@@ -3,8 +3,11 @@
 //  Occulta
 //
 //  Singleton access to the `Vault` row — the parent of `PendingShamirSecretRestore`.
-//  Foundation only: nothing here reads or writes `pendingRestores` itself.
-//  See `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3.
+//  This file only ever fetches/creates the `Vault` row itself, never the
+//  `pendingRestores` relationship — the real read/write logic (absorb, collect,
+//  orphan) lives in `Vault+Manager+ReturnBuffer.swift`, keyed by `attributeID` via a
+//  direct `FetchDescriptor<PendingShamirSecretRestore>()`, not through this
+//  relationship array. See `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3.
 //
 
 import Foundation

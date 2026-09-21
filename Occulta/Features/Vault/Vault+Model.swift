@@ -26,13 +26,15 @@ import CryptoKit
 /// relationship below.
 ///
 /// ⚠️ No longer the "one seal covers everything" shape `RECOVERY_BUFFER_LAYERING.md` §6 item 9.2
-/// describes — that relied on a single sealed blob so any change reseals the whole thing, closing
+/// described — that relied on a single sealed blob so any change reseals the whole thing, closing
 /// `bugs.md` Bug 120 as a side effect. Moving to a real SwiftData relationship (independently-sealed
 /// child rows) walks back that property; a write to one `PendingShamirSecretRestore` row no longer
-/// touches any other. Not yet reconciled with the doc — flagging here so it isn't lost.
+/// touches any other. Already reconciled with the doc, not an open gap — §9.3 (2026-09-13) discusses
+/// this exact consequence directly and accepts it, distinguishing it from Bug 120's actual claim (row
+/// count alone still reveals nothing; which row's bytes change over time now does).
 ///
-/// Singleton discipline (fetch-or-create, exactly one row) is not yet written — needs its own
-/// helper mirroring `Manager.Security.requireConfig()`, nothing in SwiftData enforces it for free.
+/// Singleton discipline (fetch-or-create, exactly one row): `VaultManager.ensureVaultExists()`/
+/// `.requireVault()` (`Vault+Manager+PendingRestore.swift`), mirroring `Manager.Security.requireConfig()`.
 @Model
 final class Vault {
 

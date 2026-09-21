@@ -191,7 +191,7 @@ before then — see §6's anti-pairings.
 |---|---|---|
 | 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
 | 4 | Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel | arming in duress does not block depth 0; cancel clears only its own layer |
-| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. Implementation still reflects the superseded 9.1 shape, not yet rebuilt. |
+| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. **Rebuilt 2026-09-21** — `ReconstructShard` (the old §9.1 shared pool) is retired; `PendingShamirSecretRestore` is the live mechanism, `ShardsCodec`/`SignedAttributeCodec` implemented, legacy rows migrate on unlock. Collection is depth-blind now, matching §9.3, but this shipped *ahead of* row 4's own arming/completion binding — see `bugs.md` Bug 99's 2026-09-21 addendum for the accepted interim gap that opens until row 4 lands. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
@@ -1023,8 +1023,8 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 96 (item 3) | Export plaintext left unzeroed | open |
 | 99 | A coercer supplying his own trustees can test for duress | open — subsumed here except the pending-file tag |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |
-| 100 r2 | Shard file length was a keyless progress counter | fixed — rows; superseded by this design's slots |
-| 100 r3 | `.occbak` length estimates vault size | open — moot once §5 slots the contents |
+| 100 r2 | Shard file length was a keyless progress counter | fixed — rows (`ReconstructShard`, 2026-08-27); **superseded again, 2026-09-21** — `ReconstructShard` itself retired, `PendingShamirSecretRestore` is the live mechanism (§9.3, Stages 4-5) |
+| 100 r3 | `.occbak` length estimates vault size | **open, not yet moot** — §9.3 drops `encryptedSnapshot` entirely rather than slotting it (Stage 3, "start shard return": collect shards first, open the file only at the end); Stages 4-5 (storage swap) shipped 2026-09-21, Stage 3 (the reordering that actually removes the file's held-window) has not. See `bugs.md` Bug 100's own 2026-09-21 addendum. |
 | 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
 
 **Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
@@ -1045,6 +1045,15 @@ of rows, the same direction item 5's own successor took. Under that proposal the
 `.occbak` and nothing resembling a slot to tag either — the depth is which row it is. If item 9 is
 adopted, this row's qualifier comes off regardless of how the §6-item-5-versus-this-row question
 above would otherwise have resolved.
+
+**Settled, 2026-09-21 — the qualifier stays, for now, and this is why.** Item 9's design lineage
+landed as §9.3, and §9.3 *is* adopted — but §9.3 splits into stages (Stage 3 doc-header numbering,
+not this section's item numbers), and only the storage-mechanism half (Stages 4-5: `ReconstructShard`
+→ `PendingShamirSecretRestore`) shipped today. Stage 3 — the "start shard return" reordering that
+actually removes the standalone `.occbak` — has not. The file exists today exactly as it always has;
+`storePendingRestore` still writes it on open and holds it for the full waiting window. So the Bug 99
+row's "except the pending-file tag" qualifier is still correct right now, not stale — it becomes
+stale, and should come off, only once Stage 3 ships. Don't resolve this ahead of that.
 
 See [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) §6, §8 for Bugs 92, 102, 105 — this container's
 sibling issues, not its own.

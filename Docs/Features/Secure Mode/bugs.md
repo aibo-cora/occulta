@@ -7670,6 +7670,17 @@ with a per-depth *row* holding a padded `encryptedSnapshot` field, not a fixed-s
 conclusion above still holds — the standalone file disappears either way, so remedy 3 (padding a
 file that no longer exists) stays moot — just via item 9, not "Bug 102"/fixed slots.
 
+**Superseding update, 2026-09-21: item 9 itself moved past "a row holding the file's contents" —
+remedy 3 is still open today, not yet moot.** §9.3 (2026-09-13) dropped `encryptedSnapshot` entirely
+rather than moving it into a row: the settled design collects shards first, depth-blind, and only
+opens the `.occbak` file at the very end, synchronously, once a matching set already exists —
+`RECOVERY_BUFFER_LAYERING.md`'s own Stage 3 ("start shard return"). Stages 4-5 of that build (the
+storage-mechanism swap, `PendingShamirSecretRestore` replacing `ReconstructShard`) shipped
+2026-09-21; Stage 3 — the reordering that actually removes the file's held-window and would make
+remedy 3 genuinely moot — has not. Until it does, `storePendingRestore` still writes the file
+immediately on open and holds it for the full waiting window exactly as this entry originally
+described. Do not mark remedy 3 moot before Stage 3 ships.
+
 **Target:** unset. Independent of Bug 99, though both concern the same two files.
 
 ### Severity: Medium (forensic)
