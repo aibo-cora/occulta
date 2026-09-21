@@ -17,6 +17,10 @@ import Foundation
 import LocalAuthentication
 @testable import Occulta
 
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
 // MARK: - Helpers shared across suites
 
 /// Alice's in-memory test setup: vault + distribute queue in one container.
@@ -31,7 +35,8 @@ private func makeAlice() throws -> (
     let schema = Schema([
         VaultEntry.self,
         CustodyShard.self,
-        ReconstructShard.self,
+        Vault.self,
+        PendingShamirSecretRestore.self,
         PendingShardDistribute.self,
         PendingShardStatusUpdate.self,
         PotentiallyLostShard.self
@@ -389,12 +394,16 @@ private func distribute(
 
 // MARK: - Case 13: Vault locked when .handback arrives
 
-@Suite("Case 13 — Vault locked when .handback arrives")
+// Needs a real Secure Enclave — .handback routes through acceptReturnedShard/absorbShard,
+// which seals PendingShamirSecretRestore.attributeID/.deletionToken under the ambient
+// Manager.Key() local key, never the injected key manager (see ShardCustodyTests.swift's
+// ReconstructionBufferTests for the fuller trap explanation).
+@Suite("Case 13 — Vault locked when .handback arrives", .enabled(if: secureEnclaveAvailable()))
 @MainActor struct Case13_LockedHandback {
 
-    @Test(".handback inserts ReconstructShard row even while vault is locked")
+    @Test(".handback inserts a PendingShamirSecretRestore row even while vault is locked")
     func handbackBufferedWhenLocked() throws {
-        let (vault, aliceCustody, km, container) = try makeAlice()
+        let (vault, aliceCustody, km, _) = try makeAlice()
         vault.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vault.addEntry(label: "s", content: Data("hi".utf8), type: .note)
         let recipients = try makeProfiles(count: 2)
@@ -418,9 +427,10 @@ private func distribute(
             currentDepth: 0
         )
 
-        // ReconstructShard row was inserted under the buffer key (no biometric needed).
-        let rows = try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>())
-        #expect(rows.count == 1, "buffer row inserted while locked")
+        // Buffer row absorbed under the restore vault key (no biometric needed) — readable
+        // via collectedShards without unlocking.
+        let collected = try vault.collectedShards(forAttributeID: entry.id)
+        #expect(collected.count == 1, "buffer row inserted while locked")
     }
 }
 
@@ -480,12 +490,13 @@ private func distribute(
 
 // MARK: - Case 17: Below-threshold reconstruction
 
-@Suite("Case 17 — Below-threshold reconstruction is a no-op")
+// Needs a real Secure Enclave — same reason as Case 13 above.
+@Suite("Case 17 — Below-threshold reconstruction is a no-op", .enabled(if: secureEnclaveAvailable()))
 @MainActor struct Case17_BelowThreshold {
 
     @Test("tryFinalizeReconstruction with one shard (k=2) leaves buffer intact")
     func belowThresholdNoop() throws {
-        let (vault, _, km, container) = try makeAlice()
+        let (vault, _, km, _) = try makeAlice()
         vault.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vault.addEntry(label: "s", content: Data("hello".utf8), type: .note)
         let recipients = try makeProfiles(count: 3)
@@ -494,8 +505,8 @@ private func distribute(
         try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier, currentDepth: 0)
         try vault.tryFinalizeReconstruction(entryID: entry.id)
 
-        let rows = try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>())
-        #expect(rows.count == 1, "one shard buffered; threshold not met — row intact")
+        let collected = try vault.collectedShards(forAttributeID: entry.id)
+        #expect(collected.count == 1, "one shard buffered; threshold not met — row intact")
         _ = km // silence warning
     }
 }

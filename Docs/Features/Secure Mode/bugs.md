@@ -7454,6 +7454,22 @@ against code, not just the document's own "design, not built" label: `identifyOw
 `storePendingRestore` (`Vault+Manager+Backup.swift:434`) still has no depth parameter at all — every
 piece this design depends on remains genuinely unbuilt.
 
+**Addendum, 2026-09-21 — a real, narrow interim widening, accepted deliberately, not silently.**
+Replacing `ReconstructShard` with `PendingShamirSecretRestore` (the plan at
+`Vault+Manager+ReturnBuffer.swift`, RECOVERY_BUFFER_LAYERING.md §9.3) moves BEK-restore shard
+collection from depth-partitioned to depth-blind *before* this bug's own fix (binding completion to
+the depth a restore was attempted at) lands — the two were originally meant to ship together, but the
+storage swap alone is worth doing now, and building the depth-blind shape twice (once temporarily
+scoped, once final) to avoid the gap costs more than the gap is worth. Today's `ReconstructShard`-based
+collection is depth-partitioned: a shard delivered while depth 2 is showing is invisible to a depth-0
+restore attempt. Depth-blind collection removes that. Traced with `attemptBackupRestore`'s
+`currentDepth == 0` completion guard still unconditionally in place (unchanged until this bug's own
+fix lands): the widening is narrow, not the core attack this entry describes — a shard collected at
+duress depth 2 becoming usable at depth 0 requires the same attacker to *also* later get access to
+depth 0, **and** depth 0 to have no real BEK configured yet (`alreadyHasBEK`, Bug 94 remedy 1, already
+blocks it otherwise). Closes the moment this bug's own remedy ships, not before. Tracked here so it
+isn't lost between the two changes landing separately.
+
 **Status:** **Open.** Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
 asking what an attacker who owns the trustee set can do, rather than what one who does not can.
 

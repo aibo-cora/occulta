@@ -113,6 +113,21 @@ final class PendingShamirSecretRestore {
     /// Inverse side of `Vault.pendingRestores`.
     var vault: Vault?
 
+    // MARK: AAD
+
+    /// Authenticated additional data for AES-GCM seal/open of `shards` — the one field on this
+    /// model sealed via a direct `AES.GCM.seal(..., authenticating:)` call rather than the generic
+    /// `Data.encrypt(using:)` helper. `attributeID`/`deletionToken` use that generic helper's own
+    /// fixed AAD instead, the same split `BackupEncryptionKey.depth`/`.deletionToken` already use —
+    /// see `bugs.md` Bug 123 for why that's a known, accepted gap for the small fields, not this one.
+    ///
+    ///   id.uuidString (UTF-8)   — 36 bytes
+    ///
+    /// ⚠️ Sealed contract. Any change makes existing ciphertext unreadable.
+    func aad() -> Data {
+        self.id.uuidString.data(using: .utf8)!
+    }
+
     // MARK: Orphaning
 
     static let liveToken:     Data = Data([0])

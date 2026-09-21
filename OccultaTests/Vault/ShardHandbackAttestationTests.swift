@@ -27,6 +27,10 @@ import Foundation
 import LocalAuthentication
 @testable import Occulta
 
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
 // MARK: - Helpers
 
 @MainActor
@@ -46,7 +50,8 @@ private func makeRig() throws -> (
         Contact.Profile.Key.self,
         VaultEntry.self,
         CustodyShard.self,
-        ReconstructShard.self,
+        Vault.self,
+        PendingShamirSecretRestore.self,
         PendingShardDistribute.self,
         PendingShardStatusUpdate.self,
         PotentiallyLostShard.self,
@@ -77,11 +82,17 @@ private func makeDistributedEntry(vault: VaultManager, threshold: Int = 2) throw
 }
 
 /// Build a `.shard` SignedAttribute as if `signer` had signed it.
+///
+/// Default `shardBytes` is a genuine 33-byte shape (1-byte x-coordinate + 32-byte
+/// value) — `ShamirSecretSharing.split`'s own output size — not an arbitrary short
+/// value. `SignedAttributeCodec.encode` (via `absorbShard`) now enforces exactly
+/// this size and throws `unexpectedValueSize` otherwise, matching every genuine
+/// `.shard` attribute this codec will ever actually see.
 private func makeShardAttr(
     signer: TestKeyManager,
     entryID: UUID,
     id: UUID = UUID(),
-    shardBytes: Data = Data([0x01, 0x02, 0x03, 0x04])
+    shardBytes: Data = Data([UInt8(1)]) + Data.randomBytes(32)
 ) throws -> SignedAttribute {
     let createdAt = Date()
     let payload = SignedAttribute.signingPayload(
@@ -96,19 +107,23 @@ private func makeShardAttr(
 }
 
 @MainActor
-private func reconstructShardCount(in container: ModelContainer) throws -> Int {
-    try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>()).count
+private func reconstructShardCount(vault: VaultManager, entryID: UUID) throws -> Int {
+    try vault.collectedShards(forAttributeID: entryID).count
 }
 
 // MARK: - Tests
 
 @MainActor
-@Suite("Bug 94 remedy 2 — shard handback acceptance", .serialized)
+// Needs a real Secure Enclave: absorbShard (via acceptReturnedShard) seals
+// PendingShamirSecretRestore.attributeID/.deletionToken under the ambient Manager.Key()
+// local key, never the injected key manager — see ShardCustodyTests.swift's
+// ReconstructionBufferTests for the fuller trap explanation.
+@Suite("Bug 94 remedy 2 — shard handback acceptance", .serialized, .enabled(if: secureEnclaveAvailable()))
 struct ShardHandbackAttestationTests {
 
     @Test("Branch A: a shard signed by the owner's own current identity is accepted")
     func branchADirectVerifyStillWorks() throws {
-        let (custody, vault, container, ownerKey) = try makeRig()
+        let (custody, vault, _, ownerKey) = try makeRig()
         let entryID = try makeDistributedEntry(vault: vault)
 
         let attr = try makeShardAttr(signer: ownerKey, entryID: entryID)
@@ -120,13 +135,13 @@ struct ShardHandbackAttestationTests {
             vaultManager: vault, currentDepth: 0
         )
 
-        #expect(try reconstructShardCount(in: container) == 1,
+        #expect(try reconstructShardCount(vault: vault, entryID: entryID) == 1,
                 "a directly-verifiable shard must be accepted")
     }
 
     @Test("A rotated-identity shard is accepted unconditionally — Bug 125 removed the attestation fallback entirely")
     func rotatedIdentityAcceptedUnconditionally() throws {
-        let (custody, vault, container, _) = try makeRig()
+        let (custody, vault, _, _) = try makeRig()
         let entryID = try makeDistributedEntry(vault: vault)
 
         // Signed by the owner's OLD identity — unreachable from this device (rotated),
@@ -143,7 +158,7 @@ struct ShardHandbackAttestationTests {
             vaultManager: vault, currentDepth: 0
         )
 
-        #expect(try reconstructShardCount(in: container) == 1, """
+        #expect(try reconstructShardCount(vault: vault, entryID: entryID) == 1, """
             A rotated-identity shard must be accepted even with no signature verifiable at all —
             transport already authenticated the sender before this ever ran (Bug 125); there is
             no stronger check left to fall back to, so Branch A failing means accept, not reject.
@@ -152,7 +167,7 @@ struct ShardHandbackAttestationTests {
 
     @Test("A second share from the same sender replaces the first, never accumulates")
     func sameSenderReplacesNotAccumulates() throws {
-        let (custody, vault, container, _) = try makeRig()
+        let (custody, vault, _, _) = try makeRig()
         let entryID = try makeDistributedEntry(vault: vault)
 
         let ownerOldKey = TestKeyManager()
@@ -168,7 +183,7 @@ struct ShardHandbackAttestationTests {
             )
         }
 
-        #expect(try reconstructShardCount(in: container) == 1, """
+        #expect(try reconstructShardCount(vault: vault, entryID: entryID) == 1, """
             Three distinct shares all arrived from the same sender identifier. Storage must keep
             exactly one — a second share from a sender already represented for this entryID
             replaces the first rather than adding a second vote toward threshold.
@@ -181,7 +196,7 @@ struct ShardHandbackAttestationTests {
     /// real work. Confirms it's closed.
     @Test("A single sender cannot mint enough distinct shares to reach a 2-of-2 threshold alone")
     func singleSenderCannotReachThresholdAlone() throws {
-        let (custody, vault, container, _) = try makeRig()
+        let (custody, vault, _, _) = try makeRig()
         let entryID = try makeDistributedEntry(vault: vault, threshold: 2)
 
         let attacker = TestKeyManager()
@@ -198,7 +213,7 @@ struct ShardHandbackAttestationTests {
             )
         }
 
-        #expect(try reconstructShardCount(in: container) == 1, """
+        #expect(try reconstructShardCount(vault: vault, entryID: entryID) == 1, """
             Both fabricated shares came from the same sender identifier, so only one is ever
             stored — a lone attacker cannot single-handedly assemble a 2-of-2 threshold no
             matter how many distinct fake SignedAttribute.id's they mint. Two DISTINCT senders

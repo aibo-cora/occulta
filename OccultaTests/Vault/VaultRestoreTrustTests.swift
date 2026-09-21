@@ -49,9 +49,11 @@ private func makeContainer() throws -> ModelContainer {
     let schema = Schema([
         VaultEntry.self,
         BackupEncryptionKey.self,
-        // BEK restore shards are rows now, not a file (Bug 100) — a container without this
-        // model cannot store one, and every test here that collects shards fails at the insert.
-        ReconstructShard.self,
+        // BEK restore shards are PendingShamirSecretRestore rows now (RECOVERY_BUFFER_LAYERING.md
+        // §9.3) — a container without these two models cannot store one, and every test here
+        // that collects shards fails at the insert.
+        Vault.self,
+        PendingShamirSecretRestore.self,
         Contact.Profile.self,
         Contact.Profile.PhoneNumber.self,
         Contact.Profile.EmailAddress.self,
@@ -341,7 +343,7 @@ struct VaultRestoreTrustTests {
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         try attackerBackup.write(to: pendingRestoreURL, options: [.atomic, .completeFileProtection])
-        try victim.vault.storeRestoreShard(attacker.shards[0], senderIdentifier: "trustee-0", currentDepth: 0)
+        try victim.vault.absorbShard(attacker.shards[0], senderIdentifier: "trustee-0")
         victim.vault.refreshPendingRestoreState(currentDepth: 0)
         #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
         #expect(victim.vault.pendingRestoreShardCount == 1)
@@ -386,7 +388,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)") }
 
         fresh.vault.attemptBackupRestore(currentDepth: 0)
 
@@ -407,7 +409,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)") }
 
         fresh.vault.attemptBackupRestore(currentDepth: 2)
 
@@ -418,39 +420,21 @@ struct VaultRestoreDepthGatingTests {
             """)
     }
 
-    /// **Reverses the original assertion here, deliberately — see
-    /// `RECOVERY_BUFFER_LAYERING.md` §6 item 9.1.** Before shard-buffer depth-partitioning,
-    /// shard collection was unconditionally depth-independent: shards gathered at any depth
-    /// fed the same single pool, so a deferred restore could complete at depth 0 later using
-    /// shards a coercer's own trustees delivered while at a duress depth — exactly the
-    /// mechanism Bug 99's attack exploits. Depth-partitioning closes that: a shard arriving
-    /// at depth N belongs to depth N's restore and no other's.
-    @Test("Shards collected at a duress depth do not transfer to depth 0's restore")
-    func shardsAtDuressDepthDoNotTransferToDepthZero() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
+    /// **Removed, 2026-09-21 — the property this asserted no longer holds, by deliberate,
+    /// documented design, not a regression.** Shard collection moved from depth-partitioned
+    /// (`ReconstructShard`) to depth-blind (`PendingShamirSecretRestore`,
+    /// `RECOVERY_BUFFER_LAYERING.md` §9.3) ahead of Bug 99's own fix (binding completion to
+    /// the depth a restore was attempted at), which is what will close this again. Building
+    /// the depth-blind shape twice — once temporarily scoped, once final — costs more than
+    /// the narrow interim gap this accepts; see `bugs.md` Bug 99's 2026-09-21 addendum for
+    /// the full trace of why the gap is narrow (still bounded by `attemptBackupRestore`'s
+    /// unconditional depth-0 completion guard, and by Bug 94 remedy 1's `alreadyHasBEK`
+    /// check) and what closes it. `shardsAtDepthZeroStillCompleteDepthZero` below still
+    /// covers the property that does still hold: shards genuinely collected at depth 0
+    /// complete depth 0's own restore.
 
-        let owner  = try makeBackupReadyVault()
-        let backup = try owner.vault.exportBackup(currentDepth: 0)
-
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 3) }
-
-        fresh.vault.attemptBackupRestore(currentDepth: 3)
-        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "must not complete above depth 0")
-
-        fresh.vault.attemptBackupRestore(currentDepth: 0)
-        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, """
-            Shards collected while at depth 3 belong to depth 3's own restore — a depth-0 \
-            attempt must see none of them, not complete using them as if collection were \
-            still depth-independent.
-            """)
-    }
-
-    /// The companion case to the one above: shards genuinely collected *at* depth 0 must
-    /// still let a depth-0 restore complete — depth-partitioning must not cost the real path
-    /// anything, only close the cross-depth transfer.
+    /// The baseline the removed cross-depth test above used to be measured against:
+    /// shards collected while depth 0 is current must still let a depth-0 restore complete.
     @Test("Shards collected at depth 0 still complete depth 0's own restore")
     func shardsAtDepthZeroStillCompleteDepthZero() throws {
         clearRestoreFiles()
@@ -461,7 +445,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)") }
 
         fresh.vault.attemptBackupRestore(currentDepth: 0)
         #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil,
@@ -487,7 +471,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        try fresh.vault.storeRestoreShard(owner.shards[0], senderIdentifier: "trustee-0", currentDepth: 0)
+        try fresh.vault.absorbShard(owner.shards[0], senderIdentifier: "trustee-0")
 
         fresh.vault.refreshPendingRestoreState(currentDepth: 0)
         #expect(fresh.vault.pendingRestoreActive, """
@@ -520,7 +504,7 @@ struct VaultRestoreDepthGatingTests {
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() {
-            try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 2)
+            try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)")
         }
 
         fresh.vault.attemptBackupRestore(currentDepth: 2)
@@ -535,7 +519,14 @@ struct VaultRestoreDepthGatingTests {
 
 // MARK: - Bug 96
 
-@Suite("Bug 96 — restore path robustness", .serialized)
+// Needs a real Secure Enclave for two independent reasons: outOfRangeEntryTypeThrows/
+// preEpochCreatedAtThrows go through makeBackupReadyVault()/exportBackup(), which stamp
+// visibleThroughDepth through the bare, uninjectable Data.encrypt() extension (same
+// reason VaultRestoreTrustTests above is gated); restoreShardBufferIsUnbounded goes
+// through absorbShard, which seals PendingShamirSecretRestore.attributeID/.deletionToken
+// under the ambient Manager.Key() local key. Previously ungated — a pre-existing gap for
+// the first two tests, surfaced while adding the gate this file's third test now needs.
+@Suite("Bug 96 — restore path robustness", .serialized, .enabled(if: secureEnclaveAvailable()))
 @MainActor
 struct VaultRestoreRobustnessTests {
 
@@ -595,20 +586,18 @@ struct VaultRestoreRobustnessTests {
         }
     }
 
-    /// **Fixed — `RECOVERY_BUFFER_LAYERING.md` §6 item 9.1.** `storeRestoreShard` deduplicates by
-    /// `SignedAttribute.id`, and an attacker picks a fresh UUID each time. Since Bug 100 these are
-    /// `ReconstructShard` rows rather than a file; item 9.1 adds the cap this test was pinning as
-    /// missing — 255 distinct-sender rows per depth, the Shamir ceiling, so no genuine
-    /// distribution could ever be rejected by it. Any cap near a realistic trustee count (single
-    /// digits; threshold ≥ 2) sits far below this ceiling — 255 bounds the attack without ever
-    /// risking real data.
-    ///
-    /// **Scoped to a fresh, no-BEK vault deliberately**, same as before the fix — on an
-    /// existing-BEK device, the early check in `attemptBackupRestore` bounds this to roughly one
-    /// shard per arming cycle in real usage, so this test would not reflect production behaviour
-    /// run against `makeBackupReadyVault()`.
-    @Test("The restore-shard buffer is capped at 255 per depth")
-    func restoreShardFileIsBounded() throws {
+    /// **Reversed, 2026-09-21 — `RECOVERY_BUFFER_LAYERING.md` §9.3's final decision.** The
+    /// 255-per-depth cap this test used to pin (`bugs.md` Bug 96 item 2's original remedy)
+    /// was reconsidered and deliberately not adopted: capping only orphaned rows leaves live
+    /// ones exploitable exactly as before, and capping live rows reopens a cross-layer denial
+    /// channel this container was built to avoid (§9.3's own "counting oracle" finding, `bugs.md`
+    /// Bug 122). The decision is "no cap, ever, on this population" — Bug 96 item 2 stays open,
+    /// permanently accepted. Each junk shard below carries a distinct `entryID` (a fake
+    /// distribution of its own), so each claims its own `PendingShamirSecretRestore` row rather
+    /// than competing for slots in a shared pool the way the old per-depth design worked — this
+    /// test now confirms growth is genuinely unbounded, not capped at 255.
+    @Test("The restore-shard buffer accepts every distinct distribution, genuinely unbounded")
+    func restoreShardBufferIsUnbounded() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
 
@@ -619,14 +608,26 @@ struct VaultRestoreRobustnessTests {
             let junk = SignedAttribute(
                 id: UUID(), label: "vault-bek-shard",
                 value: Data(repeating: UInt8(i % 251), count: 33),
-                category: .shard, signature: Data(), entryID: UUID()
+                category: .shard,
+                // A minimal valid DER SEQUENCE (tag + zero-length content) — a genuinely
+                // empty signature doesn't round-trip through SignedAttributeCodec, which
+                // requires the signature region to start with a real DER tag to recover
+                // where the real bytes end within the fixed 72-byte slot. No real shard
+                // is ever actually signed this way; this is junk data to begin with.
+                signature: Data([0x30, 0x00]),
+                entryID: UUID()
             )
-            try? victim.vault.storeRestoreShard(junk, senderIdentifier: "junk-sender-\(i)", currentDepth: 0)
+            try victim.vault.absorbShard(junk, senderIdentifier: "junk-sender-\(i)")
         }
 
-        #expect(victim.vault.pendingRestoreShardCount == 255, """
-            \(victim.vault.pendingRestoreShardCount) shards accepted from \(attempts) attempts — \
-            expected exactly the 255-per-depth cap, with the remaining 45 silently dropped.
+        // bekRestoreShardCount(), not the published pendingRestoreShardCount — that property
+        // is only refreshed as a side effect of storePendingRestore/attemptBackupRestore/
+        // refreshPendingRestoreState, none of which this test calls; absorbShard alone
+        // doesn't touch it.
+        let count = try victim.vault.bekRestoreShardCount()
+        #expect(count == attempts, """
+            \(count) shards accepted from \(attempts) attempts — expected all of them, since \
+            each names a distinct distribution and this population is permanently uncapped.
             """)
     }
 }

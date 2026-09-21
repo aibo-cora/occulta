@@ -415,7 +415,7 @@ extension VaultManager {
     func refreshPendingRestoreState(currentDepth: Int) {
         self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
         self.pendingRestoreShardCount = self.pendingRestoreActive
-            ? ((try? self.loadRestoreShards(currentDepth: currentDepth))?.count ?? 0)
+            ? ((try? self.bekRestoreShardCount()) ?? 0)
             : 0
     }
 
@@ -457,14 +457,18 @@ extension VaultManager {
         // above depth 0 traded a duress-against-duress gap for a duress-against-real one.
         // currentDepth: 0 — this whole mechanism is pinned there (see the doc comment above).
         self.pendingRestoreActive     = true
-        self.pendingRestoreShardCount = (try? self.loadRestoreShards(currentDepth: 0))?.count ?? 0
+        self.pendingRestoreShardCount = (try? self.bekRestoreShardCount()) ?? 0
     }
 
     /// Attempt reconstruction from all collected restore shards.
     ///
-    /// Groups shards by `entryID` and tries `backup.reconstruct` on each group.
+    /// Enumerates every currently-live BEK-restore distribution
+    /// (`bekRestoreDistributionIDs`) and tries `backup.reconstruct` against each
+    /// one's collected shards in turn — each `PendingShamirSecretRestore` row is
+    /// already scoped to one `distributionID` by construction, so there is no
+    /// grouping step left to do here the way the old shared-pool design needed.
     /// `AES.GCM` authentication inside `reconstruct` is the oracle — the correct
-    /// group decrypts successfully; all others throw. Runs silently when not
+    /// distribution decrypts successfully; all others throw. Runs silently when not
     /// enough shards are present. Requires vault to be unlocked.
     ///
     /// Stays on `VaultManager`, not moved into `Backup` — like `exportBackup`/
@@ -473,18 +477,20 @@ extension VaultManager {
     /// the backup key's own lifecycle. `Backup.reconstruct` is the one narrow
     /// operation this actually depends on.
     ///
-    /// Checks for an existing backup key before touching the shard file at all
-    /// (Bug 94 remedy 1 would refuse every group anyway, at the `reconstruct`
-    /// level) — because that per-group refusal has no path back to the cleanup
-    /// below. A device that already has a backup key can never reach the success
-    /// branch, so without this check `pendingRestoreActive` would stay stuck true
-    /// forever, and the shard file would keep accepting new entries on every
-    /// arrival with nothing left to ever clear it (Bug 96).
+    /// Checks for an existing backup key before touching collected shards at all
+    /// (Bug 94 remedy 1 would refuse every distribution anyway, at the `reconstruct`
+    /// level) — because that per-distribution refusal has no path back to the
+    /// cleanup below. A device that already has a backup key can never reach the
+    /// success branch, so without this check `pendingRestoreActive` would stay stuck
+    /// true forever, and shards would keep accepting new entries on every arrival
+    /// with nothing left to ever clear it (Bug 96).
     ///
     /// Never completes above depth 0 (Bug 93) — the other half of "defer and hide
     /// together" alongside `refreshPendingRestoreState`'s own depth guard. Shards
-    /// keep accumulating silently regardless (`storeRestoreShard` doesn't check
-    /// depth), so nothing is lost, only postponed to the next depth-0 unlock.
+    /// keep accumulating silently regardless (collection is depth-blind — see
+    /// `Vault+Manager+ReturnBuffer.swift`'s own header for the `bugs.md` Bug 99
+    /// addendum this ships ahead of), so nothing is lost, only postponed to the next
+    /// depth-0 unlock.
     func attemptBackupRestore(currentDepth: Int) {
         guard self.isUnlocked, self.pendingRestoreActive else { return }
         guard currentDepth == 0 else { return }
@@ -492,7 +498,9 @@ extension VaultManager {
         guard let vaultKey = try? self.currentKey() else { return }
 
         if (try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)) != nil {
-            self.clearBEKRestoreShards(currentDepth: currentDepth)
+            for distributionID in (try? self.bekRestoreDistributionIDs()) ?? [] {
+                self.orphanShards(forAttributeID: distributionID)
+            }
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
             self.pendingRestoreShardCount = 0
@@ -500,38 +508,32 @@ extension VaultManager {
         }
 
         guard let backupData = try? Data(contentsOf: Self.pendingRestoreURL) else { return }
-
-        // Derived once and reused below for clearBEKRestoreShards(usingKey:currentDepth:) on
-        // success — loadRestoreShards(usingKey:currentDepth:) and clearBEKRestoreShards would
-        // otherwise each independently re-derive the identical restore vault key.
-        guard let restoreVaultKey = try? self.keyManager.deriveRestoreVaultKey() else { return }
-        guard let shards = try? self.loadRestoreShards(usingKey: restoreVaultKey, currentDepth: currentDepth), !shards.isEmpty else { return }
+        guard let distributionIDs = try? self.bekRestoreDistributionIDs(), !distributionIDs.isEmpty else { return }
 
         // Update counter as a side effect (covers the on-unlock path).
-        self.pendingRestoreShardCount = shards.count
+        self.pendingRestoreShardCount = (try? self.bekRestoreShardCount()) ?? 0
 
-        // Already deduped to at most one per (entryID, senderIdentifier) at storage
-        // time (storeRestoreShard), so each group here already reflects distinct
-        // senders — not just distinct SignedAttribute.id's (Bug 94 remedy 2).
-        var groups: [UUID: [SignedAttribute]] = [:]
-        for shard in shards {
-            guard let eid = shard.attribute.entryID else { continue }
-            groups[eid, default: []].append(shard.attribute)
-        }
+        for distributionID in distributionIDs {
+            // Already deduped to at most one per (distributionID, senderIdentifier) at
+            // absorb time, so this already reflects distinct senders — not just
+            // distinct SignedAttribute.id's (Bug 94 remedy 2).
+            guard let shards = try? self.collectedShards(forAttributeID: distributionID), !shards.isEmpty else { continue }
 
-        for (_, group) in groups {
             do {
                 // reconstruct: Shamir combine → GCM oracle → persist row.
-                try self.backup.reconstruct(vaultKey: vaultKey, shards: group, backupData: backupData, ownerIdentity: nil, modelContext: self.modelContext)
+                try self.backup.reconstruct(
+                    vaultKey: vaultKey, shards: shards.map { $0.attribute },
+                    backupData: backupData, ownerIdentity: nil, modelContext: self.modelContext
+                )
                 // importBackup: read persisted row → decrypt file → insert entries.
                 // currentDepth == 0 here always — asserted by this function's own guard above.
                 try self.importBackup(backupData, currentDepth: currentDepth)
             } catch {
-                continue    // Wrong group or not enough shards — try next.
+                continue    // Wrong distribution or not enough shards — try next.
             }
 
-            // Success — drop the buffered shards and the cached file, reset state.
-            self.clearBEKRestoreShards(usingKey: restoreVaultKey, currentDepth: currentDepth)
+            // Success — orphan the buffered shards and the cached file, reset state.
+            self.orphanShards(forAttributeID: distributionID)
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
             self.pendingRestoreShardCount = 0
