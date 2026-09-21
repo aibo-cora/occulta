@@ -316,6 +316,56 @@ extension VaultManager {
         }
     }
 
+    // MARK: - Legacy ReconstructShard migration
+
+    /// One-time migration of any leftover `ReconstructShard` rows (the pre-§9.3
+    /// mechanism, `RECOVERY_BUFFER_LAYERING.md`, retired 2026-09-21) into
+    /// `PendingShamirSecretRestore` via `absorbShard` — not a 1:1 row copy. Up to 255
+    /// `ReconstructShard` rows (one per distinct sender) could belong to a single
+    /// secret's restore under the old shared-pool design; each decoded payload is
+    /// absorbed individually, and `absorbShard`'s own find-or-create-by-attributeID
+    /// logic collapses them into the shard slots of one target row, exactly as if
+    /// they'd arrived one at a time under the new mechanism.
+    ///
+    /// No arming depth to carry forward — completion depth is decided at file-open
+    /// time under the current design, not recorded per restore, so the legacy rows'
+    /// own per-shard *arrival* depth (already known to not be the same thing as
+    /// arming depth — `bugs.md` Bug 100's own remedy-2 note) is simply dropped.
+    ///
+    /// Idempotent and crash-safe without needing an all-or-nothing transaction:
+    /// `absorbShard` already saves after every call, and re-migrating an
+    /// already-absorbed payload against the same target row is a safe no-op
+    /// (identical re-delivery, matched by `SignedAttribute.id`) — so a source row is
+    /// only ever deleted *after* its payload has been durably absorbed, and interrupting
+    /// this partway just means some source rows are still around to retry next unlock.
+    /// A row that fails to decrypt or decode is deleted anyway — matching
+    /// `decryptAllReconstructShards`'s own established "either way, useless" precedent
+    /// for corrupt buffer rows — and a payload whose `SignedAttribute.value` somehow
+    /// isn't a genuine 33-byte Shamir share (never true for real legacy data, only
+    /// possible for something already corrupt) is skipped the same way, not treated
+    /// as fatal.
+    func migrateReconstructShardsIfNeeded() throws {
+        let rows = try self.modelContext.fetch(FetchDescriptor<ReconstructShard>())
+        guard !rows.isEmpty else { return }
+
+        guard let restoreKey = try self.keyManager.deriveRestoreVaultKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+
+        for row in rows {
+            defer { self.modelContext.delete(row) }
+
+            guard let box     = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                  let plain   = try? AES.GCM.open(box, using: restoreKey, authenticating: row.aad()),
+                  let payload = try? JSONDecoder().decode(ReconstructShard.Payload.self, from: plain)
+            else { continue }
+
+            try? self.absorbShard(payload.signedAttribute, senderIdentifier: payload.senderIdentifier)
+        }
+
+        try self.modelContext.save()
+    }
+
     // MARK: - BEK restore distribution enumeration
     //
     // absorbShard/collectedShards/orphanShards are all scoped to one attributeID.

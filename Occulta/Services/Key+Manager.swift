@@ -42,8 +42,8 @@ struct SaltInfo {
     /// AppLayerConfig. Domain-separated from all other key paths.
     static let kSecureModeKeyInfo = "Occulta-v1-secure-mode-pin-2026".data(using: .utf8)!
     /// Restore vault key: same SE key as shard custody, distinct HKDF info →
-    /// dedicated symmetric key. Used to encrypt ReconstructShard rows — the
-    /// transient set of returned shards Alice's device collects during
+    /// dedicated symmetric key. Used to encrypt PendingShamirSecretRestore.shards —
+    /// the transient set of returned shards Alice's device collects during
     /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
     /// blob and a reconstruct blob are never decryptable with the same key.
     static let kRestoreVaultKeyInfo = "Occulta-v1-restore-vault-2026".data(using: .utf8)!
@@ -837,8 +837,8 @@ extension Manager.Key: KeyManagerProtocol {
     /// policy: device-unlock, no biometric) but produces a distinct symmetric key
     /// via HKDF domain separation.
     ///
-    /// Used to seal ReconstructShard rows — the transient set of returned
-    /// shards collected during reconstruction.
+    /// Used to seal PendingShamirSecretRestore.shards — the transient set of
+    /// returned shards collected during reconstruction.
     ///
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///

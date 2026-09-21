@@ -213,6 +213,11 @@ final class VaultManager {
         if let vaultKey = try? self.currentKey() {
             try? self.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey)
         }
+        // Migrate any leftover ReconstructShard rows into PendingShamirSecretRestore,
+        // if any still exist. Idempotent — see migrateReconstructShardsIfNeeded's own
+        // doc comment. Needs only the restore vault key, not the vault key, so this
+        // runs unconditionally rather than nested in the block above.
+        try? self.migrateReconstructShardsIfNeeded()
         // Drain reconstruction buffer entries that crossed threshold while locked.
         self.tryFinalizeAllReconstructions()
         // Replay shard status updates that arrived while locked, then check for losses.
@@ -354,6 +359,10 @@ final class VaultManager {
         try deleteAll(CustodyShard.self)
         try deleteAll(PendingShardDistribute.self)
         try deleteAll(PendingShardStatusUpdate.self)
+        try deleteAll(PendingShamirSecretRestore.self)
+        try deleteAll(Vault.self)
+        // Retired but kept for migration (ReconstructShard+Model.swift) — a panic wipe
+        // must still clear any leftover legacy rows, not just the current model.
         try deleteAll(ReconstructShard.self)
         try deleteAll(GlobalShardConfig.self)
         try deleteAll(PotentiallyLostShard.self)

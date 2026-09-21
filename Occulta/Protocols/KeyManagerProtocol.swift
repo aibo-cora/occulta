@@ -88,7 +88,7 @@ protocol KeyManagerProtocol {
 
     /// Derive the restore vault key: same SE key as `deriveShardCustodyKey`,
     /// distinct HKDF info — produces a dedicated symmetric key for sealing
-    /// ReconstructShard rows.
+    /// PendingShamirSecretRestore rows.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
     func deriveRestoreVaultKey() throws -> SymmetricKey?

@@ -46,6 +46,8 @@ struct OccultaApp: App {
         Message.Draft.self,
         VaultEntry.self,
         CustodyShard.self,
+        // Retired, kept permanently, migration-only — see ReconstructShard+Model.swift's
+        // own header for why this can't just be deleted like the BEK array's old type was.
         ReconstructShard.self,
         PendingShardDistribute.self,
         PendingShardStatusUpdate.self,

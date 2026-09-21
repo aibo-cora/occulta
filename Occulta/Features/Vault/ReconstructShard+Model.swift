@@ -2,43 +2,32 @@
 //  ReconstructShard+Model.swift
 //  Occulta
 //
-//  Transient SwiftData buffer for shards Alice's device collects during
-//  per-entry PEK reconstruction, and for BEK restore shards collected during
-//  device recovery — the same recovery-buffer-keyed store, not two separate
-//  mechanisms. One row per `.handback` bundle absorbed; bulk-deleted once a
-//  group reaches its threshold and reconstruction succeeds.
+//  RETIRED, 2026-09-21 — RECOVERY_BUFFER_LAYERING.md §9.3. This was the live
+//  reconstruction buffer for both per-entry PEK reconstruction and BEK restore;
+//  `PendingShamirSecretRestore` (`Vault+Model.swift`) replaced it, keyed by the
+//  secret's own identity instead of this model's shared, sender-keyed pool.
 //
-//  Scope: a row belongs to the BEK-restore path when its `entryID` resolves to
-//  no real `VaultEntry` — no `VaultEntry.id` is ever a BEK `distributionID`, so
-//  the two populations never collide. BEK restore shards used to live in a
-//  separate encrypted file (`backup-import-cache-shards.dat`); Bug 100 moved
-//  them into this model instead, for the identical reason described below —
-//  see `Vault+Manager+ReturnBuffer.swift`'s "BEK restore shards" section and
-//  VAULT_BACKUP_GUIDE.md.
+//  Kept permanently, migration-only — deliberately, not an oversight. Unlike the
+//  BEK array's own retirement (a plain file, readable by hand-decoding raw bytes
+//  without needing its old Swift type to survive), rows of this type live inside
+//  the SwiftData-backed store itself: fetching and decoding them requires the
+//  `@Model` type and `OccultaApp.schema` entry to still exist. Deleting either
+//  would strand any device that upgrades straight into a build past this one with
+//  a genuine in-flight restore still sitting in `ReconstructShard` rows — the
+//  same "never strand a genuine recovery" principle
+//  `Vault+Manager+ReturnBuffer.swift`'s `migrateLegacyRestoreShardFile` already
+//  states for the file this model itself once replaced (Bug 100). Nothing writes
+//  to this model anymore; `VaultManager.migrateReconstructShardsIfNeeded()` (called
+//  from `unlock()`) is the only remaining reader, and it deletes every row it
+//  touches — so the live population only ever shrinks, never grows, from here on.
 //
-//  Privacy model — encryption at rest:
+//  Privacy model — encryption at rest (historical, while any rows remain):
 //  - The target entryID, the SignedAttribute.id (`attrID`), and the full
 //    SignedAttribute live inside `encryptedPayload`, sealed under the recovery
 //    buffer key with AAD = aad().
-//  - Cold-disk forensics learns "Alice has N rows in the reconstruct buffer".
-//    No entry identifiers, no shard counts per entry, no signature material.
-//  - Querying "shards for entry X" requires decrypting every row. The buffer is
-//    transient and small (active recoveries only), so the cost is negligible.
-//
-//  Lifecycle:
-//  - Inserted on each `.handback` ShardOperation routed by ShardCustodyManager.
-//  - Bulk-deleted after VaultManager runs reconstruction for the matching
-//    entryID and re-wraps the recovered PEK under the current vault key.
-//  - User-cancelled recovery: bulk-delete by walking and matching entryID.
-//  - Stale rows (e.g. > 30 days, never reaching threshold) — periodic prune in a
-//    future pass; not part of this scaffolding.
-//
-//  Why a separate model from CustodyShard:
-//  - Different encryption keys (restore vault vs. shard custody) — the type
-//    system enforces "you can't decrypt one with the other".
-//  - Different lifecycles (transient queue vs. long-lived custody store).
-//  - Different sealed payloads (reconstruct must carry entryID + attrID; custody
-//    only carries the owner fingerprint + the signed attribute).
+//  - Cold-disk forensics learns "N rows remain in the retired reconstruct
+//    buffer" — no entry identifiers, no shard counts per entry, no signature
+//    material, without the restore vault key.
 //
 
 import Foundation
