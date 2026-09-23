@@ -356,6 +356,8 @@ Not chosen:
 
 **Consequences:** The menu and sheet read the same at every depth, so there's no new tell. The
 empty-vault text stays as it is. The weakest step is still step 2, since nothing tells the trustee to
-send a message. A trustee-side prompt would fix that, as a separate decision.
+send a message. A trustee-side prompt would fix that, as a separate decision. **Decided 2026-09-23: no
+trustee-side prompt.** The owner's restore screen tells them to ask each person for a message; nothing is
+added on the trustee's side.
 
 **Full reasoning:** this conversation, 2026-09-23; `RECOVERY_BUFFER_LAYERING.md` §9.4.
