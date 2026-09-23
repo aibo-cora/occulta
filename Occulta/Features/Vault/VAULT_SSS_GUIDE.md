@@ -957,7 +957,10 @@ possible from it.
   note, key token) are not recoverable without the vault key.
 - **GF(2⁸) arithmetic timing:** `gfMul` and `gfInv` contain data-dependent
   branches. On Apple Silicon this is acceptable for SSS (not key derivation),
-  but the implementation is not formally constant-time.
+  but the implementation is not formally constant-time. *(2026-09-23: filed as
+  `bugs.md` Bug 131, with a branch-free `gfMul` as the proposed fix. `gfInv`'s
+  branches depend only on its fixed exponent and on public x-coordinates, so
+  `gfMul` is the one that matters.)*
 
 ---
 

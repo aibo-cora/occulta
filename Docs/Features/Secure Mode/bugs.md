@@ -11010,3 +11010,85 @@ Two differences from the proposal:
 runs the operation, and asserts the deleted row is gone and every survivor has new bytes and the same
 content. All three fail on the pre-fix code. A fourth test pins that a `processExpectedShards` which
 revokes nothing leaves every row's bytes unchanged, so moving to always re-sealing has to be deliberate.
+
+---
+
+## Bug 131 — `gfMul` branches on its inputs, so Shamir split and reconstruct take data-dependent time
+
+**Status:** Open, filed 2026-09-23. Found while reviewing Bug 95's change to
+`ShamirSecretSharing.reconstruct`, which computes the Lagrange weights once per reconstruction
+instead of once per byte.
+
+**Target:** unset.
+
+### Severity: Low (side channel)
+
+The only realistic observer is code on the same device measuring CPU or cache timing, which iOS
+sandboxing makes hard. Restore and split are local and offline, so there is no network observer. A
+coercer holding the phone sees only how long a whole restore takes, which is milliseconds to seconds
+dominated by the GCM check, SwiftData and Enclave calls. A nanosecond-scale difference is lost in that.
+
+### What happens
+
+`gfMul` (`ShamirSecretSharing.swift`) multiplies two bytes bit by bit, and two of its steps are
+conditional:
+
+```swift
+if b & 1 != 0 { p ^= a }      // runs only when b's low bit is 1
+...
+if carry { a ^= 0x1B }        // runs only when a's high bit was 1
+```
+
+So a multiplication's running time depends on the bits of `a` and `b`. Unoptimized builds certainly
+branch here. Optimized builds may compile these to branch-free instructions (`csel` on ARM), but Swift
+doesn't guarantee it, and nobody has checked the compiled output.
+
+Secret data reaches `gfMul` in two places, both in the `a` slot, where the `carry` step depends on it:
+
+| Where | Secret input | Public input |
+|---|---|---|
+| `split` (owner's phone, at distribution), `eval`'s `gfMul(acc, x)` | `acc`, built from the key byte and random coefficients | the share's x |
+| `reconstruct`, `gfMul(yᵢ, wᵢ)` once per share per byte | the share's value `yᵢ` | the Lagrange weight `wᵢ`, from x-coordinates only |
+
+`gfInv` runs only on values derived from x-coordinates, which are public (byte 0 of every share), and
+its loop runs over the fixed exponent 254, so it leaks nothing.
+
+Bug 95's change doesn't make this worse. Before it, each share's value went through n
+secret-dependent multiplications per byte; now it goes through one. Its subset search does repeat
+reconstruction, up to 1,024 times over the same shares in one failing restore. Repetition helps an
+attacker average out noise, so it adds a little exposure, and only for the same on-device observer.
+
+`VAULT_SSS_GUIDE.md` has called this "acceptable for SSS" since the guide was written.
+`RUST_PACKAGES_SPEC.md` already specifies constant-time GF(2⁸) for its planned `shamir.rs`.
+
+### Remedy (proposed, not built)
+
+Replace the two conditionals with masks. This is the standard constant-time form and returns the same
+result:
+
+```swift
+static func gfMul(_ a: UInt8, _ b: UInt8) -> UInt8 {
+    var p: UInt8 = 0
+    var a = a
+    var b = b
+    for _ in 0..<8 {
+        p ^= a & (0 &- (b & 1))          // all-ones mask when b's low bit is set
+        let carry = 0 &- (a >> 7)        // all-ones mask when a's high bit is set
+        a = (a << 1) ^ (0x1B & carry)
+        b >>= 1
+    }
+    return p
+}
+```
+
+Every step runs whatever the inputs. The speed should be about the same. Log/exp lookup tables are not
+an alternative: indexing a table by a secret leaks through the cache, which is worse than the branches
+here.
+
+### Guard
+
+Timing can't be asserted reliably in a unit test, so the guard is equivalence plus inspection:
+- a test comparing the new `gfMul` with the current one on all 65,536 input pairs;
+- the existing GF tests, including the exhaustive `a · a⁻¹ == 1`;
+- one manual check of the optimized arm64 output for `gfMul`, recorded here, confirming it has no
+  conditional branches.
