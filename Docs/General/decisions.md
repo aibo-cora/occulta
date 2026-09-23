@@ -44,7 +44,8 @@ the original ask, with no data-loss cost.
 **Consequences:** A coerced session cannot cause *new* custody-shard writes for a hidden owner at
 all — not just cannot see them. Pre-existing rows from before the session are unaffected; this is a
 write-path filter, not a retroactive scrub. Complements, doesn't substitute for,
-`RECOVERY_BUFFER_LAYERING.md` §6 item 7's not-yet-built trustee-depth-keyed storage partitioning.
+`RECOVERY_BUFFER_LAYERING.md` §6 item 7's trustee-depth-keyed storage partitioning, which was closed as
+not building on 2026-09-23 (see that item).
 Placement note: this had to become an instance method on `OccultaApp` rather than a free function or
 a static member of it — a `static func` inside the `@main`-attributed `OccultaApp` struct was
 invisible to `@testable import Occulta` under this toolchain's explicit-module build, reproduced

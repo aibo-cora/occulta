@@ -439,6 +439,23 @@ decided; see item 9 for what's still open before that's settled.
 
    **Not yet implemented.** Design-only, matching the rest of this branch.
 
+   **Closed, not building, 2026-09-23.** The layout above belonged to the per-depth container §9.3
+   abandoned, and was never built. The two concerns, re-checked against current code:
+   - **(b) Hiding custody from a coercer on the trustee's phone is covered, the same way contacts and
+     vault entries are.** At arrival, `OccultaApp.filterShardOperations` drops custody operations from
+     senders hidden at the trustee's current depth (`decisions.md`, first entry). On display, the
+     Vault tab lists held shards only for owners visible at the current depth, and unknown owners only
+     at depth 0. Encrypting custody per trustee depth couldn't add real separation while `bugs.md`
+     Bug 119 stands: one vault key opens every depth.
+   - **(a) The row count stays readable without a key, accepted as the same class as contacts
+     (Bug 112, declined) and vault entries.** Reading it needs a device extraction (the store is
+     excluded from device backups), which Bug 119 already covers.
+
+   Not chosen: a filler-row baseline to hide the count (read-path cost for nothing an extraction
+   can't already decrypt), and a per-trustee-depth rebuild on rows (large: a sealed depth per shard,
+   orphaning when a depth is freed, a migration for shards whose arrival depth is unknown, and a
+   trustee who can't hand a shard back unless he's at the depth it arrived at).
+
 8. **The `storePendingRestore` tombstone soft spot — settled 2026-09-06: fix it, reusing a pattern
    already proven one function over.** A downgraded build can still *arm* a restore against the
    sibling doc's tombstoned legacy row, because that one site uses `try?` where its three siblings use
@@ -1143,6 +1160,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 127 | v1.10.3's filename rename orphaned ≤v1.10.2 restore files: named for the mechanism, never deleted, in device backups | **fixed, 2026-09-23** — `deleteLegacyRestoreState` on every unlock |
 | 128 | "Erase all data" deletes no files, so the held `.occbak` and `backup-export-meta.dat` survive a wipe | **fixed, 2026-09-23** — the wipe deletes the files |
 | 129 | A restore whose entry import fails after the key is saved leaves the depth stuck (key in place, entries missing, retries refused) | **fixed, 2026-09-23** — check everything, then write once with rollback; shards kept on a bad file |
+| 130 | Three of the four custody-shard deletions don't re-seal survivors, so a snapshot diff shows which row went | open — re-seal survivors on every deletion path, as `purgeCustody` does |
 
 **Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
 `bugs.md` Bug 99.** This table's Bug 99 row qualifies its subsumption with "except the pending-file

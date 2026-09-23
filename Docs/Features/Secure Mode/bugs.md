@@ -10952,3 +10952,48 @@ acceptable because every other `VaultManager` operation saves before returning, 
   no new entries, the banked shards are still there, and a valid file can still restore there.
 - A file whose second entry is invalid: no entries are inserted, including the first, and a later `save()`
   elsewhere commits nothing from it.
+
+---
+
+## Bug 130 — Three of the four custody-shard deletions leave every other row byte-identical, so a snapshot diff shows exactly which row was removed
+
+**Status:** Open, filed 2026-09-23. Found while answering whether `CustodyShard` has a `deletionToken` (it
+doesn't; its rows are hard-deleted), after closing `RECOVERY_BUFFER_LAYERING.md` §6 item 7.
+
+**Target:** unset.
+
+### Severity: Low (forensic)
+
+Needs two snapshots of the trustee's database, which means extracting the device twice (the store is
+excluded from device backups). Without a key, the diff can't tell whose shard was removed.
+
+### What happens
+
+`CustodyShard` rows (shards this device holds for other people) are hard-deleted in four places in
+`ShardCustody+Manager.swift`:
+- `handleReplace`: the old shard, when the owner sends a replacement;
+- `deleteMismatchShards`: shards tied to the owner's old key, when the owner redistributes under a new one;
+- `processExpectedShards`: a shard the owner no longer lists (implicit revoke);
+- `purgeCustody`: everything held for an owner, when that contact is deleted.
+
+Only `purgeCustody` re-seals the surviving rows with a fresh nonce
+(`decoded.row.encryptedPayload = try self.sealRow(...)`). Its own doc comment gives the reason: without
+it, "a raw-DB examiner comparing two snapshots across a deletion would see exactly which rows
+disappeared and find every surviving row byte-for-byte identical". The other three paths skip that
+step, so the comparison it closes is still open after every replace, re-key and revoke. It shows that
+one custody relationship changed, and when.
+
+Hard deletion itself isn't the problem: custody rows don't belong to a depth, so this is not the case the
+"orphan rows in place" decision covers (`decisions.md`). The changing row count is the same accepted class
+recorded when item 7 was closed.
+
+### Remedy (proposed, not built)
+
+After each of the three deletions, re-seal every surviving `CustodyShard` row, as `purgeCustody` does.
+Cheapest shape: a small `reSealSurvivors(using:)` step called from all four paths, so they can't drift
+apart again.
+
+### Guard
+
+For each of the three paths: take every surviving row's `encryptedPayload` before the operation, run it,
+and assert every surviving row's bytes changed and its payload still decrypts to the same content.
