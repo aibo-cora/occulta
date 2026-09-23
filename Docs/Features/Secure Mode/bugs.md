@@ -7696,12 +7696,27 @@ but it doesn't close it either; depth-blind collection plus completion at any de
 It is bounded: it needs a genuine recovery in progress with its shards banked and not yet consumed, and
 success consumes them (`orphanShards`), so it works once. Once is enough to disclose the real vault.
 `VAULT_KEY_LAYERING.md` §8 item 9's "nothing left to protect by blocking it" assumed per-depth shard
-buffers, which §9.3 later abandoned. **Not decided.** Candidates: accept the window as bounded; or bind
-banked shards to the depth their sender was visible at on arrival. §9.3 worked that binding out as a
-prerequisite for a cap and set it aside only because no cap was adopted. It was never rejected on
-security grounds, so it is a live option here, with its own costs still to trace. The regression rule
-"deferral must not be silently dropped" (`RECOVERY_BUFFER_LAYERING.md`, *Regressions*) is why this has
-to be decided before the guard comes out, not after.
+buffers, which §9.3 later abandoned. The regression rule "deferral must not be silently dropped"
+(`RECOVERY_BUFFER_LAYERING.md`, *Regressions*) is why this had to be decided before the guard comes
+out, not after.
+
+**Decided, 2026-09-23: filter by trustee visibility at completion.** A restore at depth d uses only banked
+shards whose sender (`senderIdentifier`, already stored in each slot) is a contact visible at d at the
+moment of the attempt. No new stored state. The coercer's own trustees, paired in his layer, get
+`originDepth` = d and are visible there, so his file still completes and Bug 99 stays closed. They are
+not visible at depth 0 (`depth >= origin` fails), so his shards can't complete anything in the real
+layer either. Considered and not chosen:
+- Accepting the window, because the real vault goes to exactly the coercer who meets the preconditions
+  (one who took the old phone knows a recovery is coming).
+- Binding each shard to the depth current when it arrived, which needed a `ShardsCodec` v2 and a
+  migration.
+
+**What this leaves open, stated so it isn't mistaken for a full close:** a contact with no
+`visibleThroughDepth` is visible at every depth (`Contact+Model.swift`, `isVisible(atDepth:)`). Unless
+the owner hid their trustees from the duress layer, the real trustees pass the filter there, and the
+hole is open exactly as described above. The protection holds only for trustees the owner has hidden,
+and nothing currently prompts the owner to hide them. The arrival-depth binding would have closed the
+default case too; it stays available if this proves insufficient.
 
 **Guard, once built:**
 - A full share set banked first, then the file opened at a duress depth: entries land there (this
@@ -7710,7 +7725,11 @@ to be decided before the guard comes out, not after.
 - Too few shares: the attempt fails, no pending state exists afterward, and opening the same file again
   once enough shares have arrived completes.
 - The post-restore prompt appears only at the importing depth.
-- A test pinning whichever answer the open hole gets.
+- Shards from trustees hidden at the duress depth don't count there: the owner's real file, opened in
+  duress against a full set of their shards, doesn't complete.
+- The coercer's own trustees, paired at his depth, can't complete a restore at depth 0.
+- A test pinning the residual, so it can't pass unnoticed: trustees left visible at the duress depth
+  *do* count there.
 
 ### Superseded in part by Bug 102's wider framing
 

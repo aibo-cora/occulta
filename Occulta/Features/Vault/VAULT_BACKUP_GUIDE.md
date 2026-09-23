@@ -592,9 +592,10 @@ them are not.
 - **Pending `.occbak`:** still one device-wide file in shipped code. To be removed; the file is
   never held (`RECOVERY_BUFFER_LAYERING.md` §9.4).
 - **Restore shard buffer:** now `PendingShamirSecretRestore`, still deliberately depth-blind (§9.3).
-  That is the source of §9.4's open hole: a genuine backup could complete in a duress layer.
+  That is the source of §9.4's hole: a genuine backup could complete in a duress layer.
 - **Completion:** depth 0 only in shipped code. §9.4 moves it to the depth the file is opened at,
-  once that hole is decided.
+  counting only shards from trustees visible there. That closes the hole for trustees hidden from
+  the duress layer, not for ones left visible.
 
 The acknowledgment paragraph below still applies: under §9.4 the file-open *is* the attempt, so its
 result is the natural thing to report.

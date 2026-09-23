@@ -191,7 +191,8 @@ discoverability half stands.
 
 ## Open the `.occbak` as a one-shot attempt at the current depth — never hold it
 
-**Status:** Decided, 2026-09-23. Not built. One open hole, see Consequences.
+**Status:** Decided, 2026-09-23. Not built. The hole it reopened was decided the same day, see
+Consequences.
 
 **Context:** Designing Bug 99's remedy. Today `storePendingRestore` writes the opened file into the
 sandbox (`backup-import-cache.occbak`) and waits for a later unlock or shard arrival to attempt
@@ -221,12 +222,57 @@ depth-privileged success or failure is itself a forensic trace (Bug 99).
   the owner's next depth-0 unlock.
 - UX cost: the user must reopen the file after shares arrive. This reverses `VAULT_BACKUP_GUIDE.md`'s
   "no action between collection and reconstruction" requirement and leaves discoverability to Stage 3.
-- **Open hole:** during a genuine recovery, a coercer at a duress depth can open the real `.occbak` and
-  import the real vault into his layer, because banked shards aren't bound to a depth. It works once
-  (success consumes the shards) and needs a recovery in progress. Undecided, and must be settled before
-  the depth-0 guard is removed.
+- **The hole it reopens:** during a genuine recovery, a coercer at a duress depth can open the real
+  `.occbak` and import the real vault into his layer, because banked shards aren't bound to a depth. It
+  works once (success consumes the shards) and needs a recovery in progress. Decided the same day,
+  with a residual: see "Filter restore shards by trustee visibility at completion" below.
 - Legacy devices can have a held `.occbak` from before this change. What happens to it on upgrade is
   open (`RECOVERY_BUFFER_LAYERING.md` §8).
+
+**Full reasoning:** `bugs.md` Bug 99, 2026-09-23 addendum; `RECOVERY_BUFFER_LAYERING.md` §9.4.
+
+---
+
+## Filter restore shards by trustee visibility at completion
+
+**Status:** Decided, 2026-09-23. Not built. Accepted with a known residual.
+
+**Context:** The one-shot file-open design (above) lets a restore complete at any depth, and shard
+collection is depth-blind. Together they let a coercer at a duress depth open the owner's real
+`.occbak` during a genuine recovery and import the real vault into his layer, using shards the real
+trustees handed back.
+
+**Decision:** A restore at depth d uses only banked shards whose sender, the `senderIdentifier` already
+stored in each slot, is a contact visible at d at the moment of the attempt.
+
+**Why:** No new stored state, no codec change, no migration. It reuses the visibility model the arrival
+gate (`OccultaApp.filterShardOperations`) already applies. It keeps Bug 99 closed: the coercer's own
+trustees are created in his layer (`originDepth` = d), count there, and don't count at depth 0.
+Considered and not chosen:
+- **Accept the window:** the attacker who meets its preconditions is the one who took the old phone and
+  knows a recovery is coming.
+- **Bind each shard to the depth current when it arrived:** closes the default case below too, but
+  needs a `ShardsCodec` v2 and a migration.
+
+**Consequences:**
+- **Residual, accepted knowingly:** a contact with no `visibleThroughDepth` is visible at every depth.
+  Real trustees the owner didn't hide from a duress layer pass the filter there, so for them the hole
+  stays open. Protection holds only for trustees hidden from that layer, and nothing currently prompts
+  the owner to hide them.
+- A coercer who separately knows the hidden trustees handed back, and holds the real file, sees it fail
+  at his depth and can infer another layer exists. He gets no vault data.
+- Completion needs contact visibility, which `VaultManager` doesn't read today; the caller has to
+  supply it. **Settled 2026-09-23:** as two separate parameters, `currentDepth: Int` and
+  `visibleContactIdentifiers: Set<String>`. These are visible *contact* IDs, not trustee IDs, because
+  the restoring device doesn't know its trustees. A shard counts when its `senderIdentifier` is in
+  the set. The depth stays a parameter because it decides where the result lands (which layer's key
+  row, which depth the entries are stamped with), and `VaultManager` can't read it itself. The set
+  can't stand in for it, since two depths can have identical visible contacts. The caller
+  (`armPendingRestore`) builds the set the way `purgeDraftsNotSafeAtCurrentDepth` does: non-deleted
+  contacts, `isVisible(atDepth:usingKey:)`, mapped to `identifier`. So a shard from a trustee the
+  owner has since deleted doesn't count. A set was chosen over a closure so the rule stays at the call
+  site and tests can pass literal sets. Bundling the two into one value was considered and declined.
+- Arrival-depth binding stays the fallback if the residual proves too wide.
 
 **Full reasoning:** `bugs.md` Bug 99, 2026-09-23 addendum; `RECOVERY_BUFFER_LAYERING.md` §9.4.
 

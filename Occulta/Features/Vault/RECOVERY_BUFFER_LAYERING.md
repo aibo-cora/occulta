@@ -190,8 +190,8 @@ before then — see §6's anti-pairings.
 | # | Stage | Verify |
 |---|---|---|
 | 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
-| 4 | ~~Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel~~ — **superseded: §9.3 dropped per-depth state; §9.4 (2026-09-23) drops arming, held contents and cancel. What remains is completion at the depth the file is opened at** | a restore completes at the depth its file is opened at, and nothing is written to the sandbox; §9.4's open hole must be decided first |
-| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. **Rebuilt 2026-09-21** — `ReconstructShard` (the old §9.1 shared pool) is retired; `PendingShamirSecretRestore` is the live mechanism, `ShardsCodec`/`SignedAttributeCodec` implemented, legacy rows migrate on unlock. Collection is depth-blind now, matching §9.3, but this shipped *ahead of* row 4's own arming/completion binding — see `bugs.md` Bug 99's 2026-09-21 addendum for the accepted interim gap that opens until row 4 lands. Row 4's binding was itself superseded by §9.4 (2026-09-23): completion happens at file-open, at the opening depth, with an open hole. |
+| 4 | ~~Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel~~ — **superseded: §9.3 dropped per-depth state; §9.4 (2026-09-23) drops arming, held contents and cancel. What remains is completion at the depth the file is opened at** | a restore completes at the depth its file is opened at, using only shards from trustees visible there, and nothing is written to the sandbox |
+| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. **Rebuilt 2026-09-21** — `ReconstructShard` (the old §9.1 shared pool) is retired; `PendingShamirSecretRestore` is the live mechanism, `ShardsCodec`/`SignedAttributeCodec` implemented, legacy rows migrate on unlock. Collection is depth-blind now, matching §9.3, but this shipped *ahead of* row 4's own arming/completion binding — see `bugs.md` Bug 99's 2026-09-21 addendum for the accepted interim gap that opens until row 4 lands. Row 4's binding was itself superseded by §9.4 (2026-09-23): completion happens at file-open, at the opening depth, using only shards from trustees visible there. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
@@ -210,7 +210,8 @@ isn't just "the sibling half of the same feature" — it's a precondition for fi
 
 **No longer a dependency, 2026-09-23.** Per-depth restore state was abandoned in §9.3, and completion
 doesn't need it (§9.4): it reads the banked shards and the file in hand, at the depth the file is
-opened at. The blocker this paragraph describes is gone. What replaces it is §9.4's open hole.
+opened at. The blocker this paragraph describes is gone. What replaced it, §9.4's hole, is decided
+there (trustee-visibility filter, with a stated residual).
 
 **Testing and migration requirement, every stage — settled 2026-09-07, same rule as the sibling doc.**
 A stage isn't done once it builds. It's done once (a) tests cover the behavior in its `Verify` column,
@@ -1038,21 +1039,34 @@ reconstruction". A "recovery ready" signal was considered and rejected (`decisio
 reconstruction can be validated without the file, and gating a signal on trustee visibility is a depth
 difference in disguise. Discoverability stays Stage 3's problem.
 
-**The hole this reopens, not decided.** During a genuine recovery, the real trustees' shards are banked
+**The hole this reopens.** During a genuine recovery, the real trustees' shards are banked
 depth-blind. A coercer holding the phone at a duress depth can open the real `.occbak`, for example from
 the phone's own Files app, which isn't depth-scoped. If that depth has no backup key, reconstruction
 succeeds and the real depth-0 entries import into his layer. Bug 99's original remedy names this case
 ("complete in either layer — that has a hole"). `VAULT_KEY_LAYERING.md` §8 item 9's "nothing left to
 protect by blocking it" assumed per-depth shard buffers, which 9.3 later dropped. It is bounded: it
 needs a recovery in progress, and success consumes the shards (`orphanShards`), so it works once. Once
-discloses the real vault. Candidates:
-- Accept the window as bounded.
-- Bind banked shards to the depth their sender was visible at on arrival. 9.3 worked this out as a cap
-  prerequisite and set it aside only because no cap was adopted, not on security grounds. Its costs
-  are untraced.
+discloses the real vault.
 
-The *Regressions* rule "deferral must not be silently dropped" means this has to be decided before the
-depth-0 guard is removed.
+**Decided, 2026-09-23: filter by trustee visibility at completion.** A restore at depth d uses only banked
+shards whose sender (`senderIdentifier`, already in each slot) is a contact visible at d at the moment
+of the attempt. No new stored state and no codec change. The coercer's own trustees, paired in his
+layer, have `originDepth` = d: they count there, so his file completes (Bug 99 stays closed), and they
+don't count at depth 0. Mechanism: the caller passes `currentDepth: Int` and
+`visibleContactIdentifiers: Set<String>` as two separate parameters. The set holds non-deleted
+contacts visible at d, built like `Manager.Security.purgeDraftsNotSafeAtCurrentDepth`. Not chosen:
+- Accepting the window.
+- Binding each shard to the depth current when it arrived. That needed a `ShardsCodec` v2 and a
+  migration.
+
+**Residual, deliberately accepted:** contacts with no `visibleThroughDepth` are visible at every depth,
+so real trustees the owner didn't hide from the duress layer still pass the filter there, and for them
+the hole stays open. The protection holds only for trustees hidden from that layer, and nothing prompts
+the owner to hide them today. Arrival-depth binding remains the fallback if this proves insufficient.
+Full record: `decisions.md`, "Filter restore shards by trustee visibility at completion".
+
+This satisfies the *Regressions* rule "deferral must not be silently dropped" for hidden trustees only;
+see the residual.
 
 **Migration:** §8's plan adopts a legacy pending file into slot 0, which no longer exists. Still open.
 
@@ -1084,7 +1098,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 96 (item 1) | Two traps on decoded content | fixed |
 | 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈112 KB (revised down from ≈215 KB, 2026-09-14, when Bug 124 removed the attestation field), not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
-| 99 | A coercer supplying his own trustees can test for duress | open — remedy settled 2026-09-23 (§9.4: one-shot file-open at the opening depth, no held file, so the pending-file qualifier goes away with it), not built; open hole in §9.4 must be decided first |
+| 99 | A coercer supplying his own trustees can test for duress | open — remedy settled 2026-09-23 (§9.4: one-shot file-open at the opening depth, no held file, so the pending-file qualifier goes away with it), not built; §9.4's hole decided the same day (trustee-visibility filter, residual for trustees left visible in duress) |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |
 | 100 r2 | Shard file length was a keyless progress counter | fixed — rows (`ReconstructShard`, 2026-08-27); **superseded again, 2026-09-21** — `ReconstructShard` itself retired, `PendingShamirSecretRestore` is the live mechanism (§9.3, Stages 4-5) |
 | 100 r3 | `.occbak` length estimates vault size | **open, not yet moot** — §9.3 drops `encryptedSnapshot` entirely rather than slotting it (Stage 3, "start shard return": collect shards first, open the file only at the end); Stages 4-5 (storage swap) shipped 2026-09-21, Stage 3 (the reordering that actually removes the file's held-window) has not. See `bugs.md` Bug 100's own 2026-09-21 addendum. **2026-09-23:** §9.4 removes the file entirely, so this becomes moot outright when §9.4 ships (not before). |
@@ -1180,8 +1194,9 @@ Shared with the sibling doc, restated here since both containers must hold to th
   the only thing preventing a duress session from completing a depth-0-armed restore. The guard changes
   shape rather than disappearing.
   *2026-09-23:* §9.4 removes the guard. Under §9.4 there's no "armed" restore, but the case the guard
-  protected still exists: a genuine depth-0 backup completing in duress. That is §9.4's open hole, and
-  this rule is why it has to be decided before the guard comes out.
+  protected still exists: a genuine depth-0 backup completing in duress. That is §9.4's hole. Decided:
+  the guard is replaced by a trustee-visibility filter at completion, which covers trustees hidden from
+  the duress layer but not ones left visible there (§9.4's residual).
 - **No new depth-conditional UI.** Every prompt, banner and acknowledgment must read identically across
   layers unless the underlying state is genuinely per-layer. Two fixes here were themselves found to be
   new oracles — a confirmation shown only at depth 0, a banner absent above it.
