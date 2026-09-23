@@ -113,8 +113,8 @@ struct BackupTrusteeRotationTests {
     }
 
     /// **Not a test that a mixed submission is rejected** — it is, but for a reason that
-    /// doesn't distinguish this fix from its absence. Checked directly: `lagrange()`
-    /// (`ShamirSecretSharing.swift:232`) uses every supplied point unconditionally, no
+    /// doesn't distinguish this fix from its absence. Checked directly:
+    /// `ShamirSecretSharing.reconstruct` uses every supplied point unconditionally, no
     /// error-correction — mixing a share from round 1 with one from round 2 poisons the
     /// interpolation and fails the GCM check regardless of whether `distributionID`
     /// changed between rounds. Grouping-by-`entryID` (`restoreBackup`, production

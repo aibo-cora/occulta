@@ -392,3 +392,52 @@ exception. A pass that deletes nothing leaves custody bytes unchanged. `CustodyD
 pins that, so moving to always re-sealing has to be deliberate.
 
 **Full reasoning:** `bugs.md` Bug 130.
+
+---
+
+## Recover past poisoned shares by subset search against the GCM tag
+
+**Status:** Decided and built, 2026-09-23 (`bugs.md` Bug 95).
+
+**Context:** One well-formed but wrong shard, handed back by a trustee running a modified app, made
+every restore attempt fail, even with k honest shards banked. On the new-device path no shard can be
+checked on its own: the key that signed them was on the lost phone, and Bug 125 removed trustee
+attestation.
+
+**Decision:** `verifiedKey` tries every shard first, then retries with shards left out, fewest first,
+and stops at the first candidate key that opens the `.occbak`. It's capped at 1,024 tries per
+distribution. `ShamirSecretSharing.reconstruct` computes its Lagrange weights once per call so the
+search stays cheap.
+
+**Why:**
+- **The GCM tag is an exact check,** and extra honest shards never change the result, so the first
+  subset that works is the full set minus the bad ones.
+- **A hostile trustee is reduced to withholding,** which they could always do.
+- **Nothing new is stored, shown or sent,** and the search sees only shards from contacts visible at
+  the current depth, so it behaves the same at every depth.
+- **About 20 lines,** with no format change.
+
+Not chosen:
+- **Accept it as a limitation** ("pick trustees who won't run a modified app"). Considered seriously.
+  But k-of-n exists to survive some trustees going bad, a coercer who seizes a trustee's phone can do
+  it too, and the fix was cheap.
+- **Trustees cross-vouch** (each holds every share's fingerprint; the restore takes a majority). Every
+  trustee would learn the size of the recovery circle, and a seized trustee phone would hand it to a
+  coercer.
+- **A Merkle root in the `.occbak`,** with each trustee holding a proof. It checks each share on its
+  own and names the cheater, but it changes the file and shard formats, needs a migration for shares
+  already out, and loses the check on any file exported before a redistribution. The subset search
+  names the bad shares too, as the ones it had to leave out; nothing surfaces them.
+- **Berlekamp–Welch error correction.** It needs the threshold, which the restoring device doesn't
+  have, and it's far more new arithmetic.
+- **A discard-restore control.** Banked shards are depth-blind, so a coercer in a duress layer could
+  delete the real restore's shards.
+- **Verifiable secret sharing (Feldman or Pedersen).** It needs elliptic-curve point arithmetic, which
+  CryptoKit doesn't expose.
+
+**Consequences:** A failing restore can now take up to 1,024 reconstructions and GCM opens instead of
+one: under a second at 20 trustees in the measurements. Past the cap (three or more bad shares among
+larger groups), a restore still fails as before. Repeating the reconstruction slightly helps an
+on-device timing observer, which is filed as Bug 131.
+
+**Full reasoning:** `bugs.md` Bug 95.

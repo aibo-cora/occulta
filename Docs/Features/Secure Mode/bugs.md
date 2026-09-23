@@ -7019,7 +7019,9 @@ because tier padding equalises count and nothing equalises size.
 **Stale, 2026-09-11:** Cites `reconstructBEK` as the live call site — renamed to `Backup.reconstruct`
 by this session's BEK storage refactor.
 
-**Status:** **Open.** Filed 2026-08-22 alongside Bug 94, from the same read. **Re-verified
+**Status:** **Fixed 2026-09-23**, on `v1.11.0/vault-key-layering`: `verifiedKey` searches subsets of
+the shards against the backup file's GCM tag (see "Fix, as built" below). Of the three remedies below,
+only the second was buildable by then. Filed 2026-08-22 alongside Bug 94, from the same read. **Re-verified
 2026-08-26** against Bug 93's depth-gating: `attemptBEKRestore` now guards `currentDepth == 0` before
 the grouping/reconstruction loop this bug lives in (`Vault+Manager+Backup.swift:723`) — not a fix,
 just confirmation that the vulnerable code only ever runs at the one depth recovery was always meant
@@ -7038,7 +7040,7 @@ bug is about: `ShamirSecretSharing.reconstruct` still does no subset search, so 
 properly-authenticated share mixed with k−1 genuine ones still poisons the whole group, and there is
 still no UI path to discard a wedged restore. Same defect, narrower population, unchanged remedy.
 
-**Target:** unset.
+**Target:** `v1.11.0`.
 
 ### Severity: High (availability)
 
@@ -7104,10 +7106,84 @@ indistinguishable from a genuine one **once signature verification has been skip
   `pending-restore.occbak` or `pending-restore-shards.dat` from the UI, so any wedged restore is
   permanent regardless of cause. This is worth doing on its own.
 
+### Where it stood by 2026-09-23
+
+§9.4 (`RECOVERY_BUFFER_LAYERING.md`) removed the held file, so nothing stayed stuck on disk any more.
+The poisoned share did, though: it sits in its sender's `PendingShamirSecretRestore` slot, and every
+attempt combined every visible shard, so every attempt failed. Only that sender sending a good share
+would clear it, and a hostile trustee won't.
+
+How it arrives: after the owner re-pairs in person on a new phone, each trustee's next message carries a
+`.handback`. A trustee running a modified app sends a 33-byte share with the real `distributionID`
+(it's on the share they hold), any x that isn't 0 or another sender's, random values, and any
+signature. `handleHandback` accepts it on trust (Branch A always fails once the owner's key has
+rotated), and `absorbShard` banks it. The stock app can't produce one by accident: a damaged custody row
+fails to decrypt and isn't sent, and a share from an older round carries a different `distributionID`.
+
+Remedies 1 and 3 no longer applied:
+- **Remedy 1, signature verification, can't work on the path that matters.** The key that signed the
+  shares was on the lost phone, which is why `restoreBackup` passes `ownerIdentity: nil`. Bug 125
+  removed Branch B, and nothing can replace it.
+- **Remedy 3, a discard-restore UI, would now cause harm.** There's no pending restore left to
+  discard, only banked shard rows, which are depth-blind. A discard in a duress layer would let a
+  coercer delete the real restore's shards, and the control itself is a surface to spot.
+
+The one way out before the fix was blind: deleting the hostile trustee's contact drops their share from
+`visibleContactIdentifiers`, but nothing tells the owner which contact to delete.
+
+### Fix, as built (2026-09-23)
+
+- **Subset search** (`VaultManager.Backup.verifiedKey`). It tries every shard first. If that fails, it
+  retries with shards left out, fewest first, and stops at the first candidate that opens the file.
+  Extra honest shards never change the result, so the first subset that works is the full set minus the
+  bad ones, and the GCM tag is an exact check for it. The threshold is unknown on the restoring device,
+  so the search runs down to pairs; a subset below k just yields a wrong key. Every wrong candidate is
+  zeroed. A hostile trustee can now do no more than withhold their share.
+- **Cap: 1,024 tries per distribution** (`maxReconstructionAttempts`). One bad share needs at most n + 1
+  tries, and n ≤ 255, so the cap never binds for one hostile trustee. It binds only for several at once:
+  two bad shares among up to 44, and three among up to 18, always fit.
+- **`ShamirSecretSharing.reconstruct` computes the Lagrange weights once per call** instead of once per
+  byte. They depend only on the x-coordinates, so the output is identical. Before this, a 20-share
+  reconstruction took about 0.64 ms in an optimized build, and 0.44 s with 255 shares, which put the
+  search at up to about 2 minutes in that extreme.
+- **The successful candidate's decrypted backup is zeroed.** The old check threw it away without zeroing
+  it, a gap left over from Bug 96 item 3.
+
+Not chosen: accepting it as a limitation, trustees cross-vouching for each other's shares, a Merkle root
+in the `.occbak`, and Berlekamp–Welch decoding. `decisions.md`, "Recover past poisoned shares by subset
+search against the GCM tag", records why.
+
+**Measured** on the iPhone 17 Pro simulator on an Apple Silicon Mac, optimized build, before the Lagrange
+change (a device will be somewhat slower):
+
+| Backup | 10 honest | 10 honest + 1 bad | 16 honest + 4 bad (cap reached, fails) |
+|---|---|---|---|
+| 10 entries, 4 KB file | 61 ms | 57 ms | 592 ms |
+| 200 entries of 5 KB, 1.4 MB file | 842 ms | 823 ms | 870 ms |
+
+One bad share adds almost nothing, and for a large backup most of a successful restore's time is
+inserting entries. The Lagrange change then cut `PoisonedShardTests.capBoundsTheSearch` from 114 s to
+3 s in the unoptimized test build. The optimized build wasn't re-measured.
+
+Timing: the search runs only on shards from contacts visible at the current depth, so the same inputs
+take the same time at every depth. The field arithmetic's own data-dependent timing is Bug 131.
+
 ### Guard
 
-No test touches the recovery path at all (see Bug 93). Acceptance criterion: a group containing one
-forged share must still recover from the genuine ones, or must be discardable.
+`PoisonedShardTests` (`VaultRestoreTrustTests.swift`), all through `restoreBackup` on a fresh device:
+- one poisoned share with a fresh x among enough honest ones restores the owner's key and entries;
+- a poisoned share reusing an honest share's x restores (the full set fails on a duplicate coordinate,
+  not the tag);
+- two poisoned shares restore;
+- too few honest shares plus a poisoned one restores nothing and writes nothing;
+- the cap from both sides, whatever order shares arrive in: three poisoned among 18 restores (at most
+  988 tries), four among 20 fails (at least 1,352).
+
+`SSSVectorTests.matchesPerByteLagrange` (`ShamirTests.swift`) pins `reconstruct` against the per-byte
+formula it replaced, on arbitrary points for 2 to 255 shares.
+
+A wrong-length share needs no test here: `SignedAttributeCodec.encode` refuses any value that isn't 33
+bytes, so one can never be banked.
 
 ---
 

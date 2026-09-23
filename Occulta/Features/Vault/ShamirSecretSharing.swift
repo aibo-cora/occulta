@@ -143,10 +143,12 @@ enum ShamirSecretSharing {
         guard !xCoords.contains(0)     else { throw Error.invalidShareFormat }
         guard Set(xCoords).count == xCoords.count else { throw Error.duplicateXCoordinate }
 
-        var secret = [UInt8](repeating: 0, count: 32)
+        let weights = Self.lagrangeWeights(xCoords: xCoords)
+        var secret  = [UInt8](repeating: 0, count: 32)
         for byteIdx in 0..<32 {
-            let yCoords = shares.map { $0[byteIdx + 1] }
-            secret[byteIdx] = Self.lagrange(xCoords: xCoords, yCoords: yCoords)
+            for i in shares.indices {
+                secret[byteIdx] ^= Self.gfMul(shares[i][byteIdx + 1], weights[i])
+            }
         }
         return Data(secret)
     }
@@ -224,23 +226,25 @@ enum ShamirSecretSharing {
         }
     }
 
-    /// Lagrange interpolation at x = 0 over GF(2^8).
+    /// Lagrange basis weights at x = 0 over GF(2^8), one per share.
     ///
-    /// f(0) = Σᵢ [ yᵢ · ∏ⱼ≠ᵢ (0 − xⱼ) / (xᵢ − xⱼ) ]
+    /// f(0) = Σᵢ [ yᵢ · wᵢ ],  wᵢ = ∏ⱼ≠ᵢ (0 − xⱼ) / (xᵢ − xⱼ)
     ///
     /// In GF(2^8): subtraction = XOR, so (0 − xⱼ) = xⱼ and (xᵢ − xⱼ) = xᵢ ⊕ xⱼ.
-    private static func lagrange(xCoords: [UInt8], yCoords: [UInt8]) -> UInt8 {
-        var secret: UInt8 = 0
-        for i in 0..<xCoords.count {
-            var num: UInt8 = yCoords[i]
+    ///
+    /// The weights depend only on the x-coordinates, which every byte shares, so
+    /// `reconstruct` computes them once rather than once per byte. `verifiedKey`'s subset
+    /// search (`bugs.md` Bug 95) calls `reconstruct` up to 1,024 times, which is what made
+    /// the per-byte recomputation, and its 32 inversions per share, worth removing.
+    private static func lagrangeWeights(xCoords: [UInt8]) -> [UInt8] {
+        xCoords.indices.map { i in
+            var num: UInt8 = 1
             var den: UInt8 = 1
-            for j in 0..<xCoords.count {
-                guard i != j else { continue }
-                num = Self.gfMul(num, xCoords[j])            // numerator  × xⱼ
+            for j in xCoords.indices where j != i {
+                num = Self.gfMul(num, xCoords[j])              // numerator  × xⱼ
                 den = Self.gfMul(den, xCoords[i] ^ xCoords[j]) // denominator × (xᵢ ⊕ xⱼ)
             }
-            secret ^= Self.gfMul(num, gfInv(den))
+            return Self.gfMul(num, Self.gfInv(den))
         }
-        return secret
     }
 }

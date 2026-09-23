@@ -1213,6 +1213,16 @@ extension VaultManager {
         ///      Pass nil on new-device path (old key non-migratable); GCM tag substitutes.
         ///   3. Shamir.reconstruct → candidate backup key.
         ///   4. AES.GCM.open(backupFile, using: candidate) — GCM tag validates.
+        ///   5. If the full set fails, retry with shards left out, fewest first, until a
+        ///      candidate opens the file or `maxReconstructionAttempts` is reached.
+        ///
+        /// Step 5 is `bugs.md` Bug 95. On the new-device path no shard can be checked on its
+        /// own (the key that signed them is gone), so one well-formed but wrong shard from a
+        /// hostile trustee made every attempt fail, even with k honest shards present. Extra
+        /// honest shards never change the result, so the first subset that opens the file is
+        /// the full set minus the bad ones, and the GCM tag is an exact check for it. A
+        /// hostile trustee can now do no more than withhold. The threshold is unknown here,
+        /// so the search runs down to pairs; a subset below k just yields a wrong key.
         func verifiedKey(
             vaultKey:      SymmetricKey,
             shards:        [SignedAttribute],
@@ -1236,30 +1246,53 @@ extension VaultManager {
                 }
             }
 
-            let rawShares = shards.map { Array($0.value) }
-            var bekData: Data
-            do {
-                bekData = try ShamirSecretSharing.reconstruct(shares: rawShares)
-            } catch {
-                throw BackupError.bekReconstructionFailed
-            }
-
-            // Zero the candidate on every failure below; on success the bytes go to the caller.
-            var verified = false
-            defer { if !verified { for i in bekData.indices { bekData[i] = 0 } } }
-
-            guard bekData.count == 32 else { throw BackupError.bekReconstructionFailed }
-            let candidateBEK = SymmetricKey(data: bekData)
-
-            // Validate: GCM authentication tag proves the reconstructed key is correct.
             guard backupData.prefix(4) == VaultManager.backupMagic else { throw BackupError.invalidFormat }
             let box = try AES.GCM.SealedBox(combined: backupData.dropFirst(4))
-            guard (try? AES.GCM.open(box, using: candidateBEK, authenticating: VaultManager.backupFileAAD)) != nil else {
-                throw BackupError.bekReconstructionFailed
-            }
 
-            verified = true
-            return (bekData, distributionID)
+            let rawShares = shards.map { Array($0.value) }
+            var attempts  = 0
+            for leftOutCount in 0...max(0, rawShares.count - 2) {
+                var leftOut = Array(0..<leftOutCount)
+                repeat {
+                    guard attempts < Self.maxReconstructionAttempts else { throw BackupError.bekReconstructionFailed }
+                    attempts += 1
+
+                    let subset = rawShares.indices.filter { !leftOut.contains($0) }.map { rawShares[$0] }
+                    if let bekData = Self.keyOpening(box, from: subset) {
+                        return (bekData, distributionID)
+                    }
+                } while Self.advance(&leftOut, below: rawShares.count)
+            }
+            throw BackupError.bekReconstructionFailed
+        }
+
+        /// The most reconstructions `verifiedKey` tries for one distribution. One bad shard
+        /// needs at most n + 1 tries (n ≤ 255), so this only binds with several bad shards at
+        /// once: two among up to 44 shards, three among up to 18, always fit.
+        static let maxReconstructionAttempts = 1024
+
+        /// The key `shares` reconstruct, if it opens `box`; nil otherwise, with the wrong
+        /// candidate zeroed.
+        private static func keyOpening(_ box: AES.GCM.SealedBox, from shares: [[UInt8]]) -> Data? {
+            guard var bekData = try? ShamirSecretSharing.reconstruct(shares: shares) else { return nil }
+            if bekData.count == 32,
+               var plaintext = try? AES.GCM.open(box, using: SymmetricKey(data: bekData), authenticating: VaultManager.backupFileAAD) {
+                plaintext.resetBytes(in: plaintext.indices)
+                return bekData
+            }
+            bekData.resetBytes(in: bekData.indices)
+            return nil
+        }
+
+        /// Steps `indices`, a strictly increasing set of positions below `count`, to the next
+        /// such set in lexicographic order. False once there is none, so an empty set runs once.
+        private static func advance(_ indices: inout [Int], below count: Int) -> Bool {
+            var i = indices.count - 1
+            while i >= 0 && indices[i] == count - indices.count + i { i -= 1 }
+            guard i >= 0 else { return false }
+            indices[i] += 1
+            for j in (i + 1)..<indices.count { indices[j] = indices[j - 1] + 1 }
+            return true
         }
 
         // MARK: - Rotation

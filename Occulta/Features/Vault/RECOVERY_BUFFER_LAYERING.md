@@ -882,7 +882,8 @@ Original complaint: arming conflated two things — "start accepting shards" and
 bytes for the entire waiting window," which could be days. Proposed fix: an explicit "start shard return"
 action begins shard collection with no file present at all; the user opens the `.occbak` file only once
 enough shares have arrived, and reconstruction (`Backup.reconstruct`'s GCM-tag-against-the-real-file check,
-the actual defense against Bug 95's poisoned-share concern) happens synchronously at that moment, file and
+the actual defense against Bug 95's poisoned-share concern; *2026-09-23: now `verifiedKey`, whose subset
+search uses that tag to find the honest shares*) happens synchronously at that moment, file and
 shares both in hand together. The oracle that check provides is not lost — it fires later, once, instead of
 being held open for days. Consequence: `encryptedSnapshot` (33,632 of `PendingVaultRestore`'s ~42,111
 bytes-per-depth in 9.2's own sizing) is not needed at all; nothing in the collection phase ever touches
@@ -1147,7 +1148,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 93 | Vault recovery was depth-blind in state, UI and trigger | fixed; its harm-4 follow-up is partly reverted by this design |
 | 94 | Restore path trusted attacker-supplied material | overwrite refusal and confirmation stand; remedy 2 (trustee attestation) was removed, 2026-09-19 — `bugs.md` Bug 125, see §6 item 9.3 above |
 | 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | **Moot, 2026-09-19.** Bug 125 removed the attestation field itself — nothing left to pad |
-| 95 | One poisoned shard permanently blocks legitimate recovery | open — distinct-sender enforcement (unrelated to attestation, which is gone) narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
+| 95 | One poisoned shard permanently blocks legitimate recovery | **fixed, 2026-09-23** — `verifiedKey` searches subsets against the file's GCM tag, capped at 1,024 tries; a hostile trustee can only withhold. Signature checks and a discard UI no longer apply (`bugs.md` Bug 95) |
 | 96 (item 1) | Two traps on decoded content | fixed |
 | 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈112 KB (revised down from ≈215 KB, 2026-09-14, when Bug 124 removed the attestation field), not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | **fixed, 2026-09-23** — export and restore both zero labels, contents and JSON in place; encoder/decoder internals and `String` labels can't be reached |

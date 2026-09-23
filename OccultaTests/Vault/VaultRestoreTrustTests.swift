@@ -72,9 +72,9 @@ private func makeContainer() throws -> ModelContainer {
 /// Returns the shard attributes too — the restore path consumes them, and
 /// `prepareBackupShards` is the only way to obtain shares that reconstruct this BEK.
 @MainActor
-private func makeBackupReadyVault() throws -> (vault: VaultManager,
-                                               container: ModelContainer,
-                                               shards: [SignedAttribute]) {
+private func makeBackupReadyVault(threshold: Int = 2, trustees: Int = 2) throws -> (vault: VaultManager,
+                                                                                   container: ModelContainer,
+                                                                                   shards: [SignedAttribute]) {
     let container = try makeContainer()
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
@@ -87,9 +87,9 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
     // Real UUID strings, not "trustee-N" labels — BEKPayloadCodec's fixed-width wire
     // format stores contactIdentifier as raw UUID bytes (item 3). No Contact.Profile
     // needed here any more — prepareBackupShards takes identifiers directly.
-    let recipients = (0..<2).map { _ in UUID().uuidString }
+    let recipients = (0..<trustees).map { _ in UUID().uuidString }
 
-    let shards = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: 0)
+    let shards = try vault.prepareBackupShards(threshold: threshold, recipients: recipients, currentDepth: 0)
     for shard in shards {
         try vault.updateShardStatus(attributeID: shard.id, to: .confirmed)
     }
@@ -278,6 +278,105 @@ struct VaultRestoreTrustTests {
         #expect(throws: VaultManager.BackupError.invalidFormat) {
             _ = try fresh.vault.restoreBackup(from: Data("nope".utf8), currentDepth: 0, visibleContactIdentifiers: [])
         }
+    }
+}
+
+// MARK: - Bug 95
+
+/// A well-formed piece for `distributionID` carrying random values: what a trustee running a
+/// modified app can hand back. Its signature is valid for some key, just not the owner's, which
+/// the new-device path can't check anyway (`ownerIdentity: nil`).
+@MainActor
+private func poisonedShard(for distributionID: UUID, x: UInt8) throws -> SignedAttribute {
+    var value = Data([x])
+    value.append(Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
+    let id        = UUID()
+    let createdAt = Date()
+    let payload   = SignedAttribute.signingPayload(
+        id: id, category: .shard, value: value, entryID: distributionID, createdAt: createdAt, expiresAt: nil
+    )
+    return SignedAttribute(
+        id: id, label: "vault-bek-shard", value: value, category: .shard,
+        signature: try TestKeyManager().signData(payload), createdAt: createdAt, entryID: distributionID
+    )
+}
+
+/// One owner backup with `trustees` honest pieces at threshold `threshold`, restored on a fresh
+/// device after banking `honest` of them plus `poisoned`. Returns whether the restore imported.
+@MainActor
+private func restoreWithPoison(
+    threshold: Int, trustees: Int, honest: Int? = nil, poisoned: (UUID) throws -> [SignedAttribute]
+) throws -> (imported: Bool, fresh: (vault: VaultManager, container: ModelContainer), ownerBEK: Data) {
+    let owner = try makeBackupReadyVault(threshold: threshold, trustees: trustees)
+    _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
+    let backup         = try owner.vault.exportBackup(currentDepth: 0)
+    let distributionID = try #require(owner.shards.first?.entryID)
+
+    let fresh   = try makeFreshVault()
+    var senders = try bank(Array(owner.shards.prefix(honest ?? trustees)), in: fresh.vault)
+    senders.formUnion(try bank(try poisoned(distributionID), in: fresh.vault, senderPrefix: "hostile"))
+
+    let imported = try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: senders)
+    return (imported, fresh, try bekBytes(of: owner.vault))
+}
+
+/// A hostile trustee who hands back a wrong piece can do no more than one who withholds theirs.
+// Same Enclave dependency as the suites around it: makeBackupReadyVault()/exportBackup().
+@Suite("Bug 95 — a poisoned piece doesn't block recovery", .serialized, .enabled(if: secureEnclaveAvailable()))
+@MainActor
+struct PoisonedShardTests {
+
+    @Test("One poisoned piece with a fresh x among enough honest ones still restores")
+    func onePoisonedPieceRestores() throws {
+        let result = try restoreWithPoison(threshold: 2, trustees: 3) { id in [try poisonedShard(for: id, x: 200)] }
+        #expect(result.imported)
+        #expect(try bekBytes(of: result.fresh.vault) == result.ownerBEK)
+        #expect(try labels(in: result.fresh.vault, result.fresh.container, atDepth: 0) == ["recovered"])
+    }
+
+    /// Reusing an honest piece's x makes the full set fail on a duplicate coordinate rather
+    /// than on the tag. Either way the piece has to be left out.
+    @Test("A poisoned piece reusing an honest piece's x still restores")
+    func duplicateXRestores() throws {
+        let result = try restoreWithPoison(threshold: 2, trustees: 3) { id in [try poisonedShard(for: id, x: 1)] }
+        #expect(result.imported)
+        #expect(try bekBytes(of: result.fresh.vault) == result.ownerBEK)
+    }
+
+    @Test("Two poisoned pieces still restore")
+    func twoPoisonedPiecesRestore() throws {
+        let result = try restoreWithPoison(threshold: 3, trustees: 5) { id in
+            [try poisonedShard(for: id, x: 200), try poisonedShard(for: id, x: 201)]
+        }
+        #expect(result.imported)
+        #expect(try bekBytes(of: result.fresh.vault) == result.ownerBEK)
+    }
+
+    /// Below the threshold no subset can work, which is the same outcome as withholding.
+    @Test("Too few honest pieces plus a poisoned one restores nothing and keeps the pieces")
+    func tooFewHonestPiecesFails() throws {
+        let result = try restoreWithPoison(threshold: 3, trustees: 3, honest: 2) { id in [try poisonedShard(for: id, x: 200)] }
+        #expect(!result.imported)
+        #expect((try? result.fresh.vault.currentBackupKey(currentDepth: 0)) == nil)
+        #expect(try ModelContext(result.fresh.container).fetch(FetchDescriptor<VaultEntry>()).isEmpty)
+    }
+
+    /// The cap, pinned from both sides whatever order the pieces arrive in. Three bad among 18
+    /// needs at most 1 + 18 + 153 + 816 = 988 tries; four bad among 20 needs at least
+    /// 1 + 20 + 190 + 1,140 + 1 = 1,352.
+    @Test("Three poisoned among 18 restores; four among 20 exceeds the cap")
+    func capBoundsTheSearch() throws {
+        #expect(VaultManager.Backup.maxReconstructionAttempts == 1024)
+
+        let within = try restoreWithPoison(threshold: 2, trustees: 15) { id in
+            try (0..<3).map { try poisonedShard(for: id, x: UInt8(200 + $0)) }
+        }
+        #expect(within.imported)
+
+        let beyond = try restoreWithPoison(threshold: 2, trustees: 16) { id in
+            try (0..<4).map { try poisonedShard(for: id, x: UInt8(200 + $0)) }
+        }
+        #expect(!beyond.imported)
     }
 }
 
