@@ -1482,7 +1482,8 @@ importantly, a downgraded build then fails closed at three of four sites (`setup
 presence; `currentBackupKey` throws; `reconstructBackup` propagates decrypt failure) — the fourth,
 `storePendingRestore`, is the soft spot tracked in `RECOVERY_BUFFER_LAYERING.md` §6 item 8, since
 arming a restore is that container's action even though the check reads this container's tombstoned
-row.
+row. *(Closed as moot, 2026-09-23: `storePendingRestore` and arming no longer exist, and
+no released build ever tombstoned a row. See that item.)*
 
 **Rejected alternatives:** dual-run (legacy restores finish under legacy rules) — attacker-pinnable, a
 coercer who arms before updating keeps every pre-design weakness; complete-then-migrate — strictly
@@ -1572,7 +1573,8 @@ container is unaffected either way. That enum is still the place to notice if th
 
 [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) — the shard buffer, restore/arming state,
 and `CustodyShard`. Independent of this document except at §7 Stage 5 (completion) and that document's
-§6 item 8 (the `storePendingRestore` soft spot), both noted at their point of contact above.
+§6 item 8 (the `storePendingRestore` soft spot, closed as moot 2026-09-23), both noted at their point of
+contact above.
 
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — the
 spec docs for the behavior this design replaces. Both describe today's device-wide BEK/shard machinery

@@ -465,6 +465,20 @@ decided; see item 9 for what's still open before that's settled.
    **Not yet implemented.** Design-only, matching the rest of this branch — kept that way
    deliberately even though the fix itself is small enough to implement directly.
 
+   **Closed, moot, 2026-09-23. No code change.** Every part of the scenario is gone:
+   - **No arming:** `storePendingRestore` was removed by §9.4. A restore is one attempt when the file is
+     opened, and nothing is held.
+   - **An unreadable key row still fails closed:** `restoreBackup`'s first check still reads
+     `(try? fetchDecoded(...)) != nil`, so an unreadable row reads as "no key". But
+     `Backup.verifiedKey` re-checks the same row with `try`, so the attempt stops there, nothing is
+     written, and the owner sees the neutral message. That holds whatever makes the row unreadable:
+     corruption, a downgrade, or a future format.
+   - **No tombstones exist:** the Stage 1 build that wrote them (2026-09-08) came after v1.10.3
+     (2026-09-02), so no released device has one. The current migration deletes legacy rows instead.
+
+   The `try?` in the first check stays: `try` would show "There was an error" for a corrupted row
+   instead of the neutral message, without making anything safer.
+
 9. **Proposed 2026-09-11: retire the file entirely — this container as SwiftData rows, not a
    shared-pool file, following `VAULT_KEY_LAYERING.md` item 14's own BEK migration.** Prompted by a
    direct question: does this container have to be a file at all, given the sibling doc's BEK array
@@ -1248,7 +1262,8 @@ Shared with the sibling doc, restated here since both containers must hold to th
 
 [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) — the BEK record and vault entries. Independent of
 this document except at its §7 Stage 5 (completion, reads this container) and this doc's §6 item 8
-(the `storePendingRestore` soft spot, reads the sibling container's tombstoned row).
+(the `storePendingRestore` soft spot, reads the sibling container's tombstoned row; closed as moot,
+2026-09-23).
 
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — the
 spec docs for the restore/shard behavior this design replaces. Keep their own "Secure Mode" closing
