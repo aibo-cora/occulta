@@ -7505,8 +7505,20 @@ proceeds exactly as described; only the phrase "depth-independent by design" ove
 since collection is conditionally depth-independent (on sender visibility), not unconditionally.
 
 At depth 0 `attemptBEKRestore` fires on the next unlock, reconstructs his BEK, imports his entries,
-and clears the banner. Above depth 0 nothing happens, ever. He establishes the baseline once on his
-own phone and then reads the victim's answer off it.
+and clears the banner. Above depth 0 nothing happens, ever.
+
+**The signal he reads does not depend on comparing two devices — he has certainty, not inference.**
+He authored the whole distribution himself: he chose `k`, split his own genuine BEK across exactly
+`k` of his own phones, and confirmed both handbacks were accepted. Whether reconstruction *can*
+succeed is therefore not something he is estimating — he supplied precisely what his own scheme
+requires, and everything downstream of that is deterministic (Shamir combine, then a GCM tag check
+against his own file). So when nothing happens, there is exactly one explanation available to him,
+not a most-likely one among several: the depth he is looking at is not depth 0. Running the same
+sequence once on his own, undeceived phone first (the "baseline" this entry originally leaned on)
+only confirms the *mechanism* works end to end before he relies on it — pairing, handback, the
+unlock-triggered retry — it is not what makes the result on the victim's phone legible. Once he
+trusts the mechanism, silence in the face of a self-authored, self-sufficient share set is already a
+direct readout, not a comparison he has to draw.
 
 ### Why the standing reasoning does not cover this
 
@@ -7621,6 +7633,85 @@ correct and necessary prerequisite — just not, on its own, where the arming de
 it was armed at". Something still has to stop a duress session finishing a depth-0-armed restore —
 that is the assertion that protects the genuine backup.
 
+**Superseded outright, 2026-09-23 — not "in part by Bug 102" (which no longer exists, see Bug 100's
+own 2026-09-12 redirect), but by the reordering `RECOVERY_BUFFER_LAYERING.md` §9.3 already settled and
+this entry's own 2026-09-21 addendum already names.** Everything in this "Requirements" section — the
+sealed arming-depth field, where it lives, the sidecar-vs-row debate — was solving for a design with
+two depth-sensitive moments: arm, then complete later, needing something to remember which depth arming
+happened at so completion could look it up. §9.3 removed the first moment entirely. Shards are collected
+depth-blind, unconditionally, before any `.occbak` file exists (`PendingShamirSecretRestore`, shipped
+Stage 4, 2026-09-21) — there is no "arming" event left to timestamp. The only depth-sensitive moment
+remaining is the file being opened — provided the file is used only at that moment and never held
+(next paragraph). Full design: `RECOVERY_BUFFER_LAYERING.md` §9.4.
+
+**The `.occbak` is never held: opening it is the only completion attempt.** Today `storePendingRestore`
+writes the file to the sandbox and waits for a later `attemptBackupRestore` (the next unlock or shard
+arrival) to try it. Once completion is allowed at any depth, a held file breaks two ways. It completes at
+whatever depth the *next* attempt happens at, not the depth it was opened at, so a coercer's file opened
+in duress lands in depth 0 at the owner's next real unlock (this entry's own "deferral delivers it into
+the real layer"). And one depth's held file blocks every other depth's restore through `alreadyProcessed`.
+Per-depth pending files would fix both only by re-creating arming state (which depth owns which file),
+the thing §9.3 removed. A fallback of "attempt first, persist the file only if that fails", proposed
+earlier the same day, has the same two problems and was dropped. The settled shape: attempt reconstruction
+against the in-memory bytes at the depth the file is opened at; success imports there; failure stores
+nothing, and the user opens the file again once more shares have arrived. The attempt iterates over banked
+shard sets (one `PendingShamirSecretRestore` row per `distributionID`) against the one file in hand, and
+the GCM tag picks the match. It never iterates over files.
+
+The code change that follows is still small, but larger than deleting one guard:
+- delete `attemptBackupRestore`'s `guard currentDepth == 0 else { return }`
+  ([Vault+Manager+Backup.swift:496](Occulta/Features/Vault/Vault+Manager+Backup.swift:496));
+- thread a real `currentDepth` through `Backup.reconstruct`, which hardcodes depth 0 twice (its
+  `bekAlreadyPresent` check and its `persist` call), and through `storePendingRestore` and its caller,
+  `OccultaApp.armPendingRestore()`;
+- remove `pendingRestoreURL`, `pendingRestoreActive`, `pendingRestoreShardCount`,
+  `refreshPendingRestoreState`, the "Recovery in progress" section, and the unlock and shard-arrival
+  triggers of `attemptBackupRestore`, since there is no held file left for them to act on.
+
+Bug 126 becomes moot with that state. Bug 100 remedy 3 and the `.occbak` half of remedy 1 become moot
+outright: the file never touches the sandbox. No new field, no `DepthCodec`-sealed arming depth, no
+sidecar-vs-row question.
+
+**Requirement: import succeeds at any depth, the same way.** A depth-privileged success or failure is
+itself a forensic trace. Once `Backup.reconstruct` takes the real depth, the core path satisfies this;
+`importBackup` already stamps entries with its caller's depth. One existing piece violates it: on
+success, `attemptBackupRestore` sets a device-wide `UserDefaults` flag,
+`vault.postRestoreActionNeeded` ([Vault+Manager+Backup.swift:541](Occulta/Features/Vault/Vault+Manager+Backup.swift:541)),
+which `Vault+Tab` reads through `@AppStorage` to open the post-restore sheet on *any* unlock at *any*
+depth. That was harmless while completion was pinned to depth 0. Once an import can happen in duress,
+the owner's next depth-0 unlock would show "set up your backup", announcing a restore that happened in
+another layer. Under the settled shape the prompt belongs at file-open, at the importing depth, with no
+persisted global flag.
+
+**Open hole: "nothing to bind together" was too strong.** This entry's Remedy opens with the warning:
+"Not 'complete in either layer' — that has a hole." A genuine depth-0 backup completing at a duress depth
+imports the real vault into the layer the coercer is reading. The stateless file-open doesn't cause this,
+but it doesn't close it either; depth-blind collection plus completion at any depth re-opens it:
+1. During a genuine recovery, the real trustees' shards are banked depth-blind.
+2. A coercer holding the phone at a duress depth opens the real `.occbak`, for example from the phone's
+   own Files app, which isn't depth-scoped.
+3. If that depth has no backup key of its own, reconstruction succeeds and the real depth-0 entries are
+   imported into his layer.
+
+It is bounded: it needs a genuine recovery in progress with its shards banked and not yet consumed, and
+success consumes them (`orphanShards`), so it works once. Once is enough to disclose the real vault.
+`VAULT_KEY_LAYERING.md` §8 item 9's "nothing left to protect by blocking it" assumed per-depth shard
+buffers, which §9.3 later abandoned. **Not decided.** Candidates: accept the window as bounded; or bind
+banked shards to the depth their sender was visible at on arrival. §9.3 worked that binding out as a
+prerequisite for a cap and set it aside only because no cap was adopted. It was never rejected on
+security grounds, so it is a live option here, with its own costs still to trace. The regression rule
+"deferral must not be silently dropped" (`RECOVERY_BUFFER_LAYERING.md`, *Regressions*) is why this has
+to be decided before the guard comes out, not after.
+
+**Guard, once built:**
+- A full share set banked first, then the file opened at a duress depth: entries land there (this
+  entry's "quarantine, not deferral" property), and nothing is ever written to the sandbox.
+- The same at depth 0.
+- Too few shares: the attempt fails, no pending state exists afterward, and opening the same file again
+  once enough shares have arrived completes.
+- The post-restore prompt appears only at the importing depth.
+- A test pinning whichever answer the open hole gets.
+
 ### Superseded in part by Bug 102's wider framing
 
 **Amended 2026-08-27.** The arming-depth binding is the right fix *within the current architecture*,
@@ -7680,6 +7771,14 @@ storage-mechanism swap, `PendingShamirSecretRestore` replacing `ReconstructShard
 remedy 3 genuinely moot — has not. Until it does, `storePendingRestore` still writes the file
 immediately on open and holds it for the full waiting window exactly as this entry originally
 described. Do not mark remedy 3 moot before Stage 3 ships.
+
+**Update, 2026-09-23: once built, the reordering removes the file entirely, not just shortens how long
+it's held.** Bug 99's 2026-09-23 addendum settles that the `.occbak` is never written to the sandbox:
+opening it is a one-shot reconstruction attempt against the in-memory bytes, and a failed attempt stores
+nothing. So when that ships, remedy 3 (pad the file) and the pending-`.occbak` half of remedy 1 (exclude
+it from backup) both become moot outright. `backup-export-meta.dat`'s exclusion is unaffected, and so
+is Bug 101, since the `Documents/Inbox` copy is made by the OS, not by this code. Still not built: the
+same "do not mark moot early" rule applies.
 
 **Target:** unset. Independent of Bug 99, though both concern the same two files.
 
@@ -10542,3 +10641,114 @@ Covered by the reworked `ShardHandbackAttestationTests.swift` (Branch A acceptan
 acceptance with no signature at all, distinct-sender enforcement, trustee-side handback still fires on
 fingerprint mismatch) and `GroupShardGatingTests.swift`'s updated padding-parity suite. Full suite run
 after the change — see the commit this note lands with for the pass/fail/skip counts.
+
+---
+
+## Bug 126 — `pendingRestoreActive`/`pendingRestoreShardCount` are hand-synced at five separate sites instead of queried from the data that already answers them
+
+**Status:** Open, filed 2026-09-22. Found while designing the fix for `storePendingRestore` not
+immediately re-attempting reconstruction against already-collected shards (`decisions.md`'s "Don't
+auto-arm shard collection on first vault-tab visit," the gap it surfaced). No code changed — this
+entry documents the finding so the simplification is tracked, not lost, while that other fix proceeds
+first. **Superseded, 2026-09-23: closes as moot when Bug 99's remedy ships.** See the note at the end
+of this entry.
+
+**Target:** unset — a design/maintainability finding, not tied to a release.
+
+### Severity: Low as a vulnerability, real as a correctness risk in a codebase that treats UI-state honesty as security-relevant
+
+Nothing here decrypts anything or crosses a depth boundary. But `pendingRestoreActive` is exactly the
+kind of published state Bug 93 spent real design effort making depth-uniform and honest — "duress
+advertises an event whose result it will never show" only holds if the flag is reliably correct. Five
+independent hand-written assignment sites is exactly the shape that produces the "missed-consumer"
+bugs this codebase has already hit more than once for a structurally similar reason (Bug 110/113/115/116,
+all "a functional read forgot to apply a filter the model itself requires").
+
+### What happens
+
+`pendingRestoreActive: Bool` and `pendingRestoreShardCount: Int`
+([Vault+Manager.swift:81,85](Occulta/Features/Vault/Vault+Manager.swift:81)) are plain `@Observable`
+properties on `VaultManager` — not computed, not re-derived on read. SwiftUI's `@Observable` only
+tracks "did this stored value change since the view last read it"; it gives no help recomputing a
+stale value, so whatever last assigned it is the only thing keeping it honest. Both are entirely
+derivable on demand: `pendingRestoreActive` from `FileManager.default.fileExists(atPath:
+pendingRestoreURL.path)`, `pendingRestoreShardCount` from `bekRestoreShardCount()` — which already
+queries `PendingShamirSecretRestore` rows directly, the actual source of truth. Nothing about either
+value requires caching.
+
+Despite that, the same two-line formula is written out by hand in five places:
+
+1. **`refreshPendingRestoreState(currentDepth:)`**
+   ([Vault+Manager+Backup.swift:415-420](Occulta/Features/Vault/Vault+Manager+Backup.swift:415)) — the
+   one function that's actually named for this job: `active = fileExists(...)`, `count = active ?
+   bekRestoreShardCount() : 0`.
+2. **`storePendingRestore`**
+   ([Vault+Manager+Backup.swift:459-460](Occulta/Features/Vault/Vault+Manager+Backup.swift:459)) —
+   re-derives the same two fields by hand, with `active` hardcoded `true` instead of calling
+   `fileExists` (reasoned to be equivalent at that point, but that reasoning lives only in a
+   comment, not in the code).
+3. **`attemptBackupRestore`'s early "already has BEK" cleanup branch**
+   ([Vault+Manager+Backup.swift:505-506](Occulta/Features/Vault/Vault+Manager+Backup.swift:505)) —
+   hand-sets `active = false`, `count = 0`.
+4. **`attemptBackupRestore`'s pre-loop recompute**
+   ([Vault+Manager+Backup.swift:514](Occulta/Features/Vault/Vault+Manager+Backup.swift:514)) —
+   hand-sets `count` alone, a third independent copy of half the formula.
+5. **`attemptBackupRestore`'s success branch**
+   ([Vault+Manager+Backup.swift:538-539](Occulta/Features/Vault/Vault+Manager+Backup.swift:538)) —
+   hand-sets `active = false`, `count = 0` again.
+
+Concrete evidence this already causes friction, not just a hypothetical: the fix under discussion for
+the `storePendingRestore` gap was to append a call to `attemptBackupRestore(currentDepth: 0)`
+immediately after site 2's two hand-set lines. If that call reaches site 5, it silently overwrites the
+values site 2 just set, three lines earlier, in the same function — correct in that instance only
+because both sites happen to compute a value that's consistent, not because anything enforces it.  A
+future edit to either site has no compiler help catching a mismatch, and only a careful read (like the
+one that surfaced this) catches it by inspection.
+
+### Remedy — proposed, not built
+
+Collapse to one source of truth. Two shapes were discussed, neither implemented yet:
+
+- **Computed properties**, replacing the two stored `var`s outright: `var pendingRestoreActive: Bool {
+  FileManager.default.fileExists(...) }`, `var pendingRestoreShardCount: Int { pendingRestoreActive ?
+  ((try? bekRestoreShardCount()) ?? 0) : 0 }`. Removes all five hand-sync sites at once — every reader
+  gets the current on-disk/on-database truth by construction, and there is nothing left to drift.
+  Trade-off to weigh: `bekRestoreShardCount()` decrypts each `PendingShamirSecretRestore` row's
+  `shards` field to count slots, and a computed property re-runs on every SwiftUI access, not just at
+  the five points that used to assign it — needs checking whether that cost is acceptable on
+  `Vault+Tab.swift`'s render path, or whether it needs its own cheap count-only path (e.g. counting
+  rows without decrypting slot contents).
+- **If the decrypt cost turns out to matter**, keep a cache but reduce it to one writer: only
+  `refreshPendingRestoreState` ever assigns the two stored fields, and every other site
+  (`storePendingRestore`, both `attemptBackupRestore` branches) calls it instead of hand-rolling the
+  formula. Keeps the caching, removes the duplication.
+
+Whichever shape is chosen, the fix for the `storePendingRestore` immediate-recheck gap (still open,
+see `decisions.md`) should land on top of it, not before it — building the new call site on the
+current five-way duplication just adds a sixth.
+
+### Guard
+
+None yet — not fixed.
+
+### Superseded, 2026-09-23: the state itself goes away
+
+Bug 99's 2026-09-23 addendum settles that the `.occbak` is never held: opening it is a one-shot
+reconstruction attempt, and a failed attempt stores nothing. Without a held file, there is nothing for
+`pendingRestoreActive` to mirror and no "Recovery in progress" section for `pendingRestoreShardCount`
+to feed, so both are removed along with `refreshPendingRestoreState` and all five assignment sites
+above. The "immediate-recheck" fix this entry was sequenced ahead of no longer exists either. Until that
+change ships, the five sites stay exactly as described. Two findings from the review, kept for the
+record:
+
+- **The computed form already existed.** `isRestorePending`
+  ([Vault+Manager+Backup.swift:380](Occulta/Features/Vault/Vault+Manager+Backup.swift:380)) is a
+  computed `fileExists` check, used by functional callers. `pendingRestoreActive` was a hand-synced
+  cached copy of a value the type already computed.
+- **The computed-properties remedy above wouldn't have worked on its own.** `VaultManager` is
+  `@Observable`, which invalidates views on writes to *stored* properties. A computed property that reads
+  the filesystem or SwiftData gives it nothing to observe. Making `pendingRestoreActive` computed would
+  have kept the banner updating only because `pendingRestoreShardCount`, still stored, happens to be
+  written at the same moments. Making both computed would have left nothing to trigger a redraw.
+
+Close as moot when Bug 99's remedy ships.

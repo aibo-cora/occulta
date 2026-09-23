@@ -190,8 +190,8 @@ before then — see §6's anti-pairings.
 | # | Stage | Verify |
 |---|---|---|
 | 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
-| 4 | Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel | arming in duress does not block depth 0; cancel clears only its own layer |
-| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. **Rebuilt 2026-09-21** — `ReconstructShard` (the old §9.1 shared pool) is retired; `PendingShamirSecretRestore` is the live mechanism, `ShardsCodec`/`SignedAttributeCodec` implemented, legacy rows migrate on unlock. Collection is depth-blind now, matching §9.3, but this shipped *ahead of* row 4's own arming/completion binding — see `bugs.md` Bug 99's 2026-09-21 addendum for the accepted interim gap that opens until row 4 lands. |
+| 4 | ~~Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel~~ — **superseded: §9.3 dropped per-depth state; §9.4 (2026-09-23) drops arming, held contents and cancel. What remains is completion at the depth the file is opened at** | a restore completes at the depth its file is opened at, and nothing is written to the sandbox; §9.4's open hole must be decided first |
+| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. **Rebuilt 2026-09-21** — `ReconstructShard` (the old §9.1 shared pool) is retired; `PendingShamirSecretRestore` is the live mechanism, `ShardsCodec`/`SignedAttributeCodec` implemented, legacy rows migrate on unlock. Collection is depth-blind now, matching §9.3, but this shipped *ahead of* row 4's own arming/completion binding — see `bugs.md` Bug 99's 2026-09-21 addendum for the accepted interim gap that opens until row 4 lands. Row 4's binding was itself superseded by §9.4 (2026-09-23): completion happens at file-open, at the opening depth, with an open hole. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
@@ -207,6 +207,10 @@ actually per-depth instead of the single, device-wide file it is today
 (`backup-import-cache.occbak`, `refreshPendingRestoreState`/`storePendingRestore`). So Stage 4 here
 isn't just "the sibling half of the same feature" — it's a precondition for finishing
 `reconstructBEK` correctly over there.
+
+**No longer a dependency, 2026-09-23.** Per-depth restore state was abandoned in §9.3, and completion
+doesn't need it (§9.4): it reads the banked shards and the file in hand, at the depth the file is
+opened at. The blocker this paragraph describes is gone. What replaces it is §9.4's open hole.
 
 **Testing and migration requirement, every stage — settled 2026-09-07, same rule as the sibling doc.**
 A stage isn't done once it builds. It's done once (a) tests cover the behavior in its `Verify` column,
@@ -854,6 +858,10 @@ vault-entry content. `armedAt` was separately dropped — nothing in the reconst
 timestamp, only whether collection is happening, and that turned out to already be redundant with other
 state once traced through.
 
+*(2026-09-23: there is no explicit "start shard return" action, and none will be built. Collection has
+been unconditional since Stage 4 (`decisions.md`, "Don't auto-arm shard collection on first vault-tab
+visit"). How the file is handled once opened is settled in §9.4.)*
+
 **Generalizing past depth means keying by the secret's own identity instead — `PendingShamirSecretRestore`
 becomes a real `@Model`, not a struct inside `Vault`'s array:**
 
@@ -993,6 +1001,61 @@ built to close does not exist here, because the redesign that removed depth-inde
 BEK) also removed the thing that leak depended on. Left as a calmer footnote rather than a blocking
 decision — nothing currently reads or writes this population, so nothing forces the question yet.
 
+### 9.4 Revised again, 2026-09-23: the `.occbak` is never held; completion at the opening depth, and the hole that reopens
+
+**Not built.** Shipped code still holds the file and completes only at depth 0. Decision record:
+`decisions.md`, "Open the `.occbak` as a one-shot attempt at the current depth". Bug trail: `bugs.md`
+Bug 99, 2026-09-23 addendum.
+
+**The file is used once, at the moment it's opened.** Opening it runs one reconstruction attempt against
+the in-memory bytes, at the current depth, trying each banked shard set (one row per `distributionID`)
+against it; the GCM tag picks the match. Success imports there. Failure stores nothing, and the user
+opens the file again once more shares have arrived. Nothing is ever written to the sandbox, and there is
+no arming, no held contents, and no cancel (§4 row 4).
+
+**Why not keep the file:**
+- Once completion can happen at any depth, a held file completes at the depth of whichever attempt comes
+  *next*, not the depth it was opened at. A coercer's file opened in duress would land in depth 0 at the
+  owner's next real unlock.
+- One depth's held file blocks every other depth's restore through `alreadyProcessed`.
+- Per-depth held files would fix both only by re-creating arming state, which 9.3 removed.
+- "Attempt first, persist only on failure" has the same two problems.
+
+**Requirement: import succeeds at any depth, the same way,** because a depth-privileged success or
+failure is itself a forensic trace. `Backup.reconstruct` has to take the real depth (it hardcodes 0
+twice today), and so does `storePendingRestore`. The device-wide `vault.postRestoreActionNeeded` flag
+has to go: set by an import in duress, it would open "set up your backup" at the owner's next depth-0
+unlock. The post-restore prompt belongs at file-open, at the importing depth.
+
+**What this removes:** `pendingRestoreURL`, `pendingRestoreActive`, `pendingRestoreShardCount`,
+`refreshPendingRestoreState`, the "Recovery in progress" section, and `attemptBackupRestore`'s unlock
+and shard-arrival triggers. Bug 126 becomes moot, as do Bug 100 remedy 3 and the `.occbak` half of
+remedy 1.
+
+**What it costs:** the user must reopen the file after shares arrive. That reverses
+`VAULT_BACKUP_GUIDE.md`'s "must not require any action between shard collection and vault
+reconstruction". A "recovery ready" signal was considered and rejected (`decisions.md`): no trial
+reconstruction can be validated without the file, and gating a signal on trustee visibility is a depth
+difference in disguise. Discoverability stays Stage 3's problem.
+
+**The hole this reopens, not decided.** During a genuine recovery, the real trustees' shards are banked
+depth-blind. A coercer holding the phone at a duress depth can open the real `.occbak`, for example from
+the phone's own Files app, which isn't depth-scoped. If that depth has no backup key, reconstruction
+succeeds and the real depth-0 entries import into his layer. Bug 99's original remedy names this case
+("complete in either layer — that has a hole"). `VAULT_KEY_LAYERING.md` §8 item 9's "nothing left to
+protect by blocking it" assumed per-depth shard buffers, which 9.3 later dropped. It is bounded: it
+needs a recovery in progress, and success consumes the shards (`orphanShards`), so it works once. Once
+discloses the real vault. Candidates:
+- Accept the window as bounded.
+- Bind banked shards to the depth their sender was visible at on arrival. 9.3 worked this out as a cap
+  prerequisite and set it aside only because no cap was adopted, not on security grounds. Its costs
+  are untraced.
+
+The *Regressions* rule "deferral must not be silently dropped" means this has to be decided before the
+depth-0 guard is removed.
+
+**Migration:** §8's plan adopts a legacy pending file into slot 0, which no longer exists. Still open.
+
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
   up as obvious housekeeping by someone who hasn't read the reasoning — it introduces a cross-layer
@@ -1021,11 +1084,12 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 96 (item 1) | Two traps on decoded content | fixed |
 | 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈112 KB (revised down from ≈215 KB, 2026-09-14, when Bug 124 removed the attestation field), not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
-| 99 | A coercer supplying his own trustees can test for duress | open — subsumed here except the pending-file tag |
+| 99 | A coercer supplying his own trustees can test for duress | open — remedy settled 2026-09-23 (§9.4: one-shot file-open at the opening depth, no held file, so the pending-file qualifier goes away with it), not built; open hole in §9.4 must be decided first |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |
 | 100 r2 | Shard file length was a keyless progress counter | fixed — rows (`ReconstructShard`, 2026-08-27); **superseded again, 2026-09-21** — `ReconstructShard` itself retired, `PendingShamirSecretRestore` is the live mechanism (§9.3, Stages 4-5) |
-| 100 r3 | `.occbak` length estimates vault size | **open, not yet moot** — §9.3 drops `encryptedSnapshot` entirely rather than slotting it (Stage 3, "start shard return": collect shards first, open the file only at the end); Stages 4-5 (storage swap) shipped 2026-09-21, Stage 3 (the reordering that actually removes the file's held-window) has not. See `bugs.md` Bug 100's own 2026-09-21 addendum. |
+| 100 r3 | `.occbak` length estimates vault size | **open, not yet moot** — §9.3 drops `encryptedSnapshot` entirely rather than slotting it (Stage 3, "start shard return": collect shards first, open the file only at the end); Stages 4-5 (storage swap) shipped 2026-09-21, Stage 3 (the reordering that actually removes the file's held-window) has not. See `bugs.md` Bug 100's own 2026-09-21 addendum. **2026-09-23:** §9.4 removes the file entirely, so this becomes moot outright when §9.4 ships (not before). |
 | 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
+| 126 | `pendingRestoreActive`/`pendingRestoreShardCount` hand-synced at five sites | open — closes as moot when §9.4 ships, which removes that state |
 
 **Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
 `bugs.md` Bug 99.** This table's Bug 99 row qualifies its subsumption with "except the pending-file
@@ -1054,6 +1118,9 @@ actually removes the standalone `.occbak` — has not. The file exists today exa
 `storePendingRestore` still writes it on open and holds it for the full waiting window. So the Bug 99
 row's "except the pending-file tag" qualifier is still correct right now, not stale — it becomes
 stale, and should come off, only once Stage 3 ships. Don't resolve this ahead of that.
+
+**2026-09-23:** the part of Stage 3 that removes the file is now §9.4, which never holds the file at
+all. The qualifier comes off when §9.4 ships. The Bug 99 row above has been reworded to match.
 
 See [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) §6, §8 for Bugs 92, 102, 105 — this container's
 sibling issues, not its own.
@@ -1088,6 +1155,17 @@ arms before updating keeps every pre-design weakness, including this container's
 **Rejected: complete-then-migrate** — strictly worse, gated on an event a coercer can indefinitely
 prevent by keeping a restore armed (Bug 99).
 
+**Stale, 2026-09-23. The table above no longer applies.** Slots were dropped in §9.3 and the held file in
+§9.4. The shard-buffer row is already handled: legacy `ReconstructShard` rows move into
+`PendingShamirSecretRestore` on unlock (shipped 2026-09-21). What's left is a legacy pending
+`backup-import-cache.occbak` on a device that upgrades mid-restore, which §9.4 has nothing to adopt it
+into. **Open, must be settled with a test before §9.4 ships** (the every-stage migration rule in §4).
+One candidate: at the first depth-0 unlock after upgrade, make one final attempt against the file at
+depth 0, its legacy destination, then delete it whatever the outcome. The banked shards survive, and the
+user's own copy of the file is untouched, so opening it again later still completes. This needs a check
+that no path leaves the sandbox copy as the only copy; Bug 101's `Documents/Inbox` handling bears on
+that.
+
 ---
 
 ## Regressions this design must not introduce
@@ -1101,9 +1179,14 @@ Shared with the sibling doc, restated here since both containers must hold to th
 - **Deferral must not be silently dropped.** Until Stage 5 lands, `attemptBEKRestore`'s depth guard is
   the only thing preventing a duress session from completing a depth-0-armed restore. The guard changes
   shape rather than disappearing.
+  *2026-09-23:* §9.4 removes the guard. Under §9.4 there's no "armed" restore, but the case the guard
+  protected still exists: a genuine depth-0 backup completing in duress. That is §9.4's open hole, and
+  this rule is why it has to be decided before the guard comes out.
 - **No new depth-conditional UI.** Every prompt, banner and acknowledgment must read identically across
   layers unless the underlying state is genuinely per-layer. Two fixes here were themselves found to be
   new oracles — a confirmation shown only at depth 0, a banner absent above it.
+  *2026-09-23:* a "recovery ready" signal shown only where the returning trustees are visible would
+  have been a third. Rejected (`decisions.md`).
 
 ---
 

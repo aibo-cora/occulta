@@ -323,7 +323,8 @@ upgrade.
 1. Trustees detect Alice's key change during proximity exchange and auto-return
    their shards. Each sends `.handback` operations in the next outbound bundle to
    Alice (see "Owner key rotation = auto-return trigger" below).
-2. Alice's app collects arriving shards into the `ReconstructShard` buffer.
+2. Alice's app collects arriving shards into the `PendingShamirSecretRestore` buffer
+   (`ReconstructShard` before 2026-09-21, see below).
 3. When ≥ k shards are buffered, `tryFinalizeReconstruction` runs automatically.
 4. If Alice still has her original SE key: verify each shard's signature.
    If on a new device: skip signature verification, rely on GCM authentication.
@@ -344,6 +345,23 @@ reconstruction, asking her to redistribute.
 ---
 
 ## Reconstruction buffer (`ReconstructShard`)
+
+> **Retired 2026-09-21. The live buffer is `PendingShamirSecretRestore`**
+> (`Vault+Model.swift`; design in [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) §9.3).
+> The text below describes `ReconstructShard`, which is now read only by the one-time migration
+> that moves its rows over on unlock. What differs now:
+> - One row per secret (`attributeID`: a `VaultEntry.id` for PEK recovery, a `distributionID` for
+>   BEK restore), not one row per shard. `attributeID` and `deletionToken` are sealed under the local
+>   key.
+> - The shards live in a single `shards` field: up to 255 fixed-width slots (`ShardsCodec`), sealed
+>   with AAD bound to the row.
+> - Still at most one slot per `(attributeID, senderIdentifier)`.
+> - On success or cancel, the row is **orphaned in place** (`orphanShards`: shards overwritten with
+>   random bytes, `deletionToken` set to orphaned), not bulk-deleted. The Lifecycle table's last two
+>   rows are stale on that point.
+> - No cap, permanently (`bugs.md` Bug 122).
+>
+> The BEK-restore flow around this buffer is also being changed; see §9.4 of the same document.
 
 Owner-side transient queue for `.handback` bundles arriving during recovery. Each
 arriving shard becomes one `ReconstructShard` row, sealed under the recovery

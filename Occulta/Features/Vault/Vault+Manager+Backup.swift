@@ -369,7 +369,7 @@ extension VaultManager {
     /// — but they are not interchangeable, because they're kept in sync on different
     /// schedules. `pendingRestoreActive` is `@Published` UI state, only synced from disk
     /// at specific points: `refreshPendingRestoreState()` on unlock, and inline in
-    /// `storePendingRestore`/`attemptBackupRestore`. `storeRestoreShard` (and therefore
+    /// `storePendingRestore`/`attemptBackupRestore`. `absorbShard` (and therefore
     /// `acceptReturnedShard`) is explicitly designed to run *while the vault is locked*
     /// (Bug 94 remedy 2) — a shard can arrive, and a genuine restore file can already
     /// exist, before this process has ever unlocked and therefore before
@@ -382,15 +382,13 @@ extension VaultManager {
     }
 
     /// Sync `pendingRestoreActive` and `pendingRestoreShardCount` from the filesystem and from
-    /// `currentDepth`'s own share of the shard buffer. Called on every vault unlock so state is
-    /// correct after app restarts.
+    /// the shard buffer. Called on every vault unlock so state is correct after app restarts.
     ///
-    /// **`pendingRestoreActive` stays depth-uniform (whether the `.occbak` file exists at all);
-    /// `pendingRestoreShardCount` is now `currentDepth`-scoped** (`RECOVERY_BUFFER_LAYERING.md`
-    /// §6 item 9.1's shard-buffer depth-partitioning) — this is a deliberate, temporary
-    /// asymmetry: arming itself is not yet per-depth (that's §6 item 9.1's `PendingRestore`
-    /// piece, not yet built), only the shard buffer is. Once arming is per-depth too,
-    /// `pendingRestoreActive` becomes `currentDepth`-scoped as well and this asymmetry closes.
+    /// Both values are depth-blind: `pendingRestoreActive` is whether the `.occbak` file exists,
+    /// and `pendingRestoreShardCount` sums every live BEK-restore row (`bekRestoreShardCount()`).
+    /// `currentDepth` has been unused since collection went depth-blind
+    /// (`RECOVERY_BUFFER_LAYERING.md` §9.3). This mechanism is removed once §9.4 ships
+    /// (`bugs.md` Bug 126).
     ///
     /// This reverses half of Bug 93 deliberately. That fix paired "defer" with "hide":
     /// `attemptBackupRestore` refuses to complete above depth 0, and this published nothing
@@ -410,8 +408,9 @@ extension VaultManager {
     ///
     /// Recovery still only completes at depth 0, so duress advertises an event whose result it
     /// will never show. That is accepted: shard collection is depth-independent by design
-    /// (`storeRestoreShard`), so the state is real rather than fabricated, and a recovery that
-    /// visibly never finishes is an ordinary thing for one to do.
+    /// (`absorbShard`), so the state is real rather than fabricated, and a recovery that
+    /// visibly never finishes is an ordinary thing for one to do — except to a coercer who
+    /// supplied the trustees himself and knows it should finish (`bugs.md` Bug 99).
     func refreshPendingRestoreState(currentDepth: Int) {
         self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
         self.pendingRestoreShardCount = self.pendingRestoreActive
@@ -435,14 +434,13 @@ extension VaultManager {
     /// honest `alreadyProcessed` either way, but silently replacing already-pending
     /// recovery material with a second file's bytes (attacker-supplied or not) would be a
     /// real change of what completes, hidden behind a message that claims nothing changed.
-    /// `pendingRestoreActive`/`pendingRestoreShardCount` are only ever set at depth 0 —
-    /// above that, published state stays whatever `refreshPendingRestoreState` already
-    /// forced it to.
+    /// The `alreadyHasBEK` check reads depth 0's key whatever the current depth is, because
+    /// completion only ever happens at depth 0 (`attemptBackupRestore`). The published state
+    /// is set the same way at every depth — see `refreshPendingRestoreState`.
     func storePendingRestore(_ data: Data) throws {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
 
-        // currentDepth: 0 — this whole mechanism is pinned to depth 0 (doc
-        // comment above: "only ever set at depth 0").
+        // currentDepth: 0 — completion is pinned to depth 0, so that's the key that matters.
         let vaultKey       = try? self.currentKey()
         let alreadyHasBEK  = vaultKey.flatMap { try? self.backup.fetchDecoded(vaultKey: $0, currentDepth: 0, modelContext: self.modelContext) } != nil
         guard !alreadyHasBEK else { throw BackupError.alreadyProcessed }
@@ -455,7 +453,6 @@ extension VaultManager {
 
         // Published at every depth — see `refreshPendingRestoreState` for why hiding this
         // above depth 0 traded a duress-against-duress gap for a duress-against-real one.
-        // currentDepth: 0 — this whole mechanism is pinned there (see the doc comment above).
         self.pendingRestoreActive     = true
         self.pendingRestoreShardCount = (try? self.bekRestoreShardCount()) ?? 0
     }

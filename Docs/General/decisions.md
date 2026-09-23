@@ -143,3 +143,119 @@ with the reasoning above, not a reversal of it. The `.occbak` continuity this de
 depends only on `bekBytes`; confirmed directly, `VaultManager.backupFileAAD` is a fixed constant,
 never `distributionID`-dependent, so nothing about an exported backup's decryptability changes when
 `distributionID` does.
+
+---
+
+## Don't auto-arm shard collection on first vault-tab visit
+
+**Status:** Decided, 2026-09-21 — considered and dropped in the same conversation, before any code
+was written.
+
+**Context:** Exploring ways to reduce friction in the still-unbuilt "start shard return" UX (Stage 3,
+`RECOVERY_BUFFER_LAYERING.md` §9.3) — specifically, whether auto-triggering it the first time a user
+ever opens the Vault tab, instead of requiring an explicit action, would work. The reasoning offered:
+a genuinely fresh install has no prior distribution for any trustee to hand back, so it would be a
+harmless no-op there, and would only do something useful on a real recovery (a new device, re-pairing
+with trustees who still hold old shares).
+
+**Decision:** Not building this. Checked what "start" would actually gate first: shard absorption
+(`absorbShard`, shipped Stage 4, 2026-09-21) already runs unconditionally on every inbound
+`.handback`, with no arming step at all. There's nothing left for a "first visit" trigger to start.
+
+**Why:** The trustee-side reasoning (a fresh install draws no handback traffic, since nothing was
+ever distributed under that identity) was sound, but it answered a question the current
+implementation doesn't ask — Stage 4 already made collection passive and depth-blind, independent of
+any explicit start. Building a "first visit" trigger anyway would mean introducing a *new* persisted,
+checkable flag (has this vault ever been opened before) purely to gate something that isn't gated.
+That flag would itself become exactly the kind of per-depth artifact this whole design has spent
+effort avoiding — a coercer opening a fresh duress layer for the first time would produce the
+identical stored state a genuine first run does, which is fine only as long as nothing ever reads
+that flag to branch behavior differently; better not to create it at all.
+
+**Consequences:** Stage 3's actual remaining friction is discoverability (the user needs to know a
+restore/import surface exists) and one narrow mechanical gap found while discussing this:
+`storePendingRestore` (opening the `.occbak` file) doesn't immediately re-check shards already
+collected before the file was ever opened — it waits for the next unlock or shard arrival. Both are
+still open, unscheduled. Whatever Stage 3 eventually builds for discoverability should be an ordinary
+UI prompt ("restore from backup?"), not a stored "has this run before" flag.
+
+**Full reasoning:** this conversation, 2026-09-21 — not yet folded into
+`RECOVERY_BUFFER_LAYERING.md`'s own prose (Stage 3 section still unbuilt).
+
+**Addendum, 2026-09-23: the mechanical gap named under Consequences is resolved differently.** There is
+no "re-check banked shards after the file is written" step to add, because the file is no longer
+written at all. See "Open the `.occbak` as a one-shot attempt at the current depth" below. The
+discoverability half stands.
+
+---
+
+## Open the `.occbak` as a one-shot attempt at the current depth — never hold it
+
+**Status:** Decided, 2026-09-23. Not built. One open hole, see Consequences.
+
+**Context:** Designing Bug 99's remedy. Today `storePendingRestore` writes the opened file into the
+sandbox (`backup-import-cache.occbak`) and waits for a later unlock or shard arrival to attempt
+reconstruction, and completion is pinned to depth 0. Allowing completion at any depth raised the
+question of whether each depth needs its own pending file.
+
+**Decision:** The file is never held. Opening it runs one reconstruction attempt against the in-memory
+bytes, at the depth it was opened at, trying every banked shard set (one `PendingShamirSecretRestore`
+row per `distributionID`) against it, with the GCM tag deciding the match. Success imports there.
+Failure stores nothing, and the user opens the file again once more shares have arrived. Import must
+succeed at any depth, the same way.
+
+**Why:** A held file, once completion can happen anywhere, completes at the depth of whatever attempt
+comes *next*, not where it was opened: a coercer's file opened in duress lands in depth 0 at the next
+real unlock. It also blocks every other depth's restore through `alreadyProcessed`. Per-depth files fix
+both only by re-creating arming state, which §9.3 removed. "Attempt first, persist only on failure"
+(proposed the same day) has the same two problems. Any-depth import is required because a
+depth-privileged success or failure is itself a forensic trace (Bug 99).
+
+**Consequences:**
+- Removes `pendingRestoreURL`, `pendingRestoreActive`, `pendingRestoreShardCount`,
+  `refreshPendingRestoreState`, the "Recovery in progress" section, and `attemptBackupRestore`'s unlock
+  and shard-arrival triggers. Bug 126 becomes moot, as do Bug 100 remedy 3 and the `.occbak` half of
+  remedy 1.
+- `Backup.reconstruct` and `storePendingRestore` must take the real depth; both hardcode 0 today.
+- The global `vault.postRestoreActionNeeded` flag has to go. It would announce a duress-layer import at
+  the owner's next depth-0 unlock.
+- UX cost: the user must reopen the file after shares arrive. This reverses `VAULT_BACKUP_GUIDE.md`'s
+  "no action between collection and reconstruction" requirement and leaves discoverability to Stage 3.
+- **Open hole:** during a genuine recovery, a coercer at a duress depth can open the real `.occbak` and
+  import the real vault into his layer, because banked shards aren't bound to a depth. It works once
+  (success consumes the shards) and needs a recovery in progress. Undecided, and must be settled before
+  the depth-0 guard is removed.
+- Legacy devices can have a held `.occbak` from before this change. What happens to it on upgrade is
+  open (`RECOVERY_BUFFER_LAYERING.md` §8).
+
+**Full reasoning:** `bugs.md` Bug 99, 2026-09-23 addendum; `RECOVERY_BUFFER_LAYERING.md` §9.4.
+
+---
+
+## No "recovery ready" signal before the `.occbak` is opened
+
+**Status:** Decided, 2026-09-23. Nothing built; nothing to remove.
+
+**Context:** Proposed to reduce restore friction: after a trial reconstruction on shard handback, tell
+the user a recovery is possible so they know to open their backup file, and show that signal only at
+depths where the trustees who handed back shards are visible.
+
+**Decision:** No such signal, in any form.
+
+**Why:** Deciding reason, agreed: no trial reconstruction can tell you anything without the file.
+`ShamirSecretSharing.reconstruct` always returns 32 bytes, right or wrong. The only check is the GCM tag
+against the file's ciphertext (`Backup.reconstruct`). The restoring device doesn't know the threshold
+either (`AttestedShard`'s doc comment: "Do not build on this as if it were `threshold`-strength").
+Two further problems, recorded for anyone reconsidering the idea:
+- Gating the signal on trustee visibility is a depth check under another name. Real trustees aren't
+  visible at a duress depth, so the signal would differ between layers, which is the difference
+  Bug 93's follow-up removed by making the banner the same at every depth.
+- Even a signal shown the same at every depth changes during a session when it turns on. That is the
+  "live tally" reason the shard count was removed from the banner (Bug 100).
+
+**Consequences:** The user finds out a restore is possible only by opening the file. With the one-shot
+design above, that attempt is also the completion, so no separate announcement is needed.
+Discoverability stays Stage 3's problem, to be solved with an ordinary prompt rather than a
+readiness indicator.
+
+**Full reasoning:** this conversation, 2026-09-23; `RECOVERY_BUFFER_LAYERING.md` §9.4.

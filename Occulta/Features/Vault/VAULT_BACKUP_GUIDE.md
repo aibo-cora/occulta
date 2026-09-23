@@ -479,6 +479,16 @@ count is what makes it safe to render the section at every depth, which in turn
 removes a difference between layers that was readable in one glance. See
 `Docs/Features/Secure Mode/bugs.md`, Bug 93's follow-up.
 
+**Being changed, 2026-09-23. See [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) §9.4.**
+This section describes shipped behavior, which stays in effect until that change lands. After it:
+- The `.occbak` is never held. Opening it runs one reconstruction attempt at the current depth. If that
+  fails, nothing is stored and the user opens the file again later.
+- The "Recovery in Progress" section is removed, along with the automatic attempts after every shard
+  arrival and unlock.
+- The requirements above not to "require any action between shard collection and vault reconstruction"
+  and to "auto-advance" are reversed. Reopening the file is the action. A "recovery ready" signal to
+  prompt it was considered and rejected (`Docs/General/decisions.md`).
+
 ---
 
 ## Future: macOS companion app sync
@@ -575,6 +585,19 @@ Restored entries *are* stamped, by `importBackup(_:currentDepth:)`, and vault
 entries are exact-match rather than nested — so an entry restored at depth 2 is
 visible only at depth 2. The contents are layered. The key and the machinery around
 them are not.
+
+**Status of the table above, 2026-09-23:**
+- **`BackupEncryptionKey`:** per-depth rows since 2026-09-11
+  (`VAULT_KEY_LAYERING.md` §8 item 14). No longer device-wide.
+- **Pending `.occbak`:** still one device-wide file in shipped code. To be removed; the file is
+  never held (`RECOVERY_BUFFER_LAYERING.md` §9.4).
+- **Restore shard buffer:** now `PendingShamirSecretRestore`, still deliberately depth-blind (§9.3).
+  That is the source of §9.4's open hole: a genuine backup could complete in a duress layer.
+- **Completion:** depth 0 only in shipped code. §9.4 moves it to the depth the file is opened at,
+  once that hole is decided.
+
+The acknowledgment paragraph below still applies: under §9.4 the file-open *is* the attempt, so its
+result is the natural thing to report.
 
 ### The constraint every UI decision here runs into
 

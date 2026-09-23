@@ -81,7 +81,7 @@ final class VaultManager {
     var pendingRestoreActive: Bool = false
 
     /// Number of BEK restore shards collected so far. Updated on each shard arrival
-    /// and on vault unlock. Drives the progress counter in the vault list.
+    /// and on vault unlock. Maintained but no longer rendered — see `refreshPendingRestoreState`.
     var pendingRestoreShardCount: Int = 0
 
     // MARK: - Backup staleness
