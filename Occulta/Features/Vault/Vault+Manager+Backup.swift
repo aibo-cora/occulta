@@ -2,7 +2,7 @@
 //  Vault+Manager+Backup.swift
 //  Occulta
 //
-//  Vault backup — export, import, the pending-restore mechanism, and the legacy
+//  Vault backup — export, import, restore from an opened backup file, and the legacy
 //  Backup Encryption Key row's migration (all of which need `modelContext`, which
 //  belongs to `VaultManager`, not to `Backup`). The key's own lifecycle (setup,
 //  access, shard distribution, reconstruction, rotation) lives in `VaultManager.Backup`
@@ -44,10 +44,6 @@ extension VaultManager {
         case bekReconstructionFailed
         /// A backup key already exists — this device is not a fresh restore target.
         case bekAlreadyPresent
-        /// A restore is already pending, or already completed (a backup key exists).
-        /// Not a failure — the caller shows a neutral, depth-safe acknowledgment rather
-        /// than the generic error path. See Bug 93.
-        case alreadyProcessed
     }
 
     // MARK: - Wire format constants
@@ -225,8 +221,8 @@ extension VaultManager {
     /// createdAt from the backup so entry history is maintained.
     ///
     /// Stamps every restored entry with `currentDepth` (Bug 88's import half) — no default,
-    /// same reasoning as `exportBackup(currentDepth:)`. Safe on the automatic restore path
-    /// because `attemptBackupRestore` never calls this with anything but 0 (Bug 93).
+    /// same reasoning as `exportBackup(currentDepth:)`. `restoreBackup` calls this with the
+    /// depth the file was opened at (RECOVERY_BUFFER_LAYERING.md §9.4).
     func importBackup(_ data: Data, currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
 
@@ -350,194 +346,69 @@ extension VaultManager {
         try? target.setResourceValues(values)
     }
 
-    // MARK: - Pending restore
+    // MARK: - Restore from a backup file
 
-    // Filenames deliberately do not name the mechanism — see Bug 93 harm 3. A file
-    // literally named "pending-restore" is a forensic tell readable with `ls` alone,
-    // no decryption needed. These sit alongside backup-export-meta.dat and borrow its
-    // cover story: ordinary-looking backup bookkeeping.
-    static let pendingRestoreURL: URL =
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("backup-import-cache.occbak")
-
-    /// Whether a restore file genuinely exists on disk, checked directly rather than
-    /// read from the cached `pendingRestoreActive`.
+    /// Restores from an opened `.occbak`: one reconstruction attempt at `currentDepth`,
+    /// against the shards already banked. The file is never kept. A failed attempt stores
+    /// nothing, and the owner opens the file again once more pieces have arrived.
+    /// See `RECOVERY_BUFFER_LAYERING.md` §9.4.
     ///
-    /// The two compute the same thing today — `pendingRestoreActive` is no longer
-    /// depth-gated (see `refreshPendingRestoreState`, which reversed that half of Bug 93)
-    /// — but they are not interchangeable, because they're kept in sync on different
-    /// schedules. `pendingRestoreActive` is `@Published` UI state, only synced from disk
-    /// at specific points: `refreshPendingRestoreState()` on unlock, and inline in
-    /// `storePendingRestore`/`attemptBackupRestore`. `absorbShard` (and therefore
-    /// `acceptReturnedShard`) is explicitly designed to run *while the vault is locked*
-    /// (Bug 94 remedy 2) — a shard can arrive, and a genuine restore file can already
-    /// exist, before this process has ever unlocked and therefore before
-    /// `pendingRestoreActive` has ever been synced. **Functional callers deciding
-    /// whether to store a shard, or whether to relax signature checking, must use this
-    /// property, never the published one** — it has no such gap, since it reads the
-    /// filesystem directly on every access.
-    var isRestorePending: Bool {
-        FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
-    }
-
-    /// Sync `pendingRestoreActive` and `pendingRestoreShardCount` from the filesystem and from
-    /// the shard buffer. Called on every vault unlock so state is correct after app restarts.
+    /// Tries each banked BEK-restore distribution against the file; the GCM tag inside
+    /// `Backup.reconstruct` picks the one that matches. Only shards whose sender is in
+    /// `visibleContactIdentifiers` count. A real backup opened in a layer that hides its
+    /// trustees can't complete there, and a coercer's own trustees, created in his layer,
+    /// don't count at depth 0 (`bugs.md` Bug 99).
     ///
-    /// Both values are depth-blind: `pendingRestoreActive` is whether the `.occbak` file exists,
-    /// and `pendingRestoreShardCount` sums every live BEK-restore row (`bekRestoreShardCount()`).
-    /// `currentDepth` has been unused since collection went depth-blind
-    /// (`RECOVERY_BUFFER_LAYERING.md` §9.3). This mechanism is removed once §9.4 ships
-    /// (`bugs.md` Bug 126).
+    /// Returns whether entries were imported. Every failure returns `false` the same way —
+    /// this depth already has a backup key (Bug 94 remedy 1), too few shards, or no matching
+    /// distribution. Throws only for a file that isn't a backup, or when the vault is locked.
     ///
-    /// This reverses half of Bug 93 deliberately. That fix paired "defer" with "hide":
-    /// `attemptBackupRestore` refuses to complete above depth 0, and this published nothing
-    /// there, so duress never mentioned a recovery. Deferral stays; hiding does not.
-    ///
-    /// Hiding was closing a duress-against-duress gap and opening a duress-against-real one.
-    /// A pending restore made depth 0 and duress behave differently — a banner in one, none in
-    /// the other, plus differently-worded file-open replies — and that difference is readable
-    /// by anyone who opens a `.occbak` and looks, against a baseline that is public because the
-    /// app is. Publishing the same state at every depth removes the comparison.
-    ///
-    /// What makes it safe is that the surface no longer carries a number. The count below is
-    /// maintained but no longer rendered (see `Vault+Tab`): a static "Recovery in progress…"
-    /// claims no progress, so it cannot contradict itself across repeated duress unlocks, and
-    /// it matches what a real, stalled recovery looks like — one waiting on trustees it has
-    /// not met yet. A live, climbing count could not have made that claim.
-    ///
-    /// Recovery still only completes at depth 0, so duress advertises an event whose result it
-    /// will never show. That is accepted: shard collection is depth-independent by design
-    /// (`absorbShard`), so the state is real rather than fabricated, and a recovery that
-    /// visibly never finishes is an ordinary thing for one to do — except to a coercer who
-    /// supplied the trustees himself and knows it should finish (`bugs.md` Bug 99).
-    func refreshPendingRestoreState(currentDepth: Int) {
-        self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
-        self.pendingRestoreShardCount = self.pendingRestoreActive
-            ? ((try? self.bekRestoreShardCount()) ?? 0)
-            : 0
-    }
-
-    /// Validate and persist an incoming `.occbak` file. Called when the user opens a
-    /// `.occbak` file from Files.
-    ///
-    /// Checks whether *any* restore state already exists — a pending file already on
-    /// disk, or a backup key already present (remedy 1's own check, reused rather than
-    /// duplicated) — before deciding what the caller sees. Deliberately not "is this the
-    /// same file": a different `.occbak` shown while one is already pending or done gets
-    /// the same honest `alreadyProcessed`, so the signal is never a lie and needs no new
-    /// persisted history to stay truthful. See Bug 93, "The design, settled".
-    ///
-    /// If a backup key already exists, or a restore is already pending, there is nothing
-    /// to arm — refuses before writing anything in either case. A second file must never
-    /// overwrite a genuine restore that is already in flight: the caller sees the same
-    /// honest `alreadyProcessed` either way, but silently replacing already-pending
-    /// recovery material with a second file's bytes (attacker-supplied or not) would be a
-    /// real change of what completes, hidden behind a message that claims nothing changed.
-    /// The `alreadyHasBEK` check reads depth 0's key whatever the current depth is, because
-    /// completion only ever happens at depth 0 (`attemptBackupRestore`). The published state
-    /// is set the same way at every depth — see `refreshPendingRestoreState`.
-    func storePendingRestore(_ data: Data) throws {
+    /// Banked shards are left alone when this depth already has a key: collection is
+    /// depth-blind, so they may belong to another layer's restore.
+    func restoreBackup(from data: Data, currentDepth: Int, visibleContactIdentifiers: Set<String>) throws -> Bool {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
-
-        // currentDepth: 0 — completion is pinned to depth 0, so that's the key that matters.
-        let vaultKey       = try? self.currentKey()
-        let alreadyHasBEK  = vaultKey.flatMap { try? self.backup.fetchDecoded(vaultKey: $0, currentDepth: 0, modelContext: self.modelContext) } != nil
-        guard !alreadyHasBEK else { throw BackupError.alreadyProcessed }
-
-        guard !FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path) else {
-            throw BackupError.alreadyProcessed
-        }
-
-        try Self.writeExcludedFromBackup(data, to: Self.pendingRestoreURL)
-
-        // Published at every depth — see `refreshPendingRestoreState` for why hiding this
-        // above depth 0 traded a duress-against-duress gap for a duress-against-real one.
-        self.pendingRestoreActive     = true
-        self.pendingRestoreShardCount = (try? self.bekRestoreShardCount()) ?? 0
-    }
-
-    /// Attempt reconstruction from all collected restore shards.
-    ///
-    /// Enumerates every currently-live BEK-restore distribution
-    /// (`bekRestoreDistributionIDs`) and tries `backup.reconstruct` against each
-    /// one's collected shards in turn — each `PendingShamirSecretRestore` row is
-    /// already scoped to one `distributionID` by construction, so there is no
-    /// grouping step left to do here the way the old shared-pool design needed.
-    /// `AES.GCM` authentication inside `reconstruct` is the oracle — the correct
-    /// distribution decrypts successfully; all others throw. Runs silently when not
-    /// enough shards are present. Requires vault to be unlocked.
-    ///
-    /// Stays on `VaultManager`, not moved into `Backup` — like `exportBackup`/
-    /// `importBackup`, this orchestrates across several of `VaultManager`'s own
-    /// subsystems (return-buffer shard storage, `importBackup` itself), not just
-    /// the backup key's own lifecycle. `Backup.reconstruct` is the one narrow
-    /// operation this actually depends on.
-    ///
-    /// Checks for an existing backup key before touching collected shards at all
-    /// (Bug 94 remedy 1 would refuse every distribution anyway, at the `reconstruct`
-    /// level) — because that per-distribution refusal has no path back to the
-    /// cleanup below. A device that already has a backup key can never reach the
-    /// success branch, so without this check `pendingRestoreActive` would stay stuck
-    /// true forever, and shards would keep accepting new entries on every arrival
-    /// with nothing left to ever clear it (Bug 96).
-    ///
-    /// Never completes above depth 0 (Bug 93) — the other half of "defer and hide
-    /// together" alongside `refreshPendingRestoreState`'s own depth guard. Shards
-    /// keep accumulating silently regardless (collection is depth-blind — see
-    /// `Vault+Manager+ReturnBuffer.swift`'s own header for the `bugs.md` Bug 99
-    /// addendum this ships ahead of), so nothing is lost, only postponed to the next
-    /// depth-0 unlock.
-    func attemptBackupRestore(currentDepth: Int) {
-        guard self.isUnlocked, self.pendingRestoreActive else { return }
-        guard currentDepth == 0 else { return }
-
-        guard let vaultKey = try? self.currentKey() else { return }
+        let vaultKey = try self.currentKey()
 
         if (try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)) != nil {
-            for distributionID in (try? self.bekRestoreDistributionIDs()) ?? [] {
-                self.orphanShards(forAttributeID: distributionID)
-            }
-            try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
-            self.pendingRestoreActive     = false
-            self.pendingRestoreShardCount = 0
-            return
+            return false
         }
 
-        guard let backupData = try? Data(contentsOf: Self.pendingRestoreURL) else { return }
-        guard let distributionIDs = try? self.bekRestoreDistributionIDs(), !distributionIDs.isEmpty else { return }
-
-        // Update counter as a side effect (covers the on-unlock path).
-        self.pendingRestoreShardCount = (try? self.bekRestoreShardCount()) ?? 0
-
-        for distributionID in distributionIDs {
-            // Already deduped to at most one per (distributionID, senderIdentifier) at
-            // absorb time, so this already reflects distinct senders — not just
-            // distinct SignedAttribute.id's (Bug 94 remedy 2).
-            guard let shards = try? self.collectedShards(forAttributeID: distributionID), !shards.isEmpty else { continue }
+        for distributionID in (try? self.bekRestoreDistributionIDs()) ?? [] {
+            let shards = ((try? self.collectedShards(forAttributeID: distributionID)) ?? [])
+                .filter { visibleContactIdentifiers.contains($0.senderIdentifier) }
+            guard !shards.isEmpty else { continue }
 
             do {
-                // reconstruct: Shamir combine → GCM oracle → persist row.
                 try self.backup.reconstruct(
-                    vaultKey: vaultKey, shards: shards.map { $0.attribute },
-                    backupData: backupData, ownerIdentity: nil, modelContext: self.modelContext
+                    vaultKey: vaultKey, shards: shards.map { $0.attribute }, backupData: data,
+                    ownerIdentity: nil, currentDepth: currentDepth, modelContext: self.modelContext
                 )
-                // importBackup: read persisted row → decrypt file → insert entries.
-                // currentDepth == 0 here always — asserted by this function's own guard above.
-                try self.importBackup(backupData, currentDepth: currentDepth)
+                try self.importBackup(data, currentDepth: currentDepth)
             } catch {
-                continue    // Wrong distribution or not enough shards — try next.
+                continue
             }
 
-            // Success — orphan the buffered shards and the cached file, reset state.
             self.orphanShards(forAttributeID: distributionID)
-            try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
-            self.pendingRestoreActive     = false
-            self.pendingRestoreShardCount = 0
-            // Signal the vault list to show post-restore guidance on next unlock.
-            UserDefaults.standard.set(true, forKey: "vault.postRestoreActionNeeded")
-            return
+            self.postRestorePromptPending = true
+            return true
         }
+        return false
+    }
+
+    /// Deletes restore state left by versions before the one-shot design, without attempting
+    /// it (`RECOVERY_BUFFER_LAYERING.md` §8):
+    /// - the held `.occbak`, under its v1.10.3 name and its v1.10.2-and-earlier name;
+    /// - the old shard file (`bugs.md` Bug 127);
+    /// - the persisted post-restore flag.
+    ///
+    /// Called on every unlock and on wipe; after the first run there's nothing left to delete.
+    /// Takes no depth, so it behaves the same in every layer.
+    func deleteLegacyRestoreState() {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        for name in ["backup-import-cache.occbak", "pending-restore.occbak", "pending-restore-shards.dat"] {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
+        UserDefaults.standard.removeObject(forKey: "vault.postRestoreActionNeeded")
     }
 
     // MARK: - Backup key wrappers
@@ -587,11 +458,13 @@ extension VaultManager {
     }
 
     /// Reconstruct the backup key from ≥ k shards, validate against `backupData`, and
-    /// re-wrap under the current vault key. See `Backup.reconstruct` for the full steps.
-    func reconstructBackup(shards: [SignedAttribute], backupData: Data, ownerIdentity: Data?) throws {
+    /// re-wrap under the current vault key at `currentDepth`. See `Backup.reconstruct`
+    /// for the full steps.
+    func reconstructBackup(shards: [SignedAttribute], backupData: Data, ownerIdentity: Data?, currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
         try self.backup.reconstruct(
-            vaultKey: vaultKey, shards: shards, backupData: backupData, ownerIdentity: ownerIdentity, modelContext: self.modelContext
+            vaultKey: vaultKey, shards: shards, backupData: backupData, ownerIdentity: ownerIdentity,
+            currentDepth: currentDepth, modelContext: self.modelContext
         )
     }
 
@@ -651,7 +524,7 @@ extension VaultManager {
     /// the current per-depth row model — see `VAULT_KEY_LAYERING.md` for the full
     /// history. Lives on `VaultManager`, not inside `Backup` — needs `modelContext`,
     /// which is `VaultManager`'s own resource. Called once per unlock
-    /// (`unlock(context:currentDepth:)`); both steps are independently idempotent, so
+    /// (`unlock(context:)`); both steps are independently idempotent, so
     /// running this every unlock costs nothing once migration is complete.
     ///
     /// Three possible starting states, handled in order, each a no-op once done:
@@ -898,6 +771,11 @@ extension VaultManager {
 
     private static let backupExportMetaAAD: Data =
         Data("occulta.backup-export-meta-v1".utf8)
+
+    /// Removes the export metadata file. Only the wipe calls this (`bugs.md` Bug 128).
+    func deleteBackupExportMetadata() {
+        try? FileManager.default.removeItem(at: Self.backupExportMetaURL)
+    }
 
     /// Recompute `backupStaleness` for `currentDepth` by comparing that depth's sealed
     /// export snapshot against that depth's current vault entries. Never derived from
@@ -1164,7 +1042,7 @@ extension VaultManager {
         /// Previously reused `decoded.payload.distributionID` across every redistribution,
         /// so a trustee removed from `recipients` kept a permanently-valid credential:
         /// neither their old, genuinely-signed share nor the id it carried ever expired.
-        /// `attemptBackupRestore` already groups collected shards by `entryID` before
+        /// `restoreBackup` already groups collected shards by `entryID` before
         /// attempting reconstruction (built for Bug 95) — that grouping is what makes this
         /// sufficient on its own: a stale submission now lands in its own group under an id
         /// nothing else is tagged with, never reaches threshold, and never touches a live
@@ -1293,30 +1171,29 @@ extension VaultManager {
         /// file, and re-wrap under the current vault key.
         ///
         /// Steps:
-        ///   0. Refuse if a backup key row already exists — this device is not a
-        ///      fresh restore target, and reconstruction only ever fires
-        ///      automatically (Bug 94).
+        ///   0. Refuse if `currentDepth` already has a backup key row — that layer is
+        ///      not a fresh restore target (Bug 94).
         ///   1. Verify all shards share a single distributionID.
         ///   2. If `ownerIdentity` is provided, ECDSA-verify each shard.
         ///      Pass nil on new-device path (old key non-migratable); GCM tag substitutes.
         ///   3. Shamir.reconstruct → candidate backup key.
         ///   4. AES.GCM.open(backupFile, using: candidate) — GCM tag validates.
-        ///   5. Persist new payload sealed under current vault key. shardMetadata is
-        ///      cleared — redistribution prompt handles rebuild.
+        ///   5. Persist new payload sealed under current vault key, into `currentDepth`'s
+        ///      row. shardMetadata is cleared — redistribution prompt handles rebuild.
         ///
-        /// On success, the caller (`VaultManager.attemptBackupRestore`) calls
-        /// `importBackup(_:currentDepth:)` to restore vault entries.
+        /// On success, the caller (`VaultManager.restoreBackup`) calls
+        /// `importBackup(_:currentDepth:)` with the same depth to restore vault entries.
+        /// `currentDepth` is the depth the backup file was opened at
+        /// (`RECOVERY_BUFFER_LAYERING.md` §9.4).
         func reconstruct(
             vaultKey:      SymmetricKey,
             shards:        [SignedAttribute],
             backupData:    Data,
             ownerIdentity: Data?,
+            currentDepth:  Int,
             modelContext:  ModelContext
         ) throws {
-            // Hardcoded currentDepth: 0 — see the note on persist's call near the
-            // end of this function; reconstruct stays pinned to depth 0 until
-            // RECOVERY_BUFFER_LAYERING.md's per-depth restore state exists.
-            guard try self.fetchDecoded(vaultKey: vaultKey, currentDepth: 0, modelContext: modelContext) == nil else {
+            guard try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) == nil else {
                 throw BackupError.bekAlreadyPresent
             }
 
@@ -1350,13 +1227,6 @@ extension VaultManager {
                 throw BackupError.bekReconstructionFailed
             }
 
-            // Hardcoded currentDepth: 0, not threaded from a caller — deliberate.
-            // reconstruct stays pinned to depth 0 (§8 item 9): restore-completion
-            // can't be routed correctly until RECOVERY_BUFFER_LAYERING.md's own
-            // per-depth restore state exists. attemptBackupRestore's own `currentDepth
-            // == 0` guard is what makes this always true in practice; this literal
-            // makes it true by construction too, not just by the caller happening
-            // to get it right.
             try self.persist(
                 BackupEncryptionKey.Payload(
                     bekBytes:      bekData,
@@ -1364,7 +1234,7 @@ extension VaultManager {
                     shardMetadata: nil
                 ),
                 vaultKey: vaultKey,
-                currentDepth: 0,
+                currentDepth: currentDepth,
                 modelContext: modelContext
             )
         }
@@ -1737,7 +1607,7 @@ extension VaultManager {
         /// than silently returning nil for that case.
         ///
         /// Internal, not private — `VaultManager`'s own `exportBackup`, `importBackup`,
-        /// `refreshBackupStaleness`, `storePendingRestore`, `attemptBackupRestore`, and
+        /// `refreshBackupStaleness`, `restoreBackup`, and
         /// `migrateLegacyBEKStorageIfNeeded` all call this directly, since they need
         /// both `payload` and `bek`, more than the public
         /// `current(vaultKey:currentDepth:modelContext:)` accessor returns.

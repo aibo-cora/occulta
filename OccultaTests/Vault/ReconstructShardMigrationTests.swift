@@ -36,7 +36,7 @@ private func makeVault() throws -> (vault: VaultManager, km: TestKeyManager, con
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     let vault     = VaultManager(modelContainer: container, keyManager: km)
-    vault.unlock(context: LAContext(), currentDepth: 0)
+    vault.unlock(context: LAContext())
     return (vault, km, container)
 }
 

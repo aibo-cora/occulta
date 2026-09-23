@@ -7470,7 +7470,12 @@ depth 0, **and** depth 0 to have no real BEK configured yet (`alreadyHasBEK`, Bu
 blocks it otherwise). Closes the moment this bug's own remedy ships, not before. Tracked here so it
 isn't lost between the two changes landing separately.
 
-**Status:** **Open.** Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
+**Status:** **Fixed, 2026-09-23, with an accepted residual.** `RECOVERY_BUFFER_LAYERING.md` §9.4 is built: a restore
+completes at the depth its file is opened at, counting only shards from contacts visible there. The
+residual (trustees left visible in a duress layer still count there) is described in the 2026-09-23
+addendum below. Full suite: 881 tests, 875 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
 asking what an attacker who owns the trustee set can do, rather than what one who does not can.
 
 **Target:** `release/v1.10.3`.
@@ -7762,6 +7767,10 @@ binding rather than by anything about the UI.
 ---
 
 ## Bug 100 — The pending-restore files are a keyless progress counter and a vault-size estimate, and they leave the device in backups
+
+**Status, 2026-09-23: remedy 3 moot; remedy 1's pending-`.occbak` half moot.** `RECOVERY_BUFFER_LAYERING.md`
+§9.4 is built: the `.occbak` is never written to the sandbox, so there is no file to pad or exclude.
+Remedy 1 still applies to `backup-export-meta.dat`. Earlier status, unchanged below.
 
 **Status:** **Remedies 1 and 2 fixed 2026-08-27; remedy 3 open.** Remedy 2 shipped as part of this
 branch — BEK restore shards are `ReconstructShard` rows and the shard file is gone, so the progress
@@ -10669,7 +10678,8 @@ after the change — see the commit this note lands with for the pass/fail/skip 
 immediately re-attempting reconstruction against already-collected shards (`decisions.md`'s "Don't
 auto-arm shard collection on first vault-tab visit," the gap it surfaced). No code changed — this
 entry documents the finding so the simplification is tracked, not lost, while that other fix proceeds
-first. **Superseded, 2026-09-23: closes as moot when Bug 99's remedy ships.** See the note at the end
+first. **Closed, moot, 2026-09-23:** Bug 99's remedy removed `pendingRestoreActive`,
+`pendingRestoreShardCount` and `refreshPendingRestoreState` along with the held file. See the note at the end
 of this entry.
 
 **Target:** unset — a design/maintainability finding, not tied to a release.
@@ -10770,14 +10780,15 @@ record:
   have kept the banner updating only because `pendingRestoreShardCount`, still stored, happens to be
   written at the same moments. Making both computed would have left nothing to trigger a redraw.
 
-Close as moot when Bug 99's remedy ships.
+Closed as moot, 2026-09-23, when Bug 99's remedy shipped.
 
 ---
 
 ## Bug 127 — v1.10.3's restore-file rename left files from v1.10.2 and earlier orphaned on disk, named for the mechanism and included in device backups
 
-**Status:** Open, filed 2026-09-23. Found while listing what legacy restore state `RECOVERY_BUFFER_LAYERING.md`
-§9.4's migration has to handle.
+**Status:** **Fixed, 2026-09-23.** `VaultManager.deleteLegacyRestoreState()` deletes both names on every
+unlock (test: `unlockDeletesLegacyRestoreState`). Filed the same day, while listing what legacy restore state
+`RECOVERY_BUFFER_LAYERING.md` §9.4's migration has to handle.
 
 **Target:** unset. The fix belongs in §9.4's legacy migration (being decided).
 
@@ -10813,3 +10824,85 @@ because the restore it belonged to already died at the v1.10.3 upgrade.
 ### Guard
 
 A migration test seeding both old-name files and asserting neither survives the first unlock after upgrade.
+
+---
+
+## Bug 128 — "Erase all data" leaves the backup and restore files in Application Support
+
+**Status:** **Fixed, 2026-09-23.** `deleteAllData()` now deletes the legacy restore files and
+`backup-export-meta.dat` (test: `wipeDeletesBackupFiles`). The `Documents/Inbox` copies remain Bug 101's.
+Filed the same day, while drafting the §9.4 changes.
+
+**Target:** unset.
+
+### Severity: Medium (forensic), a trace that survives the wipe
+
+### What happens
+
+`Manager.App.eraseAllData()` deletes prekeys, contacts, the vault's SwiftData rows
+(`VaultManager.deleteAllData()`), and then the Secure Enclave keys. It deletes no files. Nothing in the
+erase path removes:
+- `backup-import-cache.occbak`, the held restore file (and its v1.10.2-and-earlier name,
+  `pending-restore.occbak`, plus `pending-restore-shards.dat`; see Bug 127);
+- `backup-export-meta.dat`, written by every backup export.
+
+Once the keys are gone, the contents can't be decrypted. The files' existence, length and timestamps still
+say that this device exported a vault backup and was mid-restore, and the held `.occbak`'s length estimates
+the vault's size (Bug 100). An old-name file states the mechanism outright. A wiped device is supposed to
+carry none of this. The OS copies in `Documents/Inbox` (Bug 101) survive a wipe too.
+
+### Remedy
+
+Have the erase path delete these files. §9.4's legacy-cleanup function already deletes the three restore
+files, so the wipe can call it and also remove `backup-export-meta.dat`. The Inbox copies belong with
+Bug 101's fix.
+
+### Guard
+
+Seed every file, run `eraseAllData()`, and assert none remain.
+
+---
+
+## Bug 129 — A restore whose entry import fails after the key is saved leaves that depth stuck: key installed, entries missing, every retry refused
+
+**Status:** Open, filed 2026-09-23. Found while drafting §9.4's `restoreBackup`. Present in shipped code
+(`attemptBackupRestore`), and the new function keeps the same shape.
+
+**Target:** unset.
+
+### Severity: Medium
+
+A genuine owner can lose the ability to restore. A crafted file can install its author's backup key in a
+layer without importing anything.
+
+### What happens
+
+Completion runs two steps in order: `Backup.reconstruct` (Shamir combine, GCM check against the file, then
+`persist` the reconstructed key for the depth), then `importBackup` (decrypt, decode `VaultBackup`, insert
+the entries). `importBackup` can still throw after `persist` has run:
+- the JSON doesn't decode;
+- an entry's `entryType` doesn't fit a `UInt8`;
+- an entry's `createdAt` is out of range;
+- sealing an entry or saving the context fails.
+
+The catch block moves on to the next distribution, but the key is already saved. Every later attempt at
+that depth is then refused by the "this depth already has a backup key" check (Bug 94 remedy 1), so the
+same file can never be restored there again. The entry loop can also throw partway, after inserting some
+entries.
+
+- **Genuine owner:** an import error at depth 0 leaves the real key in place with some or none of the
+  entries, and no way to retry.
+- **Crafted file:** a file that passes the GCM check but fails decoding installs its author's key as this
+  layer's backup key with nothing imported. Later exports from that layer are then readable by the file's
+  author.
+
+### Remedy (proposed, not built)
+
+Make the two steps one unit: decrypt and fully decode the file with the candidate key before `persist`
+runs, then save the key and the entries in a single `modelContext.save()`, so any failure leaves nothing
+behind. Separate from §9.4 and not in that change.
+
+### Guard
+
+A file that passes the GCM check but fails decoding: after the attempt, that depth has no backup key and no
+new entries, and a valid file can still restore there.

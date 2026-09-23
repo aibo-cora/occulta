@@ -56,7 +56,7 @@ private func makeVaultWithBackup() throws -> VaultManager {
     let container = try makeContainer()
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
     let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-    vault.unlock(context: LAContext(), currentDepth: 0)
+    vault.unlock(context: LAContext())
     try vault.setupBackup(currentDepth: 0)
     return vault
 }
@@ -67,7 +67,7 @@ private func makeVaultWithBackup() throws -> VaultManager {
 private func makeFreshVault() throws -> VaultManager {
     let container = try makeContainer()
     let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-    vault.unlock(context: LAContext(), currentDepth: 0)
+    vault.unlock(context: LAContext())
     return vault
 }
 
@@ -114,7 +114,7 @@ struct BackupTrusteeRotationTests {
     /// (`ShamirSecretSharing.swift:232`) uses every supplied point unconditionally, no
     /// error-correction — mixing a share from round 1 with one from round 2 poisons the
     /// interpolation and fails the GCM check regardless of whether `distributionID`
-    /// changed between rounds. Grouping-by-`entryID` (`attemptBackupRestore`, production
+    /// changed between rounds. Grouping-by-`entryID` (`restoreBackup`, production
     /// code) is what actually prevents that mix from being attempted in the first place —
     /// covered by `redistributionMintsNewDistributionID` above, not re-tested here. This
     /// test instead checks the one thing that fix could plausibly have broken: that a
@@ -141,7 +141,7 @@ struct BackupTrusteeRotationTests {
         let realBEK     = try bekBytes(of: vault)
 
         let restoreTarget = try makeFreshVault()
-        try restoreTarget.reconstructBackup(shards: round2, backupData: backupData, ownerIdentity: nil)
+        try restoreTarget.reconstructBackup(shards: round2, backupData: backupData, ownerIdentity: nil, currentDepth: 0)
         let reconstructed = try bekBytes(of: restoreTarget)
         #expect(reconstructed == realBEK)
     }

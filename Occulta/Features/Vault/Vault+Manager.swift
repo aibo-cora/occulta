@@ -74,15 +74,13 @@ final class VaultManager {
     /// `Backup` holds the operations, `VaultManager` holds what the UI watches.
     var backupErosion: (active: Int, threshold: Int)? = nil
 
-    // MARK: - Pending restore
+    // MARK: - Restore
 
-    /// `true` while a `.occbak` file is stored locally awaiting BEK shard collection.
-    /// Seeded from the filesystem on every unlock so it survives app restarts.
-    var pendingRestoreActive: Bool = false
-
-    /// Number of BEK restore shards collected so far. Updated on each shard arrival
-    /// and on vault unlock. Maintained but no longer rendered — see `refreshPendingRestoreState`.
-    var pendingRestoreShardCount: Int = 0
+    /// Set when `restoreBackup` imports entries; the vault tab shows the post-restore
+    /// prompt while it's `true`. In memory only and reset by `lock()`: changing depth
+    /// means entering the PIN again, which the vault locks before, so an import in one
+    /// layer can never prompt in another's session (`RECOVERY_BUFFER_LAYERING.md` §9.4).
+    var postRestorePromptPending = false
 
     // MARK: - Backup staleness
 
@@ -193,15 +191,8 @@ final class VaultManager {
     /// LAContext.evaluatePolicy before calling unlock. VaultManager stores only
     /// the context reference — no key material is held.
     ///
-    /// `currentDepth` has no default — a forgotten argument must be a compile error,
-    /// not a silent leak of restore state into whichever depth happened to call this
-    /// (Bug 93). Required specifically because `attemptBackupRestore` must never run
-    /// as though it's at depth 0 by accident. `refreshPendingRestoreState(currentDepth:)`
-    /// now also takes one, since its shard-count half is depth-scoped
-    /// (`RECOVERY_BUFFER_LAYERING.md` §6 item 9.1) — `pendingRestoreActive` itself
-    /// stays deliberately uniform across layers until arming is per-depth too, and
-    /// deferral in `attemptBackupRestore` is what keeps that safe in the meantime.
-    func unlock(context: LAContext, currentDepth: Int) {
+    /// Takes no depth: nothing done on unlock depends on which layer is showing.
+    func unlock(context: LAContext) {
         self.authContext = context
         self.resetInactivityTimer()
         // Migrate real content out of the old 32-slot array and/or the original
@@ -218,6 +209,7 @@ final class VaultManager {
         // doc comment. Needs only the restore vault key, not the vault key, so this
         // runs unconditionally rather than nested in the block above.
         try? self.migrateReconstructShardsIfNeeded()
+        self.deleteLegacyRestoreState()
         // Drain reconstruction buffer entries that crossed threshold while locked.
         self.tryFinalizeAllReconstructions()
         // Replay shard status updates that arrived while locked, then check for losses.
@@ -225,17 +217,11 @@ final class VaultManager {
         self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
         // backupStaleness and backupErosion are both refreshed by the views that
-        // display them (Vault+Tab, VaultRecoverySettings), not here — currentDepth is
-        // available in this scope now (added for Bug 93, below), but that's no longer
-        // why they stay external. The views' onChange(of: isUnlocked) already fires
-        // right after this call sets authContext, so a call here would just be a
-        // redundant second refresh (see refreshBackupStaleness's and
+        // display them (Vault+Tab, VaultRecoverySettings), not here: they're depth-scoped
+        // and this scope has no depth. The views' onChange(of: isUnlocked) fires right
+        // after this call sets authContext (see refreshBackupStaleness's and
         // refreshBackupErosion's own doc comments for why they must never be computed
         // from the wrong depth).
-        // Sync pending-restore state from filesystem and attempt reconstruction
-        // if enough shards have arrived since the last unlock.
-        self.refreshPendingRestoreState(currentDepth: currentDepth)
-        self.attemptBackupRestore(currentDepth: currentDepth)
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.
@@ -249,6 +235,7 @@ final class VaultManager {
         self.authContext     = nil
         self.recoveryHealth  = nil
         self.backupErosion   = nil
+        self.postRestorePromptPending = false
     }
 
     // MARK: - Create
@@ -368,6 +355,9 @@ final class VaultManager {
         try deleteAll(PotentiallyLostShard.self)
         try deleteAll(AppLayerConfig.self)
         try deleteAllEntries()
+        // Files outlive row deletion and key deletion alike (bugs.md Bug 128).
+        self.deleteLegacyRestoreState()
+        self.deleteBackupExportMetadata()
     }
 
     private func deleteAll<T: PersistentModel>(_ type: T.Type) throws {

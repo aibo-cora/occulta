@@ -116,8 +116,7 @@ private func distribute(
         expectedShards:   nil,
         senderPublicKey:  alicePub,
         senderIdentifier: "alice",
-        vaultManager:     vaultManager,
-        currentDepth: 0
+        vaultManager:     vaultManager
     )
     return attr
 }
@@ -131,7 +130,7 @@ private func distribute(
     func bobStoresAndManifests() throws {
         let (vault, _, km, _)         = try makeAlice()
         let (bobCustody, _, bobCont)  = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let attr = try distribute(from: km, to: bobCustody, vaultManager: vault)
         #expect(try custodyCount(in: bobCont) == 1)
@@ -149,7 +148,7 @@ private func distribute(
     @Test("PendingShardDistribute row persists until manifest confirms it")
     func retryUntilConfirmed() throws {
         let (vault, aliceCustody, km, aliceCont) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -177,7 +176,7 @@ private func distribute(
     func replaceDeletesOld() throws {
         let (vault, _, km, _) = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let entryID = UUID()
         let oldAttr = try makeAttr(signer: km, entryID: entryID, shardBytes: Data([0x01]))
@@ -189,8 +188,7 @@ private func distribute(
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
         #expect(try custodyCount(in: bobCont) == 1)
 
@@ -201,8 +199,7 @@ private func distribute(
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
 
         #expect(try custodyCount(in: bobCont) == 1, "one shard: new replaces old")
@@ -221,7 +218,7 @@ private func distribute(
     func implicitRevoke() throws {
         let (vault, _, km, _) = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let alicePub = try km.retrieveIdentity()
         let attr     = try distribute(from: km, to: bobCustody, vaultManager: vault)
@@ -234,8 +231,7 @@ private func distribute(
             expectedShards:   [],
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
         #expect(try custodyCount(in: bobCont) == 0)
         _ = attr // silence warning
@@ -250,7 +246,7 @@ private func distribute(
     @Test("Case 5: manifest with shard ID marks ShardRecord .confirmed")
     func manifestConfirms() throws {
         let (vault, aliceCustody, km, aliceCont) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -268,7 +264,7 @@ private func distribute(
     @Test("Case 6: manifest missing shard ID (no distribute row) marks .lost")
     func manifestLost() throws {
         let (vault, aliceCustody, km, _) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -291,7 +287,7 @@ private func distribute(
         // design, so losses discovered while locked are reconciled deterministically
         // in one place rather than applied immediately mid-manifest-processing.
         try aliceCustody.processInboundManifest([], from: trustee, vaultManager: vault)
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let meta = try vault.shardDistributionMetadata(for: entry.id)!
         #expect(meta.shards[0].status == .lost)
@@ -310,7 +306,7 @@ private func distribute(
         let aliceNew = TestKeyManager() // Alice's new key (new device)
         let (vault, _, _, _)         = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let aliceOldPub = try aliceOld.retrieveIdentity()
         let aliceNewPub = try aliceNew.retrieveIdentity()
@@ -338,7 +334,7 @@ private func distribute(
         let aliceNew = TestKeyManager()
         let (vault, _, _, _)         = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let aliceNewPub = try aliceNew.retrieveIdentity()
 
@@ -368,7 +364,7 @@ private func distribute(
     @Test("nil custodyManifest on inbound bundle causes no status change")
     func nilManifestNoop() throws {
         let (vault, aliceCustody, km, _) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -382,8 +378,7 @@ private func distribute(
             expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "bob",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
 
         // Status remains .pending — nil manifest means old build, no update.
@@ -404,7 +399,7 @@ private func distribute(
     @Test(".handback inserts a PendingShamirSecretRestore row even while vault is locked")
     func handbackBufferedWhenLocked() throws {
         let (vault, aliceCustody, km, _) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data("hi".utf8), type: .note)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -423,8 +418,7 @@ private func distribute(
             expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "bob",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
 
         // Buffer row absorbed under the restore vault key (no biometric needed) — readable
@@ -443,16 +437,16 @@ private func distribute(
     func duplicateDistributeDeduplicates() throws {
         let (vault, _, km, _)        = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let attr     = try makeAttr(signer: km)
         let alicePub = try km.retrieveIdentity()
         let op       = OccultaBundle.ShardOperation(kind: .distribute, attribute: attr)
 
         _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, expectedShards: nil, senderPublicKey: alicePub,
-                                     senderIdentifier: "alice", vaultManager: vault, currentDepth: 0)
+                                     senderIdentifier: "alice", vaultManager: vault)
         _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, expectedShards: nil, senderPublicKey: alicePub,
-                                     senderIdentifier: "alice", vaultManager: vault, currentDepth: 0)
+                                     senderIdentifier: "alice", vaultManager: vault)
 
         #expect(try custodyCount(in: bobCont) == 1, "duplicate must not insert a second row")
     }
@@ -469,7 +463,7 @@ private func distribute(
         let imposter = TestKeyManager()
         let (vault, _, _, _)         = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let attr        = try makeAttr(signer: alice)
         let imposterPub = try imposter.retrieveIdentity()
@@ -480,8 +474,7 @@ private func distribute(
             expectedShards:   nil,
             senderPublicKey:  imposterPub,
             senderIdentifier: "imposter",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
 
         #expect(try custodyCount(in: bobCont) == 0)
@@ -497,12 +490,12 @@ private func distribute(
     @Test("tryFinalizeReconstruction with one shard (k=2) leaves buffer intact")
     func belowThresholdNoop() throws {
         let (vault, _, km, _) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data("hello".utf8), type: .note)
         let recipients = try makeProfiles(count: 3)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier)
         try vault.tryFinalizeReconstruction(entryID: entry.id)
 
         let collected = try vault.collectedShards(forAttributeID: entry.id)
@@ -520,7 +513,7 @@ private func distribute(
     func expectedShardsRetainsInFlight() throws {
         let (vault, _, km, _)        = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let attr     = try distribute(from: km, to: bobCustody, vaultManager: vault)
         let alicePub = try km.retrieveIdentity()
@@ -535,7 +528,7 @@ private func distribute(
     func expectedShardsDeletesAbsent() throws {
         let (vault, _, km, _)        = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let alicePub = try km.retrieveIdentity()
         _ = try distribute(from: km, to: bobCustody, vaultManager: vault)
@@ -572,7 +565,7 @@ private func distribute(
         let aliceNew = TestKeyManager()
         let (vault, _, _, _)         = try makeAlice()
         let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let aliceNewPub = try aliceNew.retrieveIdentity()
 
@@ -588,7 +581,7 @@ private func distribute(
     @Test("Invariant 2: PendingShardDistribute row is deleted only on manifest confirmation")
     func distributeRowSurvivesSend() throws {
         let (vault, aliceCustody, km, aliceCont) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -612,7 +605,7 @@ private func distribute(
         let aliceNew = TestKeyManager()
         let (vault, _, _, _)         = try makeAlice()
         let (bobCustody, _, _)       = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let aliceNewPub = try aliceNew.retrieveIdentity()
 
@@ -629,7 +622,7 @@ private func distribute(
     @Test("Invariant 4: .distribute op re-included on every bundle until manifest confirms")
     func distributeRetried() throws {
         let (vault, aliceCustody, km, _) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -670,7 +663,7 @@ private func distribute(
     func custodyManifestMatchesHeldShards() throws {
         let (vault, _, km, _)        = try makeAlice()
         let (bobCustody, _, _)       = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let attr1 = try distribute(from: km, to: bobCustody, vaultManager: vault)
         let attr2 = try distribute(from: km, to: bobCustody, vaultManager: vault)
@@ -685,7 +678,7 @@ private func distribute(
     func custodyManifestEmptyForOtherContact() throws {
         let (vault, _, km, _)        = try makeAlice()
         let (bobCustody, _, _)       = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         _ = try distribute(from: km, to: bobCustody, vaultManager: vault)
 
@@ -696,7 +689,7 @@ private func distribute(
     @Test("buildExpectedShards returns active (pending/confirmed) shard IDs for a trustee")
     func expectedShardsActiveOnly() throws {
         let (vault, aliceCustody, km, _) = try makeAlice()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
         let recipients = try makeProfiles(count: 3)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -719,7 +712,7 @@ private func distribute(
     func returnsFalseWithNoShardData() throws {
         let (vault, _, km, _)   = try makeAlice()
         let (bobCustody, _, _) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let result = bobCustody.handleInbound(
             shardOperations:  nil,
@@ -727,8 +720,7 @@ private func distribute(
             expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
         #expect(!result)
     }
@@ -737,7 +729,7 @@ private func distribute(
     func returnsTrueWithEmptyManifest() throws {
         let (vault, _, km, _)  = try makeAlice()
         let (bobCustody, _, _) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let result = bobCustody.handleInbound(
             shardOperations:  nil,
@@ -745,8 +737,7 @@ private func distribute(
             expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
         #expect(result)
     }
@@ -755,7 +746,7 @@ private func distribute(
     func returnsTrueWithExpectedShards() throws {
         let (vault, _, km, _)  = try makeAlice()
         let (bobCustody, _, _) = try makeBob()
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         let result = bobCustody.handleInbound(
             shardOperations:  nil,
@@ -763,8 +754,7 @@ private func distribute(
             expectedShards:   [],
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
-            vaultManager:     vault,
-            currentDepth: 0
+            vaultManager:     vault
         )
         #expect(result)
     }

@@ -12,6 +12,7 @@ import Combine
 import ImageIO
 import SQLite3
 import UniformTypeIdentifiers
+import LocalAuthentication
 
 // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
 
@@ -273,11 +274,7 @@ struct RootView: View {
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
-    // Backup-file acknowledgment (Bug 93) — deliberately separate from showError/
-    // errorMessage: "already processed" is not a failure, and reusing the "Error" alert
-    // title for it would be a strange thing to show a legitimate user even though it's
-    // harmless at a duress depth.
-    /// A `.occbak` held until the user confirms.
+    /// A `.occbak` held in memory until the user confirms or cancels. Never written to disk.
     @State private var pendingRestoreFile: Data?
     @State private var showRestoreConfirmation = false
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
@@ -414,21 +411,22 @@ struct RootView: View {
             } message: {
                 Text(self.errorMessage)
             }
-            // Wording is load-bearing three ways. It names no mechanism — "trustees" and
+            // Wording is load-bearing two ways. It names no mechanism — "trustees" and
             // "shards" would tell whoever raised this prompt that a distributed-secret scheme
             // exists and that other people hold pieces, which is a lead a coercer does not
-            // otherwise get from this screen. It leads with the consequence rather than the
+            // otherwise get from this screen. And it leads with the consequence rather than the
             // process, because the risk is that an unrequested file plants someone else's
-            // entries and hands its author a key to every future backup. And the button says
-            // Accept, not Restore, because tapping it restores nothing now — it arms something
-            // that may complete days later or never.
+            // entries and hands its author a key to every future backup. Tapping Accept
+            // restores now if enough pieces have arrived; otherwise nothing is kept, and the
+            // file can be opened again later.
             .alert("Restore from this backup?", isPresented: self.$showRestoreConfirmation) {
                 Button("Cancel", role: .cancel) { self.pendingRestoreFile = nil }
-                Button("Accept", role: .destructive) { self.armPendingRestore() }
+                Button("Accept", role: .destructive) { self.restoreConfirmedFile() }
             } message: {
                 Text("""
-                    This will replace your vault with the contents of this file once enough \
-                    recovery pieces arrive. Only continue if you requested it.
+                    This adds the contents of this file to your vault if enough recovery pieces \
+                    have arrived. If nothing changes, open it again later. Only continue if you \
+                    requested it.
                     """)
             }
             .sheet(item: self.$openedFileContents) {
@@ -625,21 +623,18 @@ struct RootView: View {
                     try Data(contentsOf: fileLocation, options: .mappedIfSafe)
                 }.value
 
-                // .occbak — vault backup restore file. Opening one only stages it; arming
-                // happens in `armPendingRestore`, behind the confirmation below.
+                // .occbak — vault backup restore file. Opening one only stages it in memory;
+                // the restore happens in `restoreConfirmedFile`, behind the confirmation below.
                 if fileLocation.pathExtension == "occbak" {
-                    // Confirm before arming. Arming is not inert: it makes the device accept BEK
-                    // shards from contacts and, once enough arrive, import the file's entries
-                    // into the real-layer vault with no further prompt. Opening a file must not
-                    // be enough to start that on its own — a device with no BEK of its own
-                    // (fresh install, new phone) will reconstruct whatever key the file's shards
-                    // rebuild, and nothing in the file authenticates who authored it.
+                    // Confirm before restoring. A layer with no backup key of its own will
+                    // reconstruct whatever key the file's shards rebuild and import its entries,
+                    // and nothing in the file authenticates who authored it.
                     //
-                    // At every depth. The prompt is raised before `storePendingRestore` runs, so
-                    // it cannot vary with the outcome — identical text, identical buttons,
-                    // whichever of the three cases the file turns out to be. Showing it only at
-                    // depth 0 would be the leak: its *absence* would tell whoever is holding the
-                    // phone that they are in a duress layer.
+                    // At every depth. The prompt is raised before `restoreBackup` runs, so it
+                    // cannot vary with the outcome — identical text, identical buttons, whatever
+                    // the file turns out to be. Showing it only at depth 0 would be the leak: its
+                    // *absence* would tell whoever is holding the phone that they are in a duress
+                    // layer.
                     self.pendingRestoreFile = data
                     self.showRestoreConfirmation = true
                     return
@@ -654,8 +649,6 @@ struct RootView: View {
                 }
 
                 await self.processInboundFile(data)
-                // BackupError.alreadyProcessed is handled locally in the .occbak branch above —
-                // storePendingRestore is its only source, so no case reaches this far.
             } catch {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
@@ -663,36 +656,48 @@ struct RootView: View {
         }
     }
 
-    /// Arms the confirmed `.occbak` for restore.
+    /// Restores from the confirmed `.occbak`: one attempt, at the current depth, against the
+    /// shards already banked (`RECOVERY_BUFFER_LAYERING.md` §9.4).
     ///
-    /// **Silent on every outcome, at every depth**, and that uniformity is the point. The
-    /// three outcomes — fresh accept, restore already pending, BEK already present — used to
-    /// be distinguishable at depth 0 ("already been processed" versus silence) while duress
-    /// flattened them into one string. Bug 93 harm 4 had compared duress against duress and
-    /// stopped there; the comparison that matters is duress against real, because that is the
-    /// one a coercer can run. They open any `.occbak` — their own will do — and read which
-    /// session they are in off the reply, against a baseline that is public because the app is.
-    ///
-    /// It could not be closed from the duress side. Depth 0 varied its reply on whether a BEK
-    /// exists, and duress is deliberately blind to that. So the acknowledgment is gone
-    /// entirely rather than harmonised: the confirmation the user already tapped is the
-    /// receipt for a fresh accept, and the vault tab's "Recovery in progress…" — now rendered
-    /// at every depth — is the durable one.
-    ///
-    /// What is lost: on a device that already has a backup configured, opening another one now
-    /// does nothing visible at all, where it used to say why. That case is the price of the
-    /// uniformity and is recorded in Bug 93 rather than hidden here.
-    ///
-    /// A malformed file still reports an error at both depths. That branch turns on the file's
-    /// own bytes, not on vault state or depth, so it distinguishes nothing about the session.
-    private func armPendingRestore() {
+    /// The vault is usually locked here — it locks whenever the app goes to the background,
+    /// which opening a file from Files does — so this asks for Face ID first, the same prompt
+    /// the Vault tab uses. The prompt depends only on the vault's lock state, never on depth.
+    /// Cancelling it does nothing, like any failed attempt.
+    private func restoreConfirmedFile() {
         guard let pending = self.pendingRestoreFile else { return }
         self.pendingRestoreFile = nil
 
+        guard !self.vaultManager.isUnlocked else { return self.restoreBackup(from: pending) }
+
+        let context = LAContext()
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock your Vault") { success, _ in
+            DispatchQueue.main.async {
+                guard success else { return }
+                self.vaultManager.unlock(context: context)
+                self.restoreBackup(from: pending)
+            }
+        }
+    }
+
+    /// **Silent on every outcome but success and a malformed file, at every depth.** A
+    /// successful import is visible where it happened: the entries appear, and the vault tab
+    /// shows the post-restore prompt. Every other outcome — this depth already has a backup
+    /// key, too few pieces, no match — looks the same: nothing happens. The confirmation the
+    /// user tapped is the only receipt. The acknowledgment that used to distinguish these was
+    /// removed for Bug 93: depth 0 varied it on whether a backup key exists, which a coercer
+    /// could read against the public baseline.
+    ///
+    /// A malformed file still reports an error at every depth. That branch turns on the file's
+    /// own bytes, not on vault state or depth, so it distinguishes nothing about the session.
+    ///
+    /// Depth is read once, so the visible-contact set and the restore depth always agree.
+    private func restoreBackup(from data: Data) {
+        let depth = self.security.currentDepth
         do {
-            try self.vaultManager.storePendingRestore(pending)
-        } catch VaultManager.BackupError.alreadyProcessed {
-            // Deliberately indistinguishable from a fresh accept — see above.
+            _ = try self.vaultManager.restoreBackup(
+                from: data, currentDepth: depth,
+                visibleContactIdentifiers: self.contactManager.visibleContactIdentifiers(atDepth: depth)
+            )
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true
@@ -913,8 +918,7 @@ struct RootView: View {
                             expectedShards:   recipExpected ?? sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager,
-                            currentDepth:     self.security.currentDepth
+                            vaultManager:     self.vaultManager
                         )
                     }
 
@@ -961,8 +965,7 @@ struct RootView: View {
                             expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager,
-                            currentDepth:     self.security.currentDepth
+                            vaultManager:     self.vaultManager
                         )
                     }
 

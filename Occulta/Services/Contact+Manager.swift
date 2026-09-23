@@ -409,6 +409,16 @@ class ContactManager {
         let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate, sortBy: [SortDescriptor(\.familyName)])
         return try self.modelContext.fetch(descriptor)
     }
+
+    /// Identifiers of the non-deleted contacts visible at `depth`, in the stored form an
+    /// inbound bundle's sender resolves to. `VaultManager.restoreBackup` counts only banked
+    /// shards whose sender is in this set (`RECOVERY_BUFFER_LAYERING.md` §9.4).
+    func visibleContactIdentifiers(atDepth depth: Int) -> Set<String> {
+        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        return Set(((try? self.fetchAllContacts()) ?? [])
+            .filter { $0.isVisible(atDepth: depth, usingKey: key) }
+            .map(\.identifier))
+    }
     
     /// Fetches a contact by its identifier.
     func fetchContact(by identifier: String) throws -> Contact.Profile? {

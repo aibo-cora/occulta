@@ -59,8 +59,7 @@ final class ShardCustodyManager {
         expectedShards:   [UUID]?,
         senderPublicKey:  Data,
         senderIdentifier: String,
-        vaultManager:     VaultManager,
-        currentDepth:     Int
+        vaultManager:     VaultManager
     ) -> Bool {
         let hasOps      = (shardOperations?.isEmpty == false)
         let hasManifest = custodyManifest != nil
@@ -76,7 +75,7 @@ final class ShardCustodyManager {
                 case .replace:
                     try self.handleReplace(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
                 case .handback:
-                    try self.handleHandback(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier, vaultManager: vaultManager, currentDepth: currentDepth)
+                    try self.handleHandback(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier, vaultManager: vaultManager)
                 case .unsupported:
                     break
                 }
@@ -211,24 +210,19 @@ final class ShardCustodyManager {
     /// there was never a way to recover content authenticity, with or without an
     /// attestation. So Branch A failing now means accept, not "try a second,
     /// no-stronger check." `attribute.entryID` matching a real, live distribution
-    /// (checked downstream, in `acceptReturnedShard` and `attemptBackupRestore`'s
+    /// (checked downstream, in `acceptReturnedShard` and `restoreBackup`'s
     /// own grouping) is what actually scopes this to real trustees, and that check
     /// is untouched.
     ///
-    /// Neither path is gated on `isRestorePending` here — that used to be the
-    /// escape hatch for the rotated case, and it accepted *any* unverified shard
-    /// whenever a restore happened to be pending, from anyone. Acceptance is now
-    /// itself the authentication; what's still pending-gated is what happens next,
-    /// inside `acceptReturnedShard` (BEK storage) and its own per-entry check
-    /// (distribution-metadata storage) — deliberately two different gates, not one
-    /// loosened uniformly, since a fresh device can't know the expected BEK
-    /// `distributionID` any more precisely than "is a restore armed."
+    /// Acceptance is not gated on any restore being under way; a BEK restore
+    /// shard is only banked here. `restoreBackup` decides, when the owner opens the
+    /// `.occbak`, which banked shards count: only those from contacts visible at that
+    /// depth (`RECOVERY_BUFFER_LAYERING.md` §9.4).
     private func handleHandback(
         op: OccultaBundle.ShardOperation,
         senderPublicKey: Data,
         senderIdentifier: String,
-        vaultManager: VaultManager,
-        currentDepth: Int
+        vaultManager: VaultManager
     ) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
@@ -245,8 +239,7 @@ final class ShardCustodyManager {
 
         try vaultManager.acceptReturnedShard(
             attribute,
-            senderIdentifier: senderIdentifier,
-            currentDepth: currentDepth
+            senderIdentifier: senderIdentifier
         )
     }
 

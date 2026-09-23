@@ -78,7 +78,7 @@ private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer) {
     let vault = VaultManager(
         modelContainer: container, keyManager: TestKeyManager()
     )
-    vault.unlock(context: LAContext(), currentDepth: 0)
+    vault.unlock(context: LAContext())
     try setUpConfirmedBEK(for: vault, currentDepth: 0)
     return (vault, container)
 }
@@ -407,5 +407,36 @@ struct VaultBackupRoundTripTests {
                 "the targeted shard must be confirmed")
         #expect(depth2Meta?.shards.first { $0.attributeID == depth2Shards[1].id }?.status == .pending,
                 "the other depth-2 shard must be left alone")
+    }
+
+    /// Bug 128: "Erase all data" deleted rows and keys but no files. The wipe now also deletes
+    /// the held `.occbak` under both its names, the old shard file, and the export metadata.
+    /// Lives in this serialized suite because it deletes the export-metadata file the
+    /// staleness tests above read.
+    @Test("Wiping the vault deletes the backup and restore files",
+          .enabled(if: secureEnclaveAvailable()))
+    func wipeDeletesBackupFiles() throws {
+        let schema = Schema([
+            VaultEntry.self, BackupEncryptionKey.self, CustodyShard.self, PendingShardDistribute.self,
+            PendingShardStatusUpdate.self, PendingShamirSecretRestore.self, Vault.self,
+            ReconstructShard.self, GlobalShardConfig.self, PotentiallyLostShard.self, AppLayerConfig.self,
+        ])
+        let container = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+        vault.unlock(context: LAContext())
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        let files = ["backup-import-cache.occbak", "pending-restore.occbak", "pending-restore-shards.dat", "backup-export-meta.dat"]
+            .map { appSupport.appendingPathComponent($0) }
+        for url in files { try Data("x".utf8).write(to: url) }
+
+        try vault.deleteAllData()
+
+        for url in files {
+            #expect(!FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) survived the wipe")
+        }
     }
 }

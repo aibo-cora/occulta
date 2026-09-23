@@ -1004,7 +1004,7 @@ decision — nothing currently reads or writes this population, so nothing force
 
 ### 9.4 Revised again, 2026-09-23: the `.occbak` is never held; completion at the opening depth, and the hole that reopens
 
-**Not built.** Shipped code still holds the file and completes only at depth 0. Decision record:
+**Built, 2026-09-23** (`VaultManager.restoreBackup`; full suite 881 tests, 875 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline)). Decision record:
 `decisions.md`, "Open the `.occbak` as a one-shot attempt at the current depth". Bug trail: `bugs.md`
 Bug 99, 2026-09-23 addendum.
 
@@ -1072,6 +1072,19 @@ see the residual.
 2026-09-23 (§8): delete held legacy files under both filenames at the first unlock at any depth, without
 a final attempt.
 
+**The vault is usually locked at file-open, decided 2026-09-23: Face ID at Accept.** Reconstruction needs
+the vault key, which needs the vault's own biometric unlock. `VaultManager.lock()` runs whenever the app
+goes to the background, and opening a file from Files puts Occulta in the background first. So Accept
+asks for Face ID when the vault is locked, the same prompt the Vault tab uses, then attempts at once. The
+prompt depends only on the vault's lock state, never on depth, and cancelling it does nothing, like any
+failed attempt. Not chosen: keeping the bytes in memory until the next vault unlock, which would bring
+back a held state.
+
+**The post-restore prompt** becomes an in-memory flag on `VaultManager`, set on a successful import and
+reset in `lock()`. Changing depth means entering the PIN again, and the vault locks before that, so the
+flag can't carry an import in one layer into another's session. The persisted `vault.postRestoreActionNeeded`
+key is removed by the legacy cleanup.
+
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
   up as obvious housekeeping by someone who hasn't read the reasoning — it introduces a cross-layer
@@ -1100,13 +1113,15 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 96 (item 1) | Two traps on decoded content | fixed |
 | 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈112 KB (revised down from ≈215 KB, 2026-09-14, when Bug 124 removed the attestation field), not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
-| 99 | A coercer supplying his own trustees can test for duress | open — remedy settled 2026-09-23 (§9.4: one-shot file-open at the opening depth, no held file, so the pending-file qualifier goes away with it), not built; §9.4's hole decided the same day (trustee-visibility filter, residual for trustees left visible in duress) |
+| 99 | A coercer supplying his own trustees can test for duress | **fixed, 2026-09-23** — §9.4 built: one-shot file-open at the opening depth, no held file (so the pending-file qualifier is gone), trustee-visibility filter; residual for trustees left visible in duress |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |
 | 100 r2 | Shard file length was a keyless progress counter | fixed — rows (`ReconstructShard`, 2026-08-27); **superseded again, 2026-09-21** — `ReconstructShard` itself retired, `PendingShamirSecretRestore` is the live mechanism (§9.3, Stages 4-5) |
-| 100 r3 | `.occbak` length estimates vault size | **open, not yet moot** — §9.3 drops `encryptedSnapshot` entirely rather than slotting it (Stage 3, "start shard return": collect shards first, open the file only at the end); Stages 4-5 (storage swap) shipped 2026-09-21, Stage 3 (the reordering that actually removes the file's held-window) has not. See `bugs.md` Bug 100's own 2026-09-21 addendum. **2026-09-23:** §9.4 removes the file entirely, so this becomes moot outright when §9.4 ships (not before). |
+| 100 r3 | `.occbak` length estimates vault size | **open, not yet moot** — §9.3 drops `encryptedSnapshot` entirely rather than slotting it (Stage 3, "start shard return": collect shards first, open the file only at the end); Stages 4-5 (storage swap) shipped 2026-09-21, Stage 3 (the reordering that actually removes the file's held-window) has not. See `bugs.md` Bug 100's own 2026-09-21 addendum. **Moot, 2026-09-23:** §9.4 is built and the file is never written. |
 | 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
-| 126 | `pendingRestoreActive`/`pendingRestoreShardCount` hand-synced at five sites | open — closes as moot when §9.4 ships, which removes that state |
-| 127 | v1.10.3's filename rename orphaned ≤v1.10.2 restore files: named for the mechanism, never deleted, in device backups | open — fix belongs in §8/§9.4's legacy migration |
+| 126 | `pendingRestoreActive`/`pendingRestoreShardCount` hand-synced at five sites | **closed, moot, 2026-09-23** — §9.4 removed that state |
+| 127 | v1.10.3's filename rename orphaned ≤v1.10.2 restore files: named for the mechanism, never deleted, in device backups | **fixed, 2026-09-23** — `deleteLegacyRestoreState` on every unlock |
+| 128 | "Erase all data" deletes no files, so the held `.occbak` and `backup-export-meta.dat` survive a wipe | **fixed, 2026-09-23** — the wipe deletes the files |
+| 129 | A restore whose entry import fails after the key is saved leaves the depth stuck (key in place, entries missing, retries refused) | open — separate fix, not in the §9.4 change |
 
 **Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
 `bugs.md` Bug 99.** This table's Bug 99 row qualifies its subsumption with "except the pending-file

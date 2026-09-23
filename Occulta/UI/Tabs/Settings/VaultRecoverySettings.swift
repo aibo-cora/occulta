@@ -250,7 +250,7 @@ struct VaultRecoverySettings: View {
         ) { success, _ in
             DispatchQueue.main.async {
                 self.unlocking = false
-                if success { self.vault.unlock(context: ctx, currentDepth: self.security.currentDepth) }
+                if success { self.vault.unlock(context: ctx) }
             }
         }
     }

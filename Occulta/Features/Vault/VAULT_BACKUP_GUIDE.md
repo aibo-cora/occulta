@@ -479,8 +479,8 @@ count is what makes it safe to render the section at every depth, which in turn
 removes a difference between layers that was readable in one glance. See
 `Docs/Features/Secure Mode/bugs.md`, Bug 93's follow-up.
 
-**Being changed, 2026-09-23. See [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) §9.4.**
-This section describes shipped behavior, which stays in effect until that change lands. After it:
+**Changed, 2026-09-23. See [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) §9.4.**
+This section describes the behavior before that change. Now:
 - The `.occbak` is never held. Opening it runs one reconstruction attempt at the current depth. If that
   fails, nothing is stored and the user opens the file again later.
 - The "Recovery in Progress" section is removed, along with the automatic attempts after every shard

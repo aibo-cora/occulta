@@ -6,7 +6,7 @@
 //  credential, since neither the shared secret nor the id tagging its shards ever
 //  changed on an ordinary trustee-set mutation. For PEK, unlike BEK, `entryID` (=
 //  `VaultEntry.id`) never changes between rounds — there is no second id to isolate a
-//  stale round the way `attemptBackupRestore`'s grouping-by-`entryID` does for BEK.
+//  stale round the way `restoreBackup`'s grouping-by-`entryID` does for BEK.
 //  The fix instead regenerates the PEK value itself on every `prepareShards` call
 //  (`rotatePEK(for:vaultKey:)`, `Vault+Manager+Shards.swift`) and re-seals the entry's
 //  label/content under it, so a stale round's shares reconstruct a PEK that no longer
@@ -77,7 +77,7 @@ struct PEKTrusteeRotationTests {
     @Test("A stale round's shares no longer reconstruct the entry's PEK after redistribution")
     func redistributionInvalidatesStalePEKShares() throws {
         let (vm, _)    = try makeVaultManager()
-        vm.unlock(context: LAContext(), currentDepth: 0)
+        vm.unlock(context: LAContext())
         let entry      = try vm.addEntry(label: "seed", content: Data("first-secret".utf8), type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)
 
@@ -101,7 +101,7 @@ struct PEKTrusteeRotationTests {
     @Test("A clean restore using the current round's shares still succeeds after redistribution")
     func cleanRestoreStillSucceedsAfterRedistribution() throws {
         let (vm, km)   = try makeVaultManager()
-        vm.unlock(context: LAContext(), currentDepth: 0)
+        vm.unlock(context: LAContext())
         let secret     = Data("top-secret".utf8)
         let entry      = try vm.addEntry(label: "seed", content: secret, type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)

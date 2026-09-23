@@ -61,7 +61,7 @@ private func makeRig() throws -> (
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
     let vault     = VaultManager(modelContainer: container, keyManager: km)
-    vault.unlock(context: LAContext(), currentDepth: 0)
+    vault.unlock(context: LAContext())
     return (custody, vault, container, km)
 }
 
@@ -132,7 +132,7 @@ struct ShardHandbackAttestationTests {
         _ = custody.handleInbound(
             shardOperations: [op], custodyManifest: nil, expectedShards: nil,
             senderPublicKey: try ownerKey.retrieveIdentity(), senderIdentifier: "trustee-a",
-            vaultManager: vault, currentDepth: 0
+            vaultManager: vault
         )
 
         #expect(try reconstructShardCount(vault: vault, entryID: entryID) == 1,
@@ -155,7 +155,7 @@ struct ShardHandbackAttestationTests {
         _ = custody.handleInbound(
             shardOperations: [op], custodyManifest: nil, expectedShards: nil,
             senderPublicKey: try trusteeKey.retrieveIdentity(), senderIdentifier: "trustee-b",
-            vaultManager: vault, currentDepth: 0
+            vaultManager: vault
         )
 
         #expect(try reconstructShardCount(vault: vault, entryID: entryID) == 1, """
@@ -179,7 +179,7 @@ struct ShardHandbackAttestationTests {
             _ = custody.handleInbound(
                 shardOperations: [op], custodyManifest: nil, expectedShards: nil,
                 senderPublicKey: senderPub, senderIdentifier: "same-trustee",
-                vaultManager: vault, currentDepth: 0
+                vaultManager: vault
             )
         }
 
@@ -209,7 +209,7 @@ struct ShardHandbackAttestationTests {
             _ = custody.handleInbound(
                 shardOperations: [op], custodyManifest: nil, expectedShards: nil,
                 senderPublicKey: attackerPub, senderIdentifier: "lone-attacker",
-                vaultManager: vault, currentDepth: 0
+                vaultManager: vault
             )
         }
 
@@ -259,7 +259,7 @@ struct ShardHandbackAttestationTests {
         _ = trusteeCustody.handleInbound(
             shardOperations: [distributeOp], custodyManifest: nil, expectedShards: nil,
             senderPublicKey: ownerOldPub, senderIdentifier: "owner",
-            vaultManager: dummyVault, currentDepth: 0
+            vaultManager: dummyVault
         )
 
         // The owner's device has since rotated — the trustee sees a different current key

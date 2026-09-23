@@ -29,20 +29,21 @@ private func secureEnclaveAvailable() -> Bool {
 
 // MARK: - Harness
 
-/// Duplicated from `Vault+Manager+Backup.swift`, where both are `private static`.
-/// If either changes there, these tests go quietly wrong rather than failing — the
-/// AAD would produce `decryptionFailed` and the paths would clean nothing.
+/// Duplicated from `Vault+Manager+Backup.swift`, where it is `private static`. If it
+/// changes there, these tests go quietly wrong rather than failing — the AAD would
+/// produce `decryptionFailed`.
 private let backupFileAAD = Data("occulta-backup-v1".utf8)
 private let appSupport    = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-private let pendingRestoreURL       = appSupport.appendingPathComponent("backup-import-cache.occbak")
-private let pendingRestoreShardsURL = appSupport.appendingPathComponent("backup-import-cache-shards.dat")
 
-/// Both restore files live at fixed global paths, so a leftover from one test changes
-/// what `unlock(context:)` does in the next — it calls `refreshPendingRestoreState()`
-/// and then `attemptBackupRestore()`. Clear them around every test in this suite.
+/// Where older builds held a pending restore (`bugs.md` Bug 127). Nothing writes these any
+/// more; `deleteLegacyRestoreState` removes them. Duplicated from there, like the AAD above.
+private let legacyRestoreFiles = ["backup-import-cache.occbak", "pending-restore.occbak", "pending-restore-shards.dat"]
+    .map { appSupport.appendingPathComponent($0) }
+
+/// The legacy files live at fixed global paths, so clear them around every test that
+/// seeds or checks them.
 private func clearRestoreFiles() {
-    try? FileManager.default.removeItem(at: pendingRestoreURL)
-    try? FileManager.default.removeItem(at: pendingRestoreShardsURL)
+    for url in legacyRestoreFiles { try? FileManager.default.removeItem(at: url) }
 }
 
 private func makeContainer() throws -> ModelContainer {
@@ -80,7 +81,7 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
     let vault = VaultManager(
         modelContainer: container, keyManager: TestKeyManager()
     )
-    vault.unlock(context: LAContext(), currentDepth: 0)
+    vault.unlock(context: LAContext())
     try vault.setupBackup(currentDepth: 0)
 
     // Real UUID strings, not "trustee-N" labels — BEKPayloadCodec's fixed-width wire
@@ -105,19 +106,40 @@ private func makeFreshVault() throws -> (vault: VaultManager, container: ModelCo
     let vault = VaultManager(
         modelContainer: container, keyManager: TestKeyManager()
     )
-    vault.unlock(context: LAContext(), currentDepth: 0)
+    vault.unlock(context: LAContext())
     return (vault, container)
 }
 
-/// Reads `currentDepth: 0` unconditionally — `reconstructBackup` still only ever writes
-/// depth 0's slot (item 9, deferred until `RECOVERY_BUFFER_LAYERING.md`'s Stage 4), so
-/// depth 0 is where every test in this suite's BEK actually lives regardless of which
-/// depth `attemptBackupRestore` was called with.
+/// The backup key held at `depth`. `restoreBackup` writes it at the depth the file was
+/// opened at.
 @MainActor
-private func bekBytes(of vault: VaultManager) throws -> Data {
+private func bekBytes(of vault: VaultManager, atDepth depth: Int = 0) throws -> Data {
     var bytes = Data()
-    try vault.currentBackupKey(currentDepth: 0).withUnsafeBytes { bytes = Data($0) }
+    try vault.currentBackupKey(currentDepth: depth).withUnsafeBytes { bytes = Data($0) }
     return bytes
+}
+
+/// Banks each share as if handed back by its own sender, and returns those senders: the
+/// visible-contact set under which all of them count.
+@MainActor
+@discardableResult
+private func bank(_ shards: [SignedAttribute], in vault: VaultManager, senderPrefix: String = "trustee") throws -> Set<String> {
+    var senders = Set<String>()
+    for (i, shard) in shards.enumerated() {
+        let sender = "\(senderPrefix)-\(i)"
+        try vault.absorbShard(shard, senderIdentifier: sender)
+        senders.insert(sender)
+    }
+    return senders
+}
+
+/// Labels of the entries visible at `depth`. Vault entries are exact-match, so an entry
+/// restored at one depth appears at that depth only.
+@MainActor
+private func labels(in vault: VaultManager, _ container: ModelContainer, atDepth depth: Int) throws -> [String] {
+    try ModelContext(container).fetch(FetchDescriptor<VaultEntry>())
+        .filter { $0.isVisible(atDepth: depth, whenUnclassified: depth == 0) }
+        .compactMap { try? vault.decryptLabelPayload(for: $0).label }
 }
 
 // MARK: - Bug 94
@@ -132,7 +154,7 @@ struct VaultRestoreTrustTests {
 
     /// The attack, end to end, in the one call that decides it.
     ///
-    /// `attemptBackupRestore` passes `ownerIdentity: nil`, so the GCM tag is the only check —
+    /// `restoreBackup` passes `ownerIdentity: nil`, so the GCM tag is the only check —
     /// and it only proves the shards match the file. Here the *same* party produced both,
     /// so the tag proves nothing about whose backup this is. Remedy 1 (`reconstructBackup`'s
     /// step 0) refuses before any of that runs, purely because the victim already has a row.
@@ -156,7 +178,8 @@ struct VaultRestoreTrustTests {
             try victim.vault.reconstructBackup(
                 shards:        attacker.shards,
                 backupData:    attackerBackup,
-                ownerIdentity: nil
+                ownerIdentity: nil,
+                currentDepth:  0
             )
         }
 
@@ -172,7 +195,7 @@ struct VaultRestoreTrustTests {
     /// decrypts the attacker's file with it and inserts their rows into the user's vault.
     /// With remedy 1 in place, `reconstructBackup` never gets far enough to replace anything,
     /// so `importBackup` is never even reached on this path — asserted directly below rather
-    /// than via `attemptBackupRestore`, since that already stops calling it once the first throws.
+    /// than via `restoreBackup`, since that already stops calling it once the first throws.
     @Test("A foreign backup's entries must not be inserted into an existing vault")
     func foreignEntriesAreNotInserted() throws {
         clearRestoreFiles()
@@ -188,7 +211,7 @@ struct VaultRestoreTrustTests {
 
         #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
             try victim.vault.reconstructBackup(shards: attacker.shards,
-                                           backupData: attackerBackup, ownerIdentity: nil)
+                                           backupData: attackerBackup, ownerIdentity: nil, currentDepth: 0)
         }
         // importBackup still decrypts with whatever BEK is installed — the victim's own,
         // unchanged — so the attacker's ciphertext must fail to open at all, not just fail
@@ -234,7 +257,7 @@ struct VaultRestoreTrustTests {
         let fresh = try makeFreshVault()
         #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "a fresh device must start with no BEK")
 
-        try fresh.vault.reconstructBackup(shards: owner.shards, backupData: backup, ownerIdentity: nil)
+        try fresh.vault.reconstructBackup(shards: owner.shards, backupData: backup, ownerIdentity: nil, currentDepth: 0)
         #expect(try bekBytes(of: fresh.vault) == ownerBEK,
                 "reconstruction must install the owner's BEK on a device that had none")
 
@@ -248,272 +271,190 @@ struct VaultRestoreTrustTests {
             """)
     }
 
-    /// `storePendingRestore` now refuses outright when a BEK already exists (Bug 93's own
-    /// two-signal check, reusing remedy 1's `Backup.fetchDecoded`) — a hostile file on an
-    /// existing-BEK device is rejected before it is ever written, not armed-then-cleaned-up.
-    /// This is what `existingBEKRestoreDoesNotStallForever` below used to test by calling
-    /// `storePendingRestore` directly; that path is no longer reachable, so it now
-    /// constructs its scenario by writing straight to disk instead.
-    @Test("storePendingRestore refuses outright when a BEK already exists")
-    func storePendingRestoreRefusesWhenBEKAlreadyExists() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
-        let victim   = try makeBackupReadyVault()
-        let attacker = try makeBackupReadyVault()
+    /// Bug 94 remedy 1 at the entry point: a depth that already has a backup key refuses,
+    /// even with a full, matching set of the file's own shares banked.
+    @Test("restoreBackup refuses a depth that already has a backup key")
+    func restoreRefusesWhenBEKAlreadyExists() throws {
+        let victim         = try makeBackupReadyVault()
+        let attacker       = try makeBackupReadyVault()
+        let victimBEK      = try bekBytes(of: victim.vault)
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
+        let senders        = try bank(attacker.shards, in: victim.vault)
 
-        #expect(throws: VaultManager.BackupError.alreadyProcessed) {
-            try victim.vault.storePendingRestore(attackerBackup)
-        }
-        #expect(!FileManager.default.fileExists(atPath: pendingRestoreURL.path),
-                "nothing should be written at all — refused before the write, not after")
-        #expect(!victim.vault.pendingRestoreActive)
+        let imported = try victim.vault.restoreBackup(
+            from: attackerBackup, currentDepth: 0, visibleContactIdentifiers: senders
+        )
+
+        #expect(!imported)
+        #expect(try bekBytes(of: victim.vault) == victimBEK, "the existing backup key must be untouched")
     }
 
-    /// The third outcome of the two-signal check, and the baseline the two refusal tests
-    /// are measured against: neither signal is true, so the call must succeed silently.
-    @Test("storePendingRestore accepts a genuinely new file when nothing is pending or done")
-    func storePendingRestoreAcceptsAGenuinelyNewFile() throws {
+    /// Collection is depth-blind, so banked shards may belong to a restore another layer is
+    /// waiting on. A refusal here must not wipe them; the old pending-file design did, which
+    /// would let one layer destroy another's recovery.
+    @Test("A refusal leaves banked shards in place")
+    func refusalLeavesBankedShards() throws {
+        let victim         = try makeBackupReadyVault()
+        let attacker       = try makeBackupReadyVault()
+        let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
+        let senders        = try bank(attacker.shards, in: victim.vault)
+        let distributionID = try #require(attacker.shards.first?.entryID)
+
+        _ = try victim.vault.restoreBackup(from: attackerBackup, currentDepth: 0, visibleContactIdentifiers: senders)
+
+        #expect(try victim.vault.collectedShards(forAttributeID: distributionID).count == attacker.shards.count)
+    }
+
+    /// The file is used once, from memory. Nothing is written to the sandbox, whether the
+    /// attempt fails or succeeds (`RECOVERY_BUFFER_LAYERING.md` §9.4, Bug 100 remedy 3).
+    @Test("Opening a backup never writes it to the sandbox")
+    func restoreNeverWritesTheFile() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
 
         let owner  = try makeBackupReadyVault()
         let backup = try owner.vault.exportBackup(currentDepth: 0)
+        let fresh  = try makeFreshVault()
 
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
+        #expect(try !fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: []))
+        for url in legacyRestoreFiles { #expect(!FileManager.default.fileExists(atPath: url.path)) }
 
-        #expect(FileManager.default.fileExists(atPath: pendingRestoreURL.path))
-        #expect(fresh.vault.pendingRestoreActive)
+        let senders = try bank(owner.shards, in: fresh.vault)
+        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: senders))
+        for url in legacyRestoreFiles { #expect(!FileManager.default.fileExists(atPath: url.path)) }
     }
 
-    /// Found while writing this test: the original ordering wrote the second file's bytes
-    /// to disk *before* checking whether one was already pending, then threw afterward — so
-    /// a second, different `.occbak` silently replaced a genuine in-flight restore while the
-    /// caller saw the same reassuring `alreadyProcessed`. Fixed to check-then-refuse,
-    /// symmetric with the BEK-exists branch above. Asserts both halves: the throw, and that
-    /// the original bytes on disk are untouched by the second call.
-    @Test("storePendingRestore refuses a second file without overwriting the one already pending")
-    func storePendingRestoreRefusesWithoutOverwritingWhenAlreadyPending() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
-        let firstOwner  = try makeBackupReadyVault()
-        let secondOwner = try makeBackupReadyVault()
-        let firstBackup  = try firstOwner.vault.exportBackup(currentDepth: 0)
-        let secondBackup = try secondOwner.vault.exportBackup(currentDepth: 0)
-        #expect(firstBackup != secondBackup,
-                "the two backups must actually differ for this test to mean anything")
-
+    /// The one failure that reports: it turns on the file's own bytes, not on vault state or
+    /// depth, so it tells a coercer nothing about the session.
+    @Test("A file that isn't a backup throws")
+    func malformedFileThrows() throws {
         let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(firstBackup)
-
-        #expect(throws: VaultManager.BackupError.alreadyProcessed) {
-            try fresh.vault.storePendingRestore(secondBackup)
+        #expect(throws: VaultManager.BackupError.invalidFormat) {
+            _ = try fresh.vault.restoreBackup(from: Data("nope".utf8), currentDepth: 0, visibleContactIdentifiers: [])
         }
-
-        let onDisk = try Data(contentsOf: pendingRestoreURL)
-        #expect(onDisk == firstBackup, """
-            The second call overwrote the genuinely pending restore with a different file's \
-            bytes before throwing — the caller sees "already processed" as if nothing changed, \
-            while the recovery target was silently replaced underneath it.
-            """)
-    }
-
-    /// The consequence of remedy 1 that motivated it: on an existing-BEK device, every group
-    /// `reconstructBackup` sees now fails immediately via `bekAlreadyPresent` — so the "success"
-    /// branch that clears `pendingRestoreActive` and deletes the restore files can never run.
-    /// Without the early check in `attemptBackupRestore`, a single stale `.occbak` would leave
-    /// the device permanently in "restoring" state: the banner never clears, and every future
-    /// shard arrival keeps appending to a file nothing will ever read successfully again.
-    ///
-    /// Constructed by writing directly to the restore paths, bypassing `storePendingRestore` —
-    /// that path now refuses outright on an existing-BEK device (see the test above), so this
-    /// scenario is only reachable the way it would be in practice: a file already pending
-    /// *before* a BEK existed (attacker-armed, or simply stale), with `setupBackup()` called
-    /// afterward through ordinary use while it still sat there.
-    @Test("A stale restore on an existing-BEK device cleans itself up, not stalls forever")
-    func existingBEKRestoreDoesNotStallForever() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
-        let victim   = try makeBackupReadyVault()
-        let attacker = try makeBackupReadyVault()
-        let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
-
-        try attackerBackup.write(to: pendingRestoreURL, options: [.atomic, .completeFileProtection])
-        try victim.vault.absorbShard(attacker.shards[0], senderIdentifier: "trustee-0")
-        victim.vault.refreshPendingRestoreState(currentDepth: 0)
-        #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
-        #expect(victim.vault.pendingRestoreShardCount == 1)
-
-        victim.vault.attemptBackupRestore(currentDepth: 0)
-
-        #expect(!victim.vault.pendingRestoreActive, """
-            pendingRestoreActive is stuck true — every future unlock will retry against a \
-            file that can never succeed, and the "Restoring your vault" banner never clears.
-            """)
-        #expect(victim.vault.pendingRestoreShardCount == 0)
-        #expect(!FileManager.default.fileExists(atPath: pendingRestoreURL.path),
-                "the pending .occbak must be removed, not retried forever")
-        #expect(!FileManager.default.fileExists(atPath: pendingRestoreShardsURL.path),
-                "the shard file must be removed — nothing will ever clear it otherwise")
     }
 }
 
-// MARK: - Bug 93
+// MARK: - Bug 99
 
-/// Depth-gating for the automatic restore path. `attemptBackupRestore` must never complete
-/// above depth 0 (defer), and `refreshPendingRestoreState` must never publish real state
-/// above depth 0 (hide) — the two ship together, since deferring without hiding turns a
-/// disclosure into a self-contradicting oracle.
+/// A restore completes at the depth its file is opened at, counting only shards from contacts
+/// visible there (`RECOVERY_BUFFER_LAYERING.md` §9.4). Replaces the Bug 93 suite that pinned
+/// completion to depth 0: that pin was the oracle Bug 99 describes, since a coercer's own,
+/// self-sufficient restore never completing in duress told him where he was.
 // Same reason as VaultRestoreTrustTests above — every test here goes through
-// makeBackupReadyVault()/exportBackup(), which needs the real, uninjectable Manager.Key().
-@Suite("Bug 93 — recovery must not run or announce itself above depth 0", .serialized, .enabled(if: secureEnclaveAvailable()))
+// makeBackupReadyVault()/exportBackup() and absorbShard, which need the real Manager.Key().
+@Suite("Bug 99 — a restore completes at the depth its file is opened at", .serialized, .enabled(if: secureEnclaveAvailable()))
 @MainActor
-struct VaultRestoreDepthGatingTests {
+struct VaultRestoreDepthTests {
 
-    /// The regression guard, and the reason it outranks the deferral test below: a fix
-    /// that defers correctly but never lets a genuine recovery complete at depth 0 either
-    /// is worse than the bug it replaces.
-    @Test("A genuine restore still completes at depth 0")
+    @Test("A genuine restore completes at depth 0")
     func genuineRestoreCompletesAtDepthZero() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
         let owner  = try makeBackupReadyVault()
         _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
         let backup = try owner.vault.exportBackup(currentDepth: 0)
 
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)") }
+        let fresh   = try makeFreshVault()
+        let senders = try bank(owner.shards, in: fresh.vault)
 
-        fresh.vault.attemptBackupRestore(currentDepth: 0)
-
-        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil, "the BEK must be installed at depth 0")
-        #expect(!fresh.vault.pendingRestoreActive, "a completed restore must clear the flag")
+        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: senders))
+        #expect(try bekBytes(of: fresh.vault, atDepth: 0) == bekBytes(of: owner.vault))
+        #expect(try labels(in: fresh.vault, fresh.container, atDepth: 0).contains("recovered"))
+        #expect(fresh.vault.postRestorePromptPending)
     }
 
-    /// The deferral itself: the same genuine restore, reaching threshold while the caller
-    /// reports a duress depth, must not complete.
-    @Test("The same genuine restore does not complete above depth 0")
-    func genuineRestoreDoesNotCompleteAboveDepthZero() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
+    /// Bug 99's fix. The coercer's own restore (his file, his trustees paired in his layer)
+    /// completes in his layer, as it would in any working app, so watching it tells him
+    /// nothing. His entries stay in that layer; vault entries are exact-match.
+    @Test("A restore opened at a duress depth completes there, and not at depth 0")
+    func restoreCompletesAtTheOpeningDepth() throws {
+        let coercer = try makeBackupReadyVault()
+        _ = try coercer.vault.addEntry(label: "planted", content: Data("planted".utf8), type: .note)
+        let backup  = try coercer.vault.exportBackup(currentDepth: 0)
 
-        let owner  = try makeBackupReadyVault()
-        _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
-        let backup = try owner.vault.exportBackup(currentDepth: 0)
+        let victim  = try makeFreshVault()
+        let senders = try bank(coercer.shards, in: victim.vault, senderPrefix: "coercer")
 
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)") }
-
-        fresh.vault.attemptBackupRestore(currentDepth: 2)
-
-        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, """
-            The restore completed while the caller reported a duress depth — a recovered \
-            real-layer vault was just filed into whichever layer the coercer happened to \
-            be looking at.
-            """)
+        #expect(try victim.vault.restoreBackup(from: backup, currentDepth: 2, visibleContactIdentifiers: senders))
+        #expect((try? victim.vault.currentBackupKey(currentDepth: 2)) != nil, "the key must land at the opening depth")
+        #expect((try? victim.vault.currentBackupKey(currentDepth: 0)) == nil, "the real layer must be untouched")
+        #expect(try labels(in: victim.vault, victim.container, atDepth: 2).contains("planted"))
+        #expect(try !labels(in: victim.vault, victim.container, atDepth: 0).contains("planted"))
     }
 
-    /// **Removed, 2026-09-21 — the property this asserted no longer holds, by deliberate,
-    /// documented design, not a regression.** Shard collection moved from depth-partitioned
-    /// (`ReconstructShard`) to depth-blind (`PendingShamirSecretRestore`,
-    /// `RECOVERY_BUFFER_LAYERING.md` §9.3) ahead of Bug 99's own fix (binding completion to
-    /// the depth a restore was attempted at), which is what will close this again. Building
-    /// the depth-blind shape twice — once temporarily scoped, once final — costs more than
-    /// the narrow interim gap this accepts; see `bugs.md` Bug 99's 2026-09-21 addendum for
-    /// the full trace of why the gap is narrow (still bounded by `attemptBackupRestore`'s
-    /// unconditional depth-0 completion guard, and by Bug 94 remedy 1's `alreadyHasBEK`
-    /// check) and what closes it. `shardsAtDepthZeroStillCompleteDepthZero` below still
-    /// covers the property that does still hold: shards genuinely collected at depth 0
-    /// complete depth 0's own restore.
+    /// The hole §9.4 closes, for trustees the owner hid from the duress layer: their banked
+    /// shards don't count there, so the owner's real file can't complete in that layer.
+    @Test("Shards from contacts hidden at the depth don't count there")
+    func hiddenTrusteesDoNotCountAtDuressDepth() throws {
+        let owner   = try makeBackupReadyVault()
+        let backup  = try owner.vault.exportBackup(currentDepth: 0)
+        let fresh   = try makeFreshVault()
+        let senders = try bank(owner.shards, in: fresh.vault)
 
-    /// The baseline the removed cross-depth test above used to be measured against:
-    /// shards collected while depth 0 is current must still let a depth-0 restore complete.
-    @Test("Shards collected at depth 0 still complete depth 0's own restore")
-    func shardsAtDepthZeroStillCompleteDepthZero() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
+        #expect(try !fresh.vault.restoreBackup(from: backup, currentDepth: 2, visibleContactIdentifiers: ["someone-else"]))
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 2)) == nil)
 
-        let owner  = try makeBackupReadyVault()
-        let backup = try owner.vault.exportBackup(currentDepth: 0)
-
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)") }
-
-        fresh.vault.attemptBackupRestore(currentDepth: 0)
-        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil,
-                "shards genuinely collected at depth 0 must still complete depth 0's restore")
+        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: senders),
+                "the same shards must still count where their senders are visible")
     }
 
-    /// **Reverses the original Bug 93 assertion, deliberately.** This test used to require
-    /// `refreshPendingRestoreState` to publish false above depth 0 — "defer and hide
-    /// together." Deferral stays and is covered by the two tests above; hiding is gone.
-    ///
-    /// Hiding closed a duress-against-duress gap and opened a duress-against-real one: a
-    /// pending restore made the two layers behave differently, and that difference is what a
-    /// coercer can actually read, against a baseline that is public. The banner is now
-    /// depth-uniform and carries no count, so it claims no progress and cannot contradict
-    /// itself across repeated duress unlocks.
-    @Test("Published pending-restore state is identical at every depth")
-    func publishedStateIsDepthUniform() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
+    /// The residual §9.4 accepts, pinned so it can't pass unnoticed: trustees the owner left
+    /// visible in the duress layer (the default for a contact) count there, so the owner's
+    /// real backup completes in that layer. See `decisions.md`, "Filter restore shards by
+    /// trustee visibility at completion".
+    @Test("Residual: trustees left visible at a duress depth count there")
+    func visibleTrusteesCountAtDuressDepth() throws {
+        let owner   = try makeBackupReadyVault()
+        let backup  = try owner.vault.exportBackup(currentDepth: 0)
+        let fresh   = try makeFreshVault()
+        let senders = try bank(owner.shards, in: fresh.vault)
 
+        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 2, visibleContactIdentifiers: senders))
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 2)) != nil)
+    }
+
+    /// Success consumes the shards, so the same set can't complete a second restore anywhere.
+    @Test("Consumed shards can't be replayed at another depth")
+    func consumedShardsCannotBeReplayed() throws {
+        let owner   = try makeBackupReadyVault()
+        let backup  = try owner.vault.exportBackup(currentDepth: 0)
+        let fresh   = try makeFreshVault()
+        let senders = try bank(owner.shards, in: fresh.vault)
+
+        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: senders))
+        #expect(try !fresh.vault.restoreBackup(from: backup, currentDepth: 3, visibleContactIdentifiers: senders))
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 3)) == nil)
+    }
+
+    /// Too few shares: nothing happens and nothing is kept. Opening the same file again once
+    /// the rest arrive completes.
+    @Test("Too few shares fails cleanly, and a later attempt completes")
+    func partialSharesThenRetry() throws {
         let owner  = try makeBackupReadyVault()
         let backup = try owner.vault.exportBackup(currentDepth: 0)
+        let fresh  = try makeFreshVault()
 
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
         try fresh.vault.absorbShard(owner.shards[0], senderIdentifier: "trustee-0")
+        #expect(try !fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: ["trustee-0"]))
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil)
 
-        fresh.vault.refreshPendingRestoreState(currentDepth: 0)
-        #expect(fresh.vault.pendingRestoreActive, """
-            A pending restore must publish as active — the banner is what a duress session \
-            shows in place of the file-open acknowledgment that used to differ by depth.
-            """)
-
-        // pendingRestoreActive itself is not depth-derived (pendingRestoreShardCount now is,
-        // per RECOVERY_BUFFER_LAYERING.md §6 item 9.1 — see that section's own note on the
-        // deliberate, temporary asymmetry) — a sync taken while at a duress depth must report
-        // the identical active flag.
-        fresh.vault.refreshPendingRestoreState(currentDepth: 2)
-        #expect(fresh.vault.pendingRestoreActive,
-                "repeated syncs must not flip the published state — a coercer sees one story")
+        try fresh.vault.absorbShard(owner.shards[1], senderIdentifier: "trustee-1")
+        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: ["trustee-0", "trustee-1"]))
     }
 
-    /// The other half of the pairing, and the reason the banner can be shown at all:
-    /// reconstruction never completes above depth 0, regardless of which depth the shards
-    /// forming a full set arrived at. Duress advertises a recovery it can never complete,
-    /// which is exactly what a real recovery still waiting on trustees looks like.
-    @Test("A pending restore does not complete above depth 0 even with a full shard set")
-    func pendingRestoreNeverCompletesAboveDepthZero() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
+    /// In-memory state reset on lock. Changing depth means entering the PIN again, which the
+    /// vault locks before, so an import in one layer can't prompt in another layer's session.
+    @Test("The post-restore prompt is cleared on lock")
+    func postRestorePromptClearsOnLock() throws {
+        let owner   = try makeBackupReadyVault()
+        let backup  = try owner.vault.exportBackup(currentDepth: 0)
+        let fresh   = try makeFreshVault()
+        let senders = try bank(owner.shards, in: fresh.vault)
 
-        let owner  = try makeBackupReadyVault()
-        _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
-        let backup = try owner.vault.exportBackup(currentDepth: 0)
+        _ = try fresh.vault.restoreBackup(from: backup, currentDepth: 2, visibleContactIdentifiers: senders)
+        #expect(fresh.vault.postRestorePromptPending)
 
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() {
-            try fresh.vault.absorbShard(shard, senderIdentifier: "trustee-\(i)")
-        }
-
-        fresh.vault.attemptBackupRestore(currentDepth: 2)
-
-        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, """
-            Deferral is the half of Bug 93 that stays. A full shard set at a duress depth must \
-            not install the BEK — showing the banner there is only safe because completion \
-            still cannot happen.
-            """)
+        fresh.vault.lock()
+        #expect(!fresh.vault.postRestorePromptPending)
     }
 }
 
@@ -620,27 +561,24 @@ struct VaultRestoreRobustnessTests {
             try victim.vault.absorbShard(junk, senderIdentifier: "junk-sender-\(i)")
         }
 
-        // bekRestoreShardCount(), not the published pendingRestoreShardCount — that property
-        // is only refreshed as a side effect of storePendingRestore/attemptBackupRestore/
-        // refreshPendingRestoreState, none of which this test calls; absorbShard alone
-        // doesn't touch it.
-        let count = try victim.vault.bekRestoreShardCount()
+        let count = try victim.vault.bekRestoreDistributionIDs().count
         #expect(count == attempts, """
-            \(count) shards accepted from \(attempts) attempts — expected all of them, since \
-            each names a distinct distribution and this population is permanently uncapped.
+            \(count) distributions held from \(attempts) junk shards — expected all of them, \
+            since each names a distinct distribution and this population is permanently uncapped.
             """)
     }
 }
 
-// MARK: - Bug 100 remedy 1
+// MARK: - Bug 100 remedy 1, Bug 127
 
-/// The pending `.occbak` and the export-metadata file are written into Application Support,
-/// which `excludeStoreFromBackup` does not cover — it takes the SQLite store and its
-/// `-wal`/`-shm` sidecars only. So both were copied into iTunes/Finder/iCloud backups. The
-/// payloads stay sealed and device-bound, but existence, length and timestamps travel with the
-/// copy, and a backup is obtainable without the passcode prompt `.completeFileProtection`
-/// depends on.
-@Suite("Bug 100 — restore artifacts are excluded from device backups", .serialized)
+/// The export-metadata file is written into Application Support, which
+/// `excludeStoreFromBackup` does not cover — it takes the SQLite store and its `-wal`/`-shm`
+/// sidecars only. So it was copied into iTunes/Finder/iCloud backups: sealed and device-bound,
+/// but existence, length and timestamps travel with the copy, and a backup is obtainable without
+/// the passcode prompt `.completeFileProtection` depends on. The pending `.occbak` this suite
+/// used to cover is never written any more (`RECOVERY_BUFFER_LAYERING.md` §9.4); what's left of
+/// it is the legacy cleanup below.
+@Suite("Bug 100/127 — backup and restore files on disk", .serialized, .enabled(if: secureEnclaveAvailable()))
 @MainActor
 struct RestoreArtifactBackupExclusionTests {
 
@@ -648,63 +586,8 @@ struct RestoreArtifactBackupExclusionTests {
         try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup ?? false
     }
 
-    @Test("Arming a restore writes a file excluded from backup",
-          .enabled(if: secureEnclaveAvailable()))
-    func pendingRestoreIsExcluded() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
-        let owner  = try makeBackupReadyVault()
-        let backup = try owner.vault.exportBackup(currentDepth: 0)
-
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
-
-        #expect(try self.isExcluded(pendingRestoreURL), """
-            The pending restore file is copied into device backups. Its length estimates the \
-            size of the vault it came from, and a backup can be obtained without the passcode \
-            prompt that complete file protection depends on.
-            """)
-    }
-
-    /// **The assertion that matters, and the one a wrong implementation passes without.**
-    ///
-    /// `isExcludedFromBackup` is a `URLResourceValues` attribute on the file, and `.atomic`
-    /// writes rename a fresh temp file over the target — so the inode holding the attribute is
-    /// discarded on every write. Setting the flag once at launch reads back correct exactly
-    /// once. Only a re-arm catches that, which is why this test arms twice rather than
-    /// checking the value after a single write.
-    @Test("The exclusion survives the file being rewritten by a second arming",
-          .enabled(if: secureEnclaveAvailable()))
-    func exclusionSurvivesRewrite() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
-        let owner  = try makeBackupReadyVault()
-        let backup = try owner.vault.exportBackup(currentDepth: 0)
-
-        let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup)
-
-        // A second arming is refused while one is pending, so clear the file the way a
-        // completed or abandoned restore does and arm again — the same rewrite, reached the
-        // way production reaches it.
-        try? FileManager.default.removeItem(at: pendingRestoreURL)
-        try fresh.vault.storePendingRestore(backup)
-
-        #expect(try self.isExcluded(pendingRestoreURL), """
-            The exclusion did not survive a rewrite. An implementation that sets the attribute \
-            at launch rather than at each write passes the first-write test and fails here, \
-            then ships silently unprotected from the second arming onward.
-            """)
-    }
-
-    @Test("Exporting writes export metadata excluded from backup",
-          .enabled(if: secureEnclaveAvailable()))
+    @Test("Exporting writes export metadata excluded from backup")
     func exportMetadataIsExcluded() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
         let owner = try makeBackupReadyVault()
         _ = try owner.vault.addEntry(label: "e", content: Data("e".utf8), type: .note)
         _ = try owner.vault.exportBackup(currentDepth: 0)
@@ -712,5 +595,53 @@ struct RestoreArtifactBackupExclusionTests {
         let metaURL = appSupport.appendingPathComponent("backup-export-meta.dat")
         #expect(try self.isExcluded(metaURL),
                 "the export-metadata file is copied into device backups")
+    }
+
+    /// **The assertion that matters, and the one a wrong implementation passes without.**
+    ///
+    /// `isExcludedFromBackup` is a `URLResourceValues` attribute on the file, and `.atomic`
+    /// writes rename a fresh temp file over the target — so the inode holding the attribute is
+    /// discarded on every write. Setting the flag once at launch reads back correct exactly
+    /// once. Only a rewrite catches that, which is why this test exports twice rather than
+    /// checking the value after a single write.
+    @Test("The exclusion survives the file being rewritten by a second export")
+    func exclusionSurvivesRewrite() throws {
+        let owner = try makeBackupReadyVault()
+        _ = try owner.vault.addEntry(label: "e", content: Data("e".utf8), type: .note)
+        _ = try owner.vault.exportBackup(currentDepth: 0)
+        _ = try owner.vault.exportBackup(currentDepth: 0)
+
+        let metaURL = appSupport.appendingPathComponent("backup-export-meta.dat")
+        #expect(try self.isExcluded(metaURL), """
+            The exclusion did not survive a rewrite. An implementation that sets the attribute \
+            at launch rather than at each write passes the first-write test and fails here, \
+            then ships silently unprotected from the second export onward.
+            """)
+    }
+
+    /// Bug 127: the held `.occbak` under both its names, the old shard file, and the persisted
+    /// post-restore flag are all deleted on unlock, without a restore attempt. Banked shard rows
+    /// are untouched. `unlock(context:)` takes no depth, so this holds in every layer.
+    @Test("Unlock deletes legacy restore state and keeps banked shards")
+    func unlockDeletesLegacyRestoreState() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner = try makeBackupReadyVault()
+        let fresh = try makeFreshVault()
+        try bank(owner.shards, in: fresh.vault)
+        let distributionID = try #require(owner.shards.first?.entryID)
+
+        for url in legacyRestoreFiles { try Data("legacy".utf8).write(to: url) }
+        UserDefaults.standard.set(true, forKey: "vault.postRestoreActionNeeded")
+
+        fresh.vault.lock()
+        fresh.vault.unlock(context: LAContext())
+
+        for url in legacyRestoreFiles {
+            #expect(!FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) survived unlock")
+        }
+        #expect(UserDefaults.standard.object(forKey: "vault.postRestoreActionNeeded") == nil)
+        #expect(try fresh.vault.collectedShards(forAttributeID: distributionID).count == owner.shards.count)
     }
 }

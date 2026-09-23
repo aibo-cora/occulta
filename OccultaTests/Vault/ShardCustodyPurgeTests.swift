@@ -77,8 +77,7 @@ private func receiveShard(
         expectedShards:   nil,
         senderPublicKey:  try ownerKM.retrieveIdentity(),
         senderIdentifier: ownerIdentifier,
-        vaultManager:     vault,
-        currentDepth: 0
+        vaultManager:     vault
     )
 }
 

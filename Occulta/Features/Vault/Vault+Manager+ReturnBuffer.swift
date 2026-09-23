@@ -14,12 +14,11 @@
 //  carries no depth information at all, so a coercer who fully decrypts every row
 //  still learns only "a secret was restored," never which depth.
 //
-//  `bugs.md` Bug 99, addendum 2026-09-21: this depth-blind collection ships ahead of
-//  that bug's own fix (binding completion to the depth a restore was attempted at),
-//  which is a separate, deferred change. `attemptBackupRestore`'s `currentDepth == 0`
-//  completion guard (`Vault+Manager+Backup.swift`) is untouched here — building the
-//  depth-blind shape twice (once temporarily scoped, once final) costs more than the
-//  narrow interim gap this accepts. See that bug's addendum for the exact trace.
+//  BEK restore completes only when the owner opens a `.occbak` (`restoreBackup`,
+//  `Vault+Manager+Backup.swift`), at the depth it's opened at, counting only shards
+//  from contacts visible there — which is what keeps depth-blind collection from
+//  letting a real backup complete in a duress layer (`bugs.md` Bug 99,
+//  RECOVERY_BUFFER_LAYERING.md §9.4). Nothing here triggers it.
 //
 //  All buffer rows are readable/writable while the vault is locked — `attributeID`/
 //  `deletionToken` sealed under the local DB key, `shards` under the restore vault
@@ -48,13 +47,13 @@ extension VaultManager {
     ///      a second share from the same sender replaces the first rather than
     ///      accumulating, so a threshold-reaching group structurally requires distinct
     ///      senders, not just distinct `SignedAttribute.id`s.
-    ///   2. Opportunistically try to finalise — for a per-entry PEK if this device
-    ///      split that entry itself, for a BEK restore if a `.occbak` file is already
-    ///      pending. Both no-op harmlessly if their own preconditions aren't met.
+    ///   2. For a per-entry PEK this device split itself, opportunistically try to
+    ///      finalise; it no-ops harmlessly if its preconditions aren't met. A BEK
+    ///      restore shard is only banked: completion happens when the owner opens the
+    ///      `.occbak` (`restoreBackup`).
     func acceptReturnedShard(
         _ attribute: SignedAttribute,
-        senderIdentifier: String,
-        currentDepth: Int
+        senderIdentifier: String
     ) throws {
         guard attribute.category == .shard, let attributeID = attribute.entryID else {
             throw VaultError.decryptionFailed
@@ -69,13 +68,6 @@ extension VaultManager {
         // ── Per-entry PEK reconstruction ──────────────────────────────────
         if let entry = try? self.fetchEntry(by: attributeID), entry.shardDistributionEncrypted != nil {
             try? self.tryFinalizeReconstruction(entryID: attributeID)
-        }
-
-        // ── BEK restore ────────────────────────────────────────────────────
-        // Only meaningful when a .occbak file is awaiting recovery — attemptBackupRestore
-        // no-ops otherwise (locked, no pending file, or currentDepth != 0).
-        if self.isRestorePending {
-            self.attemptBackupRestore(currentDepth: currentDepth)
         }
     }
 
@@ -369,8 +361,8 @@ extension VaultManager {
     // MARK: - BEK restore distribution enumeration
     //
     // absorbShard/collectedShards/orphanShards are all scoped to one attributeID.
-    // attemptBackupRestore (Vault+Manager+Backup.swift) doesn't know which
-    // distributionID its pending .occbak belongs to until reconstruction against it
+    // restoreBackup (Vault+Manager+Backup.swift) doesn't know which
+    // distributionID an opened .occbak belongs to until reconstruction against it
     // actually succeeds, so it needs to enumerate every currently-live BEK-restore
     // distribution and try each in turn — the same "group and try every group" shape
     // the old grouping-by-entryID logic had, just already grouped by construction now
@@ -393,17 +385,5 @@ extension VaultManager {
             ids.append(id)
         }
         return ids
-    }
-
-    /// Total shards collected so far across every currently-live BEK-restore
-    /// distribution — the UI-facing progress count. Unlike the old per-depth count,
-    /// this can now sum across more than one concurrently-collecting distribution
-    /// (collection is depth-blind); `Vault+Tab`'s own display already treats this as
-    /// a static "in progress" signal, not a rendered number — see
-    /// `refreshPendingRestoreState`'s doc comment.
-    func bekRestoreShardCount() throws -> Int {
-        try self.bekRestoreDistributionIDs().reduce(0) { total, id in
-            total + (try self.collectedShards(forAttributeID: id).count)
-        }
     }
 }

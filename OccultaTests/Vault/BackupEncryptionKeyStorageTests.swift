@@ -108,7 +108,7 @@ struct BackupKeyFillerBaselineTests {
     func overflowPastThirtyTwoInsertsFreshRow() throws {
         let container = try makeContainer()
         let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         for depth in 0..<32 {
             try vault.setupBackup(currentDepth: depth)
@@ -135,7 +135,7 @@ struct BackupKeyFillerBaselineTests {
     func repeatedSetupClaimsOnlyOneRow() throws {
         let container = try makeContainer()
         let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
 
         try vault.setupBackup(currentDepth: 5)
         let firstKey = try vault.currentBackupKey(currentDepth: 5)
@@ -169,7 +169,7 @@ struct BackupKeyOrphaningTests {
         let container = try makeContainer()
         let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         return Components(security: security, container: container, vault: vault)
     }
 
@@ -349,7 +349,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     func migratesArrayOnly() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let vaultKey  = try vault.currentKey()
 
         let depth0Payload = BackupEncryptionKey.Payload(bekBytes: Data.randomBytes(32), distributionID: UUID(), shardMetadata: nil)
@@ -379,7 +379,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     func migratesLegacyRowOnly() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let vaultKey  = try vault.currentKey()
 
         // Insert a legacy row directly — depth/deletionToken nil, exactly as a
@@ -415,7 +415,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     func arrayWinsOverLegacyRowAtDepthZero() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let vaultKey  = try vault.currentKey()
 
         let arrayPayload  = BackupEncryptionKey.Payload(bekBytes: Data.randomBytes(32), distributionID: UUID(), shardMetadata: nil)
@@ -445,7 +445,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     func noSourcesIsANoOp() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let vaultKey  = try vault.currentKey()
 
         let rowCountBefore = try fetchAllBackupKeyRows(from: container).count
@@ -459,7 +459,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     func secondPassIsNoOp() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        vault.unlock(context: LAContext(), currentDepth: 0)
+        vault.unlock(context: LAContext())
         let vaultKey  = try vault.currentKey()
 
         let payload = BackupEncryptionKey.Payload(bekBytes: Data.randomBytes(32), distributionID: UUID(), shardMetadata: nil)

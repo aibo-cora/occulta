@@ -191,7 +191,7 @@ discoverability half stands.
 
 ## Open the `.occbak` as a one-shot attempt at the current depth — never hold it
 
-**Status:** Decided, 2026-09-23. Not built. The hole it reopened was decided the same day, see
+**Status:** Decided and built, 2026-09-23. The hole it reopened was decided the same day, see
 Consequences.
 
 **Context:** Designing Bug 99's remedy. Today `storePendingRestore` writes the opened file into the
@@ -219,7 +219,11 @@ depth-privileged success or failure is itself a forensic trace (Bug 99).
   remedy 1.
 - `Backup.reconstruct` and `storePendingRestore` must take the real depth; both hardcode 0 today.
 - The global `vault.postRestoreActionNeeded` flag has to go. It would announce a duress-layer import at
-  the owner's next depth-0 unlock.
+  the owner's next depth-0 unlock. Replaced by an in-memory flag reset on vault lock.
+- The vault is usually locked when a file is opened (it locks whenever the app goes to the
+  background). Decided the same day: Accept asks for Face ID when the vault is locked, then attempts
+  at once. Keeping the bytes in memory until the next vault unlock was rejected because it brings
+  back a held state.
 - UX cost: the user must reopen the file after shares arrive. This reverses `VAULT_BACKUP_GUIDE.md`'s
   "no action between collection and reconstruction" requirement and leaves discoverability to Stage 3.
 - **The hole it reopens:** during a genuine recovery, a coercer at a duress depth can open the real
@@ -237,7 +241,7 @@ depth-privileged success or failure is itself a forensic trace (Bug 99).
 
 ## Filter restore shards by trustee visibility at completion
 
-**Status:** Decided, 2026-09-23. Not built. Accepted with a known residual.
+**Status:** Decided and built, 2026-09-23. Accepted with a known residual.
 
 **Context:** The one-shot file-open design (above) lets a restore complete at any depth, and shard
 collection is depth-blind. Together they let a coercer at a duress depth open the owner's real

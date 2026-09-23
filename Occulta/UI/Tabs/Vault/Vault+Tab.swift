@@ -82,8 +82,6 @@ struct VaultTab: View {
     @Query private var rawCustodyShards: [CustodyShard]
     @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
 
-    @AppStorage("vault.postRestoreActionNeeded") private var postRestoreActionNeeded = false
-
     @State private var filter: Filter = .all
     @State private var showNewEntry = false
     @State private var unlocking = false
@@ -131,17 +129,14 @@ struct VaultTab: View {
             }
             .sheet(isPresented: $showPostRestoreSheet) {
                 VaultPostRestoreSheet {
-                    self.postRestoreActionNeeded = false
+                    self.vault.postRestorePromptPending = false
                 } onSetupBackup: {
-                    self.postRestoreActionNeeded = false
+                    self.vault.postRestorePromptPending = false
                     self.showPostRestoreSheet    = false
                     self.showBEKSetup            = true
                 }
             }
             .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
-                if isUnlocked && self.postRestoreActionNeeded {
-                    self.showPostRestoreSheet = true
-                }
                 // backupStaleness and backupErosion are both depth-scoped and
                 // VaultManager has no way to know currentDepth on its own — refresh
                 // them here, where both vault and security are in scope, rather than
@@ -151,7 +146,7 @@ struct VaultTab: View {
                     self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
                 }
             }
-            .onChange(of: self.postRestoreActionNeeded) { _, newValue in
+            .onChange(of: self.vault.postRestorePromptPending) { _, newValue in
                 if newValue && self.vault.isUnlocked {
                     self.showPostRestoreSheet = true
                 }
@@ -162,6 +157,11 @@ struct VaultTab: View {
                 if self.vault.isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
                     self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
+                }
+                // A restore finished from the file-open prompt before this tab was first
+                // shown never triggers the onChange above.
+                if self.vault.postRestorePromptPending && self.vault.isUnlocked {
+                    self.showPostRestoreSheet = true
                 }
             }
         }
@@ -248,52 +248,6 @@ struct VaultTab: View {
                 .pickerStyle(.segmented)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-            }
-
-            // Pending restore section — shown while a .occbak file awaits BEK shard collection
-            if self.vault.pendingRestoreActive {
-                Section {
-                    HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9)
-                                .fill(Color.occultaAccent.opacity(0.12))
-                                .frame(width: 36, height: 36)
-                            Image(systemName: "arrow.down.circle")
-                                .font(.system(size: 16))
-                                .foregroundStyle(Color.occultaAccent)
-                        }
-                        // No count, and that omission is what lets this render at every depth.
-                        // A climbing tally is a live report on real depth-0 activity and would
-                        // contradict itself in a duress session, where collection continues but
-                        // reconstruction never fires. A static line claims no progress, so it
-                        // reads the same as a real recovery still waiting on trustees it has not
-                        // met — see `refreshPendingRestoreState`.
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Recovery in progress…")
-                                .font(.system(size: 16, weight: .medium))
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 3)
-                } header: {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                            .tint(Color.occultaAccent)
-                        Text("Recovery in Progress")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .tracking(1.6)
-                            .foregroundStyle(Color.occultaAccent)
-                    }
-                } footer: {
-                    // Names no mechanism, for the same reason the restore confirmation does not:
-                    // this section renders at every depth now, so "your trustees" would tell
-                    // whoever is holding the phone that the recovery is split among specific
-                    // people and that proximity to them is what advances it. The real user still
-                    // gets the one instruction that matters — be near them with the app open.
-                    Text("Recovery continues when Occulta is open near the people helping you.")
-                        .font(.system(size: 10, design: .monospaced))
-                }
             }
 
             // Attention section — entries with degraded or critical coverage + BEK erosion + stale backup
@@ -529,7 +483,7 @@ struct VaultTab: View {
             DispatchQueue.main.async {
                 self.unlocking = false
                 
-                if success { self.vault.unlock(context: ctx, currentDepth: self.security.currentDepth) }
+                if success { self.vault.unlock(context: ctx) }
             }
         }
     }
