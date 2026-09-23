@@ -14,7 +14,10 @@
 //
 //  All operations require the vault to be unlocked (currentKey() enforces this).
 //  Backup key bytes only exist in memory during an active operation and are zeroed via
-//  defer where they appear as raw [UInt8] or Data buffers.
+//  defer where they appear as raw [UInt8] or Data buffers. The vault plaintext that export
+//  and restore handle (each entry's label and content, and the JSON around them) is zeroed
+//  the same way (`zeroPlaintext`, bugs.md Bug 96 item 3). What can't be reached stays:
+//  JSONEncoder/JSONDecoder internals, and labels while they pass through Swift Strings.
 //
 //  File format (.occbak):
 //    magic (4 bytes: "OCBK") ∥ AES-GCM combined (nonce(12) ∥ ciphertext ∥ tag(16))
@@ -63,7 +66,7 @@ extension VaultManager {
     struct VaultBackup: Codable {
         let version:   Int
         let createdAt: Date
-        let entries:   [VaultBackupEntry]
+        var entries:   [VaultBackupEntry]   // var so the plaintext can be zeroed in place
     }
 
     /// One entry's plaintext within VaultBackup. Transient — see VaultBackup above.
@@ -71,8 +74,18 @@ extension VaultManager {
         let id:        UUID
         let entryType: Int    // VaultEntryType.rawValue
         let createdAt: Date
-        let label:     Data   // plaintext UTF-8 label string
-        let content:   Data   // plaintext entry content
+        var label:     Data   // plaintext UTF-8 label string; var so it can be zeroed in place
+        var content:   Data   // plaintext entry content; var so it can be zeroed in place
+    }
+
+    /// Zeroes every entry's label and content in place (`bugs.md` Bug 96 item 3). Only
+    /// effective while each buffer is held by `entries` alone: a buffer still shared elsewhere
+    /// is copied on write, and the copy is zeroed instead of the original.
+    static func zeroPlaintext(_ entries: inout [VaultBackupEntry]) {
+        for i in entries.indices {
+            entries[i].label.resetBytes(in: entries[i].label.startIndex..<entries[i].label.endIndex)
+            entries[i].content.resetBytes(in: entries[i].content.startIndex..<entries[i].content.endIndex)
+        }
     }
 
     // MARK: - Backup export metadata (staleness tracking, per depth)
@@ -144,6 +157,7 @@ extension VaultManager {
         let entries = try self.entriesVisible(atDepth: currentDepth)
         var backupEntries = [VaultBackupEntry]()
         backupEntries.reserveCapacity(entries.count)
+        defer { Self.zeroPlaintext(&backupEntries) }
 
         for entry in entries {
             // decryptLabelPayload and decryptContent are internal — they call currentKey()
@@ -159,8 +173,10 @@ extension VaultManager {
             ))
         }
 
-        let backup = VaultBackup(version: 1, createdAt: Date(), entries: backupEntries)
-        let json   = try JSONEncoder().encode(backup)
+        // Built inside the call so no second reference to the entries outlives it, which
+        // is what lets the defer above zero them in place.
+        var json = try JSONEncoder().encode(VaultBackup(version: 1, createdAt: Date(), entries: backupEntries))
+        defer { json.resetBytes(in: json.startIndex..<json.endIndex) }
 
         let sealed = try AES.GCM.seal(
             json,
@@ -224,35 +240,40 @@ extension VaultManager {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
 
         let box  = try AES.GCM.SealedBox(combined: data.dropFirst(4))
-        let json: Data
+        var json: Data
         do {
             json = try AES.GCM.open(box, using: bek, authenticating: Self.backupFileAAD)
         } catch {
             throw BackupError.decryptionFailed
         }
+        defer { json.resetBytes(in: json.startIndex..<json.endIndex) }
 
-        let backup = try JSONDecoder().decode(VaultBackup.self, from: json)
+        var backup = try JSONDecoder().decode(VaultBackup.self, from: json)
 
-        for backupEntry in backup.entries {
-            // UInt8(_: Int) traps outside 0...255 — VaultEntryType(rawValue:) is the safe
-            // conversion, but only once the Int is known to fit. Anything that doesn't isn't
-            // a future version's entry type, it's malformed.
-            guard UInt8(exactly: backupEntry.entryType) != nil else {
-                throw BackupError.invalidFormat
-            }
-
-            // UInt64(_: Double) traps outside its representable range — negative (pre-1970)
-            // or large enough to overflow. aad(for:) does this exact conversion and cannot be
-            // changed to guard it (sealed contract, see its doc comment), so the check has to
-            // happen before createdAt is ever assigned. A plain range check rather than
-            // UInt64(exactly:) — the latter requires exact integer representability, which
-            // would reject every legitimate sub-second timestamp along with the bad ones.
-            let createdAtSeconds = backupEntry.createdAt.timeIntervalSince1970
-            guard createdAtSeconds >= 0, createdAtSeconds < Double(UInt64.max) else {
-                throw BackupError.invalidFormat
-            }
+        // Checked before zeroing, not inside a loop over the entries: the loop would hold its own
+        // reference to the array, so zeroing from inside it would zero a copy.
+        guard backup.entries.allSatisfy(Self.isWellFormed) else {
+            Self.zeroPlaintext(&backup.entries)
+            throw BackupError.invalidFormat
         }
         return backup
+    }
+
+    /// Whether an entry's fields can be converted without trapping.
+    private static func isWellFormed(_ entry: VaultBackupEntry) -> Bool {
+        // UInt8(_: Int) traps outside 0...255 — VaultEntryType(rawValue:) is the safe
+        // conversion, but only once the Int is known to fit. Anything that doesn't isn't
+        // a future version's entry type, it's malformed.
+        guard UInt8(exactly: entry.entryType) != nil else { return false }
+
+        // UInt64(_: Double) traps outside its representable range — negative (pre-1970)
+        // or large enough to overflow. aad(for:) does this exact conversion and cannot be
+        // changed to guard it (sealed contract, see its doc comment), so the check has to
+        // happen before createdAt is ever assigned. A plain range check rather than
+        // UInt64(exactly:) — the latter requires exact integer representability, which
+        // would reject every legitimate sub-second timestamp along with the bad ones.
+        let createdAtSeconds = entry.createdAt.timeIntervalSince1970
+        return createdAtSeconds >= 0 && createdAtSeconds < Double(UInt64.max)
     }
 
     /// Inserts `backup`'s entries at `currentDepth` **without saving**, preserving each
@@ -394,7 +415,8 @@ extension VaultManager {
             // The key opened this file, so no other distribution will. From here any failure
             // ends the attempt with nothing written.
             do {
-                let backup = try self.decodedBackup(data, using: SymmetricKey(data: verified.bekBytes))
+                var backup = try self.decodedBackup(data, using: SymmetricKey(data: verified.bekBytes))
+                defer { Self.zeroPlaintext(&backup.entries) }
                 try self.backup.stage(
                     BackupEncryptionKey.Payload(
                         bekBytes: verified.bekBytes, distributionID: verified.distributionID, shardMetadata: nil

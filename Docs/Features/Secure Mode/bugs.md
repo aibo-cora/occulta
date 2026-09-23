@@ -7123,7 +7123,8 @@ cross-referencing back here.
 because all four are robustness rather than access-control defects, and none is worth its own
 entry. **Item 1 (the two traps) is fixed** — `importBackup` now range-checks `entryType` and
 `createdAt` before either reaches the conversion that used to crash the process. **Items 2
-(unbounded shard file) and 3 (unzeroed export plaintext) remain open.**
+(unbounded shard file) and 3 (unzeroed export plaintext) remain open.** Item 3 fixed 2026-09-23, see
+below.
 
 **Item 2 has a structural fix rather than a cap, 2026-08-27.** The shard *file* no longer exists —
 Bug 100 remedy 2 made restore shards `ReconstructShard` rows — so item 2 is now unbounded *rows*
@@ -7253,6 +7254,23 @@ blob in the vault, decrypted — and then `JSONEncoder().encode(backup)`. **Neit
 Guarding the key while leaving what the key protects is the wrong way round. `JSONEncoder`'s internal
 buffers cannot be reached, which limits how complete any fix can be, but the two named buffers can
 be — and the discipline as written promises more than it delivers.
+
+**Fixed, 2026-09-23, on both export and restore.** The restore side had the same defect in mirror
+image (`decodedBackup`'s decrypted JSON and decoded entries), so both are covered:
+- `VaultBackupEntry.label`/`.content` and `VaultBackup.entries` are now `var`, so they can be zeroed in
+  place. `VaultManager.zeroPlaintext(_:)` zeroes every label and content.
+- `exportBackup` zeroes its entries and its JSON by `defer`. The `VaultBackup` is built inside the
+  encode call, so no second reference outlives it.
+- `decodedBackup` zeroes the decrypted JSON on return, and the decoded entries if a check fails.
+  `restoreBackup` zeroes them when the attempt ends, successful or not. The per-entry checks moved out
+  of a loop over the entries, because the loop's own reference to the array would have made the
+  zeroing hit a copy.
+
+In-place zeroing only works while each buffer has one owner; a second reference makes Swift copy on
+write and zero the copy. `BackupPlaintextZeroingTests` pins that property (it checks the buffers'
+addresses are unchanged), and it fails if a second reference is introduced. **Not covered, and can't
+be:** `JSONEncoder`/`JSONDecoder` internals, labels while they pass through Swift `String`s
+(`decryptLabelPayload` returns one), and CryptoKit's own buffers.
 
 ### 4 — Minor, recorded so they are not rediscovered
 

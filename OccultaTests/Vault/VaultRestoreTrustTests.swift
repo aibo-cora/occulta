@@ -608,3 +608,41 @@ struct RestoreArtifactBackupExclusionTests {
         #expect(try fresh.vault.collectedShards(forAttributeID: distributionID).count == owner.shards.count)
     }
 }
+
+// MARK: - Bug 96 item 3
+
+/// Export and restore zero every entry's decrypted label and content through
+/// `VaultManager.zeroPlaintext`. Freed memory can't be read back safely, so this pins the
+/// property the fix depends on instead: the zeroing happens in the original buffers, not in
+/// copies made on write. A caller that kept a second reference to the entries would make this
+/// silently zero a copy; the address check catches that.
+@Suite("Bug 96 item 3 — backup plaintext is zeroed in place")
+struct BackupPlaintextZeroingTests {
+
+    /// 64 bytes, not a short literal: Data keeps anything up to 14 bytes inline, where the
+    /// address `withUnsafeBytes` reports is a temporary and can't be compared.
+    private static let plaintext = Data(repeating: 0xAB, count: 64)
+
+    private func address(of data: Data) -> UInt {
+        data.withUnsafeBytes { UInt(bitPattern: $0.baseAddress) }
+    }
+
+    @Test("Labels and contents are zeroed in their original buffers")
+    func zeroesInPlace() {
+        var entries = [VaultManager.VaultBackupEntry(
+            id: UUID(), entryType: 1, createdAt: Date(), label: Self.plaintext, content: Self.plaintext
+        )]
+        // Detach from the shared static so each buffer has one owner, as it does in production.
+        entries[0].label.append(0xAB)
+        entries[0].content.append(0xAB)
+        let labelAddress   = self.address(of: entries[0].label)
+        let contentAddress = self.address(of: entries[0].content)
+
+        VaultManager.zeroPlaintext(&entries)
+
+        #expect(entries[0].label.allSatisfy { $0 == 0 })
+        #expect(entries[0].content.allSatisfy { $0 == 0 })
+        #expect(self.address(of: entries[0].label) == labelAddress, "the label was zeroed in a copy, not in place")
+        #expect(self.address(of: entries[0].content) == contentAddress, "the content was zeroed in a copy, not in place")
+    }
+}
