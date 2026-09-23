@@ -1068,7 +1068,9 @@ Full record: `decisions.md`, "Filter restore shards by trustee visibility at com
 This satisfies the *Regressions* rule "deferral must not be silently dropped" for hidden trustees only;
 see the residual.
 
-**Migration:** §8's plan adopts a legacy pending file into slot 0, which no longer exists. Still open.
+**Migration:** §8's plan adopted a legacy pending file into slot 0, which no longer exists. Decided
+2026-09-23 (§8): delete held legacy files under both filenames at the first unlock at any depth, without
+a final attempt.
 
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
@@ -1104,6 +1106,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 100 r3 | `.occbak` length estimates vault size | **open, not yet moot** — §9.3 drops `encryptedSnapshot` entirely rather than slotting it (Stage 3, "start shard return": collect shards first, open the file only at the end); Stages 4-5 (storage swap) shipped 2026-09-21, Stage 3 (the reordering that actually removes the file's held-window) has not. See `bugs.md` Bug 100's own 2026-09-21 addendum. **2026-09-23:** §9.4 removes the file entirely, so this becomes moot outright when §9.4 ships (not before). |
 | 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
 | 126 | `pendingRestoreActive`/`pendingRestoreShardCount` hand-synced at five sites | open — closes as moot when §9.4 ships, which removes that state |
+| 127 | v1.10.3's filename rename orphaned ≤v1.10.2 restore files: named for the mechanism, never deleted, in device backups | open — fix belongs in §8/§9.4's legacy migration |
 
 **Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
 `bugs.md` Bug 99.** This table's Bug 99 row qualifies its subsumption with "except the pending-file
@@ -1171,14 +1174,28 @@ prevent by keeping a restore armed (Bug 99).
 
 **Stale, 2026-09-23. The table above no longer applies.** Slots were dropped in §9.3 and the held file in
 §9.4. The shard-buffer row is already handled: legacy `ReconstructShard` rows move into
-`PendingShamirSecretRestore` on unlock (shipped 2026-09-21). What's left is a legacy pending
-`backup-import-cache.occbak` on a device that upgrades mid-restore, which §9.4 has nothing to adopt it
-into. **Open, must be settled with a test before §9.4 ships** (the every-stage migration rule in §4).
-One candidate: at the first depth-0 unlock after upgrade, make one final attempt against the file at
-depth 0, its legacy destination, then delete it whatever the outcome. The banked shards survive, and the
-user's own copy of the file is untouched, so opening it again later still completes. This needs a check
-that no path leaves the sandbox copy as the only copy; Bug 101's `Documents/Inbox` handling bears on
-that.
+`PendingShamirSecretRestore` on unlock (shipped 2026-09-21). What's left is a legacy held `.occbak` on a
+device that upgrades mid-restore, which §9.4 has nothing to adopt it into.
+
+**Decided, 2026-09-23: delete without a final attempt, at the first unlock at any depth.**
+- **What's deleted:** `backup-import-cache.occbak` (v1.10.3) and the v1.10.2-and-earlier
+  `pending-restore.occbak` and `pending-restore-shards.dat`. v1.10.3's rename never migrated the old
+  names (`bugs.md` Bug 127).
+- **Timing:** first unlock at any depth, the same rule `VAULT_KEY_LAYERING.md` settled for its own
+  Stage 1 migration. It never consults the current depth, so a coercer sees the same first unlock in
+  every layer.
+- **Why not a final attempt:** it was considered and not chosen. Under the old code, a restore that
+  could complete would already have completed on the next depth-0 unlock or shard arrival, so an attempt
+  would rarely find anything, for an extra test path.
+- **Shards:** banked rows are untouched. The old shard file is deleted, not salvaged; the restore it
+  belonged to already died at the v1.10.3 upgrade.
+- **Data-loss check:** the deleted `.occbak` is our copy, made when the owner opened the file. The
+  export itself sits wherever they saved it, and an OS copy very likely sits in `Documents/Inbox`
+  (Bug 101). A mid-restore owner opens the file again, and the banked shards complete it. If Bug 101 is
+  later fixed by deleting Inbox copies, recheck this: an AirDropped file could then have no copy left.
+- **No message to the owner:** any notice would either show at every depth or be a depth tell.
+- **Guard:** seed each file; unlock once at depth 0 and once at a duress depth; assert every file is
+  gone and the banked shard rows are unchanged.
 
 ---
 

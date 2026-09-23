@@ -226,8 +226,10 @@ depth-privileged success or failure is itself a forensic trace (Bug 99).
   `.occbak` and import the real vault into his layer, because banked shards aren't bound to a depth. It
   works once (success consumes the shards) and needs a recovery in progress. Decided the same day,
   with a residual: see "Filter restore shards by trustee visibility at completion" below.
-- Legacy devices can have a held `.occbak` from before this change. What happens to it on upgrade is
-  open (`RECOVERY_BUFFER_LAYERING.md` §8).
+- Legacy devices can have a held `.occbak` from before this change. Decided the same day: at the first
+  unlock at any depth, delete it under both filenames, plus the old shard file, without a final
+  attempt. Covers the v1.10.2-and-earlier files that v1.10.3's rename orphaned (`bugs.md` Bug 127).
+  Reasoning and data-loss check: `RECOVERY_BUFFER_LAYERING.md` §8.
 
 **Full reasoning:** `bugs.md` Bug 99, 2026-09-23 addendum; `RECOVERY_BUFFER_LAYERING.md` §9.4.
 

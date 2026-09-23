@@ -10771,3 +10771,45 @@ record:
   written at the same moments. Making both computed would have left nothing to trigger a redraw.
 
 Close as moot when Bug 99's remedy ships.
+
+---
+
+## Bug 127 — v1.10.3's restore-file rename left files from v1.10.2 and earlier orphaned on disk, named for the mechanism and included in device backups
+
+**Status:** Open, filed 2026-09-23. Found while listing what legacy restore state `RECOVERY_BUFFER_LAYERING.md`
+§9.4's migration has to handle.
+
+**Target:** unset. The fix belongs in §9.4's legacy migration (being decided).
+
+### Severity: Medium (forensic), plus a silently lost restore
+
+It affects only devices that were mid-restore when they upgraded from v1.10.2 or earlier to v1.10.3 or later.
+
+### What happens
+
+Bug 93 Part D (`0e35dd6`, 2026-08-25, shipped in v1.10.3) renamed `pending-restore.occbak` →
+`backup-import-cache.occbak` and `pending-restore-shards.dat` → `backup-import-cache-shards.dat`. Its commit
+message says "filesystem paths only", and it included no migration. Nothing in current code references the
+old names (`grep` for `pending-restore.occbak` finds only history). So on an upgraded device:
+
+- **The old files are never read and never deleted.** Their names state what they are, the exact tell Part
+  D existed to remove, readable with `ls` and no key. The `.occbak`'s length estimates the vault's size
+  (Bug 100).
+- **They are in device backups.** Bug 100 remedy 1 (`f9aeaca`, 2026-08-28) sets `isExcludedFromBackup` only
+  on files it writes, under the new names. Old-name files were written before it existed, so they never
+  got the attribute.
+- **The in-flight restore silently died.** `pendingRestoreActive` and `isRestorePending` check the new path
+  only, so the banner vanished and nothing ever attempted the old file again.
+  `migrateLegacyRestoreShardFile` reads only `backup-import-cache-shards.dat`, which no release ever wrote:
+  shards moved into rows (remedy 2) in the same release as the rename.
+
+### Remedy
+
+Fold into §9.4's legacy migration. **Decided 2026-09-23** (`RECOVERY_BUFFER_LAYERING.md` §8): at the first
+unlock at any depth, delete `pending-restore.occbak`, `pending-restore-shards.dat` and
+`backup-import-cache.occbak`, without a final restore attempt. The old shard file is deleted, not salvaged,
+because the restore it belonged to already died at the v1.10.3 upgrade.
+
+### Guard
+
+A migration test seeding both old-name files and asserting neither survives the first unlock after upgrade.
