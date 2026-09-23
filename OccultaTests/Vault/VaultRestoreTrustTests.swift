@@ -12,7 +12,7 @@
 //  `withKnownIssue`: `UInt8(300)` and `UInt64(-1.0)` crash the process rather than throw,
 //  and a crash is not an issue Swift Testing can record — it takes the whole run with it,
 //  reporting the disguised green "Executed 0 tests" that CLAUDE.md documents for
-//  `Manager.Key` in `setUpWithError`. Both traps are fixed now (guards in `importBackup`,
+//  `Manager.Key` in `setUpWithError`. Both traps are fixed now (guards in `decodedBackup`,
 //  ahead of the conversions that used to crash) and the tests run as ordinary assertions.
 //
 
@@ -152,17 +152,14 @@ private func labels(in vault: VaultManager, _ container: ModelContainer, atDepth
 @MainActor
 struct VaultRestoreTrustTests {
 
-    /// The attack, end to end, in the one call that decides it.
+    /// The attack, end to end, through the one production restore path.
     ///
-    /// `restoreBackup` passes `ownerIdentity: nil`, so the GCM tag is the only check —
-    /// and it only proves the shards match the file. Here the *same* party produced both,
-    /// so the tag proves nothing about whose backup this is. Remedy 1 (`reconstructBackup`'s
-    /// step 0) refuses before any of that runs, purely because the victim already has a row.
+    /// `restoreBackup` passes `ownerIdentity: nil`, so the GCM tag is the only check — and it
+    /// only proves the shards match the file. Here the *same* party produced both, so the tag
+    /// proves nothing about whose backup this is. Remedy 1 refuses before any of that runs,
+    /// purely because the victim's layer already has a backup key.
     @Test("A foreign backup and its own shards must not replace an existing BEK")
     func foreignShardsCannotReplaceExistingBEK() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
         let victim   = try makeBackupReadyVault()
         let attacker = try makeBackupReadyVault()
 
@@ -173,34 +170,22 @@ struct VaultRestoreTrustTests {
         // The attacker seals their own file under their own BEK and splits that BEK.
         // Nothing here is forged — it is simply not the victim's.
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
+        let senders        = try bank(attacker.shards, in: victim.vault)
 
-        #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
-            try victim.vault.reconstructBackup(
-                shards:        attacker.shards,
-                backupData:    attackerBackup,
-                ownerIdentity: nil,
-                currentDepth:  0
-            )
-        }
+        let imported = try victim.vault.restoreBackup(from: attackerBackup, currentDepth: 0, visibleContactIdentifiers: senders)
 
-        let victimBEKAfter = try bekBytes(of: victim.vault)
-        #expect(victimBEKAfter == victimBEKBefore, """
+        #expect(!imported)
+        #expect(try bekBytes(of: victim.vault) == victimBEKBefore, """
             The victim's BEK was replaced by one reconstructed from a stranger's shards. \
             Every backup file sealed under the old key is now permanently unrestorable, \
             and the trustees' real shards reconstruct a key that matches nothing.
             """)
     }
 
-    /// The second half of the same harm: once the BEK has been replaced, `importBackup`
-    /// decrypts the attacker's file with it and inserts their rows into the user's vault.
-    /// With remedy 1 in place, `reconstructBackup` never gets far enough to replace anything,
-    /// so `importBackup` is never even reached on this path — asserted directly below rather
-    /// than via `restoreBackup`, since that already stops calling it once the first throws.
+    /// The second half of the same harm: had the BEK been replaced, the attacker's entries
+    /// would have been inserted into the user's vault.
     @Test("A foreign backup's entries must not be inserted into an existing vault")
     func foreignEntriesAreNotInserted() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
         let victim   = try makeBackupReadyVault()
         let attacker = try makeBackupReadyVault()
 
@@ -208,25 +193,17 @@ struct VaultRestoreTrustTests {
         _ = try attacker.vault.addEntry(label: "planted", content: Data("planted".utf8), type: .note)
 
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
+        let senders        = try bank(attacker.shards, in: victim.vault)
 
-        #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
-            try victim.vault.reconstructBackup(shards: attacker.shards,
-                                           backupData: attackerBackup, ownerIdentity: nil, currentDepth: 0)
-        }
-        // importBackup still decrypts with whatever BEK is installed — the victim's own,
-        // unchanged — so the attacker's ciphertext must fail to open at all, not just fail
-        // to name the entry "planted".
-        #expect(throws: VaultManager.BackupError.decryptionFailed) {
-            try victim.vault.importBackup(attackerBackup, currentDepth: 0)
-        }
+        #expect(try !victim.vault.restoreBackup(from: attackerBackup, currentDepth: 0, visibleContactIdentifiers: senders))
 
-        let labels = try ModelContext(victim.container)
+        let allLabels = try ModelContext(victim.container)
             .fetch(FetchDescriptor<VaultEntry>())
             .compactMap { try? victim.vault.decryptLabelPayload(for: $0).label }
 
-        #expect(!labels.contains("planted"), """
+        #expect(!allLabels.contains("planted"), """
             A stranger's vault entry was inserted into the user's vault. Labels now: \
-            \(labels.sorted()).
+            \(allLabels.sorted()).
             """)
     }
 
@@ -235,58 +212,27 @@ struct VaultRestoreTrustTests {
     /// Bug 94's remedy refuses to overwrite an existing BEK. If that guard is written a
     /// notch too wide it also blocks the only path this system exists for — a device that
     /// lost everything, restoring from trustees. That failure is silent, and surfaces when
-    /// the user has no device left to discover it on. This test must pass before the fix
-    /// and after it.
-    /// The only test in this suite that needs a real Enclave. The other thirteen assert that
-    /// something is *refused*, and a refusal still happens when the depth stamp silently
-    /// fails to seal. This one asserts a restore succeeds end to end, which needs
-    /// `importBackup`'s stamp to actually be written — see `VaultBackupRoundTripTests` for
-    /// why the injected key manager does not reach it.
-    @Test("A device with no BEK can still restore — the new-device path stays open",
-          .enabled(if: secureEnclaveAvailable()))
+    /// the user has no device left to discover it on.
+    @Test("A device with no BEK can still restore — the new-device path stays open")
     func freshDeviceCanStillRestore() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
         let owner = try makeBackupReadyVault()
         _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
-        let backup    = try owner.vault.exportBackup(currentDepth: 0)
-        let ownerBEK  = try bekBytes(of: owner.vault)
+        let backup   = try owner.vault.exportBackup(currentDepth: 0)
+        let ownerBEK = try bekBytes(of: owner.vault)
 
         // The replacement device: vault set up, backup never configured, so no BEK row.
         let fresh = try makeFreshVault()
         #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "a fresh device must start with no BEK")
+        let senders = try bank(owner.shards, in: fresh.vault)
 
-        try fresh.vault.reconstructBackup(shards: owner.shards, backupData: backup, ownerIdentity: nil, currentDepth: 0)
+        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: senders))
         #expect(try bekBytes(of: fresh.vault) == ownerBEK,
-                "reconstruction must install the owner's BEK on a device that had none")
-
-        try fresh.vault.importBackup(backup, currentDepth: 0)
-        let labels = try ModelContext(fresh.container)
-            .fetch(FetchDescriptor<VaultEntry>())
-            .compactMap { try? fresh.vault.decryptLabelPayload(for: $0).label }
-        #expect(labels.contains("recovered"), """
+                "restore must install the owner's BEK on a device that had none")
+        #expect(try labels(in: fresh.vault, fresh.container, atDepth: 0).contains("recovered"), """
             The new-device restore path is broken. This is the path the whole shard system \
             exists for, and its failure mode is discovered only when the device is gone.
             """)
-    }
-
-    /// Bug 94 remedy 1 at the entry point: a depth that already has a backup key refuses,
-    /// even with a full, matching set of the file's own shares banked.
-    @Test("restoreBackup refuses a depth that already has a backup key")
-    func restoreRefusesWhenBEKAlreadyExists() throws {
-        let victim         = try makeBackupReadyVault()
-        let attacker       = try makeBackupReadyVault()
-        let victimBEK      = try bekBytes(of: victim.vault)
-        let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
-        let senders        = try bank(attacker.shards, in: victim.vault)
-
-        let imported = try victim.vault.restoreBackup(
-            from: attackerBackup, currentDepth: 0, visibleContactIdentifiers: senders
-        )
-
-        #expect(!imported)
-        #expect(try bekBytes(of: victim.vault) == victimBEK, "the existing backup key must be untouched")
+        #expect(fresh.vault.postRestorePromptPending)
     }
 
     /// Collection is depth-blind, so banked shards may belong to a restore another layer is
@@ -346,21 +292,6 @@ struct VaultRestoreTrustTests {
 @Suite("Bug 99 — a restore completes at the depth its file is opened at", .serialized, .enabled(if: secureEnclaveAvailable()))
 @MainActor
 struct VaultRestoreDepthTests {
-
-    @Test("A genuine restore completes at depth 0")
-    func genuineRestoreCompletesAtDepthZero() throws {
-        let owner  = try makeBackupReadyVault()
-        _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
-        let backup = try owner.vault.exportBackup(currentDepth: 0)
-
-        let fresh   = try makeFreshVault()
-        let senders = try bank(owner.shards, in: fresh.vault)
-
-        #expect(try fresh.vault.restoreBackup(from: backup, currentDepth: 0, visibleContactIdentifiers: senders))
-        #expect(try bekBytes(of: fresh.vault, atDepth: 0) == bekBytes(of: owner.vault))
-        #expect(try labels(in: fresh.vault, fresh.container, atDepth: 0).contains("recovered"))
-        #expect(fresh.vault.postRestorePromptPending)
-    }
 
     /// Bug 99's fix. The coercer's own restore (his file, his trustees paired in his layer)
     /// completes in his layer, as it would in any working app, so watching it tells him
@@ -471,60 +402,92 @@ struct VaultRestoreDepthTests {
 @MainActor
 struct VaultRestoreRobustnessTests {
 
-    /// Seal an arbitrary `VaultBackup` under a vault's BEK, producing a file that vault
-    /// will accept. Reaching the traps below requires exactly this — which is why Bug 94
-    /// is what makes them exploitable rather than theoretical.
+    /// Seal arbitrary bytes under `owner`'s BEK as a `.occbak`. The owner's shards open it,
+    /// so it passes the GCM check — which is why Bug 94 is what makes a hostile file
+    /// reachable rather than theoretical.
     @MainActor
-    private func sealedBackup(_ backup: VaultManager.VaultBackup,
-                              under vault: VaultManager) throws -> Data {
-        let json   = try JSONEncoder().encode(backup)
-        let sealed = try AES.GCM.seal(json, using: try vault.currentBackupKey(currentDepth: 0),
-                                      nonce: AES.GCM.Nonce(), authenticating: backupFileAAD)
+    private func sealed(_ plaintext: Data, under owner: VaultManager) throws -> Data {
+        let box = try AES.GCM.seal(plaintext, using: try owner.currentBackupKey(currentDepth: 0),
+                                   nonce: AES.GCM.Nonce(), authenticating: backupFileAAD)
         var out = Data("OCBK".utf8)
-        out.append(sealed.combined!)
+        out.append(box.combined!)
         return out
+    }
+
+    @MainActor
+    private func sealedBackup(_ entries: [VaultManager.VaultBackupEntry], under owner: VaultManager) throws -> Data {
+        try self.sealed(JSONEncoder().encode(VaultManager.VaultBackup(version: 1, createdAt: Date(), entries: entries)),
+                        under: owner)
+    }
+
+    /// Restores `data` onto a fresh vault holding all of `owner`'s shards, and checks the
+    /// Bug 129 guarantee: a file that matches the shards but fails later leaves no backup key,
+    /// no entries, and every shard still banked.
+    @MainActor
+    private func expectRestoreLeavesNothing(_ data: Data, owner: (vault: VaultManager, container: ModelContainer, shards: [SignedAttribute])) throws {
+        let fresh          = try makeFreshVault()
+        let senders        = try bank(owner.shards, in: fresh.vault)
+        let distributionID = try #require(owner.shards.first?.entryID)
+
+        #expect(try !fresh.vault.restoreBackup(from: data, currentDepth: 0, visibleContactIdentifiers: senders))
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "a failed restore must not leave a backup key")
+        #expect(try fresh.vault.collectedShards(forAttributeID: distributionID).count == owner.shards.count,
+                "a file that matches the shards but fails to decode must not consume them")
+
+        // A later save anywhere must not commit anything the failed attempt staged.
+        _ = try fresh.vault.addEntry(label: "later", content: Data("later".utf8), type: .note)
+        #expect(try labels(in: fresh.vault, fresh.container, atDepth: 0) == ["later"])
+
+        // The layer can still be restored from a good copy.
+        let good = try owner.vault.exportBackup(currentDepth: 0)
+        #expect(try fresh.vault.restoreBackup(from: good, currentDepth: 0, visibleContactIdentifiers: senders))
     }
 
     /// `VaultEntryType(rawValue: UInt8(backupEntry.entryType))` — the `?? .note` guards
     /// the `rawValue:` lookup, but `UInt8(_: Int)` traps first on anything outside 0...255.
-    @Test("An out-of-range entryType is rejected, not trapped")
-    func outOfRangeEntryTypeThrows() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
-        let victim = try makeBackupReadyVault()
-        let hostile = VaultManager.VaultBackup(
-            version: 1, createdAt: Date(),
-            entries: [.init(id: UUID(), entryType: 300, createdAt: Date(),
-                            label: Data("x".utf8), content: Data())]
+    @Test("An out-of-range entryType is rejected, not trapped, and leaves nothing behind")
+    func outOfRangeEntryTypeLeavesNothing() throws {
+        let owner = try makeBackupReadyVault()
+        let data  = try self.sealedBackup(
+            [.init(id: UUID(), entryType: 300, createdAt: Date(), label: Data("x".utf8), content: Data())],
+            under: owner.vault
         )
-        let data = try self.sealedBackup(hostile, under: victim.vault)
-
-        #expect(throws: (any Error).self) {
-            try victim.vault.importBackup(data, currentDepth: 0)
-        }
+        try self.expectRestoreLeavesNothing(data, owner: owner)
     }
 
     /// `VaultEntry.aad(for:)` does `UInt64(self.createdAt.timeIntervalSince1970)`, which
     /// traps on any date before 1970. The fix belongs at import: `aad` is read by every
     /// vault path, and changing its byte layout would strand every existing entry.
-    @Test("A pre-1970 createdAt is rejected, not trapped")
-    func preEpochCreatedAtThrows() throws {
-        clearRestoreFiles()
-        defer { clearRestoreFiles() }
-
-        let victim = try makeBackupReadyVault()
-        let hostile = VaultManager.VaultBackup(
-            version: 1, createdAt: Date(),
-            entries: [.init(id: UUID(), entryType: 1,
-                            createdAt: Date(timeIntervalSince1970: -1),
-                            label: Data("x".utf8), content: Data())]
+    @Test("A pre-1970 createdAt is rejected, not trapped, and leaves nothing behind")
+    func preEpochCreatedAtLeavesNothing() throws {
+        let owner = try makeBackupReadyVault()
+        let data  = try self.sealedBackup(
+            [.init(id: UUID(), entryType: 1, createdAt: Date(timeIntervalSince1970: -1), label: Data("x".utf8), content: Data())],
+            under: owner.vault
         )
-        let data = try self.sealedBackup(hostile, under: victim.vault)
+        try self.expectRestoreLeavesNothing(data, owner: owner)
+    }
 
-        #expect(throws: (any Error).self) {
-            try victim.vault.importBackup(data, currentDepth: 0)
-        }
+    /// Bug 129: the key used to be committed before the file was decoded, so a file that
+    /// passed the GCM check but didn't decode installed its author's key with nothing imported,
+    /// and every later attempt at that depth was refused.
+    @Test("A file that matches the shards but isn't a backup leaves no key behind")
+    func undecodableFileLeavesNothing() throws {
+        let owner = try makeBackupReadyVault()
+        try self.expectRestoreLeavesNothing(try self.sealed(Data("junk".utf8), under: owner.vault), owner: owner)
+    }
+
+    /// Bug 129's second half: entries were checked inside the insert loop, so a bad second
+    /// entry was found after the first had been inserted, and the next save anywhere committed
+    /// that first entry.
+    @Test("An invalid second entry leaves the first one uninserted")
+    func invalidSecondEntryLeavesNothing() throws {
+        let owner = try makeBackupReadyVault()
+        let data  = try self.sealedBackup([
+            .init(id: UUID(), entryType: 1, createdAt: Date(), label: Data("first".utf8), content: Data("first".utf8)),
+            .init(id: UUID(), entryType: 300, createdAt: Date(), label: Data("second".utf8), content: Data()),
+        ], under: owner.vault)
+        try self.expectRestoreLeavesNothing(data, owner: owner)
     }
 
     /// **Reversed, 2026-09-21 — `RECOVERY_BUFFER_LAYERING.md` §9.3's final decision.** The

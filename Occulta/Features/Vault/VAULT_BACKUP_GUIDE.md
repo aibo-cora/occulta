@@ -583,7 +583,7 @@ proceeds. Check there before assuming this gap is still fully open.
 | Restore shard buffer | `ReconstructShard` rows, no depth | shards cannot be attributed to a layer before reconstruction |
 | Completion | depth 0 only | completes in one layer and not the other, which is a coercer-triggerable test (Bug 99) |
 
-Restored entries *are* stamped, by `importBackup(_:currentDepth:)`, and vault
+Restored entries *are* stamped with the depth they're restored at (`restoreBackup`), and vault
 entries are exact-match rather than nested — so an entry restored at depth 2 is
 visible only at depth 2. The contents are layered. The key and the machinery around
 them are not.

@@ -1128,7 +1128,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 126 | `pendingRestoreActive`/`pendingRestoreShardCount` hand-synced at five sites | **closed, moot, 2026-09-23** — §9.4 removed that state |
 | 127 | v1.10.3's filename rename orphaned ≤v1.10.2 restore files: named for the mechanism, never deleted, in device backups | **fixed, 2026-09-23** — `deleteLegacyRestoreState` on every unlock |
 | 128 | "Erase all data" deletes no files, so the held `.occbak` and `backup-export-meta.dat` survive a wipe | **fixed, 2026-09-23** — the wipe deletes the files |
-| 129 | A restore whose entry import fails after the key is saved leaves the depth stuck (key in place, entries missing, retries refused) | open — separate fix, not in the §9.4 change |
+| 129 | A restore whose entry import fails after the key is saved leaves the depth stuck (key in place, entries missing, retries refused) | **fixed, 2026-09-23** — check everything, then write once with rollback; shards kept on a bad file |
 
 **Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
 `bugs.md` Bug 99.** This table's Bug 99 row qualifies its subsumption with "except the pending-file

@@ -48,7 +48,7 @@ extension VaultManager {
 
     // MARK: - Wire format constants
 
-    /// Not `private` — `Backup.reconstruct` also seals/opens against this exact
+    /// Not `private` — `Backup.verifiedKey` also seals/opens against this exact
     /// format, and needs to reference it. A plain constant reference, not a stored
     /// dependency — costs `Backup` nothing in coupling; the value never changes and
     /// carries no state.
@@ -212,30 +212,21 @@ extension VaultManager {
         }
     }
 
-    // MARK: - Import
+    // MARK: - Restore helpers
+    //
+    // `restoreBackup` checks everything before writing anything (`bugs.md` Bug 129):
+    // `decodedBackup` does every check that can reject a file, and `insertEntries` only
+    // stages rows, so the backup key and the entries commit in one save or not at all.
 
-    /// Open a `.occbak` file with the current backup key and restore all entries.
-    ///
-    /// Requires the backup key to be set up — call `backup.reconstruct(...)` first
-    /// on a new device. Inserts new VaultEntry rows preserving the original id and
-    /// createdAt from the backup so entry history is maintained.
-    ///
-    /// Stamps every restored entry with `currentDepth` (Bug 88's import half) — no default,
-    /// same reasoning as `exportBackup(currentDepth:)`. `restoreBackup` calls this with the
-    /// depth the file was opened at (RECOVERY_BUFFER_LAYERING.md §9.4).
-    func importBackup(_ data: Data, currentDepth: Int) throws {
-        let vaultKey = try self.currentKey()
-
-        guard let decoded = try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext) else {
-            throw BackupError.bekNotSetup
-        }
-
+    /// Decrypts `data` with `bek`, decodes it, and checks every entry, without touching the
+    /// store. Every check that can reject a file happens here, before any write.
+    private func decodedBackup(_ data: Data, using bek: SymmetricKey) throws -> VaultBackup {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
 
         let box  = try AES.GCM.SealedBox(combined: data.dropFirst(4))
         let json: Data
         do {
-            json = try AES.GCM.open(box, using: decoded.bek, authenticating: Self.backupFileAAD)
+            json = try AES.GCM.open(box, using: bek, authenticating: Self.backupFileAAD)
         } catch {
             throw BackupError.decryptionFailed
         }
@@ -243,29 +234,39 @@ extension VaultManager {
         let backup = try JSONDecoder().decode(VaultBackup.self, from: json)
 
         for backupEntry in backup.entries {
-            // Skip entries that already exist — prevents double-insertion on interrupted
-            // restore (e.g. app crash after some entries were saved but before file cleanup).
-            if (try? self.fetchEntry(by: backupEntry.id)) != nil { continue }
-
             // UInt8(_: Int) traps outside 0...255 — VaultEntryType(rawValue:) is the safe
             // conversion, but only once the Int is known to fit. Anything that doesn't isn't
             // a future version's entry type, it's malformed.
-            guard let entryTypeRaw = UInt8(exactly: backupEntry.entryType) else {
+            guard UInt8(exactly: backupEntry.entryType) != nil else {
                 throw BackupError.invalidFormat
             }
-            let entryType   = VaultEntryType(rawValue: entryTypeRaw) ?? .note
-            let labelString = String(data: backupEntry.label, encoding: .utf8) ?? ""
 
             // UInt64(_: Double) traps outside its representable range — negative (pre-1970)
             // or large enough to overflow. aad(for:) does this exact conversion and cannot be
             // changed to guard it (sealed contract, see its doc comment), so the check has to
-            // happen here, before createdAt is ever assigned. A plain range check rather than
+            // happen before createdAt is ever assigned. A plain range check rather than
             // UInt64(exactly:) — the latter requires exact integer representability, which
             // would reject every legitimate sub-second timestamp along with the bad ones.
             let createdAtSeconds = backupEntry.createdAt.timeIntervalSince1970
             guard createdAtSeconds >= 0, createdAtSeconds < Double(UInt64.max) else {
                 throw BackupError.invalidFormat
             }
+        }
+        return backup
+    }
+
+    /// Inserts `backup`'s entries at `currentDepth` **without saving**, preserving each
+    /// original id and createdAt so entry history survives. Stamps every entry with
+    /// `currentDepth` (Bug 88's import half) — the depth the file was opened at.
+    /// Expects `decodedBackup` to have checked every entry already.
+    private func insertEntries(_ backup: VaultBackup, currentDepth: Int, vaultKey: SymmetricKey) throws {
+        for backupEntry in backup.entries {
+            // Skip entries that already exist — prevents double-insertion when the same
+            // entries are already in the store.
+            if (try? self.fetchEntry(by: backupEntry.id)) != nil { continue }
+
+            let entryType   = UInt8(exactly: backupEntry.entryType).flatMap(VaultEntryType.init(rawValue:)) ?? .note
+            let labelString = String(data: backupEntry.label, encoding: .utf8) ?? ""
 
             // Build the entry with the original id and createdAt so that AAD is
             // consistent with the original device and entry history is preserved.
@@ -309,8 +310,6 @@ extension VaultManager {
 
             self.modelContext.insert(entry)
         }
-
-        try self.modelContext.save()
     }
 
     // MARK: - Backup-excluded writes
@@ -354,17 +353,25 @@ extension VaultManager {
     /// See `RECOVERY_BUFFER_LAYERING.md` §9.4.
     ///
     /// Tries each banked BEK-restore distribution against the file; the GCM tag inside
-    /// `Backup.reconstruct` picks the one that matches. Only shards whose sender is in
+    /// `Backup.verifiedKey` picks the one that matches. Only shards whose sender is in
     /// `visibleContactIdentifiers` count. A real backup opened in a layer that hides its
     /// trustees can't complete there, and a coercer's own trustees, created in his layer,
     /// don't count at depth 0 (`bugs.md` Bug 99).
     ///
-    /// Returns whether entries were imported. Every failure returns `false` the same way —
-    /// this depth already has a backup key (Bug 94 remedy 1), too few shards, or no matching
-    /// distribution. Throws only for a file that isn't a backup, or when the vault is locked.
+    /// **Checks everything before writing anything, then writes once** (`bugs.md` Bug 129):
+    /// the key is verified and the whole file decoded and checked first; only then are the
+    /// key and the entries staged and committed in one save. Any failure rolls the staged
+    /// changes back, so a bad file leaves no key and no entries behind, and the layer can
+    /// still be restored from a good copy.
     ///
-    /// Banked shards are left alone when this depth already has a key: collection is
-    /// depth-blind, so they may belong to another layer's restore.
+    /// Returns whether entries were imported. Every failure returns `false` the same way —
+    /// this depth already has a backup key (Bug 94 remedy 1), too few shards, no matching
+    /// distribution, or a file that matches but won't decode. Throws only for a file that
+    /// isn't a backup, or when the vault is locked.
+    ///
+    /// Banked shards are consumed only on success. They're left alone when this depth
+    /// already has a key (collection is depth-blind, so they may belong to another layer's
+    /// restore) and when the file matches but won't decode (only that copy is bad).
     func restoreBackup(from data: Data, currentDepth: Int, visibleContactIdentifiers: Set<String>) throws -> Bool {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
         let vaultKey = try self.currentKey()
@@ -378,14 +385,28 @@ extension VaultManager {
                 .filter { visibleContactIdentifiers.contains($0.senderIdentifier) }
             guard !shards.isEmpty else { continue }
 
+            guard var verified = try? self.backup.verifiedKey(
+                vaultKey: vaultKey, shards: shards.map { $0.attribute }, backupData: data,
+                ownerIdentity: nil, currentDepth: currentDepth, modelContext: self.modelContext
+            ) else { continue }
+            defer { for i in verified.bekBytes.indices { verified.bekBytes[i] = 0 } }
+
+            // The key opened this file, so no other distribution will. From here any failure
+            // ends the attempt with nothing written.
             do {
-                try self.backup.reconstruct(
-                    vaultKey: vaultKey, shards: shards.map { $0.attribute }, backupData: data,
-                    ownerIdentity: nil, currentDepth: currentDepth, modelContext: self.modelContext
+                let backup = try self.decodedBackup(data, using: SymmetricKey(data: verified.bekBytes))
+                try self.backup.stage(
+                    BackupEncryptionKey.Payload(
+                        bekBytes: verified.bekBytes, distributionID: verified.distributionID, shardMetadata: nil
+                    ),
+                    vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext
                 )
-                try self.importBackup(data, currentDepth: currentDepth)
+                try self.insertEntries(backup, currentDepth: currentDepth, vaultKey: vaultKey)
+                try self.modelContext.save()
             } catch {
-                continue
+                // Staged rows would otherwise be committed by the next save anywhere.
+                self.modelContext.rollback()
+                return false
             }
 
             self.orphanShards(forAttributeID: distributionID)
@@ -455,17 +476,6 @@ extension VaultManager {
     func currentBackupKey(currentDepth: Int) throws -> SymmetricKey {
         let vaultKey = try self.currentKey()
         return try self.backup.current(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
-    }
-
-    /// Reconstruct the backup key from ≥ k shards, validate against `backupData`, and
-    /// re-wrap under the current vault key at `currentDepth`. See `Backup.reconstruct`
-    /// for the full steps.
-    func reconstructBackup(shards: [SignedAttribute], backupData: Data, ownerIdentity: Data?, currentDepth: Int) throws {
-        let vaultKey = try self.currentKey()
-        try self.backup.reconstruct(
-            vaultKey: vaultKey, shards: shards, backupData: backupData, ownerIdentity: ownerIdentity,
-            currentDepth: currentDepth, modelContext: self.modelContext
-        )
     }
 
     // MARK: - Backup key filler baseline
@@ -705,7 +715,7 @@ extension VaultManager {
         /// `nil` encodes to random filler — total, matches `DepthCodec.encode`'s own
         /// "must not trap" requirement. `shardCount`/`entryCount` saturate via
         /// `clamping:` rather than a plain cast, which would trap outside range —
-        /// exactly the class of bug fixed twice in `importBackup` (Bug 96).
+        /// exactly the class of bug fixed twice in backup import, now `decodedBackup` (Bug 96).
         static func encodeSlot(_ meta: BackupExportMetadata?) -> Data {
             guard let meta else { return Data.randomBytes(Self.slotPlainSize) }
 
@@ -892,7 +902,7 @@ extension VaultManager {
     ///
     /// Not called directly outside `VaultManager` — the "Backup key wrappers" section
     /// above (`backupSetupState`, `setupBackup`, `backupShardMetadata`,
-    /// `prepareBackupShards`, `currentBackupKey`, `reconstructBackup`) is the surface UI
+    /// `prepareBackupShards`, `currentBackupKey`) is the surface UI
     /// code and tests use; each one derives `vaultKey` via `self.currentKey()`, already
     /// has `self.modelContext`, and calls through. `rotate` and `distributeShards` have
     /// no caller yet and get no wrapper — add one only once something actually calls
@@ -1167,8 +1177,11 @@ extension VaultManager {
 
         // MARK: - Reconstruction
 
-        /// Reconstruct the backup key from ≥ k shards, validate against the backup
-        /// file, and re-wrap under the current vault key.
+        /// Rebuilds the backup key from ≥ k shards and returns it once it has opened
+        /// `backupData`. **Writes nothing**: `VaultManager.restoreBackup` decodes and checks
+        /// the whole file with this key before staging anything, so a file that fails
+        /// later leaves no key behind (`bugs.md` Bug 129). The caller owns the returned
+        /// bytes and zeroes them.
         ///
         /// Steps:
         ///   0. Refuse if `currentDepth` already has a backup key row — that layer is
@@ -1178,21 +1191,14 @@ extension VaultManager {
         ///      Pass nil on new-device path (old key non-migratable); GCM tag substitutes.
         ///   3. Shamir.reconstruct → candidate backup key.
         ///   4. AES.GCM.open(backupFile, using: candidate) — GCM tag validates.
-        ///   5. Persist new payload sealed under current vault key, into `currentDepth`'s
-        ///      row. shardMetadata is cleared — redistribution prompt handles rebuild.
-        ///
-        /// On success, the caller (`VaultManager.restoreBackup`) calls
-        /// `importBackup(_:currentDepth:)` with the same depth to restore vault entries.
-        /// `currentDepth` is the depth the backup file was opened at
-        /// (`RECOVERY_BUFFER_LAYERING.md` §9.4).
-        func reconstruct(
+        func verifiedKey(
             vaultKey:      SymmetricKey,
             shards:        [SignedAttribute],
             backupData:    Data,
             ownerIdentity: Data?,
             currentDepth:  Int,
             modelContext:  ModelContext
-        ) throws {
+        ) throws -> (bekBytes: Data, distributionID: UUID) {
             guard try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) == nil else {
                 throw BackupError.bekAlreadyPresent
             }
@@ -1215,7 +1221,10 @@ extension VaultManager {
             } catch {
                 throw BackupError.bekReconstructionFailed
             }
-            defer { for i in bekData.indices { bekData[i] = 0 } }
+
+            // Zero the candidate on every failure below; on success the bytes go to the caller.
+            var verified = false
+            defer { if !verified { for i in bekData.indices { bekData[i] = 0 } } }
 
             guard bekData.count == 32 else { throw BackupError.bekReconstructionFailed }
             let candidateBEK = SymmetricKey(data: bekData)
@@ -1227,16 +1236,8 @@ extension VaultManager {
                 throw BackupError.bekReconstructionFailed
             }
 
-            try self.persist(
-                BackupEncryptionKey.Payload(
-                    bekBytes:      bekData,
-                    distributionID: distributionID,
-                    shardMetadata: nil
-                ),
-                vaultKey: vaultKey,
-                currentDepth: currentDepth,
-                modelContext: modelContext
-            )
+            verified = true
+            return (bekData, distributionID)
         }
 
         // MARK: - Rotation
@@ -1606,7 +1607,7 @@ extension VaultManager {
         /// still fails to open/decode means real corruption, so this throws rather
         /// than silently returning nil for that case.
         ///
-        /// Internal, not private — `VaultManager`'s own `exportBackup`, `importBackup`,
+        /// Internal, not private — `VaultManager`'s own `exportBackup`,
         /// `refreshBackupStaleness`, `restoreBackup`, and
         /// `migrateLegacyBEKStorageIfNeeded` all call this directly, since they need
         /// both `payload` and `bek`, more than the public
@@ -1624,12 +1625,21 @@ extension VaultManager {
             return Decoded(payload: payload, bek: SymmetricKey(data: payload.bekBytes))
         }
 
-        /// Writes `payload` into `currentDepth`'s row — the already-live row if one
-        /// exists, otherwise a claimed filler row (or a freshly inserted one, past the
-        /// 32-row baseline).
+        /// Writes `payload` into `currentDepth`'s row and saves. See `stage`.
         ///
         /// Internal, not private — same reason as `fetchDecoded` above.
         func persist(
+            _ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext
+        ) throws {
+            try self.stage(payload, vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext)
+            try modelContext.save()
+        }
+
+        /// Writes `payload` into `currentDepth`'s row — the already-live row if one
+        /// exists, otherwise a claimed filler row (or a freshly inserted one, past the
+        /// 32-row baseline) — **without saving**, so a caller can commit it together with
+        /// other changes, or roll it back (`VaultManager.restoreBackup`, `bugs.md` Bug 129).
+        func stage(
             _ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext
         ) throws {
             let row: BackupEncryptionKey
@@ -1643,7 +1653,6 @@ extension VaultManager {
                 guard row.depth != nil, row.deletionToken != nil else { throw BackupError.encryptionFailed }
             }
             try self.seal(payload, vaultKey: vaultKey, into: row)
-            try modelContext.save()
         }
     }
 }

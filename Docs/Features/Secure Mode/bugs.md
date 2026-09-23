@@ -10865,7 +10865,9 @@ Seed every file, run `eraseAllData()`, and assert none remain.
 
 ## Bug 129 — A restore whose entry import fails after the key is saved leaves that depth stuck: key installed, entries missing, every retry refused
 
-**Status:** Open, filed 2026-09-23. Found while drafting §9.4's `restoreBackup`. Present in shipped code
+**Status:** **Fixed, 2026-09-23.** `restoreBackup` checks everything, then writes once with rollback. `importBackup`,
+`reconstructBackup` and `Backup.reconstruct` were deleted, since no production code called them any more;
+their tests now go through `restoreBackup`. Found while drafting §9.4's `restoreBackup`. Present in shipped code
 (`attemptBackupRestore`), and the new function keeps the same shape.
 
 **Target:** unset.
@@ -10896,13 +10898,39 @@ entries.
   layer's backup key with nothing imported. Later exports from that layer are then readable by the file's
   author.
 
-### Remedy (proposed, not built)
+**A second failure in the same path, found 2026-09-23 while deciding the fix.** `importBackup` inserts
+entries one at a time and saves once at the end. If an entry fails validation partway (an out-of-range
+`entryType` or `createdAt`), the entries inserted before it stay in `VaultManager`'s shared `modelContext`
+unsaved, and the next `save()` anywhere commits them. So a failed import can leave a partial import behind
+later, even when no key was saved.
 
-Make the two steps one unit: decrypt and fully decode the file with the candidate key before `persist`
-runs, then save the key and the entries in a single `modelContext.save()`, so any failure leaves nothing
-behind. Separate from §9.4 and not in that change.
+### Remedy — decided and built 2026-09-23
+
+**Check everything first, then write once.**
+- Split `Backup.reconstruct` into a step that verifies the key against the file and writes nothing, and
+  the existing `persist`.
+- Split `importBackup` into decrypt, decode and validate every entry, and insert without saving.
+- `restoreBackup` runs all the checks before any write, stages the key and the entries, and commits them
+  in one `modelContext.save()`. On any failure, `modelContext.rollback()` discards the staged changes.
+- A failed attempt leaves nothing behind, and the layer can still be restored from a good copy of the
+  file. `importBackup` and `reconstructBackup` are rebuilt from the same pieces and also roll back.
+
+**Shards after a file that verifies but won't decode are kept, not consumed.** They reconstructed the
+file's key, so they're genuine; only this copy of the file is bad, and a good copy can still complete. The
+owner sees the usual neutral message.
+
+Not chosen:
+- **Undo afterwards** (revert the saved key row): it would have to become indistinguishable from a
+  filler row again, and inserted entries would still need cleanup.
+- **SwiftData `transaction { }`:** how the inner `save()` calls behave inside a transaction isn't
+  documented.
+
+`rollback()` discards every unsaved change in the shared context, not only this attempt's. That's
+acceptable because every other `VaultManager` operation saves before returning, but it is worth knowing.
 
 ### Guard
 
-A file that passes the GCM check but fails decoding: after the attempt, that depth has no backup key and no
-new entries, and a valid file can still restore there.
+- A file that passes the GCM check but fails decoding: after the attempt, that depth has no backup key and
+  no new entries, the banked shards are still there, and a valid file can still restore there.
+- A file whose second entry is invalid: no entries are inserted, including the first, and a later `save()`
+  elsewhere commits nothing from it.

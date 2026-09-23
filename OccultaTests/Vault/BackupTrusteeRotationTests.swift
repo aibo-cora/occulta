@@ -36,6 +36,9 @@ private func makeContainer() throws -> ModelContainer {
         AppLayerConfig.self,
         BackupEncryptionKey.self,
         VaultEntry.self,
+        // restoreBackup reads banked shards from these.
+        Vault.self,
+        PendingShamirSecretRestore.self,
         Contact.Profile.self,
         Contact.Profile.PhoneNumber.self,
         Contact.Profile.EmailAddress.self,
@@ -141,7 +144,12 @@ struct BackupTrusteeRotationTests {
         let realBEK     = try bekBytes(of: vault)
 
         let restoreTarget = try makeFreshVault()
-        try restoreTarget.reconstructBackup(shards: round2, backupData: backupData, ownerIdentity: nil, currentDepth: 0)
+        var senders = Set<String>()
+        for (i, shard) in round2.enumerated() {
+            try restoreTarget.absorbShard(shard, senderIdentifier: "trustee-\(i)")
+            senders.insert("trustee-\(i)")
+        }
+        #expect(try restoreTarget.restoreBackup(from: backupData, currentDepth: 0, visibleContactIdentifiers: senders))
         let reconstructed = try bekBytes(of: restoreTarget)
         #expect(reconstructed == realBEK)
     }
