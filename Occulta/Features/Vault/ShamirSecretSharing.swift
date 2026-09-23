@@ -161,16 +161,21 @@ enum ShamirSecretSharing {
 
     /// Multiply two elements in GF(2^8) using the Russian peasant algorithm.
     ///
+    /// Branch-free: each conditional step is an all-ones or all-zero mask, so every
+    /// iteration does the same work whatever the inputs (`bugs.md` Bug 131). Secret bytes
+    /// pass through here in `split` and `reconstruct`. The optimizer happened to emit
+    /// conditional selects for the old `if` form, but the source didn't guarantee it and
+    /// unoptimized builds branched.
+    ///
     /// Internal visibility for unit testing.
     static func gfMul(_ a: UInt8, _ b: UInt8) -> UInt8 {
         var p: UInt8 = 0
         var a = a
         var b = b
         for _ in 0..<8 {
-            if b & 1 != 0 { p ^= a }
-            let carry = a & 0x80 != 0
-            a <<= 1
-            if carry { a ^= 0x1B }   // reduce: x^8 mod 0x11B ≡ 0x1B
+            p ^= a & (0 &- (b & 1))         // add a when b's low bit is set
+            let carry = 0 &- (a >> 7)       // all ones when a's high bit is set
+            a = (a << 1) ^ (0x1B & carry)   // reduce: x^8 mod 0x11B ≡ 0x1B
             b >>= 1
         }
         return p

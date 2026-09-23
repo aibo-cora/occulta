@@ -74,6 +74,33 @@ struct GFArithmeticTests {
         #expect(ShamirSecretSharing.gfInv(0x03) == 0xF6)
     }
 
+    /// The branch-free `gfMul` (Bug 131) against the branching form it replaced, on every
+    /// input pair.
+    @Test("gfMul matches the branching Russian peasant form on all 65,536 input pairs")
+    func mulMatchesBranchingForm() {
+        func branching(_ a: UInt8, _ b: UInt8) -> UInt8 {
+            var p: UInt8 = 0
+            var a = a
+            var b = b
+            for _ in 0..<8 {
+                if b & 1 != 0 { p ^= a }
+                let carry = a & 0x80 != 0
+                a <<= 1
+                if carry { a ^= 0x1B }
+                b >>= 1
+            }
+            return p
+        }
+
+        var mismatches = 0
+        for a in UInt8.min...UInt8.max {
+            for b in UInt8.min...UInt8.max where ShamirSecretSharing.gfMul(a, b) != branching(a, b) {
+                mismatches += 1
+            }
+        }
+        #expect(mismatches == 0)
+    }
+
     @Test("a * gfInv(a) == 1 for all non-zero a in [1, 255]")
     func mulByInverseIsOne() {
         for a in UInt8(1)...UInt8(255) {

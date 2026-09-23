@@ -960,7 +960,10 @@ possible from it.
   but the implementation is not formally constant-time. *(2026-09-23: filed as
   `bugs.md` Bug 131, with a branch-free `gfMul` as the proposed fix. `gfInv`'s
   branches depend only on its fixed exponent and on public x-coordinates, so
-  `gfMul` is the one that matters.)*
+  `gfMul` is the one that matters. Fixed the same day: `gfMul` is mask-based, and
+  the compiled arm64 output has no conditional branches at `-O`. Shipped builds
+  already compiled the old form to conditional selects; the source now guarantees
+  it.)*
 
 ---
 

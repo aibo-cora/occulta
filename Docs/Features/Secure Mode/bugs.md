@@ -11091,11 +11091,17 @@ revokes nothing leaves every row's bytes unchanged, so moving to always re-seali
 
 ## Bug 131 — `gfMul` branches on its inputs, so Shamir split and reconstruct take data-dependent time
 
-**Status:** Open, filed 2026-09-23. Found while reviewing Bug 95's change to
-`ShamirSecretSharing.reconstruct`, which computes the Lagrange weights once per reconstruction
-instead of once per byte.
+**Status:** Fixed 2026-09-23, on `v1.11.0/vault-key-layering`. Filed the same day, found while
+reviewing Bug 95's change to `ShamirSecretSharing.reconstruct`, which computes the Lagrange weights
+once per reconstruction instead of once per byte.
 
-**Target:** unset.
+**Less live than filed.** Checking the compiled output while fixing it showed that shipped builds
+never branched here: at `-O` the compiler turned both `if`s into conditional selects (`csel`, 7 in the
+specialized `gfMul`), and ARM treats `csel` as a data-independent-timing instruction. Only unoptimized
+builds branched, and those don't ship. The exposure was that nothing in the source guaranteed the
+optimizer's choice.
+
+**Target:** `v1.11.0`.
 
 ### Severity: Low (side channel)
 
@@ -11137,7 +11143,7 @@ attacker average out noise, so it adds a little exposure, and only for the same 
 `VAULT_SSS_GUIDE.md` has called this "acceptable for SSS" since the guide was written.
 `RUST_PACKAGES_SPEC.md` already specifies constant-time GF(2⁸) for its planned `shamir.rs`.
 
-### Remedy (proposed, not built)
+### Remedy (built)
 
 Replace the two conditionals with masks. This is the standard constant-time form and returns the same
 result:
@@ -11164,7 +11170,21 @@ here.
 ### Guard
 
 Timing can't be asserted reliably in a unit test, so the guard is equivalence plus inspection:
-- a test comparing the new `gfMul` with the current one on all 65,536 input pairs;
+- `GFArithmeticTests.mulMatchesBranchingForm` compares the new `gfMul` with the branching form it
+  replaced on all 65,536 input pairs;
 - the existing GF tests, including the exhaustive `a · a⁻¹ == 1`;
-- one manual check of the optimized arm64 output for `gfMul`, recorded here, confirming it has no
-  conditional branches.
+- a manual check of the compiled output, recorded below.
+
+**Compiled output, checked 2026-09-23** (Apple Swift 6.2.3, `swiftc -emit-assembly`,
+`-target arm64-apple-ios18.6`, on `ShamirSecretSharing.swift` itself):
+
+| Build | Old `gfMul` | New `gfMul` |
+|---|---|---|
+| `-O` | 0 conditional branches, 7 `csel` | 0 conditional branches, 0 `csel` |
+| `-Onone` | 3 conditional branches: the loop's end check and both `if`s | 1: the loop's end check |
+
+At `-O`, `reconstruct` calls the specialized `gfMul` rather than inlining it, and has no bit-test
+branches of its own. `split`'s six bit-test branches are the same before and after, and are all
+copy-on-write uniqueness checks (`swift_isUniquelyReferenced`), not secret values. Re-check after a
+Swift toolchain upgrade if this ever matters more; the source no longer depends on the optimizer's
+choice, but the check is cheap.
