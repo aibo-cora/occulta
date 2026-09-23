@@ -86,7 +86,7 @@ struct VaultTab: View {
     @State private var showNewEntry = false
     @State private var unlocking = false
     @State private var showExportEducation = false
-    @State private var showPostRestoreSheet = false
+    @State private var showRestore = false
     @State private var showBEKSetup = false
 
     private enum Filter: String, CaseIterable {
@@ -108,7 +108,10 @@ struct VaultTab: View {
             .toolbar {
                 if self.vault.isUnlocked {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Button { self.showNewEntry = true } label: {
+                        Menu {
+                            Button("New Entry", systemImage: "square.and.pencil") { self.showNewEntry = true }
+                            Button("Restore from Backup…", systemImage: "arrow.down.doc") { self.showRestore = true }
+                        } label: {
                             Image(systemName: "plus")
                         }
                         .tint(.occultaAccent)
@@ -127,13 +130,17 @@ struct VaultTab: View {
             .navigationDestination(isPresented: $showBEKSetup) {
                 VaultShardSetup(mode: .backup)
             }
-            .sheet(isPresented: $showPostRestoreSheet) {
+            .navigationDestination(isPresented: self.$showRestore) {
+                VaultRestoreView()
+            }
+            // Bound straight to the manager's flag: the import can happen outside this tab
+            // (Open in Occulta), and a view-side copy would need syncing by hand.
+            .sheet(isPresented: Bindable(self.vault).postRestorePromptPending) {
                 VaultPostRestoreSheet {
                     self.vault.postRestorePromptPending = false
                 } onSetupBackup: {
                     self.vault.postRestorePromptPending = false
-                    self.showPostRestoreSheet    = false
-                    self.showBEKSetup            = true
+                    self.showBEKSetup = true
                 }
             }
             .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
@@ -146,22 +153,12 @@ struct VaultTab: View {
                     self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
                 }
             }
-            .onChange(of: self.vault.postRestorePromptPending) { _, newValue in
-                if newValue && self.vault.isUnlocked {
-                    self.showPostRestoreSheet = true
-                }
-            }
             .onAppear {
                 // Covers returning to this tab while already unlocked, when the
                 // isUnlocked transition above never fires.
                 if self.vault.isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
                     self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
-                }
-                // A restore finished from the file-open prompt before this tab was first
-                // shown never triggers the onChange above.
-                if self.vault.postRestorePromptPending && self.vault.isUnlocked {
-                    self.showPostRestoreSheet = true
                 }
             }
         }

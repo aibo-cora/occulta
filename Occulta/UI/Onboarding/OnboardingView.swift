@@ -419,7 +419,7 @@ private struct VaultScreen: View {
                 TrustRow(
                     icon: "person.3.fill",
                     title: "Recoverable, your way",
-                    description: "Split a backup key among trusted contacts later — no single one of them can recover it alone.",
+                    description: "Split a backup key among trusted contacts later — no single one of them can recover it alone. On a new phone, restore from the + menu in the Vault tab.",
                     accentColor: .teal
                 )
             }

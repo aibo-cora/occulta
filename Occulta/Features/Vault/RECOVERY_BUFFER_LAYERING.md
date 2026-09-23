@@ -192,7 +192,7 @@ before then — see §6's anti-pairings.
 | 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
 | 4 | ~~Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel~~ — **superseded: §9.3 dropped per-depth state; §9.4 (2026-09-23) drops arming, held contents and cancel. What remains is completion at the depth the file is opened at** | a restore completes at the depth its file is opened at, using only shards from trustees visible there, and nothing is written to the sandbox |
 | — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. **Rebuilt 2026-09-21** — `ReconstructShard` (the old §9.1 shared pool) is retired; `PendingShamirSecretRestore` is the live mechanism, `ShardsCodec`/`SignedAttributeCodec` implemented, legacy rows migrate on unlock. Collection is depth-blind now, matching §9.3, but this shipped *ahead of* row 4's own arming/completion binding — see `bugs.md` Bug 99's 2026-09-21 addendum for the accepted interim gap that opens until row 4 lands. Row 4's binding was itself superseded by §9.4 (2026-09-23): completion happens at file-open, at the opening depth, using only shards from trustees visible there. |
-| 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
+| 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces. **Decided 2026-09-23 (§9.4, Stage 3 UX):** success shows the imported entries; every failure shows one neutral message, the same at every depth |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
 container's collected shares and writes the reconstructed BEK into the other one's slot.
@@ -1067,6 +1067,13 @@ Full record: `decisions.md`, "Filter restore shards by trustee visibility at com
 
 This satisfies the *Regressions* rule "deferral must not be silently dropped" for hidden trustees only;
 see the residual.
+
+**Stage 3 UX, decided and built 2026-09-23 (`VaultRestoreView`, `Vault+Restore.swift`):** a "Restore from
+Backup…" item in the Vault tab's `+` menu pushes a screen listing the three steps (exchange contacts again in person; have each person send a message, which
+carries the piece back; choose the backup file), ending in a file picker for the backup type. A file
+picked there skips the confirmation alert; files arriving through "Open in Occulta" keep it. Every failed
+attempt shows one neutral message at every depth. The onboarding backup-key page points to the item.
+Record: `decisions.md`, "Restore discoverability".
 
 **Migration:** §8's plan adopted a legacy pending file into slot 0, which no longer exists. Decided
 2026-09-23 (§8): delete held legacy files under both filenames at the first unlock at any depth, without

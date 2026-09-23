@@ -593,9 +593,10 @@ Bob's app responds automatically, with no separate scheduling model:
    every outbound bundle to Alice. Bob does not delete these rows pre-emptively.
    `encryptBundle` enforces ML-KEM when `.handback` ops are present.
 3. **Alice receives `.handback`** — `handleHandback` verifies it first (see below),
-   then `acceptReturnedShard` stores each shard in the `ReconstructShard` buffer
-   (sealed under the recovery buffer key, no biometric). `tryFinalizeReconstruction`
-   is triggered opportunistically.
+   then `acceptReturnedShard` stores each shard in the `PendingShamirSecretRestore` buffer
+   (no biometric needed). For a per-entry PEK, `tryFinalizeReconstruction` is triggered
+   opportunistically; a BEK restore completes only when Alice opens her backup file
+   (`restoreBackup`, `RECOVERY_BUFFER_LAYERING.md` §9.4).
 
 ### Handback verification
 
@@ -618,7 +619,7 @@ transport (a 1:1 exchange; the session key is derivable only by the two real
 parties) already proves before `handleHandback` is ever called. So Branch A failing
 now falls straight through to acceptance. `attribute.entryID` matching a real, live
 distribution — checked downstream, in `acceptReturnedShard` and
-`attemptBackupRestore`'s own grouping — is what actually scopes this to real
+`restoreBackup`'s own grouping — is what actually scopes this to real
 trustees, and that check is unaffected.
 
 4. **Cleanup** — when Alice successfully redistributes (sends `.distribute` with her

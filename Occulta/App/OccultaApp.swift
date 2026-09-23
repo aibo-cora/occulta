@@ -277,6 +277,7 @@ struct RootView: View {
     /// A `.occbak` held in memory until the user confirms or cancels. Never written to disk.
     @State private var pendingRestoreFile: Data?
     @State private var showRestoreConfirmation = false
+    @State private var showNothingRestored = false
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
     @State private var shareResult: ShareResult?
     /// A share-extension session staged in the App Group, waiting for the user to pick who it
@@ -428,6 +429,11 @@ struct RootView: View {
                     have arrived. If nothing changes, open it again later. Only continue if you \
                     requested it.
                     """)
+            }
+            .alert("Nothing was restored", isPresented: self.$showNothingRestored) {
+                Button("OK") { }
+            } message: {
+                Text(VaultRestoreView.nothingRestoredMessage)
             }
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
@@ -679,13 +685,12 @@ struct RootView: View {
         }
     }
 
-    /// **Silent on every outcome but success and a malformed file, at every depth.** A
-    /// successful import is visible where it happened: the entries appear, and the vault tab
-    /// shows the post-restore prompt. Every other outcome — this depth already has a backup
-    /// key, too few pieces, no match — looks the same: nothing happens. The confirmation the
-    /// user tapped is the only receipt. The acknowledgment that used to distinguish these was
-    /// removed for Bug 93: depth 0 varied it on whether a backup key exists, which a coercer
-    /// could read against the public baseline.
+    /// A successful import is visible where it happened: the entries appear, and the vault tab
+    /// shows the post-restore prompt. **Every failure shows the same message at every depth**,
+    /// whatever the cause — this depth already has a backup key, too few pieces, no match — so
+    /// it never reveals which one happened. The acknowledgment removed for Bug 93 was unsafe
+    /// because depth 0 checked its own backup key while duress couldn't; every depth now checks
+    /// its own state (`RECOVERY_BUFFER_LAYERING.md` §4 row 6).
     ///
     /// A malformed file still reports an error at every depth. That branch turns on the file's
     /// own bytes, not on vault state or depth, so it distinguishes nothing about the session.
@@ -694,10 +699,11 @@ struct RootView: View {
     private func restoreBackup(from data: Data) {
         let depth = self.security.currentDepth
         do {
-            _ = try self.vaultManager.restoreBackup(
+            let imported = try self.vaultManager.restoreBackup(
                 from: data, currentDepth: depth,
                 visibleContactIdentifiers: self.contactManager.visibleContactIdentifiers(atDepth: depth)
             )
+            if !imported { self.showNothingRestored = true }
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true

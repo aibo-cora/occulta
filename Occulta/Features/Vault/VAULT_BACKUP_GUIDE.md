@@ -485,6 +485,8 @@ This section describes the behavior before that change. Now:
   fails, nothing is stored and the user opens the file again later.
 - The "Recovery in Progress" section is removed, along with the automatic attempts after every shard
   arrival and unlock.
+- Restore has an in-app entry point (built 2026-09-23): "Restore from Backup…" in the Vault tab's `+`
+  menu opens a screen explaining the steps, then a file picker. A failed attempt shows one neutral message.
 - The requirements above not to "require any action between shard collection and vault reconstruction"
   and to "auto-advance" are reversed. Reopening the file is the action. A "recovery ready" signal to
   prompt it was considered and rejected (`Docs/General/decisions.md`).

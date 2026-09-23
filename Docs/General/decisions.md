@@ -311,3 +311,51 @@ Discoverability stays Stage 3's problem, to be solved with an ordinary prompt ra
 readiness indicator.
 
 **Full reasoning:** this conversation, 2026-09-23; `RECOVERY_BUFFER_LAYERING.md` §9.4.
+
+---
+
+## Restore discoverability: a Restore item in the Vault tab's `+` menu
+
+**Status:** Decided and built, 2026-09-23. The restore screen is pushed onto the Vault tab's navigation
+stack rather than presented as a sheet, and the post-restore prompt is bound directly to
+`VaultManager.postRestorePromptPending` (no view-side copy). Not walked through in the simulator: the
+vault can't unlock there, because the simulator can't create or use a Face ID-protected Secure Enclave key.
+
+**Context:** `RECOVERY_BUFFER_LAYERING.md` Stage 3. After §9.4, restore is only reachable through "Open in
+Occulta" from Files, and its steps aren't obvious. The owner has to:
+1. exchange contacts again, in person, with each person holding a piece;
+2. have each of them send a message, which carries the piece back;
+3. open the backup file.
+
+A failed attempt showed nothing, so trying too early looked like nothing happened.
+
+**Decision:**
+- The Vault tab's `+` button becomes a menu: "New Entry" and "Restore from Backup…". The restore item
+  opens a sheet listing the three steps, ending in a file picker limited to the backup type
+  (`com.github.aibo-cora.occulta.backup`). The restore then runs through the same path as "Open in
+  Occulta".
+- A file picked in that sheet skips the "Restore from this backup?" alert. Files arriving through "Open in
+  Occulta" keep it.
+- Every failed attempt, from either path, shows one neutral message at every depth.
+- The existing backup-key onboarding page gets one line pointing new-phone users to the restore item.
+
+**Why:**
+- **The Vault tab, not Settings:** someone who lost their phone looks for their vault in the Vault tab.
+- **A menu item:** it's always reachable, including after entries exist, and takes no screen space.
+- **The steps sheet:** it puts the non-obvious steps where the action is.
+- **Skipping the alert in-app:** the alert guards against a file nobody asked for. A file picked from our
+  own sheet was asked for, and the sheet has already explained what happens.
+- **The failure message:** safe now because every depth checks its own state. One message covers every
+  failure reason, so it never reveals which one happened. This is the "truthful acknowledgment" that
+  `RECOVERY_BUFFER_LAYERING.md` §4 row 6 anticipated.
+
+Not chosen:
+- **A Settings entry:** not where a new-phone owner looks.
+- **An empty-vault prompt:** vanishes as soon as the layer has an entry.
+- **Silence on failure:** a too-early attempt looked like nothing happened.
+
+**Consequences:** The menu and sheet read the same at every depth, so there's no new tell. The
+empty-vault text stays as it is. The weakest step is still step 2, since nothing tells the trustee to
+send a message. A trustee-side prompt would fix that, as a separate decision.
+
+**Full reasoning:** this conversation, 2026-09-23; `RECOVERY_BUFFER_LAYERING.md` §9.4.
