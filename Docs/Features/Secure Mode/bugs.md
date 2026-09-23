@@ -10957,8 +10957,9 @@ acceptable because every other `VaultManager` operation saves before returning, 
 
 ## Bug 130 — Three of the four custody-shard deletions leave every other row byte-identical, so a snapshot diff shows exactly which row was removed
 
-**Status:** Open, filed 2026-09-23. Found while answering whether `CustodyShard` has a `deletionToken` (it
-doesn't; its rows are hard-deleted), after closing `RECOVERY_BUFFER_LAYERING.md` §6 item 7.
+**Status:** Fixed 2026-09-23, on `v1.11.0/vault-key-layering`. Filed the same day, found while answering
+whether `CustodyShard` has a `deletionToken` (it doesn't; its rows are hard-deleted), after closing
+`RECOVERY_BUFFER_LAYERING.md` §6 item 7.
 
 **Target:** unset.
 
@@ -10987,13 +10988,25 @@ Hard deletion itself isn't the problem: custody rows don't belong to a depth, so
 "orphan rows in place" decision covers (`decisions.md`). The changing row count is the same accepted class
 recorded when item 7 was closed.
 
-### Remedy (proposed, not built)
+### Remedy (built)
 
-After each of the three deletions, re-seal every surviving `CustodyShard` row, as `purgeCustody` does.
-Cheapest shape: a small `reSealSurvivors(using:)` step called from all four paths, so they can't drift
-apart again.
+The three paths now delete through one helper, `deleteCustodyShards(using:where:)`. It deletes the
+rows matching a predicate and re-seals every other readable row with a fresh nonce and the same content.
+`handleReplace`'s two deletions (the replaced shard, and the owner's old-key shards) became one
+predicate, so survivors are re-sealed once rather than twice.
+
+Two differences from the proposal:
+- **Re-seal only when something is deleted.** The row count already shows whether a deletion
+  happened, so re-sealing on a no-op leaks nothing less. It would also rewrite every custody row on
+  every inbound bundle, since `processExpectedShards` runs on each one.
+- **`purgeCustody` keeps its own loop.** It re-seals on every purge, even one that deletes nothing,
+  and `ShardCustodyPurgeTests` pins that. Routing it through the helper would have quietly dropped the
+  unconditional re-seal, so it wasn't moved. The helper's doc comment names the exception.
 
 ### Guard
 
-For each of the three paths: take every surviving row's `encryptedPayload` before the operation, run it,
-and assert every surviving row's bytes changed and its payload still decrypts to the same content.
+`CustodyDeletionResealTests` (`ShardCustodyTests.swift`) covers `.distribute` under a new owner key,
+`.replace` and `processExpectedShards`. Each snapshots every row's bytes and decrypted attribute ID,
+runs the operation, and asserts the deleted row is gone and every survivor has new bytes and the same
+content. All three fail on the pre-fix code. A fourth test pins that a `processExpectedShards` which
+revokes nothing leaves every row's bytes unchanged, so moving to always re-sealing has to be deliberate.

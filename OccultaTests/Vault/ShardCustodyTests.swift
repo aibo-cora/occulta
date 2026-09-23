@@ -372,6 +372,149 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     }
 }
 
+// MARK: - Re-sealing survivors on deletion (Bug 130)
+
+/// Every surviving row's sealed bytes and decrypted signed-attribute ID, keyed by row ID.
+@MainActor
+private func custodySnapshot(in container: ModelContainer, using km: TestKeyManager) throws -> [UUID: (bytes: Data, attributeID: UUID)] {
+    let key  = try #require(try km.deriveShardCustodyKey())
+    let rows = try ModelContext(container).fetch(FetchDescriptor<CustodyShard>())
+    return try Dictionary(uniqueKeysWithValues: rows.map { row in
+        let box     = try AES.GCM.SealedBox(combined: row.encryptedPayload)
+        let plain   = try AES.GCM.open(box, using: key, authenticating: row.id.uuidString.data(using: .utf8)!)
+        let payload = try JSONDecoder().decode(CustodyShard.Payload.self, from: plain)
+        return (row.id, (row.encryptedPayload, payload.signedAttribute.id))
+    })
+}
+
+@MainActor
+private func distribute(
+    _ attr: SignedAttribute,
+    kind: OccultaBundle.ShardOperation.Kind = .distribute,
+    replacing oldID: UUID? = nil,
+    from signer: TestKeyManager,
+    as identifier: String,
+    into custody: ShardCustodyManager,
+    vault: VaultManager
+) throws {
+    _ = custody.handleInbound(
+        shardOperations:  [.init(kind: kind, attribute: attr, attributeID: oldID)],
+        custodyManifest:  nil,
+        expectedShards:   nil,
+        senderPublicKey:  try signer.retrieveIdentity(),
+        senderIdentifier: identifier,
+        vaultManager:     vault
+    )
+}
+
+/// Bug 130: a deletion that left every surviving row byte-identical let a two-snapshot diff
+/// point at exactly the row that went. Each path that deletes custody rows must re-seal every
+/// survivor with a fresh nonce, same content.
+@Suite("ShardCustodyManager — deletions re-seal survivors (Bug 130)")
+@MainActor struct CustodyDeletionResealTests {
+
+    /// Asserts `before`'s rows minus `deleted` are exactly `after`'s pre-existing rows, each with
+    /// new bytes and the same content.
+    private func expectResealed(
+        before: [UUID: (bytes: Data, attributeID: UUID)],
+        after:  [UUID: (bytes: Data, attributeID: UUID)],
+        deleted: Set<UUID>
+    ) {
+        let survivors = Set(before.keys).subtracting(deleted)
+        #expect(!survivors.isEmpty)
+        #expect(deleted.allSatisfy { after[$0] == nil }, "deleted rows must be gone")
+        for id in survivors {
+            #expect(after[id]?.bytes != before[id]?.bytes, "a surviving row must be re-sealed")
+            #expect(after[id]?.attributeID == before[id]?.attributeID, "re-sealing must not change content")
+        }
+    }
+
+    @Test(".distribute under a new owner key re-seals every survivor")
+    func distributeResealsSurvivors() throws {
+        let aliceOld = TestKeyManager()
+        let aliceNew = TestKeyManager()
+        let carol    = TestKeyManager()
+        let (custody, km, container) = try makeBob()
+        let vault = try makeAlice().vault
+
+        let oldAttr = try makeShardAttr(signer: aliceOld)
+        try distribute(oldAttr, from: aliceOld, as: "alice", into: custody, vault: vault)
+        try distribute(try makeShardAttr(signer: carol), from: carol, as: "carol", into: custody, vault: vault)
+        let before = try custodySnapshot(in: container, using: km)
+
+        // Alice re-keyed: her old-fingerprint shard is deleted as the new one lands.
+        try distribute(try makeShardAttr(signer: aliceNew), from: aliceNew, as: "alice", into: custody, vault: vault)
+
+        let after = try custodySnapshot(in: container, using: km)
+        #expect(after.count == 2)
+        self.expectResealed(before: before, after: after, deleted: [try self.rowID(of: oldAttr, in: before)])
+    }
+
+    @Test(".replace re-seals every survivor")
+    func replaceResealsSurvivors() throws {
+        let alice = TestKeyManager()
+        let carol = TestKeyManager()
+        let (custody, km, container) = try makeBob()
+        let vault = try makeAlice().vault
+
+        let oldAttr = try makeShardAttr(signer: alice)
+        try distribute(oldAttr, from: alice, as: "alice", into: custody, vault: vault)
+        try distribute(try makeShardAttr(signer: alice), from: alice, as: "alice", into: custody, vault: vault)
+        try distribute(try makeShardAttr(signer: carol), from: carol, as: "carol", into: custody, vault: vault)
+        let before = try custodySnapshot(in: container, using: km)
+
+        try distribute(try makeShardAttr(signer: alice), kind: .replace, replacing: oldAttr.id,
+                       from: alice, as: "alice", into: custody, vault: vault)
+
+        let after = try custodySnapshot(in: container, using: km)
+        #expect(after.count == 3)
+        self.expectResealed(before: before, after: after, deleted: [try self.rowID(of: oldAttr, in: before)])
+    }
+
+    @Test("processExpectedShards re-seals every survivor when it revokes")
+    func expectedShardsResealsSurvivors() throws {
+        let alice = TestKeyManager()
+        let carol = TestKeyManager()
+        let (custody, km, container) = try makeBob()
+        let vault = try makeAlice().vault
+
+        let revoked = try makeShardAttr(signer: alice)
+        let kept    = try makeShardAttr(signer: alice)
+        try distribute(revoked, from: alice, as: "alice", into: custody, vault: vault)
+        try distribute(kept, from: alice, as: "alice", into: custody, vault: vault)
+        try distribute(try makeShardAttr(signer: carol), from: carol, as: "carol", into: custody, vault: vault)
+        let before = try custodySnapshot(in: container, using: km)
+
+        try custody.processExpectedShards([kept.id], from: "alice", senderPublicKey: try alice.retrieveIdentity())
+
+        let after = try custodySnapshot(in: container, using: km)
+        #expect(after.count == 2)
+        self.expectResealed(before: before, after: after, deleted: [try self.rowID(of: revoked, in: before)])
+    }
+
+    /// Re-sealing only on deletion leaks nothing extra: the row count already shows whether
+    /// anything was deleted. Pinned so a later change to always re-seal is a deliberate one.
+    @Test("processExpectedShards that revokes nothing leaves every row untouched")
+    func expectedShardsWithoutRevokeLeavesBytes() throws {
+        let alice = TestKeyManager()
+        let (custody, km, container) = try makeBob()
+        let vault = try makeAlice().vault
+
+        let attr = try makeShardAttr(signer: alice)
+        try distribute(attr, from: alice, as: "alice", into: custody, vault: vault)
+        let before = try custodySnapshot(in: container, using: km)
+
+        try custody.processExpectedShards([attr.id], from: "alice", senderPublicKey: try alice.retrieveIdentity())
+
+        let after = try custodySnapshot(in: container, using: km)
+        #expect(after.mapValues(\.bytes) == before.mapValues(\.bytes))
+    }
+
+    private func rowID(of attr: SignedAttribute, in snapshot: [UUID: (bytes: Data, attributeID: UUID)]) throws -> UUID {
+        try #require(snapshot.first { $0.value.attributeID == attr.id }?.key)
+    }
+}
+
 // MARK: - .respond and the reconstruction buffer
 
 // Needs a real Secure Enclave: PendingShamirSecretRestore.attributeID/.deletionToken are

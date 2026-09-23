@@ -362,3 +362,33 @@ trustee-side prompt.** The owner's restore screen tells them to ask each person 
 added on the trustee's side.
 
 **Full reasoning:** this conversation, 2026-09-23; `RECOVERY_BUFFER_LAYERING.md` §9.4.
+
+---
+
+## Re-seal surviving custody shards when one is deleted, not on every pass
+
+**Status:** Decided and built, 2026-09-23 (`bugs.md` Bug 130).
+
+**Context:** Three of the four places that hard-delete `CustodyShard` rows left the survivors
+byte-identical, so two snapshots of the trustee's database showed exactly which row went. The fix
+re-seals survivors with a fresh nonce. The open question was whether to re-seal on every pass or only
+when a row is actually deleted.
+
+**Decision:** `deleteCustodyShards(using:where:)` re-seals every survivor only when it deletes at least
+one row. `.distribute`, `.replace` and `processExpectedShards` all delete through it. `purgeCustody` keeps
+its existing loop, which re-seals on every purge.
+
+**Why:**
+- **Only on deletion:** a snapshot diff already shows the row count, and so whether anything was
+  deleted. Re-sealing on a pass that deletes nothing hides nothing extra.
+- **Not on every pass:** `processExpectedShards` runs on every inbound bundle, so re-sealing always
+  would rewrite every custody row on every message.
+- **`purgeCustody` left alone:** its re-seal on every purge is older, tested
+  (`ShardCustodyPurgeTests`) and costs nothing that matters, since contact deletion is rare. Moving it
+  onto the helper would have weakened it silently.
+
+**Consequences:** Two re-seal rules sit side by side, and the helper's doc comment names the
+exception. A pass that deletes nothing leaves custody bytes unchanged. `CustodyDeletionResealTests`
+pins that, so moving to always re-sealing has to be deliberate.
+
+**Full reasoning:** `bugs.md` Bug 130.

@@ -138,7 +138,7 @@ final class ShardCustodyManager {
         let combined = try self.sealRow(payload, using: custodyKey, id: rowID)
         self.modelContext.insert(CustodyShard(id: rowID, encryptedPayload: combined))
 
-        try self.deleteMismatchShards(for: senderIdentifier, newFingerprint: newFP)
+        try self.deleteMismatchShards(for: senderIdentifier, newFingerprint: newFP, using: custodyKey)
         try self.modelContext.save()
     }
 
@@ -168,23 +168,46 @@ final class ShardCustodyManager {
         let combined = try self.sealRow(payload, using: custodyKey, id: rowID)
         self.modelContext.insert(CustodyShard(id: rowID, encryptedPayload: combined))
 
-        let allShards = try self.decryptAllCustodyShards()
-        for decoded in allShards
-            where decoded.payload.signedAttribute.id == oldID
-               && decoded.payload.ownerContactIdentifier == senderIdentifier {
-            self.modelContext.delete(decoded.row)
+        // One pass: the replaced shard, plus any of this owner's shards under an old key.
+        try self.deleteCustodyShards(using: custodyKey) { payload in
+            payload.ownerContactIdentifier == senderIdentifier
+                && (payload.signedAttribute.id == oldID || payload.ownerKeyFingerprint != newFP)
         }
-        try self.deleteMismatchShards(for: senderIdentifier, newFingerprint: newFP)
         try self.modelContext.save()
     }
 
     /// Delete all CustodyShard rows for `contactIdentifier` whose fingerprint ≠ `newFingerprint`.
-    private func deleteMismatchShards(for contactIdentifier: String, newFingerprint: Data) throws {
-        for decoded in try self.decryptAllCustodyShards()
-            where decoded.payload.ownerContactIdentifier == contactIdentifier
-               && decoded.payload.ownerKeyFingerprint != newFingerprint {
-            self.modelContext.delete(decoded.row)
+    private func deleteMismatchShards(for contactIdentifier: String, newFingerprint: Data, using custodyKey: SymmetricKey) throws {
+        try self.deleteCustodyShards(using: custodyKey) { payload in
+            payload.ownerContactIdentifier == contactIdentifier && payload.ownerKeyFingerprint != newFingerprint
         }
+    }
+
+    /// Deletes every custody row whose payload matches `shouldDelete` and, when anything was
+    /// deleted, re-seals every other readable row with a fresh nonce and the same content.
+    /// Without the re-seal, two snapshots taken across a deletion show exactly which row went
+    /// while every other row stays byte-identical (`bugs.md` Bug 130). Rows that don't decrypt
+    /// are left alone: not deleted, not re-sealed. Doesn't save; the caller does.
+    ///
+    /// Every other path that deletes custody rows goes through here, so they can't drift apart
+    /// again. `purgeCustody` keeps its own loop because it re-seals on every purge, even one
+    /// that deletes nothing.
+    @discardableResult
+    private func deleteCustodyShards(
+        using custodyKey: SymmetricKey,
+        where shouldDelete: (CustodyShard.Payload) -> Bool
+    ) throws -> Bool {
+        let decoded = try self.decryptAllCustodyShards(using: custodyKey)
+        guard decoded.contains(where: { shouldDelete($0.payload) }) else { return false }
+
+        for shard in decoded {
+            if shouldDelete(shard.payload) {
+                self.modelContext.delete(shard.row)
+            } else {
+                shard.row.encryptedPayload = try self.sealRow(shard.payload, using: custodyKey, id: shard.row.id)
+            }
+        }
+        return true
     }
 
     // MARK: - Owner path: inbound
@@ -309,16 +332,16 @@ final class ShardCustodyManager {
     /// Mismatch-fingerprint shards are immune — only cleared by a new `.distribute`
     /// with the owner's updated fingerprint (Invariant 1 from SHARD_PROTOCOL_CASES.md).
     func processExpectedShards(_ expectedIDs: [UUID], from ownerIdentifier: String, senderPublicKey: Data) throws {
-        let expectedSet   = Set(expectedIDs)
-        let currentFP     = Self.fingerprint(of: senderPublicKey)
-        var deletedAny    = false
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let expectedSet = Set(expectedIDs)
+        let currentFP   = Self.fingerprint(of: senderPublicKey)
 
-        for decoded in try self.decryptAllCustodyShards()
-            where decoded.payload.ownerContactIdentifier == ownerIdentifier
-               && decoded.payload.ownerKeyFingerprint == currentFP
-               && !expectedSet.contains(decoded.payload.signedAttribute.id) {
-            self.modelContext.delete(decoded.row)
-            deletedAny = true
+        let deletedAny = try self.deleteCustodyShards(using: custodyKey) { payload in
+            payload.ownerContactIdentifier == ownerIdentifier
+                && payload.ownerKeyFingerprint == currentFP
+                && !expectedSet.contains(payload.signedAttribute.id)
         }
         if deletedAny { try self.modelContext.save() }
     }
