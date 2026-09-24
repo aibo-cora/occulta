@@ -783,10 +783,9 @@ final class VaultEntry {
     /// Whether this entry has been orphaned. Fail-safe: a `deletionToken` that is nil,
     /// undecryptable, or decrypts to neither known sentinel is treated as orphaned — the
     /// same "ambiguous means hidden" convention `isVisible` already uses elsewhere on
-    /// this model. In practice `deletionToken` is always populated and always decryptable
-    /// under the current key; nil only occurs for a row that predates this field
-    /// entirely, which cannot happen on this branch (added the same session it started
-    /// being written), but the fallback costs nothing to keep.
+    /// this model. Nil means the row predates this field: every entry created by v1.10.3 or
+    /// earlier. `DatabaseMigration.migrateVaultEntryDeletionTokens` gives those a live token
+    /// at launch (`bugs.md` Bug 133); before it existed, upgrading hid all of them.
     func isOrphaned(usingKey key: SymmetricKey) -> Bool {
         guard let data = self.deletionToken, let plain = data.decrypt(using: key)
         else { return true }

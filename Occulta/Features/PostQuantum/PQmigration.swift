@@ -484,6 +484,38 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
+    /// Gives every `VaultEntry` with no `deletionToken` a live one (`bugs.md` Bug 133).
+    ///
+    /// The field was added after v1.10.3 (Bug 110). `addEntry` writes it for every new entry,
+    /// but entries created by v1.10.3 or earlier have none, and `VaultEntry.isOrphaned` reads
+    /// a missing token as orphaned. So on upgrade every one of them vanished from the vault
+    /// list, from backup export and from shard custody, and counted toward the orphan cap
+    /// whose oldest rows `orphanVaultEntries` hard-deletes.
+    ///
+    /// Live is the correct value, not a guess: every path that orphans an entry writes a
+    /// sealed token, so nil can only mean the row predates the field. A token that doesn't
+    /// decrypt is left alone and still reads as orphaned.
+    ///
+    /// Every pre-field row is rewritten in the same pass, so the change says nothing about
+    /// any one entry. Idempotent: after the first run no row has a nil token.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save vault entries.
+    static func migrateVaultEntryDeletionTokens(modelContext: ModelContext) throws {
+        let legacy = try modelContext.fetch(
+            FetchDescriptor<VaultEntry>(predicate: #Predicate { $0.deletionToken == nil })
+        )
+        guard !legacy.isEmpty else { return }
+
+        for entry in legacy {
+            // Sealed per row, so each gets its own nonce, as `addEntry` does.
+            guard let token = try VaultEntry.liveToken.encrypt() else {
+                throw MigrationError.hybridKeyUnavailable
+            }
+            entry.deletionToken = token
+        }
+        try modelContext.save()
+    }
+
     /// The replacement for one depth stamp, or nil to leave the field byte-identical.
     ///
     /// Applied per field, not per row: a deleted row can legitimately have one stamp readable

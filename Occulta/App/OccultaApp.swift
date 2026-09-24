@@ -182,6 +182,16 @@ struct OccultaApp: App {
         }
 
 
+        // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
+        // this runs (Bug 133). Independent of every pass above.
+        do {
+            try DatabaseMigration.migrateVaultEntryDeletionTokens(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("VaultEntry deletionToken backfill error: \(error)")
+            #endif
+        }
+
         do {
             try DatabaseMigration.migrateGlobalShardConfigToPerContact(
                 modelContext: context, shardCustodyManager: self.shardCustodyManager

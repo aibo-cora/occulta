@@ -9262,6 +9262,9 @@ sensitive contact's key-record material decrypts successfully under the current 
 bug's fix establishes — later extended to `BackupEncryptionKey` (Bug 118) and considered, declined,
 for `Contact.Profile` (Bug 112).
 
+**Regression, 2026-09-24:** the fix shipped no migration for entries created before `deletionToken`
+existed, so upgrading from v1.10.3 hid all of them. See Bug 133.
+
 **Status:** Closed (Fixed), 2026-09-10. Filed the same day, found while updating
 `forensic-trace-avoidance.md`'s S7 to describe the current (post-removal) behavior — not a
 pre-existing entry being revisited, a fresh regression from Removal Stage 1. Fixed the same day, after
@@ -11309,3 +11312,77 @@ None beyond the build: no test references the function. After the change, search
 `backup-import-cache-shards` should find nothing outside `bugs.md`. Checked 2026-09-24: nothing in
 `Occulta/` or `OccultaTests/`. (`Docs/Bugs/v1.10.3/` still names the function, as a record of that
 release.)
+
+---
+
+## Bug 133 — Upgrading from v1.10.3 hides every existing vault entry: they have no `deletionToken`, which reads as orphaned
+
+**Status:** Fixed 2026-09-24, on `v1.11.0/vault-key-layering`, and confirmed on the device that found it.
+Found testing on a device: an entry created before the update was gone from the Vault tab.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (data availability)
+
+No data is destroyed by the upgrade itself, but every pre-update entry disappears from every read, and
+two follow-on paths can make the loss real (below). It hits every user who upgrades with a non-empty
+vault.
+
+### What happens
+
+Bug 110's fix (2026-09-10) added `VaultEntry.deletionToken`, a sealed live/orphaned sentinel. `addEntry`
+writes a live token for every new entry. v1.10.3's `VaultEntry` had no such field, so every entry it
+created has `deletionToken == nil` after the lightweight schema migration, and no migration ever filled
+it in.
+
+`VaultEntry.isOrphaned(usingKey:)` fails closed on a missing token (`guard let data =
+self.deletionToken ... else { return true }`). Its doc comment claimed a nil row "cannot happen on this
+branch", which holds for a fresh install and not for an upgrade. So every pre-update entry reads as
+orphaned, and is excluded by:
+- the Vault tab's filter, `Manager.Security.visibleVaultEntries` (v1.10.3's tab applied no such filter,
+  which is why the entry showed before the update);
+- `VaultManager.fetchAllEntries()`, the central read behind backup export, shard custody
+  (`shardRecordsForTrustee`) and the return buffer.
+
+**How the loss can become real:**
+- **Export writes an incomplete backup.** `exportBackup` reads through `fetchAllEntries()`, so a new
+  `.occbak` omits every pre-update entry. Worst if it replaces an older, complete backup.
+- **The orphan cap can hard-delete them.** `Manager.Security.orphanVaultEntries` counts rows that
+  already read as orphaned toward a cap of 50 and hard-deletes the oldest when orphaning more on
+  deactivation. Pre-update entries count, and are the oldest. Needs 50 or more such rows, so unlikely
+  on one device, but it is a real deletion path.
+- Trustees holding shards of these entries' keys also stop seeing them in `expectedShards`, which reads
+  as an implicit revoke (per `deletionToken`'s own doc comment), so they delete their copies.
+
+Checked for the same mistake elsewhere: `BackupEncryptionKey`'s legacy row is carried forward explicitly
+(`migrateLegacyBackupRowIfNeeded`), `PendingShamirSecretRestore` is new on this branch, and
+`Contact.Profile.deletionToken` uses nil for live. Only vault entries are affected. The local key the
+token is sealed under is derived the same way as in v1.10.3, and this branch no longer rotates it, so a
+missing token is the only cause.
+
+### Fix, as built
+
+- **`DatabaseMigration.migrateVaultEntryDeletionTokens`** (`PQmigration.swift`), run from
+  `OccultaApp.migrate()` at every launch. It gives every `VaultEntry` whose `deletionToken` is nil a live
+  token, sealed per row under the local key exactly as `addEntry` does, and saves once. Idempotent.
+- **Live is the correct value, not a guess:** every path that orphans an entry writes a sealed token, so
+  nil can only mean the row predates the field. Undecryptable tokens are left alone and still read as
+  orphaned, so the fail-closed design stands.
+- **No trace:** every pre-field row is rewritten in the same pass, so the change says nothing about any
+  one entry.
+- The wrong claim in `isOrphaned`'s doc comment is corrected.
+
+**Confirmed on a device, 2026-09-24:** on the phone that found it, installing the fixed build over the
+existing one (not a reinstall) brought the hidden entry back.
+
+### Guard
+
+`VaultEntryDeletionTokenMigrationTests` (Enclave-gated):
+- a pre-field entry is hidden from `fetchAllEntries()` before the migration, and live and returned after
+  it; two such entries get different ciphertexts;
+- entries that already have a token, live or orphaned, are left byte-identical;
+- a second run changes nothing.
+
+**What let it through:** no test ever built a `VaultEntry` the way v1.10.3 left it. Every test creates
+entries through `addEntry`, which writes the token. The same gap applies to any field added with a
+fail-closed reading of nil.
