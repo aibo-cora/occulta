@@ -11188,3 +11188,60 @@ branches of its own. `split`'s six bit-test branches are the same before and aft
 copy-on-write uniqueness checks (`swift_isUniquelyReferenced`), not secret values. Re-check after a
 Swift toolchain upgrade if this ever matters more; the source no longer depends on the optimizer's
 choice, but the check is cheap.
+
+---
+
+## Bug 132 — `migrateLegacyRestoreShardFile` migrates a file no release ever wrote
+
+**Status:** Fixed 2026-09-24, on `v1.11.0/vault-key-layering`: the function and its call are deleted.
+Filed the same day, found while listing what was left in the vault refactor: the
+function looked like a gap, since it runs only when a shard arrives (not on unlock) and "Erase all
+data" doesn't delete its file. Checking which builds wrote the file showed there is no population for
+either concern.
+
+**Target:** unset.
+
+### Severity: Low (dead code, with a doc comment that says otherwise)
+
+No user device can hold the file. The only cost is code that runs for nothing and describes a
+population that doesn't exist.
+
+### What happens
+
+`acceptReturnedShard` calls `migrateLegacyRestoreShardFile()` on every shard delivery
+(`Vault+Manager+ReturnBuffer.swift`). It checks for `backup-import-cache-shards.dat` in Application
+Support and, if present, decrypts it, absorbs its shards into `PendingShamirSecretRestore` rows and
+deletes it. Its doc comment says it exists for "devices upgrading mid-restore, from a build old enough
+to predate Bug 100's move off this file entirely", and that dropping the file "would strand a genuine
+recovery".
+
+No such device exists:
+- `backup-import-cache-shards.dat` was introduced by `0e35dd6` (2026-08-25, Bug 93 Part D, renaming
+  `pending-restore-shards.dat`), and writing it stopped with `284e145` (2026-08-27, Bug 100 remedy 2,
+  shards into `ReconstructShard` rows).
+- The only release tag containing either commit is `v1.10.3`, which contains both. Checked in the
+  released trees: `v1.10.2` writes `pending-restore-shards.dat`. `v1.10.3` (released; tag `92e3e6e`,
+  2026-09-02) names `backup-import-cache-shards.dat` only in this migration, which reads it, and in a
+  comment, and writes shards as `ReconstructShard` rows. No shipped build wrote the file.
+- So the migration shipped in `v1.10.3` never fired on a real device. It looked for the new name while
+  `v1.10.2` devices mid-restore held the old one, which is how their restores died at the upgrade
+  (Bug 127).
+- Bug 127 already recorded this ("reads only `backup-import-cache-shards.dat`, which no release ever
+  wrote"). Its remedy deletes `pending-restore-shards.dat` on unlock and wipe without salvaging it,
+  because the restore it belonged to died at the v1.10.3 upgrade, and left this function alone.
+
+So the file can exist only on a development device that ran a build from 2026-08-25 to 2026-08-27.
+
+### Remedy (built)
+
+Delete `migrateLegacyRestoreShardFile`, its two constants (`legacyRestoreShardsURL`,
+`legacyRestoreShardsAAD`), its call in `acceptReturnedShard`, and the reference to it in
+`ReconstructShard+Model.swift`'s header comment. Don't add the name to `deleteLegacyRestoreState`'s
+list: no user has the file, and a development device can be reinstalled.
+
+### Guard
+
+None beyond the build: no test references the function. After the change, searching the source for
+`backup-import-cache-shards` should find nothing outside `bugs.md`. Checked 2026-09-24: nothing in
+`Occulta/` or `OccultaTests/`. (`Docs/Bugs/v1.10.3/` still names the function, as a record of that
+release.)

@@ -13,10 +13,7 @@
 //  the SwiftData-backed store itself: fetching and decoding them requires the
 //  `@Model` type and `OccultaApp.schema` entry to still exist. Deleting either
 //  would strand any device that upgrades straight into a build past this one with
-//  a genuine in-flight restore still sitting in `ReconstructShard` rows — the
-//  same "never strand a genuine recovery" principle
-//  `Vault+Manager+ReturnBuffer.swift`'s `migrateLegacyRestoreShardFile` already
-//  states for the file this model itself once replaced (Bug 100). Nothing writes
+//  a genuine in-flight restore still sitting in `ReconstructShard` rows. Nothing writes
 //  to this model anymore; `VaultManager.migrateReconstructShardsIfNeeded()` (called
 //  from `unlock()`) is the only remaining reader, and it deletes every row it
 //  touches — so the live population only ever shrinks, never grows, from here on.

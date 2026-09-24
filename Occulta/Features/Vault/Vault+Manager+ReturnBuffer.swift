@@ -59,10 +59,6 @@ extension VaultManager {
             throw VaultError.decryptionFailed
         }
 
-        // Drains a pre-Bug-100 shard file into rows on the first delivery that
-        // notices it — harmless no-op once migrated, or if never present.
-        try? self.migrateLegacyRestoreShardFile()
-
         try self.absorbShard(attribute, senderIdentifier: senderIdentifier)
 
         // ── Per-entry PEK reconstruction ──────────────────────────────────
@@ -265,47 +261,6 @@ extension VaultManager {
             bytes[0], bytes[1], bytes[2],  bytes[3],  bytes[4],  bytes[5],  bytes[6],  bytes[7],
             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
         ))
-    }
-
-    // MARK: - Legacy shard-file import
-
-    private static let legacyRestoreShardsURL: URL =
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("backup-import-cache-shards.dat")
-
-    private static let legacyRestoreShardsAAD: Data =
-        Data("occulta.pending-bek-restore-shards".utf8)
-
-    /// Move a pre-Bug-100 shard file straight into `PendingShamirSecretRestore` rows
-    /// via `absorbShard`, then delete it.
-    ///
-    /// Exists for one population: devices upgrading mid-restore, from a build old
-    /// enough to predate Bug 100's move off this file entirely. Dropping the file
-    /// instead would strand a genuine recovery — the shards are already spent from
-    /// the trustees' side, so re-collecting means asking every one of them to hand
-    /// back again.
-    ///
-    /// No depth stamping — this file predates depth-partitioning entirely, and
-    /// collection is depth-blind now regardless (see this file's own header).
-    func migrateLegacyRestoreShardFile() throws {
-        let url = Self.legacyRestoreShardsURL
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        guard let restoreKey = try self.keyManager.deriveRestoreVaultKey() else {
-            throw VaultError.keyDerivationFailed
-        }
-
-        let combined = try Data(contentsOf: url)
-        let box      = try AES.GCM.SealedBox(combined: combined)
-        let plain    = try AES.GCM.open(box, using: restoreKey, authenticating: Self.legacyRestoreShardsAAD)
-        let shards   = try JSONDecoder().decode([AttestedShard].self, from: plain)
-
-        for shard in shards {
-            try? self.absorbShard(shard.attribute, senderIdentifier: shard.senderIdentifier)
-        }
     }
 
     // MARK: - Legacy ReconstructShard migration
