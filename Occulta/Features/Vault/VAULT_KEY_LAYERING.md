@@ -588,7 +588,8 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
 4. **Convention or cryptography for the BEK field's slot separation** (Bug 92) — splits into two
    applications with different blockers and costs. **Live-slot half superseded 2026-09-07 by item 7 —
    not built, accepted as code-discipline separation instead. Exported-file half still decided
-   2026-09-06 (ship opt-in, 6-word passphrase), unaffected, not implemented yet.**
+   2026-09-06 (ship opt-in, 6-word passphrase), unaffected, not implemented yet.** *(2026-09-24:
+   tracked as `bugs.md` Bug 92, re-scoped to this half; the stored-key half is subsumed into Bug 119.)*
 
    **Why not a slow KDF** (still applies to the exported-file half). `PIN+Manager.swift`'s existing
    verifier derivation is `HKDF(seKey, info: label ∥ pin)` — deliberately fast. `plan.md` records
@@ -1527,7 +1528,7 @@ Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical 
 
 | Bug | What | Status |
 |---|---|---|
-| 92 | A backup file is readable from any layer (offline half) | open — complementary to this design, see §4 and §8 item 4 |
+| 92 | A backup file is readable from any layer (offline half) | **re-scoped 2026-09-24** — on-device half subsumed into Bug 119; open for the exported file only, remedy the opt-in export passphrase (§8 item 4) |
 | 102 | The BEK has no layer concept | **Closed — subsumed into Bug 99, 2026-09-11.** Item 14's per-depth rows closed the device-wide-install harm this bug was about; what's left (restore completion pinned to depth 0) is Bug 99's own oracle, not a separate one |
 | 108 | Design B has no mid-session edit persistence — was thought to block S8 too | **Closed — moot, 2026-09-10.** Design B deleted whole (Removal Stages 0-4); neither S5 nor S8 ever needed this mechanism — see §8 item 12 |
 | 105 | A duress layer can distribute shares of the real BEK | **Closed (Fixed), verified 2026-09-10** — §6; closed via Stage 1+2 |

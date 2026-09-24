@@ -5776,9 +5776,14 @@ which is the part of that refactor where a mistake would hide.
 
 ---
 
-## Bug 92 — A backup file is readable from any layer, because the BEK is not layered
+## Bug 92 — An exported backup file opens for anyone holding its backup key: the opt-in export passphrase isn't built
 
-**Status:** **Open — re-examined 2026-08-26, scenario narrower than originally filed.** Separated out
+*Originally filed as "A backup file is readable from any layer, because the BEK is not layered".
+Re-scoped 2026-09-24; see "Split, 2026-09-24" below.*
+
+**Status:** **Open, re-scoped 2026-09-24 to the exported-file half.** The on-device half (the stored
+backup key opens under the one vault key, so extracting it reads every depth's backup key) is
+subsumed into Bug 119. Earlier: **Open — re-examined 2026-08-26, scenario narrower than originally filed.** Separated out
 of Bug 88's design discussion, 2026-08-20, on noticing that fixing the export leak does not stop a
 coerced session reading a backup file it *finds*. **That specific in-app scenario no longer reaches**
 — see *Re-examined* below, added after Bugs 93 and 94 (both filed and fixed after this one) turned
@@ -5789,7 +5794,12 @@ accordingly.
 **Target:** unset. Independent of Bug 88 — that one needs no format change and should not wait for
 this.
 
-### Severity: Medium (security) — re-rated 2026-08-26 from High, see *Re-examined* below
+### Severity: Low (security) — re-rated 2026-09-24 from Medium; Medium since 2026-08-26, High before that
+
+**2026-09-24:** what remains needs the file *and* the backup key obtained elsewhere: from k trustees
+colluding, or by extracting it from the device, which is Bug 119's case. The in-app route is closed
+(see "Split, 2026-09-24"), and k colluding trustees can already recover the owner's vault by design.
+The export passphrase adds a factor on top of that trust model, which is why it is still worth building.
 
 **Original reasoning, preserved:** Bug 88 needs someone to tap Export. This needs a backup file to
 exist and be reachable — on the device, in Files, in iCloud. Weaker, but ordinary: backups are made
@@ -5974,6 +5984,41 @@ jailbreak, forensic extraction or a memory dump — the three things the re-rati
 **Re-rate deliberately after Bug 105 is settled**, rather than leaving Medium standing on reasoning
 that predates it.
 
+### Split, 2026-09-24
+
+Re-examined against the current code, as the "Bug 105 may have restored the in-app route" note above
+asked once Bug 105 settled (it closed 2026-09-10).
+
+**The in-app route is closed.** Only two places touch a backup file's contents: `exportBackup`, which
+seals it, and `restoreBackup`, which opens it only with a key rebuilt from returned shards and checked
+against the file's GCM tag (`verifiedKey`). No code opens a file with a stored backup key. Every depth
+has its own backup key (`VAULT_KEY_LAYERING.md` §7 stages 1-2), so a duress layer's export and shard
+distribution act on its own key (Bug 105). A restore refuses at a depth that already has a backup key,
+and counts only shards from contacts visible at the current depth (§9.4). The one way in is the owner's
+real trustees left visible in the duress layer, having handed back their shards: that is the residual
+Bug 99 and §9.4 already accept, not a separate one.
+
+**The on-device half is Bug 119.** Per-depth backup keys are sealed under the one vault key, which is
+not derived per depth, so extracting it yields every depth's backup key and opens any real `.occbak`.
+The same attacker reads every depth's entries straight from the database anyway. The fix is Bug 119's,
+`PASSPHRASE_LAYER_KEYS.md`, which already names the backup key's cross-depth scan among the things it
+must handle. Subsumed there; see Bug 119's note of the same date.
+
+**The exported-file half stays here.** `VAULT_KEY_LAYERING.md` §8 item 4 (decided 2026-09-06, not built)
+replaced this entry's PIN-combined file key with an **opt-in, 6-word passphrase per export**: EFF
+wordlist via `Manager.PassphraseGenerator`, about 77.5 bits, generated fresh for each export and shown
+once. It isn't the app PIN, so changing the PIN never orphans a file, and at that entropy plain HKDF is
+enough, so the missing slow KDF (see "The number this turns on") no longer blocks anything. Its scope,
+as decided: it protects a file obtained without the owner's cooperation (from `Documents/Inbox`, Bug 101;
+a device backup; or k trustees colluding), and nothing against a coercer holding the owner. Layer keys
+don't cover this: they protect the stored key on the device, not the file against someone holding the
+key from elsewhere.
+
+**Superseded in this entry:** the PIN-combined derivation, the "Two costs" section (both costs belonged
+to the PIN design; recovery from shards alone stays the default, since the passphrase is opt-in), and
+that Bug 105 severity caveat. The file-format section still applies: the passphrase salt and a scheme
+version have to sit in the plaintext envelope.
+
 ### Guard
 
 `VaultBackupRoundTripTests` already pins that a backup carries no plaintext label or content, and
@@ -5987,6 +6032,11 @@ holding the storage. A test written against the app's own API cannot tell those 
 assert on raw key material rather than on a decrypt call.
 
 
+
+**2026-09-24:** the cross-layer criterion above now belongs to Bug 119. For this entry's re-scoped half
+the acceptance criterion is: a file exported with a passphrase does not open from the backup key alone
+(shards or stored key), and does open with the key plus the passphrase; a file exported without one
+still restores from shards alone.
 ---
 
 ## Bug 93 — Vault recovery is depth-blind: a coerced session sees the pending restore, and the restore runs into whatever layer it is standing in
@@ -10185,6 +10235,20 @@ anything raised fresh today.
   well outside feasibility — the KDF choice stops being what stands between an attacker and the phrase.
   It still matters for defense-in-depth against a future entropy-reducing mistake (a shorter phrase, a
   user-edited one), so this doesn't remove the decision, just lowers what's riding on it.
+
+### Absorbs Bug 92's on-device half, 2026-09-24
+
+Per-depth backup keys (`BackupEncryptionKey` rows) are sealed under the same vault key as everything
+else, so this entry's extraction also yields every depth's backup key, and with it any real `.occbak`
+the attacker finds. Bug 92 carried that case separately; it is folded in here, because the fix is the
+same: `PASSPHRASE_LAYER_KEYS.md`'s per-layer keys, sealing the real layer's backup key under the real
+layer's key. Bug 92 stays open for the exported file itself (an opt-in export passphrase).
+
+One thing the backup file adds beyond the entries in the database: it lives off the device (iCloud,
+Files, AirDrop) and can hold entries later deleted from the phone. And the backup key is deliberately
+reused across trustee changes (`decisions.md`, "Reuse the same BEK across trustee-set changes"), so a
+key extracted once opens that depth's earlier and later exports until it is rotated. Rotation has no
+UX or caller yet: Bug 121.
 
 ### Guard
 

@@ -441,3 +441,29 @@ larger groups), a restore still fails as before. Repeating the reconstruction sl
 on-device timing observer, which is filed as Bug 131.
 
 **Full reasoning:** `bugs.md` Bug 95.
+
+---
+
+## Split Bug 92: the stored backup key goes with layer keys, the export passphrase stays
+
+**Status:** Decided, 2026-09-24. Docs only; nothing built.
+
+**Context:** Bug 92 ("a backup file is readable from any layer") had been waiting on a re-rating since
+Bug 105 closed. Re-examined against the current code: no in-app path opens a backup file with a stored
+backup key, and every depth has its own backup key.
+
+**Decision:** Split it.
+- **The on-device half is subsumed into Bug 119.** Extracting the one vault key yields every depth's
+  backup key. That's Bug 119's case, and its fix (`PASSPHRASE_LAYER_KEYS.md`'s per-layer keys) covers it.
+- **The exported-file half stays open as Bug 92,** re-rated Low. Its remedy is the opt-in, 6-word
+  passphrase per export decided on 2026-09-06 (`VAULT_KEY_LAYERING.md` §8 item 4), still unbuilt.
+
+**Why:** Layer keys protect the stored key on the device. They do nothing for a file whose key an
+attacker has from somewhere else, most clearly k trustees colluding, and that is what the passphrase is
+for. Closing Bug 92 outright would have dropped the passphrase decision from tracking.
+
+**Consequences:** Bug 92's PIN-combined file key and its two costs are superseded. The passphrase is
+opt-in, so restoring from shards alone stays the default. The passphrase still protects nothing against
+a coercer holding the owner, as the 2026-09-06 decision accepted.
+
+**Full reasoning:** `bugs.md` Bugs 92 and 119.
