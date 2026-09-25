@@ -8086,7 +8086,10 @@ file over and was not carried across.
 
 ## Bug 101 — Every file opened through "Open in Occulta" is likely still sitting in `Documents/Inbox`, unsealed and backed up
 
-**Status:** **Fixed in code 2026-09-25, on `v1.11.0/vault-key-layering`; device confirmation pending.**
+**Status:** **Fixed 2026-09-25, on `v1.11.0/vault-key-layering`, and verified in the simulator the same
+day.** New copies are deleted after the read (step 1 below), and every Inbox, with copies left by
+earlier versions, is cleared when the app goes to the background (step 3). Share-sheet and AirDrop
+deliveries on a device are still unchecked.
 ~~Open, one fact unverified — see Confirm first.~~ Filed 2026-08-27, found while scoping
 Bug 100's backup exclusion. Not found by reading the restore code: found by asking which copy of an
 opened file the exclusion would actually cover, and discovering there is one more copy than the code
@@ -8114,20 +8117,71 @@ which location is right.
    iOS has put the incoming copy there before the app starts, and the detached sweep raced
    `handleOpenURL` for it, so a file that launched the app could be deleted unread.
 
+3. **Added the same day, after the simulator run below:** `FileManager.clearInboxes()`, called from
+   `RootView`'s `scenePhase` handler on `.background`, deletes `Documents/Inbox/` and every
+   `tmp/*-Inbox/`, folders included. By then every delivered file has been read, since iOS brings the
+   app to the foreground to hand one over and `handleOpenURL` reads it at once, so this can't race an
+   incoming file the way a launch sweep does. It removes what step 1 can't reach: copies left by
+   versions before the fix, and one stranded by a crash between delivery and read. Removing the folder
+   leaves no sign a file was ever opened into the app; iOS recreates it for the next delivery.
+
 **Not built: remedy 1 (`LSSupportsOpeningDocumentsInPlace`)** — changes the opening contract, and a
 share-sheet delivery is copied regardless, so step 1 is needed either way. **Not built: a launch sweep
 of `Documents/Inbox`.** If iOS does deliver there, the sweep races the incoming file exactly like the
-`tmp/` one did; and no such folder was found on the one upgraded device checked.
+`tmp/` one did; and no such folder was found on the one upgraded device checked. *(Superseded the same
+day: iOS 26 does deliver there, and copies from earlier versions need removing. Step 3 does it at
+backgrounding instead, which has no race.)*
 
-**Residual:** a crash between delivery and the read leaves that one copy in `tmp/…-Inbox`, now
-skipped by the launch sweep, until iOS purges `tmp/`. Not backed up.
+**Residual:** ~~a crash between delivery and the read leaves that one copy in `tmp/…-Inbox`, now
+skipped by the launch sweep, until iOS purges `tmp/`. Not backed up.~~ *Closed by step 3: that copy
+goes at the next backgrounding.* Remaining: a copy delivered and never followed by a backgrounding (the
+app is killed while in the foreground) waits for the next one.
 
 **Tests:** `OpenInPlaceCopyTests` — the inside/outside predicate (both Inbox locations, the container
-root, a `<home>X` sibling, `..` escape, a symlink pointing out) and the sweep keeping `*-Inbox`.
+root, a `<home>X` sibling, `..` escape, a symlink pointing out), the sweep keeping `*-Inbox`, and
+`clearInboxes` removing both Inbox folders with their copies and nothing else, and doing nothing when
+there are none.
 `handleOpenURL` itself is on `OccultaApp` and can't be constructed in a test.
 
 **Device check still wanted:** open a `.occbak` from Files and from a share sheet, cold and warm
 launch; each must open, and a downloaded container must show no copy left afterwards.
+
+### Verified in the simulator, 2026-09-25
+
+iPhone 17 Pro simulator, iOS 26.2, Debug build of `46868e5`. Each `.occbak` was a dummy (`OCBK` plus
+random bytes) opened with `xcrun simctl openurl`, which hands the file to the app the way "Open in"
+does; the app container was watched every 20 ms. A control build, identical except that the `defer`
+deleted only share-extension handoffs, was run the same way.
+
+| | Fixed build | Control build |
+|---|---|---|
+| Where iOS put the copy | `Documents/Inbox/`, cold and warm | `Documents/Inbox/`, cold and warm |
+| Copy after a cold launch | deleted after the read; the "Restore from this backup?" prompt showed | left in place |
+| Copy after a warm launch | deleted within 20 ms | left in place |
+| The original outside the container | untouched | untouched |
+
+What this settles and what it changes:
+- **The location guess above was wrong, at least here:** the copy goes to `Documents/Inbox/`, which is
+  in device backups, not `tmp/<bundle-id>-Inbox/`. So the harm is the one this entry was filed for, and
+  **the premise is confirmed:** without the fix every copy stays.
+- **The fix works for new files,** on both launch paths, and reads before deleting.
+- **Copies left by earlier versions are never removed.** The control build's two copies survived the
+  fixed build's launches and opens. Every user of v1.10.3 or earlier who opened a file this way still
+  has those copies, in backups. The "no launch sweep" decision above rested on the `tmp/` location and
+  on one device that had no `Documents/Inbox`.
+- **A date-based launch sweep can't fix that safely:** iOS keeps the original's creation and
+  modification dates on the copy (a file dated 2020 arrived dated 2020), so "delete anything old" would
+  delete a just-delivered old file unread.
+- **An empty `Documents/Inbox` folder remains** after the fix deletes a copy. Its existence and
+  modification date say a file was once opened into the app, and when.
+
+**Step 3, verified the same way:** with the control build's two copies still in `Documents/Inbox/`, the
+fixed build launched and sent to the background (by opening Settings) removed both copies and the
+folder. A new file opened afterwards: iOS recreated `Inbox`, the app read the file and showed the
+prompt, the copy was deleted, and the next backgrounding removed the folder again.
+
+Not covered: share-sheet ("Copy to Occulta") and AirDrop deliveries, and a real device. Both still
+want the device check above.
 
 ### Severity: High if confirmed (contents, not metadata)
 

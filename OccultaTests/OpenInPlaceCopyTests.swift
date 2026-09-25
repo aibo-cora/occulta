@@ -104,4 +104,49 @@ struct OpenInPlaceCopyTests {
         #expect(!self.fileManager.fileExists(atPath: attachment.path))
         #expect(!self.fileManager.fileExists(atPath: folder.path))
     }
+    // MARK: - clearInboxes
+
+    /// Runs when the app goes to the background, so it must take every Inbox, with the copies
+    /// earlier versions left there, and nothing else.
+    @Test("Clearing the Inboxes removes both Inbox folders and their copies, and nothing else")
+    func clearInboxesRemovesOnlyInboxes() throws {
+        let documents = try self.makeScratchDirectory()
+        let temporary = try self.makeScratchDirectory()
+        defer {
+            try? self.fileManager.removeItem(at: documents)
+            try? self.fileManager.removeItem(at: temporary)
+        }
+        let documentsInbox = documents.appendingPathComponent("Inbox", isDirectory: true)
+        let tmpInbox       = temporary.appendingPathComponent("com.occulta.Occulta-Inbox", isDirectory: true)
+        for inbox in [documentsInbox, tmpInbox] {
+            try self.fileManager.createDirectory(at: inbox, withIntermediateDirectories: true)
+            try Data([1]).write(to: inbox.appendingPathComponent("left-by-v1.10.3.occbak"))
+        }
+        let otherDocument = documents.appendingPathComponent("export.occbak")
+        let otherTemp     = temporary.appendingPathComponent("attachment.jpg")
+        try Data([2]).write(to: otherDocument)
+        try Data([3]).write(to: otherTemp)
+
+        self.fileManager.clearInboxes(documents: documents, temporary: temporary)
+
+        #expect(!self.fileManager.fileExists(atPath: documentsInbox.path))
+        #expect(!self.fileManager.fileExists(atPath: tmpInbox.path))
+        #expect(self.fileManager.fileExists(atPath: otherDocument.path))
+        #expect(self.fileManager.fileExists(atPath: otherTemp.path))
+    }
+
+    @Test("Clearing the Inboxes when there are none does nothing")
+    func clearInboxesWithNoneIsHarmless() throws {
+        let documents = try self.makeScratchDirectory()
+        let temporary = try self.makeScratchDirectory()
+        defer {
+            try? self.fileManager.removeItem(at: documents)
+            try? self.fileManager.removeItem(at: temporary)
+        }
+
+        self.fileManager.clearInboxes(documents: documents, temporary: temporary)
+
+        #expect(self.fileManager.fileExists(atPath: documents.path))
+        #expect(self.fileManager.fileExists(atPath: temporary.path))
+    }
 }

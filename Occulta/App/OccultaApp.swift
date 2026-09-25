@@ -362,6 +362,9 @@ struct RootView: View {
                 switch newPhase {
                 case .active:
                     self.contactManager.cleanupPendingSessions()
+                case .background:
+                    // Every file delivered to the app has been read by now (Bug 101).
+                    FileManager.default.clearInboxes()
                 default:
                     break
                 }
