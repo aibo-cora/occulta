@@ -97,6 +97,11 @@ final class VaultManager {
     @ObservationIgnored
     private var inactivityTimer: Timer?
 
+    /// When the inactivity lock is due; nil while locked. Internal for unit tests, which can't
+    /// time the lock itself reliably: in a full run other tests hold the main thread for longer
+    /// than any sensible timeout.
+    var inactivityDeadline: Date? { self.inactivityTimer?.fireDate }
+
     @ObservationIgnored
     private var cancellables = Set<AnyCancellable>()
 
@@ -203,6 +208,17 @@ final class VaultManager {
                 action()
             }
         }
+    }
+
+    /// Pushes the inactivity lock back by `inactivityTimeout`, if the vault is unlocked
+    /// (`bugs.md` Bug 135).
+    ///
+    /// For `VaultNewEntrySheet`, the one vault screen where someone types for minutes without
+    /// the vault key being used, which is all that otherwise counts as activity. Does nothing
+    /// while locked: it can't unlock, or start a timer on a locked vault.
+    func extendSession() {
+        guard self.isUnlocked else { return }
+        self.resetInactivityTimer()
     }
 
     /// Store a pre-evaluated LAContext for the vault session.

@@ -126,6 +126,19 @@ struct VaultNewEntrySheet: View {
                 }
             }
         }
+        // Typing counts as vault activity here, so the inactivity lock can't fire mid-entry
+        // (bugs.md Bug 135).
+        .onChange(of: self.label) { self.vault.extendSession() }
+        .onChange(of: self.content) { self.vault.extendSession() }
+        .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
+            guard !isUnlocked else { return }
+            // Vault locked while an entry is being typed (five minutes without typing, or
+            // leaving the app) — clear it and close, so the secret isn't left on screen over a
+            // locked vault. The user unlocks and starts again.
+            self.label   = ""
+            self.content = ""
+            self.dismiss()
+        }
     }
 
     // MARK: - Type tile

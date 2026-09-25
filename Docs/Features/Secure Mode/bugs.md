@@ -11528,5 +11528,89 @@ vault. Device check: open Backup Recovery (and an entry's Shard Distribution), w
 leave the app, and confirm the screen has closed; open Export Backup, wait, tap Export, and confirm
 Face ID appears and the export sheet follows.
 
-**Not checked, related:** `VaultNewEntrySheet` has no lock handling either. An entry being typed stays
-on screen after a lock, and a long entry can outlast the five-minute timer.
+**Related:** `VaultNewEntrySheet` had no lock handling either; filed and fixed as Bug 135.
+
+---
+
+## Bug 135 — A vault entry being typed stays on screen after the vault locks, and Save can't unlock
+
+**Status:** Fixed 2026-09-25, on `v1.11.0/vault-key-layering`; not yet checked on a device. Found as the
+related case noted under Bug 134.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (the secret being entered stays visible over a locked vault)
+
+### What happens
+
+`VaultNewEntrySheet` is a sheet on the Vault tab, presented independently of the lock, so it stayed
+open when the vault locked. Two things lock it: the five-minute inactivity timer, which only counts
+use of the vault key, so typing never reset it and a slowly typed seed phrase could outlast it; and
+leaving the app (`willResignActive`). After that:
+- **the label and content stayed on screen,** including the secret. `privacySensitive` only redacts
+  system snapshots, not the live view;
+- **Save failed with "Vault locked — unlock and try again",** but the sheet has no way to unlock. The
+  only way out was Cancel, which discarded the entry.
+
+### Fix, as built
+
+- **Typing counts as vault activity in this sheet.** `VaultManager.extendSession()` resets the inactivity
+  timer, only while unlocked, and the sheet calls it on every change to the label or content. The
+  vault now locks only after five minutes without typing, or on leaving the app. Everywhere else only
+  use of the vault key counts (`decisions.md`, "Typing in the new-entry sheet counts as vault activity").
+- **On lock, the sheet clears the label and content and closes,** as `VaultEntryDetail` and
+  `VaultShardSetup` do. Nothing typed is kept, in memory or anywhere else; the user unlocks and starts
+  again. Chosen over hiding the fields and keeping the draft until Face ID. The cost, accepted: anything
+  that briefly takes the app out of focus (a call, Control Center, a notification banner, switching
+  apps to copy words) also discards the entry.
+
+### Guard
+
+`VaultManagerLifecycleTests` (`VaultTests.swift`): `extendSession` moves the inactivity deadline later
+on an unlocked vault, and on a locked one leaves it locked with no timer. Both read the timer's deadline
+(`VaultManager.inactivityDeadline`, internal for tests) rather than timing the lock: a first,
+real-time version failed in full-suite runs both ways, kept unlocked by other tests' saves (Bug 136)
+and locked early by main-thread contention, while passing on its own. The sheet is a SwiftUI view with
+no test harness here. Device check: type for more than five minutes and confirm the vault stays
+unlocked; stop typing for five minutes, or leave the app, and confirm the sheet has closed and is empty
+when reopened.
+
+---
+
+## Bug 136 — Any save anywhere in the app resets the vault's inactivity timer
+
+**Status:** Open, filed 2026-09-25. Found when Bug 135's `extendSession` test failed in full-suite runs
+only: other tests' saves kept its vault unlocked.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (weakens the inactivity lock)
+
+### What happens
+
+`VaultManager.init` subscribes to every `ModelContext.didSave`, from any context, and while the vault is
+unlocked calls `recomputeRecoveryHealth()` (`Vault+Manager.swift`). That calls `currentKey()`
+(`Vault+Manager+Shards.swift`), and `currentKey()` resets the inactivity timer on every success. The
+hook's comment calls the extra recomputes "harmless"; each one extends the vault session.
+
+So using any other part of the app that saves (sending a message, editing a contact, opening a file)
+keeps the vault unlocked, not just using the vault. Nothing in the app was found to save on a timer
+while idle (the only repeating timers are UI ones: the PIN countdown, the identity challenge's 30-second
+tick), so an idle app still locks after five minutes. The rule the inactivity lock is built on, that
+only use of the vault counts, doesn't hold.
+
+### Remedy (proposed, not built)
+
+Let the automatic recompute read the vault key without extending the session: a parameter
+`currentKey(extendingSession: Bool = true)`, passed `false` by `recomputeRecoveryHealth()`. Every other
+caller keeps today's behaviour.
+
+### Guard
+
+A test that a save on an unrelated context, with the vault unlocked, leaves
+`VaultManager.inactivityDeadline` unchanged once the save notification has been delivered.
+
+**Also affected:** the existing `VaultManagerLifecycleTests.locksAfterInactivity` times the lock in real
+time (50 ms timeout, checked at 150 ms) and failed once in a full run on 2026-09-25, after passing in
+every earlier run: a save elsewhere, or a busy main thread, in that window keeps the vault unlocked.
+The fix should move it to the deadline, as Bug 135's tests were.

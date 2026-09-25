@@ -476,3 +476,34 @@ opt-in, so restoring from shards alone stays the default. The passphrase still p
 a coercer holding the owner, as the 2026-09-06 decision accepted.
 
 **Full reasoning:** `bugs.md` Bugs 92 and 119.
+
+---
+
+## Typing in the new-entry sheet counts as vault activity; locking clears the sheet
+
+**Status:** Decided and built, 2026-09-25 (`bugs.md` Bug 135).
+
+**Context:** The vault's five-minute inactivity lock counts only use of the vault key. Typing a new
+entry never uses it, so a slowly typed seed phrase could hit the lock mid-entry, and the sheet then
+stayed open over a locked vault with the secret on screen and no way to save.
+
+**Decision:**
+- **Typing counts:** `VaultManager.extendSession()` resets the timer while unlocked, called on every
+  change to the sheet's label or content. It applies to this sheet only.
+- **Locking clears:** when the vault locks, the sheet empties its fields and closes. No draft is kept,
+  in memory or anywhere else.
+
+**Why:**
+- **This is the one vault screen where someone works for minutes without the key being used.** A
+  phone left idle, or taken and not typed on, still locks after five minutes, and leaving the app
+  still locks at once.
+- **Clearing, not keeping:** a user who can't finish in five minutes can start again. Keeping a hidden
+  draft until Face ID was considered and rejected: a secret would sit in memory over a locked vault
+  for no real benefit.
+
+**Consequences:** anything that briefly takes the app out of focus (a call, Control Center, a
+notification banner, switching apps to copy words) discards the entry being typed. The timer exception
+is limited to this sheet; everywhere else only use of the key counts, a rule Bug 136 currently breaks
+for saves.
+
+**Full reasoning:** `bugs.md` Bugs 135 and 136.

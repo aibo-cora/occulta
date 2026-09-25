@@ -148,6 +148,33 @@ private func makeContainer() throws -> ModelContainer {
         try await Task.sleep(for: .milliseconds(150))
         #expect(vm.isUnlocked == false, "vault must auto-lock after inactivity timeout")
     }
+
+    /// Bug 135: typing in the new-entry sheet pushes the lock back. Read from the timer's own
+    /// deadline, before and after in one synchronous step, so neither a save elsewhere (Bug 136)
+    /// nor main-thread contention in a full run can interleave. That the lock fires at its
+    /// deadline is `locksAfterInactivity`.
+    @Test("extendSession pushes the inactivity lock back while unlocked")
+    func extendSessionPushesLockBack() async throws {
+        let (vm, _) = try makeVaultManager(inactivityTimeout: 60)
+        vm.unlock(context: LAContext())
+        try await Task.sleep(for: .milliseconds(50))
+
+        let before = try #require(vm.inactivityDeadline)
+        vm.extendSession()
+        let after = try #require(vm.inactivityDeadline)
+
+        #expect(after > before)
+    }
+
+    @Test("extendSession on a locked vault leaves it locked, with no timer")
+    func extendSessionWhileLockedDoesNothing() throws {
+        let (vm, _) = try makeVaultManager(inactivityTimeout: 60)
+
+        vm.extendSession()
+
+        #expect(!vm.isUnlocked)
+        #expect(vm.inactivityDeadline == nil)
+    }
 }
 
 // MARK: - Phase 4: CRUD
