@@ -3,7 +3,7 @@
 **Status:** ~~design, not built.~~ **Built, corrected 2026-09-25** — this line was never updated as
 stages landed. Stage 3's inbound gate shipped 2026-09-12 (§2.1, `OccultaApp.filterShardOperations`);
 `PendingShamirSecretRestore` replaced `ReconstructShard` 2026-09-21; §9.4's one-shot restore at the
-opening depth and Stage 6 shipped 2026-09-23. Still open: Bug 101 (needs a device check) and Bug 96
+opening depth and Stage 6 shipped 2026-09-23. Still open: Bug 101 (fixed in code 2026-09-25, device check pending) and Bug 96
 item 2 (accepted). §4 has the per-stage state. **Owner entries:** `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK,
 shared with the sibling doc), Bugs 93, 95, 96, 99, 100, 101 (this container's own). **Compiled:**
 2026-09-02, split out of `STORAGE_LAYERING.md` alongside
@@ -1166,7 +1166,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |
 | 100 r2 | Shard file length was a keyless progress counter | fixed — rows (`ReconstructShard`, 2026-08-27); **superseded again, 2026-09-21** — `ReconstructShard` itself retired, `PendingShamirSecretRestore` is the live mechanism (§9.3, Stages 4-5) |
 | 100 r3 | `.occbak` length estimates vault size | **moot, 2026-09-23** — §9.4 is built and the file is never written to the sandbox. (Was open until then: §9.3 dropped `encryptedSnapshot`, but the file stayed held until the reordering shipped; see `bugs.md` Bug 100's 2026-09-21 and 2026-09-23 notes.) |
-| 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
+| 101 | `Documents/Inbox` copies retained and backed up | **fixed in code, 2026-09-25** — `handleOpenURL` deletes the copy iOS makes inside the container after reading it; the copy likely lands in `tmp/…-Inbox`, not `Documents/Inbox` (`bugs.md` Bug 101). Device check pending |
 | 126 | `pendingRestoreActive`/`pendingRestoreShardCount` hand-synced at five sites | **closed, moot, 2026-09-23** — §9.4 removed that state |
 | 127 | v1.10.3's filename rename orphaned ≤v1.10.2 restore files: named for the mechanism, never deleted, in device backups | **fixed, 2026-09-23** — `deleteLegacyRestoreState` on every unlock |
 | 128 | "Erase all data" deletes no files, so the held `.occbak` and `backup-export-meta.dat` survive a wipe | **fixed, 2026-09-23** — the wipe deletes the files |
@@ -1258,6 +1258,10 @@ device that upgrades mid-restore, which §9.4 has nothing to adopt it into.
   export itself sits wherever they saved it, and an OS copy very likely sits in `Documents/Inbox`
   (Bug 101). A mid-restore owner opens the file again, and the banked shards complete it. If Bug 101 is
   later fixed by deleting Inbox copies, recheck this: an AirDropped file could then have no copy left.
+  *Rechecked 2026-09-25, when Bug 101 was fixed that way: no reachable copy is lost. The Inbox copy was
+  never reachable by the owner — Files shows neither `Documents/Inbox` nor `tmp/`, and nothing in the
+  app reopens it — so a second attempt always meant reopening from the original: the AirDrop sender's
+  device, the Mail or Messages attachment, or wherever the export was saved. Those are untouched.*
 - **No message to the owner:** any notice would either show at every depth or be a depth tell.
 - **Guard:** seed each file; unlock once at depth 0 and once at a duress depth; assert every file is
   gone and the banked shard rows are unchanged.

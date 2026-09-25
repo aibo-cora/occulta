@@ -609,8 +609,12 @@ struct RootView: View {
         }
 
         Task {
+            // Also delete the copy iOS makes in our own container for "Open in Occulta"
+            // (Bug 101). An original opened in place from Files lies outside it and is kept.
+            // Safe after reading: the bytes are memory-mapped, and unlinking a mapped file
+            // leaves the mapping valid.
             defer {
-                if openedThroughShareExtension {
+                if openedThroughShareExtension || FileManager.default.isInsideAppContainer(fileLocation) {
                     try? FileManager.default.removeItem(at: fileLocation)
                 }
             }

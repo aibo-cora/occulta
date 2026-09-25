@@ -8086,12 +8086,48 @@ file over and was not carried across.
 
 ## Bug 101 — Every file opened through "Open in Occulta" is likely still sitting in `Documents/Inbox`, unsealed and backed up
 
-**Status:** **Open, one fact unverified — see Confirm first.** Filed 2026-08-27, found while scoping
+**Status:** **Fixed in code 2026-09-25, on `v1.11.0/vault-key-layering`; device confirmation pending.**
+~~Open, one fact unverified — see Confirm first.~~ Filed 2026-08-27, found while scoping
 Bug 100's backup exclusion. Not found by reading the restore code: found by asking which copy of an
 opened file the exclusion would actually cover, and discovering there is one more copy than the code
 accounts for.
 
-**Target:** unset until the device check below settles the severity.
+**Target:** `v1.11.0`.
+
+### Fix, 2026-09-25 — delete the copy after reading, wherever iOS put it
+
+**The location was probably wrong.** A device upgraded from v1.10.3 had no `Documents/Inbox` at all.
+Occulta is a scene-based SwiftUI app, and for those iOS usually copies an opened file into
+`tmp/<bundle-id>-Inbox/`, not `Documents/Inbox/`. That is unconfirmed: the device had not
+necessarily opened a file through "Open in Occulta". If it holds, the harm is far smaller: `tmp/` is
+not backed up, and `clearTemporaryDirectory()` empties it on launch. The fix below does not depend on
+which location is right.
+
+**Built:**
+1. `handleOpenURL` (`OccultaApp.swift`) deletes the opened file after reading it whenever
+   `FileManager.isInsideAppContainer` places it inside the app's container, the same `defer` that
+   already deleted the share extension's App Group handoff. That covers both Inbox locations. A
+   file outside the container is the user's original, opened in place from Files, and is never
+   touched. Deleting after the read is safe for a staged `.occbak`: the bytes are memory-mapped,
+   and unlinking a mapped file leaves the mapping valid.
+2. `clearTemporaryDirectory()` now skips `*-Inbox` folders (`clearContents(of:)`). On a cold launch
+   iOS has put the incoming copy there before the app starts, and the detached sweep raced
+   `handleOpenURL` for it, so a file that launched the app could be deleted unread.
+
+**Not built: remedy 1 (`LSSupportsOpeningDocumentsInPlace`)** — changes the opening contract, and a
+share-sheet delivery is copied regardless, so step 1 is needed either way. **Not built: a launch sweep
+of `Documents/Inbox`.** If iOS does deliver there, the sweep races the incoming file exactly like the
+`tmp/` one did; and no such folder was found on the one upgraded device checked.
+
+**Residual:** a crash between delivery and the read leaves that one copy in `tmp/…-Inbox`, now
+skipped by the launch sweep, until iOS purges `tmp/`. Not backed up.
+
+**Tests:** `OpenInPlaceCopyTests` — the inside/outside predicate (both Inbox locations, the container
+root, a `<home>X` sibling, `..` escape, a symlink pointing out) and the sweep keeping `*-Inbox`.
+`handleOpenURL` itself is on `OccultaApp` and can't be constructed in a test.
+
+**Device check still wanted:** open a `.occbak` from Files and from a share sheet, cold and warm
+launch; each must open, and a downloaded container must show no copy left afterwards.
 
 ### Severity: High if confirmed (contents, not metadata)
 
