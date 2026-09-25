@@ -1519,6 +1519,14 @@ decide whether to run, so a coercer sees identical first-unlock behavior regardl
 forced their way into (the same "every layer behaves identically" property Bug 99's pattern requires
 elsewhere in this design).
 
+**Upgrade verified on a device, 2026-09-25.** A v1.11.0 build from `v1.11.0/vault-key-layering` was installed over v1.10.3
+holding vault entries and a backup key already split among trustees. After the update the entries and
+trustees were intact, and with Secure Mode activated each depth showed only its own data. This covers
+item 14's backup-key migration and Bug 133's `deletionToken` backfill on real upgraded data. Not
+covered: a restore still collecting shards at upgrade time (the `ReconstructShard` →
+`PendingShamirSecretRestore` migration, `RECOVERY_BUFFER_LAYERING.md` §8) and Bug 127's legacy restore-file
+cleanup, since this install had no restore in progress.
+
 ---
 
 ## 10. Known bugs — this container's
