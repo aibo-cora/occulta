@@ -16,6 +16,9 @@ import UniformTypeIdentifiers
 /// Leaving is the back button, as with the export screen. A failed attempt stays here so the
 /// owner can choose another file or go back; a successful one pops back to the vault list,
 /// where `VaultTab` shows the post-restore prompt.
+///
+/// This screen stays up if the vault locks while it's open (inactivity, or leaving the app), so a
+/// file picked then asks for Face ID before the attempt, as Open in Occulta does.
 struct VaultRestoreView: View {
     @Environment(VaultManager.self) private var vault
     @Environment(ContactManager.self) private var contactManager
@@ -68,7 +71,15 @@ struct VaultRestoreView: View {
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
         do {
-            let data  = try Data(contentsOf: url)
+            let data = try Data(contentsOf: url)
+            self.vault.whenUnlocked { self.restore(data) }
+        } catch {
+            self.failureMessage = "There was an error. \(error.localizedDescription)"
+        }
+    }
+
+    private func restore(_ data: Data) {
+        do {
             let depth = self.security.currentDepth
             let imported = try self.vault.restoreBackup(
                 from: data, currentDepth: depth,

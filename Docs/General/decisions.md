@@ -361,6 +361,15 @@ send a message. A trustee-side prompt would fix that, as a separate decision. **
 trustee-side prompt.** The owner's restore screen tells them to ask each person for a message; nothing is
 added on the trustee's side.
 
+**2026-09-25: a file picked after the vault locks asks for Face ID.** The restore screen is pushed, so
+it stays up when the vault locks (the inactivity timer, which only resets on key use, or leaving the
+app), and a pick then failed with a generic "There was an error". It now asks for Face ID and restores,
+through `VaultManager.whenUnlocked`, the step Open in Occulta already had; both paths share it.
+Cancelling does nothing. Not chosen: dismissing the screen on lock, as `VaultEntryDetail` does (if the
+system picker itself makes the app resign active, that would tear the picker down as it opens), and
+pausing the inactivity timer while the picker is open (keeps the vault unlocked for as long as the
+picker stays up).
+
 **Full reasoning:** this conversation, 2026-09-23; `RECOVERY_BUFFER_LAYERING.md` §9.4.
 
 ---

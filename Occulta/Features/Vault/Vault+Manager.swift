@@ -185,6 +185,25 @@ final class VaultManager {
 
     // MARK: - Unlock / lock
 
+    /// Runs `action` with the vault unlocked, asking for Face ID first if it's locked, the same
+    /// prompt the Vault tab uses. Cancelling or failing the prompt does nothing.
+    ///
+    /// For the two restore paths, where a file is already in hand and the vault may have locked
+    /// while it was chosen: `VaultRestoreView`'s picker, and Open in Occulta's
+    /// `restoreConfirmedFile`. The prompt depends only on the lock state, never on depth.
+    func whenUnlocked(_ action: @escaping () -> Void) {
+        guard !self.isUnlocked else { return action() }
+
+        let context = LAContext()
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock your Vault") { success, _ in
+            DispatchQueue.main.async {
+                guard success else { return }
+                self.unlock(context: context)
+                action()
+            }
+        }
+    }
+
     /// Store a pre-evaluated LAContext for the vault session.
     ///
     /// The caller (a view or coordinator) evaluates the biometric policy via

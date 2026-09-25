@@ -12,7 +12,6 @@ import Combine
 import ImageIO
 import SQLite3
 import UniformTypeIdentifiers
-import LocalAuthentication
 
 // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
 
@@ -690,16 +689,7 @@ struct RootView: View {
         guard let pending = self.pendingRestoreFile else { return }
         self.pendingRestoreFile = nil
 
-        guard !self.vaultManager.isUnlocked else { return self.restoreBackup(from: pending) }
-
-        let context = LAContext()
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock your Vault") { success, _ in
-            DispatchQueue.main.async {
-                guard success else { return }
-                self.vaultManager.unlock(context: context)
-                self.restoreBackup(from: pending)
-            }
-        }
+        self.vaultManager.whenUnlocked { self.restoreBackup(from: pending) }
     }
 
     /// A successful import is visible where it happened: the entries appear, and the vault tab
