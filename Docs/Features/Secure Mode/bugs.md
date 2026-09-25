@@ -11476,3 +11476,57 @@ existing one (not a reinstall) brought the hidden entry back.
 **What let it through:** no test ever built a `VaultEntry` the way v1.10.3 left it. Every test creates
 entries through `addEntry`, which writes the token. The same gap applies to any field added with a
 fail-closed reading of nil.
+
+---
+
+## Bug 134 — After the vault locks, the backup setup screen keeps showing its trustees and threshold, and Export fails silently
+
+**Status:** Fix built 2026-09-25, on `v1.11.0/vault-key-layering`, not yet committed or checked on a
+device. Found checking which pushed vault screens react to a lock, after the restore screen's picker
+case (`decisions.md`, "Restore discoverability", 2026-09-25 note).
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (vault-key data visible after lock; a silent failure)
+
+### What happens
+
+The Vault tab swaps its root view for the lock screen when the vault locks, but screens already pushed
+onto its navigation stack stay. `VaultEntryDetail` closes itself on lock; two others didn't.
+
+- **`VaultShardSetup`** (reached from 7 places: the Vault tab, an entry's detail, the post-restore
+  prompt and two Settings screens) keeps the trustee checkmarks and threshold it seeded from the
+  distribution metadata, which is sealed under the vault key, in its own state. After a lock they stay
+  on screen, while the status chips vanish on the next redraw (`fetchDistributionMeta()` reads with
+  `try?`), so it reads as "nothing distributed" with the selection still showing. Distributing then
+  fails with "Vault locked — unlock and try again", revoking with a generic "Revoke failed".
+  The global trustee list is readable without the vault key anyway (contact records); this
+  distribution's selection, threshold and status are not.
+- **`BackupExportEducationView`** shows only fixed text, but "I understand — Export" after a lock calls
+  `startExport()`, `exportBackup` throws `locked`, and the error is swallowed by an unfinished
+  `// TODO: surface export error`.
+
+The inactivity timer only resets when the vault key is used, so five minutes on either screen is
+enough, as is leaving the app.
+
+### Fix, as built
+
+- **`VaultShardSetup` closes on lock,** clearing the seeded selection, threshold and pending revoke
+  first: the same `onChange(of: vault.isUnlocked)` → `dismiss()` as `VaultEntryDetail`. One change covers
+  all 7 entry points. It opens no system picker, so the concern that ruled closing-on-lock out for the
+  restore screen doesn't apply. Unsaved selection changes are lost once the vault locks.
+- **Export goes through `VaultManager.whenUnlocked`:** a lock since the screen opened means Face ID, then
+  the export, as the restore paths do.
+
+Not changed: other export failures are still silent (the existing TODO); choosing their message is a
+separate decision.
+
+### Guard
+
+None automated: these are SwiftUI views with no test harness here, and the simulator can't unlock the
+vault. Device check: open Backup Recovery (and an entry's Shard Distribution), wait five minutes or
+leave the app, and confirm the screen has closed; open Export Backup, wait, tap Export, and confirm
+Face ID appears and the export sheet follows.
+
+**Not checked, related:** `VaultNewEntrySheet` has no lock handling either. An entry being typed stays
+on screen after a lock, and a long entry can outlast the five-minute timer.

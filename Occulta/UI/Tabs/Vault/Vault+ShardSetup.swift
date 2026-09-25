@@ -110,6 +110,18 @@ struct VaultShardSetup: View {
         }
         .safeAreaInset(edge: .bottom) { self.ctaBar(meta: meta, canMark: canMark) }
         .onAppear { self.seedInitialState() }
+        .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
+            guard !isUnlocked else { return }
+            // Vault locked while this screen is visible — clear the trustee selection and
+            // threshold seeded from the vault-sealed distribution metadata, and navigate back
+            // so Face ID is required to re-enter, as VaultEntryDetail does.
+            self.selectedIDs       = []
+            self.snapshotIDs       = []
+            self.threshold         = 2
+            self.snapshotThreshold = 2
+            self.revokeTarget      = nil
+            self.dismiss()
+        }
         .confirmationDialog(
             "Revoke Shard",
             isPresented: Binding(

@@ -125,7 +125,9 @@ struct VaultTab: View {
                 VaultEntryDetail(entryID: id)
             }
             .navigationDestination(isPresented: $showExportEducation) {
-                BackupExportEducationView { self.startExport() }
+                // The vault can lock while this screen is read; export asks for Face ID then,
+                // rather than failing silently.
+                BackupExportEducationView { self.vault.whenUnlocked { self.startExport() } }
             }
             .navigationDestination(isPresented: $showBEKSetup) {
                 VaultShardSetup(mode: .backup)
