@@ -252,7 +252,7 @@ extension VaultManager {
 
         // Checked before zeroing, not inside a loop over the entries: the loop would hold its own
         // reference to the array, so zeroing from inside it would zero a copy.
-        guard backup.entries.allSatisfy(Self.isWellFormed) else {
+        guard backup.entries.allSatisfy(self.isWellFormed) else {
             Self.zeroPlaintext(&backup.entries)
             throw BackupError.invalidFormat
         }
@@ -260,7 +260,7 @@ extension VaultManager {
     }
 
     /// Whether an entry's fields can be converted without trapping.
-    private static func isWellFormed(_ entry: VaultBackupEntry) -> Bool {
+    private func isWellFormed(_ entry: VaultBackupEntry) -> Bool {
         // UInt8(_: Int) traps outside 0...255 — VaultEntryType(rawValue:) is the safe
         // conversion, but only once the Int is known to fit. Anything that doesn't isn't
         // a future version's entry type, it's malformed.
