@@ -145,14 +145,60 @@ private func makeContainer() throws -> ModelContainer {
         vm.unlock(context: LAContext())
         #expect(vm.isUnlocked == true)
 
-        try await Task.sleep(for: .milliseconds(150))
+        // Well past the 50 ms deadline, so another test holding the main thread in a full run
+        // can't leave this check running before the timer (Bug 136).
+        try await Task.sleep(for: .seconds(1))
         #expect(vm.isUnlocked == false, "vault must auto-lock after inactivity timeout")
     }
 
-    /// Bug 135: typing in the new-entry sheet pushes the lock back. Read from the timer's own
-    /// deadline, before and after in one synchronous step, so neither a save elsewhere (Bug 136)
-    /// nor main-thread contention in a full run can interleave. That the lock fires at its
-    /// deadline is `locksAfterInactivity`.
+    @Test("unlock starts the session: the lock is due one timeout from now")
+    func unlockSetsDeadline() throws {
+        let (vm, _) = try makeVaultManager(inactivityTimeout: 60)
+        let start = Date()
+
+        vm.unlock(context: LAContext())
+
+        let deadline = try #require(vm.inactivityDeadline)
+        #expect(abs(deadline.timeIntervalSince(start) - 60) < 1)
+    }
+
+    /// Bug 136: deriving the key is not vault activity. It used to reset the timer, so every
+    /// automatic use of the key (the save hook, incoming and outgoing messages, redraws)
+    /// kept the vault unlocked.
+    @Test("currentKey doesn't extend the session")
+    func currentKeyDoesNotExtend() async throws {
+        let (vm, _) = try makeVaultManager(inactivityTimeout: 60)
+        vm.unlock(context: LAContext())
+        try await Task.sleep(for: .milliseconds(50))
+
+        let before = try #require(vm.inactivityDeadline)
+        _ = try vm.currentKey()
+        let after = try #require(vm.inactivityDeadline)
+
+        #expect(after == before)
+    }
+
+    /// Bug 136 as filed: a save anywhere ran `recomputeRecoveryHealth()` through the save hook,
+    /// which used the key and so pushed the lock back.
+    @Test("A save on an unrelated context doesn't extend the session")
+    func unrelatedSaveDoesNotExtend() async throws {
+        let (vm, _) = try makeVaultManager(inactivityTimeout: 60)
+        vm.unlock(context: LAContext())
+        try await Task.sleep(for: .milliseconds(50))
+        let before = try #require(vm.inactivityDeadline)
+
+        let (other, _) = try makeVaultManager()
+        other.unlock(context: LAContext())
+        _ = try other.addEntry(label: "elsewhere", content: Data("x".utf8), type: .note)
+        // The hook is delivered on the main queue; let it run.
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(vm.inactivityDeadline == before)
+    }
+
+    /// Bugs 135, 136: the vault screens call this for the person's deliberate actions. Read
+    /// from the timer's own deadline, before and after in one synchronous step, so nothing can
+    /// interleave. That the lock fires at its deadline is `locksAfterInactivity`.
     @Test("extendSession pushes the inactivity lock back while unlocked")
     func extendSessionPushesLockBack() async throws {
         let (vm, _) = try makeVaultManager(inactivityTimeout: 60)

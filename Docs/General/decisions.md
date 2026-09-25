@@ -506,4 +506,63 @@ notification banner, switching apps to copy words) discards the entry being type
 is limited to this sheet; everywhere else only use of the key counts, a rule Bug 136 currently breaks
 for saves.
 
+**2026-09-25:** the "this sheet only" exception is gone with Bug 136's fix. Key use no longer extends
+the session anywhere; typing here is one item in the general rule below.
+
 **Full reasoning:** `bugs.md` Bugs 135 and 136.
+
+---
+
+## Vault activity is the person's deliberate actions, not key use
+
+**Status:** Decided and built, 2026-09-25 (`bugs.md` Bug 136).
+
+**Context:** The vault's five-minute inactivity lock was reset whenever the vault key was derived. Most
+key use is the app working on its own: a recompute after any save, incoming and outgoing messages,
+redraws. So using any part of the app kept the vault unlocked.
+
+**Decision:** `currentKey()` only derives the key. The session is extended only by `unlock` and
+`VaultManager.extendSession()`, and the vault screens call `extendSession()` for these events:
+
+1. Unlocking with Face ID (starts the session).
+2. Switching to the Vault tab, or returning to it from a pushed screen.
+3. Opening an entry.
+4. New Entry, Restore from Backup… (opening either).
+5. Swipe-deleting an entry.
+6. Opening Backup Recovery, or Export backup file.
+7. Hold-to-reveal, once when the hold starts.
+8. Copy.
+9. Manage Shards.
+10. Delete, confirmed.
+11. Typing in a new entry's label or content.
+12. Choosing a new entry's type.
+13. Save.
+14. Choose Backup File, and picking a file.
+15. I understand — Export.
+16. Ticking or unticking a trustee.
+17. Changing the threshold.
+18. Mark for distribution.
+19. Revoke, confirmed.
+20. The post-restore prompt: appearing, Set up backup, Done.
+21. Opening the vault screens in Settings (backup recovery, shard health), and an entry from them.
+
+Opening a screen is covered by one `.onAppear` call on that screen; explicit actions call it in their
+handler.
+
+**Why:**
+- **Deriving a key isn't an action the person took.** Tying the session to it let automatic work keep
+  the vault open indefinitely.
+- **In the UI, not in `VaultManager`:** several events (switching tabs, ticking trustees, choosing a
+  type) have no `VaultManager` call, and the whole list is then visible in one place: the screens.
+- A per-caller `extendingSession:` flag on `currentKey()` was rejected: it would drift as callers are
+  added.
+
+Settled with it: scrolling or reading without tapping doesn't count; switching to the Vault tab does;
+hold-to-reveal counts once, not continuously.
+
+**Consequences:** reading a revealed entry untouched for five minutes locks the vault and closes the
+screen. A new vault screen or action must call `extendSession()`, or it won't keep the vault open;
+this list is what reviews check against. Automatic work, however much it uses the key, never extends
+the session.
+
+**Full reasoning:** `bugs.md` Bug 136.

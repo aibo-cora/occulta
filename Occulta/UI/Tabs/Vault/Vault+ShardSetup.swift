@@ -109,7 +109,13 @@ struct VaultShardSetup: View {
             }
         }
         .safeAreaInset(edge: .bottom) { self.ctaBar(meta: meta, canMark: canMark) }
-        .onAppear { self.seedInitialState() }
+        .onAppear {
+            self.vault.extendSession()
+            self.seedInitialState()
+        }
+        // Ticking a trustee and changing the threshold are vault activity (Bug 136).
+        .onChange(of: self.selectedIDs) { self.vault.extendSession() }
+        .onChange(of: self.threshold) { self.vault.extendSession() }
         .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
             guard !isUnlocked else { return }
             // Vault locked while this screen is visible — clear the trustee selection and
@@ -581,6 +587,7 @@ struct VaultShardSetup: View {
     // MARK: - Actions
 
     private func markForDistribution() {
+        self.vault.extendSession()
         self.marking = true
         self.error = nil
 
@@ -653,6 +660,7 @@ struct VaultShardSetup: View {
     }
 
     private func revokeShard(_ record: ShardRecord) {
+        self.vault.extendSession()
         do {
             try self.vault.updateShardStatus(attributeID: record.attributeID, to: .revoked)
             // Remove from selection so the UI reflects the change.

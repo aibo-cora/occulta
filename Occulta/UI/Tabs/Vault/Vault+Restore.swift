@@ -44,11 +44,15 @@ struct VaultRestoreView: View {
                 Label("Choose your backup file below.", systemImage: "3.circle")
             }
             Section {
-                Button("Choose Backup File") { self.showPicker = true }
+                Button("Choose Backup File") {
+                    self.vault.extendSession()
+                    self.showPicker = true
+                }
             }
         }
         .navigationTitle("Restore from Backup")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { self.vault.extendSession() }
         .fileImporter(
             isPresented: self.$showPicker,
             allowedContentTypes: [UTType(exportedAs: "com.github.aibo-cora.occulta.backup")]
@@ -67,6 +71,7 @@ struct VaultRestoreView: View {
 
     private func restore(from result: Result<URL, Error>) {
         guard case .success(let url) = result else { return }
+        self.vault.extendSession()
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 

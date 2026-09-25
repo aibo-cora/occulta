@@ -59,6 +59,7 @@ struct VaultShardHealth: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Shard Health")
         .navigationBarTitleDisplayMode(.large)
+        .onAppear { self.vault.extendSession() }
     }
 
     // MARK: - Locked state

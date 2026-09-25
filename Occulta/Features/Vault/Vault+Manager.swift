@@ -175,8 +175,9 @@ final class VaultManager {
         // ── Auto-recompute on any ModelContext save ───────────────────────────
         // We don't discriminate which ModelContext caused the notification —
         // saves from other managers (ContactManager, ExchangeManager) may also
-        // fire it while the vault is unlocked, but extra recomputes are harmless
-        // since recomputeRecoveryHealth() exits cheaply when no shard data exists.
+        // fire it while the vault is unlocked. Extra recomputes cost little, since
+        // recomputeRecoveryHealth() exits cheaply when no shard data exists, and they
+        // don't extend the vault session: using the key never does (bugs.md Bug 136).
         // The guard on isUnlocked is for correctness: currentKey() would throw
         // when locked, and recoveryHealth/backupErosion are already nil from lock().
         NotificationCenter.default.publisher(for: ModelContext.didSave)
@@ -210,12 +211,15 @@ final class VaultManager {
         }
     }
 
-    /// Pushes the inactivity lock back by `inactivityTimeout`, if the vault is unlocked
-    /// (`bugs.md` Bug 135).
+    /// Pushes the inactivity lock back by `inactivityTimeout`, if the vault is unlocked.
     ///
-    /// For `VaultNewEntrySheet`, the one vault screen where someone types for minutes without
-    /// the vault key being used, which is all that otherwise counts as activity. Does nothing
-    /// while locked: it can't unlock, or start a timer on a locked vault.
+    /// Apart from `unlock`, the only thing that extends the session. It is called by the vault
+    /// screens for the person's deliberate actions: opening a vault screen, revealing, copying,
+    /// typing, saving, deleting, distributing, exporting, restoring (`decisions.md`, "Vault
+    /// activity is the person's deliberate actions, not key use"). Using the vault key never
+    /// extends it, so saves, incoming and outgoing messages and redraws don't keep the vault
+    /// open (`bugs.md` Bug 136). Does nothing while locked: it can't unlock, or start a timer
+    /// on a locked vault.
     func extendSession() {
         guard self.isUnlocked else { return }
         self.resetInactivityTimer()
@@ -472,9 +476,11 @@ final class VaultManager {
 
     /// Derive the vault key on the fly using the cached LAContext.
     ///
-    /// Resets the inactivity timer on success. On any derivation failure —
-    /// covering invalidated context, biometric set change, device restart —
-    /// calls lock() and throws .locked. This is lock condition 5.
+    /// Only derives the key: it doesn't extend the session. Much of what uses the key is the
+    /// app working on its own (the save hook, incoming and outgoing messages, redraws), and
+    /// that must not keep the vault unlocked (`bugs.md` Bug 136); the session is extended by
+    /// `extendSession()`. On any derivation failure — covering invalidated context, biometric
+    /// set change, device restart — calls lock() and throws .locked. This is lock condition 5.
     ///
     /// Internal (not private) so Vault+Manager+Shards.swift can access it.
     func currentKey() throws -> SymmetricKey {
@@ -486,8 +492,7 @@ final class VaultManager {
                 
                 throw VaultError.keyDerivationFailed
             }
-            self.resetInactivityTimer()
-            
+
             return key
         } catch let error as VaultError {
             throw error

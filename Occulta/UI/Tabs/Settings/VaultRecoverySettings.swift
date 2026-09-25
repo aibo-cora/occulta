@@ -45,6 +45,7 @@ struct VaultRecoverySettings: View {
         .navigationBarTitleDisplayMode(.large)
         .scrollIndicators(.hidden)
         .onAppear {
+            self.vault.extendSession()
             // backupStaleness and backupErosion are both depth-scoped; this view can be
             // reached without ever visiting Vault+Tab first, so it must refresh its
             // own copies rather than rely on that tab having already done it.

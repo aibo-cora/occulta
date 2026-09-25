@@ -126,10 +126,12 @@ struct VaultNewEntrySheet: View {
                 }
             }
         }
-        // Typing counts as vault activity here, so the inactivity lock can't fire mid-entry
-        // (bugs.md Bug 135).
+        // Opening the sheet, typing and choosing a type are vault activity, so the inactivity
+        // lock can't fire mid-entry (bugs.md Bugs 135, 136).
+        .onAppear { self.vault.extendSession() }
         .onChange(of: self.label) { self.vault.extendSession() }
         .onChange(of: self.content) { self.vault.extendSession() }
+        .onChange(of: self.selectedType) { self.vault.extendSession() }
         .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
             guard !isUnlocked else { return }
             // Vault locked while an entry is being typed (five minutes without typing, or
@@ -189,6 +191,7 @@ struct VaultNewEntrySheet: View {
     }
 
     private func save() {
+        self.vault.extendSession()
         self.error = nil
         do {
             let data = self.content.data(using: .utf8) ?? Data()

@@ -65,6 +65,7 @@ struct VaultEntryDetail: View {
         .alert("Delete Entry?", isPresented: self.$showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 guard let entry else { return }
+                self.vault.extendSession()
                 
                 _ = try? self.vault.deleteEntry(id: entry.id)
                 
@@ -75,6 +76,7 @@ struct VaultEntryDetail: View {
             Text("This permanently removes the encrypted entry. Distributed shards remain valid.")
         }
         .onAppear {
+            self.vault.extendSession()
             if let entry, let payload = try? self.vault.decryptLabelPayload(for: entry) {
                 self.cachedLabel = payload.label
                 self.cachedType  = payload.type
@@ -170,6 +172,10 @@ struct VaultEntryDetail: View {
             DragGesture(minimumDistance: 0)
                 .updating(self.$isHeld) { _, state, _ in state = true }
         )
+        // Once when the hold starts, not continuously while held (Bug 136).
+        .onChange(of: self.isHeld) { _, held in
+            if held { self.vault.extendSession() }
+        }
     }
 
     // MARK: - Metadata card
@@ -352,6 +358,7 @@ struct VaultEntryDetail: View {
     private func actionStrip(entry: VaultEntry) -> some View {
         HStack(spacing: 8) {
             Button {
+                self.vault.extendSession()
                 if let data = try? vault.decryptContent(for: entry),
                    let str  = String(data: data, encoding: .utf8) {
                     UIPasteboard.general.copySensitive(str)

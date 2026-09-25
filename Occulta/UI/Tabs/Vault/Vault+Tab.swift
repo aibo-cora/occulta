@@ -127,7 +127,11 @@ struct VaultTab: View {
             .navigationDestination(isPresented: $showExportEducation) {
                 // The vault can lock while this screen is read; export asks for Face ID then,
                 // rather than failing silently.
-                BackupExportEducationView { self.vault.whenUnlocked { self.startExport() } }
+                BackupExportEducationView {
+                    self.vault.extendSession()
+                    self.vault.whenUnlocked { self.startExport() }
+                }
+                .onAppear { self.vault.extendSession() }
             }
             .navigationDestination(isPresented: $showBEKSetup) {
                 VaultShardSetup(mode: .backup)
@@ -139,11 +143,14 @@ struct VaultTab: View {
             // (Open in Occulta), and a view-side copy would need syncing by hand.
             .sheet(isPresented: Bindable(self.vault).postRestorePromptPending) {
                 VaultPostRestoreSheet {
+                    self.vault.extendSession()
                     self.vault.postRestorePromptPending = false
                 } onSetupBackup: {
+                    self.vault.extendSession()
                     self.vault.postRestorePromptPending = false
                     self.showBEKSetup = true
                 }
+                .onAppear { self.vault.extendSession() }
             }
             .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
                 // backupStaleness and backupErosion are both depth-scoped and
@@ -156,6 +163,8 @@ struct VaultTab: View {
                 }
             }
             .onAppear {
+                // Switching to this tab, or coming back to it, is vault activity (Bug 136).
+                self.vault.extendSession()
                 // Covers returning to this tab while already unlocked, when the
                 // isUnlocked transition above never fires.
                 if self.vault.isUnlocked {
@@ -330,6 +339,7 @@ struct VaultTab: View {
                             }
                         }
                         .onDelete { offsets in
+                            self.vault.extendSession()
                             for i in offsets {
                                 _ = try? self.vault.deleteEntry(id: normalEntries[i].id)
                             }
