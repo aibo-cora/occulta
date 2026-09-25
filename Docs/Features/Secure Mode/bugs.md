@@ -11481,7 +11481,7 @@ fail-closed reading of nil.
 
 ## Bug 134 — After the vault locks, the backup setup screen keeps showing its trustees and threshold, and Export fails silently
 
-**Status:** Fix built 2026-09-25, on `v1.11.0/vault-key-layering`, not yet committed or checked on a
+**Status:** Fixed 2026-09-25, on `v1.11.0/vault-key-layering` (`7e977f8`); not yet checked on a
 device. Found checking which pushed vault screens react to a lock, after the restore screen's picker
 case (`decisions.md`, "Restore discoverability", 2026-09-25 note).
 
