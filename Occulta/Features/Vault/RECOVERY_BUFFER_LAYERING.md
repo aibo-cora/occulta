@@ -1,6 +1,10 @@
 # Recovery-Buffer-Gated Storage — Shard Buffer and Restore State
 
-**Status:** design, not built. **Owner entries:** `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK,
+**Status:** ~~design, not built.~~ **Built, corrected 2026-09-25** — this line was never updated as
+stages landed. Stage 3's inbound gate shipped 2026-09-12 (§2.1, `OccultaApp.filterShardOperations`);
+`PendingShamirSecretRestore` replaced `ReconstructShard` 2026-09-21; §9.4's one-shot restore at the
+opening depth and Stage 6 shipped 2026-09-23. Still open: Bug 101 (needs a device check) and Bug 96
+item 2 (accepted). §4 has the per-stage state. **Owner entries:** `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK,
 shared with the sibling doc), Bugs 93, 95, 96, 99, 100, 101 (this container's own). **Compiled:**
 2026-09-02, split out of `STORAGE_LAYERING.md` alongside
 [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) once the container boundary turned out to be the real
@@ -28,6 +32,11 @@ is a second container and not a field in the vault-key-gated one.
 Restored vault *entries* land correctly per-depth already (`importBackup` stamps `visibleThroughDepth`
 on the way in) — it's the machinery *around* that import, not the import itself, that's device-wide.
 
+**This table is the pre-design state, not today's — noted 2026-09-25.** Since §9.4 (2026-09-23) there is
+no pending `.occbak` and no arming; the shard buffer is `PendingShamirSecretRestore` rows, collected
+depth-blind behind Stage 3's sender gate (§2.1); and completion happens at whatever depth the file is
+opened at, counting only shards from trustees visible there.
+
 ---
 
 ## 2. Shard attribution — the mechanism that makes per-layer work
@@ -51,7 +60,8 @@ bundle. Without that property this design would trade a starvation channel for d
 
 **This gate does not exist today.** `identifyOwner` resolves senders through `fetchAllContacts()`,
 which predicates on `deletionToken` alone. Adding it is the load-bearing piece of this container's
-design, and it has scope beyond shards — see §7.
+design, and it has scope beyond shards — see §7. *Built 2026-09-12 (`e0be536`), on the shard path only,
+not in `identifyOwner` — see §2.1.*
 
 ### 2.1 Concrete design, 2026-09-11 — where the gate actually hooks in, and a correction to the
 framing above
@@ -189,7 +199,7 @@ before then — see §6's anti-pairings.
 
 | # | Stage | Verify |
 |---|---|---|
-| 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
+| 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth. **Built 2026-09-12 (`e0be536`), status added 2026-09-25:** `OccultaApp.filterShardOperations` drops every shard op kind from a sender not visible at the current depth, at both `handleInbound` call sites, failing closed. No dedicated unit test: it lives on `OccultaApp`, which can't be constructed in a test (§2.1) |
 | 4 | ~~Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel~~ — **superseded: §9.3 dropped per-depth state; §9.4 (2026-09-23) drops arming, held contents and cancel. What remains is completion at the depth the file is opened at** | a restore completes at the depth its file is opened at, using only shards from trustees visible there, and nothing is written to the sandbox |
 | — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. **Rebuilt 2026-09-21** — `ReconstructShard` (the old §9.1 shared pool) is retired; `PendingShamirSecretRestore` is the live mechanism, `ShardsCodec`/`SignedAttributeCodec` implemented, legacy rows migrate on unlock. Collection is depth-blind now, matching §9.3, but this shipped *ahead of* row 4's own arming/completion binding — see `bugs.md` Bug 99's 2026-09-21 addendum for the accepted interim gap that opens until row 4 lands. Row 4's binding was itself superseded by §9.4 (2026-09-23): completion happens at file-open, at the opening depth, using only shards from trustees visible there. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces. **Decided and built 2026-09-23 (§9.4, Stage 3 UX):** success shows the imported entries; every failure shows one neutral message, the same at every depth |
