@@ -10343,6 +10343,17 @@ reused across trustee changes (`decisions.md`, "Reuse the same BEK across truste
 key extracted once opens that depth's earlier and later exports until it is rotated. Rotation has no
 UX or caller yet: Bug 121.
 
+### Absorbs Bug 123, 2026-09-26
+
+The small local-key fields (`VaultEntry.visibleThroughDepth`/`.deletionToken`, `BackupEncryptionKey.depth`/
+`.deletionToken`, `Contact.Profile`'s three depth fields, `PendingShamirSecretRestore.attributeID`/
+`.deletionToken`) all seal with one fixed AAD, so their ciphertext can be moved between rows. That only
+matters to an attacker who can write the store but can't use the local key, and on an unlocked phone
+anyone who can write the store can use it (no prompt on that key). So it is folded in here: **when this
+entry's remedy re-seals these fields under layer keys, the same migration must bind each to its row and
+field** (an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)` already does for the
+content fields). Recorded as a requirement in `PASSPHRASE_LAYER_KEYS.md` §2.
+
 ### Guard
 
 None — not built. Tracked as `PASSPHRASE_LAYER_KEYS.md`'s own §2, unresolved. This entry's job is
@@ -10551,7 +10562,7 @@ None needed — closed by removing the mechanism (a cap) rather than by guarding
 
 ## Bug 123 — `depth`/`deletionToken`/`visibleThroughDepth` share one fixed AAD across every row and field, so their ciphertext is splice-able without the key
 
-**Status:** Open. Found 2026-09-13 during a security review of `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's
+**Closed, subsumed into Bug 119, 2026-09-26.** See "Closed as subsumed" below. Earlier: **Status:** Open. Found 2026-09-13 during a security review of `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's
 `PendingShamirSecretRestore` model, before it gains any read/write logic — its `attributeID`/`deletionToken`
 fields are specified to inherit this exact pattern from `BackupEncryptionKey`. Pre-existing, not introduced
 by that work: `BackupEncryptionKey.depth`/`.deletionToken` and `VaultEntry.deletionToken`/
@@ -10623,6 +10634,32 @@ AAD, re-seal under the new row-bound one, crash-safe and idempotent, same shape 
 ciphertext copied from a different row or field, since nothing currently tests for that. `Group` needs no
 change and no new test. `PendingShamirSecretRestore.attributeID`/`.deletionToken` cost nothing extra either
 way — nothing has shipped for them yet, so building them bound from the start carries no migration debt.
+
+### Closed as subsumed into Bug 119, 2026-09-26
+
+Re-examined against who can actually splice. Two facts from the code:
+- **The store is only readable while the phone is unlocked:** it carries `FileProtectionType.complete`
+  (`OccultaApp.swift`), so rewriting it needs an unlocked phone and write access to the app container.
+- **The key these fields are sealed under needs no user prompt:** the local database SE key is created with
+  `[.privateKeyUsage]` only and `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (`Key+Manager.swift`), so
+  any code running as the app on an unlocked phone can use it.
+
+An attacker able to rewrite the database is therefore, in practice, running code on the phone, and can
+use the local key to decrypt and re-seal these fields with any value at all. Row binding wouldn't stop
+that; they don't need to splice. That is Bug 119's attacker, who also gets the vault key. The only
+attacker binding stops is one who can write a modified container back without running code that uses
+the app's SE keys, a narrow capability.
+
+So binding pays only once these fields are sealed under a key hostile code can't just use, which is what
+Bug 119's remedy (`PASSPHRASE_LAYER_KEYS.md`) would bring, and that design already lists these fields.
+The requirement moves there: when these fields are re-sealed under layer keys, the same migration binds
+each to its row and field. Fixing it now would mean a migration now and another then, against an attacker
+who can forge the values outright.
+
+Fields carried into that requirement: `VaultEntry.visibleThroughDepth`/`.deletionToken`,
+`BackupEncryptionKey.depth`/`.deletionToken`, `Contact.Profile.originDepth`/`.visibleThroughDepth`/
+`.globalTrusteeDepth`, and `PendingShamirSecretRestore.attributeID`/`.deletionToken` (built unbound on
+this branch, against this entry's earlier advice; consistent with this closure).
 
 ### Guard
 

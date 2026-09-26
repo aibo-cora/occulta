@@ -566,3 +566,33 @@ this list is what reviews check against. Automatic work, however much it uses th
 the session.
 
 **Full reasoning:** `bugs.md` Bug 136.
+
+---
+
+## Bind the small local-key fields to their rows when layer keys land, not now
+
+**Status:** Decided, 2026-09-26 (`bugs.md` Bug 123, closed as subsumed into Bug 119). Nothing built.
+
+**Context:** Depth stamps, deletion tokens and the restore rows' `attributeID` all seal through
+`Data.encrypt(using:)` with one fixed AAD byte, so their ciphertext can be moved from one row to another
+and still decrypt. Binding each to its row and field would take a migration across nine fields in four
+models.
+
+**Decision:** Don't fix it now. Make it a requirement of Bug 119's remedy (`PASSPHRASE_LAYER_KEYS.md` §2):
+the migration that re-seals these fields under layer keys binds them at the same time.
+
+**Why:**
+- **Splicing needs write access to a store that is only readable while the phone is unlocked**
+  (`FileProtectionType.complete`), and on an unlocked phone any code running as the app can use the local
+  key without a prompt (`.privateKeyUsage` only). Such an attacker forges the values outright; binding
+  doesn't stop them.
+- **Binding matters only once hostile code can't use the key,** which is exactly what layer keys would
+  change, and those re-seal these same fields anyway.
+- **Now would mean two migrations** for protection against a narrow attacker: one who can write a modified
+  container back without running code that uses the app's keys.
+
+**Consequences:** the fields stay unbound until Bug 119's remedy is built, and that remedy can't be
+considered complete without binding them. New fields sealed with the helper inherit the same gap until
+then.
+
+**Full reasoning:** `bugs.md` Bugs 119 and 123.

@@ -163,6 +163,16 @@ every depth's slot gets touched on every write (the old array's actual mechanism
 cost that implies once derivation is human-passphrase-gated rather than free SE-only derivation), or some
 other mechanism hides write-frequency-by-depth. Flagging, not deciding.
 
+**Requirement, added 2026-09-26 (`bugs.md` Bug 123, closed as subsumed into Bug 119):** whatever re-seals
+the small per-row fields under layer keys must also bind each ciphertext to its row and field, with an
+AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)` does for the content fields.
+Today they all seal through `Data.encrypt(using:)` with one fixed AAD byte, so a value copied from one row
+to another decrypts cleanly. That is harmless while any on-device code can use the local key and forge the
+values outright, and becomes a real gap once it can't. Fields: `VaultEntry.visibleThroughDepth`/
+`.deletionToken`, `BackupEncryptionKey.depth`/`.deletionToken`, `Contact.Profile.originDepth`/
+`.visibleThroughDepth`/`.globalTrusteeDepth`, `PendingShamirSecretRestore.attributeID`/`.deletionToken`.
+Doing it in the same migration costs nothing extra.
+
 ---
 
 ## 3. Duress compatibility
