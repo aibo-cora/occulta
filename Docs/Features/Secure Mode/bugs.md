@@ -12114,9 +12114,71 @@ sent at depth *d* should say about backup-key pieces isn't obvious:
 Whichever is chosen, `drainPotentiallyLostShards` and `markShardsLost` need backup-key records so a lost
 piece shows up in the owner's backup health.
 
+**Related, filed 2026-09-26:** Bug 142. Redistributing never removes the previous split's queued pieces,
+so a trustee removed before delivery still receives theirs. That part is a queue fix; a removed trustee
+whose piece was already delivered is this entry's decision.
+
 ### Guard
 
 A test through the real paths: owner sets up a backup and distributes; a trustee receives a piece; the owner,
 unlocked, builds `expectedShards` for that trustee (with no entries split, and with one split); the trustee
 processes it; the backup-key piece is still there. Plus: a piece missing from a later manifest is marked
 `.lost` in the backup-key metadata.
+
+---
+
+## Bug 142 — Redistributing leaves the superseded split's pieces queued: a removed trustee still gets one, and kept trustees get old and new together
+
+**Status:** Open, filed 2026-09-26. Found while verifying how backup-key pieces reach trustees after a
+trustee-list change, for Bug 141's decision; reproduced with a throwaway test.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (revocation fails before delivery; stale pieces kept)
+
+### What happens
+
+Distributing pieces queues one `PendingShardDistribute` row per trustee (`ShardCustodyManager.queueDistribute`,
+from `VaultShardSetup.markForDistribution`). Every outgoing message to that contact carries all of its queued
+rows (`buildShardOperations` → `pendingDistributeOps`, on the 1:1, share-flow and group paths) until the
+trustee's manifest lists the piece and `processInboundManifest` drops the row. That part works: after a
+change, added trustees get `.distribute` and kept trustees `.replace` with their next message.
+
+What nothing does is remove the **previous split's** queued rows when the depth redistributes.
+`markForDistribution` marks removed trustees' pieces `.revoked` and queues the new split, but never touches
+the queue, and `queueDistribute` only deduplicates identical pieces. Reproduced with trustees A, B, C, then
+the list changed to A, B, D before anything was delivered:
+
+```
+backup key regenerated on mutation: false
+A (kept):    distribute(round1), replace(round2, replaces)
+B (kept):    distribute(round1), replace(round2, replaces)
+C (removed): distribute(round1)
+D (added):   distribute(round2)
+C's record in current metadata: nil
+```
+
+- **A removed trustee still receives their piece.** C's next message delivers the round-1 piece although C
+  was dropped. C's record is also gone from the backup's metadata (`prepareShards` writes the new recipient
+  list only), so the owner has no trace that C holds anything. Because the backup key is reused across
+  trustee changes, that piece works together with any other round-1 piece.
+- **Kept trustees receive the stale piece and its replacement in the same message.** The two rows go out in
+  fetch order, which isn't guaranteed. If `.replace` is processed first it deletes nothing (the old piece
+  hasn't arrived yet), then `.distribute` stores the round-1 piece, and the trustee ends up holding both. The
+  stale one never goes away: implicit revoke can't remove backup-key pieces correctly (Bug 141).
+
+The per-entry split path has the same shape; it is being retired.
+
+### Remedy (proposed, not built)
+
+When a depth redistributes its backup key, delete the queued rows of the split it replaces before queuing
+the new one: rows whose piece carries the depth's previous `distributionID` (the attribute's `entryID`).
+The depth reads only its own `BackupEncryptionKey` row to find that ID, so it stays depth-local, as Bug 141
+requires. A removed trustee whose piece was **already delivered** is a revocation, and falls to Bug 141's
+decision; if that is option 4 (a new backup key whenever a trustee is removed), such pieces become harmless.
+
+### Guard
+
+A test through the queue: distribute to A, B, C; change to A, B, D before delivery; then C's next message
+carries no piece, A's and B's carry only the round-2 piece, and D's carries its round-2 piece. Also: a piece
+already confirmed by C is outside this fix (Bug 141).
