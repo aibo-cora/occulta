@@ -11844,3 +11844,71 @@ v1.10.3 left them (depth and token nil, payload JSON-encoded, sealed under the v
 - the existing `migratesLegacyRowOnly` stays green on both versions.
 
 Both new tests fail against the pre-fix migration.
+
+---
+
+## Bug 139 — Keys left by an interrupted v1.10.3 key rotation are never deleted, not even by "Erase all data"
+
+**Status:** Fixed 2026-09-26 for the wipe, on `v1.11.0/vault-key-layering`; the optional launch clean-up
+is not built. Filed the same day, found by the branch code review against `develop`.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (forensic trace that survives a panic wipe; narrow trigger)
+
+Needs a v1.10.3 activation or deactivation of Secure Mode that was interrupted (app killed, crash, a
+failed keychain call) partway through its key rotation. Where it happened, the leftover items outlive
+every later wipe, and their names say what they were for.
+
+### What happens
+
+v1.10.3 rotated the local database key on every Secure Mode activation and deactivation, using three
+items besides the canonical ones (`Key+Manager.swift` in `v1.10.3`):
+- SE key `local.db.se.key.occulta.staged` and keychain item `local.db.random.key.occulta.staged`,
+  created by `createStagedLocalDBKey()`;
+- SE key `local.db.se.key.occulta.superseded`, the old canonical key, renamed by
+  `commitStagedLocalDBKey()`.
+
+On success, step 11 called `deleteSupersededLocalDBArtefacts()`; on failure, `rollbackStagedLocalDBKey()`.
+An interruption between those points left items behind, and v1.10.3 had two things that removed them
+later: `createStagedLocalDBKey()` rolls back leftover staged items before starting, and
+`Manager.Key.deleteAllKeys()` swept all three on "Erase all data".
+
+This branch removed key rotation (Removal Stages 0-3, `plan.md`), and with it both clean-ups. `plan.md`
+records dropping the wipe's sweep on the grounds that "nothing rotates any more, so there is never a
+transient artefact to sweep". That holds for new installs, not for a device upgraded from v1.10.3 that
+already has leftovers. Nothing on this branch reads or deletes those three names (confirmed by search).
+So on such a device they stay forever, including after "Erase all data", and a keychain dump shows
+items named `…staged` / `…superseded`: evidence that Secure Mode was activated, surviving the very
+wipe meant to leave nothing. The same class as Bug 133 and Bug 137: an upgrade path from what v1.10.3
+actually left on disk.
+
+They grant nothing: the old random component is overwritten at commit, and the wipe deletes the
+canonical SE key, so no leftover can re-derive a key that decrypts anything.
+
+### Remedy
+
+- **Built: the wipe deletes the three legacy names again.** `Manager.Key.deleteLegacyRotationArtefacts()`
+  deletes the two SE keys and the keychain item under private constants that nothing else uses, and
+  `deleteAllKeys()` calls it; missing items count as deleted, so a device that never had leftovers still
+  wipes cleanly. Keep them as private constants used only for
+  deletion, and delete them in `deleteAllKeys()`. Always safe there: after a wipe there is no data left
+  that any of them could be needed for.
+- **Not built: optionally, clean up once at launch, but only in unambiguous states.** A blind delete is not safe:
+  if a v1.10.3 commit stopped between sub-step A (canonical → `.superseded`) and sub-step B (`.staged` →
+  canonical), the key the data is sealed under sits at `.superseded`, and nothing holds the canonical
+  name. Delete leftovers only when the canonical key demonstrably opens existing data (for example a
+  `VaultEntry.deletionToken` or an `AppLayerConfig` field); otherwise leave them.
+
+Out of scope, pre-existing: an interrupted v1.10.3 rotation could already leave data sealed under a key
+the canonical name no longer holds (v1.10.3 had no launch-time recovery either). Recovering that is a
+separate problem; the launch rule above only has to avoid making it permanent.
+
+### Guard
+
+`LegacyRotationArtefactTests` (`OccultaTests/SecureMode/`): creates the two SE keys and the keychain item
+under the names written out as v1.10.3 used them, calls `deleteLegacyRotationArtefacts()`, and asserts all
+three are gone (Enclave-gated); and with nothing there, deletion still reports success. It tests the
+helper rather than `deleteAllKeys()`, which would delete the canonical keys other tests in the process
+use. If the launch clean-up is built: a test per state (post-commit leftovers deleted; staged-only
+leftovers deleted; canonical missing with `.superseded` present, left untouched).

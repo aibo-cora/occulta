@@ -965,12 +965,34 @@ extension Manager.Key: KeyManagerProtocol {
     @discardableResult
     func deleteAllKeys() -> Bool {
         let seDeleted = Tags.allCases.allSatisfy { delete(using: $0.rawValue) }
+        let legacyDeleted = self.deleteLegacyRotationArtefacts()
         let keychainQuery: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrAccount as String: Self.localDBRandomKeychainAccount
         ]
         let keychainStatus = SecItemDelete(keychainQuery as CFDictionary)
-        return seDeleted && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
+        return seDeleted && legacyDeleted && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
+    }
+
+    /// The names v1.10.3's local-DB key rotation used for its transient keys (`bugs.md` Bug 139).
+    /// Nothing creates or reads them any more: they exist only so the wipe can delete leftovers
+    /// from a rotation that was interrupted before this branch removed rotation.
+    private static let legacyRotationSETags          = ["local.db.se.key.occulta.staged", "local.db.se.key.occulta.superseded"]
+    private static let legacyRotationRandomAccount   = "local.db.random.key.occulta.staged"
+
+    /// Deletes any keys left by an interrupted v1.10.3 rotation (`bugs.md` Bug 139). Their
+    /// names show Secure Mode was activated, and they must not outlive a wipe. Always safe from
+    /// `deleteAllKeys()`: after a wipe no data remains that any of them could be needed for.
+    /// Not called at launch, where a `.superseded` key can still be the one existing data is
+    /// sealed under. Missing items count as deleted.
+    func deleteLegacyRotationArtefacts() -> Bool {
+        let seDeleted = Self.legacyRotationSETags.allSatisfy { self.delete(using: $0) }
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrAccount as String: Self.legacyRotationRandomAccount
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return seDeleted && (status == errSecSuccess || status == errSecItemNotFound)
     }
 }
 

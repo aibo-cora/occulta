@@ -858,7 +858,10 @@ function) called `deleteSupersededLocalDBArtefacts()`/`rollbackStagedLocalDBKey(
 transient rotation artefacts in case a wipe fired mid-rotation. Missed in the initial grep because it
 was checked by MARK-comment boundary rather than by searching the whole file for every call site of
 the methods being deleted. Fixed by removing those two lines — nothing rotates any more, so there is
-never a transient artefact to sweep.
+never a transient artefact to sweep. *(Wrong for upgraded devices, 2026-09-26: a device that interrupted a
+v1.10.3 rotation already holds `…staged` / `…superseded` items, and now nothing ever deletes them, not
+even "Erase all data". `bugs.md` Bug 139. Fixed the same day: `deleteAllKeys()` deletes them again,
+through `deleteLegacyRotationArtefacts()`.)*
 
 **Deviations from the original dead-test-file list, both caught by direct verification before
 deleting anything (the list itself, written before this stage, was checked against the live tree
