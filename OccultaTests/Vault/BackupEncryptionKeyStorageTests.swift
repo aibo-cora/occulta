@@ -410,6 +410,73 @@ struct BackupKeyLegacyStorageMigrationTests {
         #expect(!stillLegacyShaped, "the legacy row must be folded into filler, not left in its distinguishable nil/nil state")
     }
 
+    /// Inserts a row as v1.10.3 left it: depth and deletionToken nil, `plaintext` sealed under
+    /// the vault key with the row's own id-based AAD. Returns the row's id.
+    private func insertLegacyRow(_ plaintext: Data, vaultKey: SymmetricKey, in container: ModelContainer) throws -> UUID {
+        let legacyRow = BackupEncryptionKey(encryptedPayload: Data())
+        let sealed = try AES.GCM.seal(plaintext, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: legacyRow.aad())
+        legacyRow.encryptedPayload = try #require(sealed.combined)
+        let ctx = ModelContext(container)
+        ctx.insert(legacyRow)
+        try ctx.save()
+        return legacyRow.id
+    }
+
+    private func row(_ id: UUID, in container: ModelContainer) throws -> BackupEncryptionKey {
+        try #require(try fetchAllBackupKeyRows(from: container).first { $0.id == id })
+    }
+
+    /// Bug 138: the migration used to fold the legacy row into filler and save before the
+    /// key reached its new row, so a row that decrypted but wouldn't decode lost the key.
+    @Test("A legacy row that won't decode is left untouched for the next unlock",
+          .enabled(if: secureEnclaveAvailable()))
+    func undecodableLegacyRowIsUntouched() throws {
+        let container = try makeContainer()
+        let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+        vault.unlock(context: LAContext())
+        let vaultKey  = try vault.currentKey()
+        let id        = try self.insertLegacyRow(Data("not a payload".utf8), vaultKey: vaultKey, in: container)
+        let before    = try self.row(id, in: container).encryptedPayload
+
+        try vault.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey, legacyArrayBackend: InMemoryLayerStoreBackend())
+
+        let after = try self.row(id, in: container)
+        #expect(after.encryptedPayload == before)
+        #expect(after.depth == nil && after.deletionToken == nil)
+        #expect((try? vault.currentBackupKey(currentDepth: 0)) == nil)
+    }
+
+    /// Bug 138: a failure after the key is staged must roll back, leaving the legacy row as
+    /// the key's only copy rather than a folded row and no depth-0 key. 256 shard records
+    /// decode from JSON but make `PayloadCodec.encode` throw `tooManyShards` inside `stage`,
+    /// after a depth-0 row has been claimed.
+    @Test("A failure after staging leaves the legacy row intact and no depth-0 key",
+          .enabled(if: secureEnclaveAvailable()))
+    func failureAfterStagingRollsBack() throws {
+        let container = try makeContainer()
+        let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+        vault.unlock(context: LAContext())
+        let vaultKey  = try vault.currentKey()
+        let records   = (0..<256).map { _ in
+            ShardRecord(contactIdentifier: UUID().uuidString, attributeID: UUID(), status: .confirmed)
+        }
+        let payload   = BackupEncryptionKey.Payload(
+            bekBytes: Data.randomBytes(32), distributionID: UUID(),
+            shardMetadata: ShardDistributionMetadata(threshold: 2, shards: records)
+        )
+        let id        = try self.insertLegacyRow(try JSONEncoder().encode(payload), vaultKey: vaultKey, in: container)
+        let before    = try self.row(id, in: container).encryptedPayload
+
+        #expect(throws: (any Error).self) {
+            try vault.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey, legacyArrayBackend: InMemoryLayerStoreBackend())
+        }
+
+        let after = try self.row(id, in: container)
+        #expect(after.encryptedPayload == before)
+        #expect(after.depth == nil && after.deletionToken == nil)
+        #expect((try? vault.currentBackupKey(currentDepth: 0)) == nil)
+    }
+
     @Test("Both present: array data wins over the legacy row at depth 0, matching the original precedence",
           .enabled(if: secureEnclaveAvailable()))
     func arrayWinsOverLegacyRowAtDepthZero() throws {

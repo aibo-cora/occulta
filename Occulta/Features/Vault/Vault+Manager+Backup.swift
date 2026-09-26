@@ -583,7 +583,9 @@ extension VaultManager {
     /// a real anomaly, not "nothing to migrate") is swallowed by `unlock()`'s `try?`
     /// rather than surfaced to whatever UI action first touched the backup key. The
     /// affected row simply stays un-migrated and the next unlock tries again — safe,
-    /// not silent data loss, but a diagnostic regression for that one rare case.
+    /// not silent data loss, but a diagnostic regression for that one rare case. *(Only true since
+    /// `bugs.md` Bug 138's fix, 2026-09-26: before it, the legacy row was folded into
+    /// filler and saved before the key reached its new row, so that case lost the key.)*
     /// `legacyArrayBackend` is injectable — defaults to the real production location —
     /// purely so tests can substitute `InMemoryLayerStoreBackend` and exercise the
     /// array-migration path without touching the real app-group container. Production
@@ -652,18 +654,18 @@ extension VaultManager {
     /// Migrates the original single-row legacy `BackupEncryptionKey` to depth 0, if
     /// one still exists and depth 0 has no live row yet.
     ///
-    /// Folds the legacy row into an ordinary filler row *before* calling
-    /// `Backup.persist` — not after, and not left to `persist`'s own filler-claiming
-    /// to handle incidentally. `BackupEncryptionKey.isUnclaimed(usingKey:)` reports
-    /// `true` for a nil `depth` exactly as it does for genuine filler (both fail
-    /// safe the same way), so the legacy row *would* be a valid candidate for
-    /// `persist`'s own claim logic to pick — but only sometimes, depending on fetch
-    /// order, since real filler rows are equally valid candidates. Folding first
-    /// makes the outcome deterministic instead of order-dependent: whichever row
-    /// `persist` ends up claiming for depth 0, the legacy row is unconditionally
-    /// blended into the filler pool either way, never left holding its original
-    /// real ciphertext un-tombstoned because a different row happened to be claimed
-    /// instead.
+    /// All or nothing (`bugs.md` Bug 138). The legacy row is the only copy of v1.10.3's
+    /// backup key, so nothing touches it until the key can be carried over:
+    /// - **decode first:** a row that won't open or decode is left exactly as it is, and
+    ///   the next unlock tries again;
+    /// - **then stage, fold, and save once:** the key is staged into a depth-0 row
+    ///   (`Backup.stage`, which doesn't save), the legacy row is folded into filler, and
+    ///   one `save()` commits both. On any error `rollback()` restores the legacy row.
+    ///
+    /// `stage` may claim the legacy row itself, since `isUnclaimed(usingKey:)` reports a
+    /// nil `depth` as unclaimed just like genuine filler. Then sealing the key into it has
+    /// already replaced its content, and it must not be folded; either way no row is left
+    /// in the distinguishable nil/nil legacy state.
     private func migrateLegacyBackupRowIfNeeded(vaultKey: SymmetricKey) throws {
         guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext) == nil else {
             return
@@ -673,20 +675,20 @@ extension VaultManager {
             return
         }
 
-        // Decode before folding — folding overwrites the only copy of this row's
-        // real content.
-        let legacyPayload: BackupEncryptionKey.Payload? = {
-            guard let box       = try? AES.GCM.SealedBox(combined: legacyRow.encryptedPayload),
-                  let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: legacyRow.aad())
-            else { return nil }
-            return try? JSONDecoder().decode(BackupEncryptionKey.Payload.self, from: plaintext)
-        }()
+        guard let box           = try? AES.GCM.SealedBox(combined: legacyRow.encryptedPayload),
+              var plaintext     = try? AES.GCM.open(box, using: vaultKey, authenticating: legacyRow.aad())
+        else { return }
+        defer { plaintext.resetBytes(in: plaintext.startIndex..<plaintext.endIndex) }
+        guard let legacyPayload = try? JSONDecoder().decode(BackupEncryptionKey.Payload.self, from: plaintext) else { return }
 
-        self.foldLegacyRowIntoFiller(legacyRow)
-        try self.modelContext.save()
-
-        guard let legacyPayload else { return }   // already tombstoned, or genuinely corrupt — nothing to carry forward
-        try self.backup.persist(legacyPayload, vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext)
+        do {
+            try self.backup.stage(legacyPayload, vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext)
+            if legacyRow.depth == nil { self.foldLegacyRowIntoFiller(legacyRow) }
+            try self.modelContext.save()
+        } catch {
+            self.modelContext.rollback()
+            throw error
+        }
     }
 
     /// Overwrites a nil/nil legacy row's three fields with fresh random bytes of

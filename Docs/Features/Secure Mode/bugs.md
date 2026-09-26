@@ -11770,3 +11770,77 @@ banked before the revert are lost. No release ever had that model.
   this bug; all pass after the revert.
 - `RecoveryBufferKeyTests.infoStringIsV1_10_3s` pins the constant's exact bytes and checks the derived
   key equals the literal-string derivation, so a future rename can't pass silently.
+
+---
+
+## Bug 138 — The v1.10.3 backup-key migration destroys the only copy of the key before the replacement is saved
+
+**Status:** Fixed 2026-09-26, on `v1.11.0/vault-key-layering`. Filed the same day, found by the branch
+code review against `develop`.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (catastrophic loss, narrow trigger)
+
+Nothing is lost on the ordinary path: the upgrade from v1.10.3 was checked on a device (`6242b9c`) and the
+backup key survived. But on any failure between the two saves, or if the process dies between them, the
+device's backup key is gone for good: every `.occbak` ever exported can no longer be restored, and the
+pieces trustees hold rebuild a key nothing is sealed under. Nothing reports it.
+
+### What happens
+
+`VaultManager.unlock` runs `migrateLegacyBackupStorageIfNeeded` inside `try?`, which calls
+`migrateLegacyBackupRowIfNeeded` (`Vault+Manager+Backup.swift`) for v1.10.3's single `BackupEncryptionKey`
+row (`depth == nil && deletionToken == nil`). It:
+1. decrypts and decodes the payload into memory (`try?`, so a failure gives `nil`);
+2. **folds the legacy row into filler** (`foldLegacyRowIntoFiller`: random bytes over `encryptedPayload`,
+   `depth` and `deletionToken`) **and saves**;
+3. only then, `guard let legacyPayload else { return }`, and `backup.persist(...)` writes the key into a
+   depth-0 row and saves.
+
+So the only durable copy is destroyed at step 2, before the replacement exists on disk:
+- **if decoding failed,** step 3 returns early and the key is simply gone;
+- **if `persist` throws** (`localKey()` or sealing the depth stamp fails, `PayloadCodec.encode` throws, the
+  seal or the save fails), the error vanishes into `unlock`'s `try?` and the key is gone;
+- **if the process dies** between the two saves, the next unlock finds no legacy row and no depth-0 row.
+
+The code contradicts its own documentation: `migrateLegacyBackupStorageIfNeeded`'s doc comment says a row
+that decrypts but fails to decode "simply stays un-migrated and the next unlock tries again — safe, not
+silent data loss". The fold-first order was chosen so `persist`'s filler-claiming can't pick the legacy
+row by chance (`isUnclaimed` is true for a nil `depth`); that concern is real, but it doesn't need the
+fold to be saved first.
+
+The array path next to it (`migrateBackupArrayIfNeeded`) doesn't have this problem: it persists each slot
+first and deletes the file only after every slot is committed.
+
+### Remedy (built)
+
+Make the migration all-or-nothing and leave the legacy row alone whenever the key can't be carried over:
+- **Decode first; on failure, touch nothing.** Return without folding, so the next unlock retries, as the
+  doc comment promises.
+- **Stage the new row, fold the legacy row, then save once.** Use `Backup.stage` (it doesn't save), making
+  sure it doesn't claim the legacy row itself (claim with the legacy row excluded, or if it does claim it,
+  skip the fold, since sealing the new payload into that row already replaces its content). Then fold and
+  call `save()` once. On any error, `modelContext.rollback()`, which restores the legacy row.
+
+As built: after `stage`, the legacy row is folded only if its `depth` is still nil, meaning `stage` claimed
+a different row. The decrypted plaintext is zeroed after decoding. `migrateLegacyBackupStorageIfNeeded`'s
+"stays un-migrated … the next unlock tries again" promise now holds, and says since when.
+
+Behaviour change, accepted: a legacy row that can never decode (for example, sealed under a vault key that
+no longer exists) used to be folded into filler as a side effect. It now stays in its nil/nil state, and
+each unlock tries it again cheaply. That row is only a leftover of the pre-refactor format; keeping it
+rules out ever destroying a key that could have been recovered.
+
+### Guard
+
+`BackupKeyLegacyStorageMigrationTests` (`BackupEncryptionKeyStorageTests.swift`), rows built the way
+v1.10.3 left them (depth and token nil, payload JSON-encoded, sealed under the vault key with `row.aad()`):
+- `undecodableLegacyRowIsUntouched`: a payload that decrypts but won't decode leaves the row
+  byte-identical, still nil/nil, and no depth-0 key;
+- `failureAfterStagingRollsBack`: 256 shard records decode from JSON but make `PayloadCodec.encode` throw
+  `tooManyShards` inside `stage`, after a depth-0 row is claimed; the error surfaces, the legacy row is
+  byte-identical, and there's no depth-0 key. No seam needed;
+- the existing `migratesLegacyRowOnly` stays green on both versions.
+
+Both new tests fail against the pre-fix migration.
