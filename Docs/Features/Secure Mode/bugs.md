@@ -12037,3 +12037,86 @@ allowed is a separate question.
   prompt; open an entry, switch to Settings, deactivate, return to the Vault tab, and confirm the entry is
   closed and the vault asks for Face ID; open a `.occbak` while the PIN screen is up and confirm the prompt
   appears after the PIN.
+
+---
+
+## Bug 141 — Messaging a trustee with the vault unlocked makes them delete their backup-key piece: `expectedShards` never lists backup-key pieces
+
+**Status:** Open, filed 2026-09-26, reproduced the same day. Found while inventorying per-entry shard
+splitting for retirement. **Shipped:** `v1.10.3` builds the list the same way.
+
+**Target:** `v1.11.0`. **Release blocker, and a blocker for retiring per-entry splitting.**
+
+### Severity: High (silent loss of backup recoverability)
+
+A restore needs k trustees' backup-key pieces. Ordinary messaging destroys them, the owner's app keeps
+showing the backup as healthy, and the loss surfaces only when a restore fails, after the phone is gone.
+
+### What happens
+
+Every outgoing bundle from the owner to a contact carries `expectedShards`, "the IDs the owner expects
+this trustee to hold", built by `ShardCustodyManager.buildExpectedShards` from
+`VaultManager.shardRecordsForTrustee`. That function reads **only per-entry distribution records**
+(`VaultEntry.shardDistributionEncrypted`); backup-key pieces, recorded in the `BackupEncryptionKey`
+payload's `ShardDistributionMetadata`, are never included. Senders:
+- `ComposeViewModel` (1:1 messages) and `RootView`'s share flow (`OccultaApp.swift`): `try?`, so the field is
+  `nil` when the vault is locked and the list, possibly empty, when it is unlocked;
+- `ContactManager`'s group path: per recipient, `[]` on failure with `shardMetadataAttempted` false.
+
+`[]` is encoded (`encodeIfPresent` omits only `nil`), and the bundle's own doc comment defines it as "holds
+nothing". On the trustee, `handleInbound` → `processExpectedShards` deletes every custody piece from that
+owner, under the owner's current fingerprint, that isn't listed. It doesn't distinguish backup-key pieces
+(`"vault-bek-shard"`) from per-entry ones.
+
+So whenever the owner sends a trustee anything with the vault unlocked:
+- **owner who split no entry:** the list is `[]`, and the trustee deletes all of that owner's pieces;
+- **owner who split entries:** the list holds those entries' piece IDs only, and the trustee still deletes
+  the backup-key piece.
+
+When the vault is locked the list isn't sent, so nothing is deleted; that may be why the device upgrade
+check (`6242b9c`) saw a healthy backup.
+
+### Reproduction
+
+Alice (`TestKeyManager`) sets up a backup at depth 0 and splits it for Bob and Carol
+(`prepareBackupShards`); Bob's `ShardCustodyManager` receives his piece (`handleInbound`, `.distribute`).
+With Alice's vault unlocked, `buildExpectedShards(for: bob, vaultManager: alice)` returns `[]`; Bob
+processes a bundle carrying it. Bob's custody pieces: **1 before, 0 after.**
+
+### The owner never finds out
+
+- The status Alice sees is her own record (`confirmed`), not the trustee's state.
+- Absence detection can't see it either: when Bob's `custodyManifest` later omits the piece,
+  `drainPotentiallyLostShards` checks the missing ID against `shardRecordsForTrustee`, which knows only
+  per-entry records, so a backup-key piece is never marked `.lost`. `markShardsLost` (a contact's key
+  change) is per-entry only too.
+- So "Backup Recovery" and `backupErosion` keep reporting a healthy backup.
+
+**Why tests missed it:** every `expectedShards` test uses per-entry pieces (`makeShardAttr`, label
+`"vault-shard"`); none sends a backup-key piece through `buildExpectedShards` to a trustee.
+
+### Remedy: needs a decision (depth)
+
+Backup keys are per depth, and one trustee can hold the owner's pieces from several depths. What a message
+sent at depth *d* should say about backup-key pieces isn't obvious:
+1. **List only depth *d*'s backup-key pieces:** the trustee deletes the owner's pieces from every other depth
+   it holds, so using the app at one layer destroys another layer's backup.
+2. **List every depth's backup-key pieces:** the owner's device, at any depth, enumerates other depths'
+   backup keys to build a bundle, and a trustee comparing lists from different sessions can see there are
+   pieces the current layer doesn't account for.
+3. **Take backup-key pieces out of implicit revoke:** the trustee never deletes a `"vault-bek-shard"` piece
+   because of `expectedShards`; those are replaced or removed only by `.replace`, a new-fingerprint
+   `.distribute`, or `purgeCustody`. Depth-neutral and simple. The cost: a trustee dropped from a
+   redistribution keeps their old piece, and because the backup key is reused across trustee changes
+   (`decisions.md`, "Reuse the same BEK across trustee-set changes"), k such dropped trustees colluding could
+   still rebuild it.
+
+Whichever is chosen, `drainPotentiallyLostShards` and `markShardsLost` need backup-key records so a lost
+piece shows up in the owner's backup health.
+
+### Guard
+
+A test through the real paths: owner sets up a backup and distributes; a trustee receives a piece; the owner,
+unlocked, builds `expectedShards` for that trustee (with no entries split, and with one split); the trustee
+processes it; the backup-key piece is still there. Plus: a piece missing from a later manifest is marked
+`.lost` in the backup-key metadata.
