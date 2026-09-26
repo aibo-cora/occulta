@@ -275,6 +275,7 @@ final class VaultManager {
         self.authContext     = nil
         self.recoveryHealth  = nil
         self.backupErosion   = nil
+        self.backupStaleness = nil
         self.postRestorePromptPending = false
     }
 

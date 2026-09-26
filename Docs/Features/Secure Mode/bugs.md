@@ -11917,8 +11917,9 @@ leftovers deleted; canonical missing with `.superseded` present, left untouched)
 
 ## Bug 140 — Session state outlives the session: nothing clears it at a new unlock or an in-place depth change
 
-**Status:** Open, filed 2026-09-26. Found by the branch code review against `develop` as a pending restore
-prompt surviving the PIN screen; rewritten the same day around the invariant that case breaks.
+**Status:** Fixed 2026-09-26, on `v1.11.0/vault-key-layering`; not yet walked through on a device or in
+the simulator. Found by the branch code review against `develop` as a pending restore prompt surviving the
+PIN screen; rewritten the same day around the invariant that case breaks.
 
 **Target:** `v1.11.0`.
 
@@ -11971,7 +11972,7 @@ and §9.4 accept), without the coercer ever holding the file. Whether the prompt
 on SwiftUI writing `false` back to `showRestoreConfirmation` when its host is torn down; the bytes stay
 either way.
 
-### Remedy (proposed, not built): one session boundary
+### Remedy: one session boundary (as proposed; see "Built" below for where it differs)
 
 - **A session identifier** owned by `Manager.Security`, changed on every successful unlock and every
   in-place depth change.
@@ -11983,16 +11984,42 @@ either way.
 - **Queued input is exempt by an explicit, documented list** kept outside the session scope on purpose:
   `pendingFileData`, `pendingShareSession`, and a `.occbak` staged while `.pinRequired`.
 
+### Built
+
+- **`Manager.Security.sessionID`** changes in `setState` whenever the depth actually changes, which is the
+  in-place case (`deactivateSecureMode`). It does **not** change at a PIN unlock, unlike the proposal:
+  `applyVerifyState` and the phase flip run in one synchronous block, so their two `onChange` handlers
+  would fire in one SwiftUI update in no guaranteed order, and a reset there could race the delivery of a
+  file queued at the PIN screen. The PIN path doesn't need it: the PIN screen tears the unlocked tree down,
+  and the reset runs on leaving `.unlocked`.
+- **`RootView.endSession()`** is the one reset: it clears `openedFileContents`, `shareResult`,
+  `pendingRestoreFile`, `showRestoreConfirmation`, `showNothingRestored`, `showError`, the identity
+  challenge's three presentations (`outboundShare`, `incomingChallenge`, `verificationOutcome`, also held
+  above the tree), and calls `vaultManager.lock()`. It runs when the phase changes *from* `.unlocked` (not
+  on a cold launch's `.covered` → `.pinRequired`, which may already have staged the file that launched the
+  app), and on every `sessionID` change. It replaces the phase handler's hand-picked clearing.
+- **`.id(self.security.sessionID)`** on the `.unlocked` branch rebuilds the whole tree on an in-place
+  depth change. The selected tab moved up into `RootView` (`selectedTab`, bound to the `TabView`) so it
+  survives; it isn't sensitive.
+- **`VaultManager.lock()`** now also clears `backupStaleness`, the one depth-scoped value it missed.
+- **The exempt list** is one comment above `RootView`'s session state: `pendingFileData`,
+  `pendingShareSession`, and a `.occbak` staged while `.pinRequired`. No separate queued slot was needed:
+  such a file is staged after the reset, so it reaches the prompt after the PIN.
+
+Accepted edge: a `.occbak` whose read finishes before a warm return's phase change to `.pinRequired` is
+cleared with the session; the owner reopens it. The read is asynchronous, so the file normally lands after.
+
 Out of scope, worth its own look: which depth `deactivateSecureMode` lands on when used from a duress
 depth. The boundary makes any in-place change safe to leave behind; whether that transition should be
 allowed is a separate question.
 
 ### Guard
 
-- `Manager.Security`: the session identifier changes on a successful verify and on `deactivateSecureMode`,
-  and not on a wrong PIN.
-- `VaultManager`: the reset hook locks the vault and clears the post-restore prompt and the depth-scoped
-  values (testable without the UI).
+- `SessionIdentifierTests` (`SecureModeActivationTests.swift`): the identifier changes when
+  `deactivateSecureMode` moves the depth (2 → 1), and stays the same through PIN setup, activation, a wrong
+  PIN and a same-depth verify.
+- `VaultManagerLifecycleTests.lockClearsStaleness`: `lock()` clears `backupStaleness`, recovery health,
+  erosion and the post-restore prompt.
 - `RootView` and the view tree can't be built in a unit test. Device or simulator check (needs a PIN):
   open a `.occbak`, leave without answering, return past the grace period, enter a PIN, and confirm no
   prompt; open an entry, switch to Settings, deactivate, return to the Vault tab, and confirm the entry is

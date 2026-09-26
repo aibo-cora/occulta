@@ -151,6 +151,22 @@ private func makeContainer() throws -> ModelContainer {
         #expect(vm.isUnlocked == false, "vault must auto-lock after inactivity timeout")
     }
 
+    /// Bug 140: locking ends the session, including the depth-scoped values computed for it.
+    /// `backupStaleness` was the one `lock()` left behind.
+    @Test("lock clears the backup staleness report along with the other depth-scoped values")
+    func lockClearsStaleness() throws {
+        let (vm, _) = try makeVaultManager()
+        vm.unlock(context: LAContext())
+        vm.backupStaleness = VaultManager.BackupStalenessReport(bekRotated: false, newEntryCount: 1, trusteeSetChanged: false)
+
+        vm.lock()
+
+        #expect(vm.backupStaleness == nil)
+        #expect(vm.recoveryHealth == nil)
+        #expect(vm.backupErosion == nil)
+        #expect(!vm.postRestorePromptPending)
+    }
+
     @Test("unlock starts the session: the lock is due one timeout from now")
     func unlockSetsDeadline() throws {
         let (vm, _) = try makeVaultManager(inactivityTimeout: 60)

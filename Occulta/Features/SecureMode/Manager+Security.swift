@@ -47,6 +47,14 @@ extension Manager {
         /// directly to the matched depth without walking through intermediate layers.
         private(set) var currentDepth: Int = 0
 
+        /// Identifies the unlocked session at the current depth (`bugs.md` Bug 140). Changes
+        /// whenever `currentDepth` changes while the app stays unlocked (`setState`, from
+        /// `deactivateSecureMode`): `RootView` keys the unlocked view tree by it and resets the
+        /// session state it holds above that tree, so nothing from the old depth reaches the new
+        /// one. A PIN unlock needs no change: the PIN screen already tears the tree down, and
+        /// `RootView` resets its state on leaving `.unlocked`.
+        private(set) var sessionID = UUID()
+
         /// Derived from `currentDepth` and `coercerBaseDepth` — never set manually.
         ///
         /// `.normal` — the current operator is at their home layer:
@@ -270,8 +278,10 @@ extension Manager {
         private func setState(_ depth: Int, pinEnabled: Bool = true, config: AppLayerConfig) throws {
             try config.writePersistedDepth(depth)
             try config.writePinEnabled(pinEnabled, at: depth)
+            let depthChanged  = depth != self.currentDepth
             self.currentDepth = depth
             self.pinEnabled   = pinEnabled
+            if depthChanged { self.sessionID = UUID() }
         }
 
         // MARK: - PIN Setup

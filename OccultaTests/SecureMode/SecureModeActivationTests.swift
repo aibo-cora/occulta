@@ -280,6 +280,46 @@ struct SecureModeNonInterferenceTests {
 /// from a brand-new `ModelContext` that bypasses every in-memory cache, not just the
 /// in-memory `AppLayerConfig` instance every other test in this file reads through
 /// `c.security` directly.
+/// Bug 140: `sessionID` marks where session state must end. It changes when the depth changes
+/// while the app stays unlocked, which has no PIN screen to tear anything down; a PIN unlock
+/// doesn't need it (the PIN screen already tears the unlocked tree down).
+@Suite("Secure Mode — session identifier (Bug 140)", .serialized)
+struct SessionIdentifierTests {
+
+    @Test("An in-place depth change starts a new session", .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func deactivationChangesSession() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try c.security.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
+        let before = c.security.sessionID
+
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+
+        #expect(c.security.currentDepth == 1)
+        #expect(c.security.sessionID != before)
+    }
+
+    @Test("Setup, activation and PIN verification keep the session", .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func sameDepthKeepsSession() throws {
+        let c = try makeComponents()
+        let initial = c.security.sessionID
+
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("000000"))   // wrong PIN
+        c.security.applyVerifyState(for: try c.security.verify("111111"))   // same depth
+
+        #expect(c.security.currentDepth == 0)
+        #expect(c.security.sessionID == initial)
+    }
+}
+
 @Suite("Secure Mode — verifier writes persist to the WAL (Bug 37, PIN-only shape)", .serialized)
 struct SecureModeVerifierPersistenceTests {
 

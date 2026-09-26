@@ -283,6 +283,17 @@ struct RootView: View {
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
+    // Session state (`bugs.md` Bug 140). Everything below that a session creates, and the
+    // identity challenge's presentations, is cleared by `endSession()` when the session ends:
+    // on leaving `.unlocked`, and on an in-place depth change (`Manager.Security.sessionID`).
+    // Exempt on purpose, because it is input queued before anyone authenticated and is
+    // delivered after whichever PIN is entered, the same at every depth: `pendingFileData`,
+    // `pendingShareSession`, and a `.occbak` staged while `.pinRequired` (staged after the
+    // reset, so it reaches the prompt). New state goes in one list or the other.
+
+    /// Which tab is showing. Held here, above the unlocked tree keyed by the session, so a
+    /// depth change in Settings doesn't drop the user on the first tab; not sensitive.
+    @State private var selectedTab: Tabs = .contacts
     /// A `.occbak` held in memory until the user confirms or cancels. Never written to disk.
     @State private var pendingRestoreFile: Data?
     @State private var showRestoreConfirmation = false
@@ -332,15 +343,16 @@ struct RootView: View {
             // Duress-Detection-Oracle.md) means there's no restriction-gated rejection
             // left to differ on, so a duress unlock draining this the same way as a
             // normal one introduces no new signal.
-            .onChange(of: self.appScreen.phase) { _, newPhase in
+            .onChange(of: self.appScreen.phase) { oldPhase, newPhase in
                 guard newPhase == .unlocked else {
                     // Leaving .unlocked (grace expired on a warm return) tears down the
                     // branch that owns the presentations, dismissing anything on screen.
-                    // Their item state outlives the branch, so clear it here — otherwise
-                    // the next unlock re-presents a sheet the user already finished with,
-                    // over content they have only just re-authenticated to.
-                    self.openedFileContents = nil
-                    self.shareResult = nil
+                    // Their item state outlives the branch, so end the session here —
+                    // otherwise the next unlock, at whatever depth, re-presents what this
+                    // session left behind (Bug 140). Only when actually leaving it: a cold
+                    // launch goes .covered → .pinRequired with no session to end, and may
+                    // already have staged the file that launched the app.
+                    if oldPhase == .unlocked { self.endSession() }
                     return
                 }
                 // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
@@ -356,6 +368,12 @@ struct RootView: View {
                     self.pendingFileData = nil
                     Task { await self.processInboundFile(data) }
                 }
+            }
+            // A depth change while unlocked (`deactivateSecureMode` from Settings) has no PIN
+            // screen to tear anything down; the unlocked tree is rebuilt by its `.id`, and the
+            // state held here ends too (Bug 140).
+            .onChange(of: self.security.sessionID) {
+                self.endSession()
             }
             .onChange(of: self.scenePhase) { _, newPhase in
                 switch newPhase {
@@ -510,14 +528,33 @@ struct RootView: View {
                     onDismiss: { self.identityChallenge.verificationOutcome = nil }
                 )
             }
+            // One unlocked tree per session: an in-place depth change rebuilds it, dropping
+            // every pushed screen, sheet and cached `@State` from the old depth (Bug 140).
+            .id(self.security.sessionID)
         }
+    }
+
+    /// Ends the session's state held above the unlocked tree (`bugs.md` Bug 140): what this
+    /// session presented or staged, and the vault's unlocked session, so a new depth needs its
+    /// own Face ID. Queued pre-authentication input is left alone (see the list above).
+    private func endSession() {
+        self.openedFileContents      = nil
+        self.shareResult             = nil
+        self.pendingRestoreFile      = nil
+        self.showRestoreConfirmation = false
+        self.showNothingRestored     = false
+        self.showError               = false
+        self.identityChallenge.outboundShare       = nil
+        self.identityChallenge.incomingChallenge   = nil
+        self.identityChallenge.verificationOutcome = nil
+        self.vaultManager.lock()
     }
 
     // MARK: Tab content
 
     @ViewBuilder
     private var tabContent: some View {
-        TabView {
+        TabView(selection: self.$selectedTab) {
             ContactsV2()
                 .tag(Tabs.contacts)
                 .tabItem {

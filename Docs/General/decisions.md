@@ -596,3 +596,37 @@ considered complete without binding them. New fields sealed with the helper inhe
 then.
 
 **Full reasoning:** `bugs.md` Bugs 119 and 123.
+
+---
+
+## One session boundary; queued input exempt by list
+
+**Status:** Decided and built, 2026-09-26 (`bugs.md` Bug 140).
+
+**Context:** State created in one authenticated session could reach the next one, at another depth: an
+unanswered restore prompt and the owner's `.occbak` bytes survived the PIN screen, and an in-place depth
+change (`deactivateSecureMode`) cleared nothing, leaving the vault unlocked and old vault screens open.
+Clean-up was a hand-picked list in `RootView`'s phase handler.
+
+**Decision:** Two kinds of in-memory state, one boundary:
+- **Session state** ends at `RootView.endSession()`, which runs on leaving `.unlocked` and whenever
+  `Manager.Security.sessionID` changes (an in-place depth change). The unlocked view tree is keyed by
+  `sessionID`, so everything inside it goes at once.
+- **Input queued before authentication** is exempt, by an explicit list in one comment above `RootView`'s
+  state: `pendingFileData`, `pendingShareSession`, and a `.occbak` staged while `.pinRequired`.
+
+Any new piece of state goes on one list or the other.
+
+**Why:**
+- **A boundary, not a list of fields:** the missed restore prompt was the list's failure mode (as with Bug
+  126); the tree's `.id` and one reset function don't depend on remembering every field.
+- **No session change at a PIN unlock:** the PIN screen already tears the tree down, and a second reset
+  there would race the delivery of queued input (two `onChange` handlers in one update, order not
+  guaranteed).
+- **Queued input stays exempt:** delivering it the same after any PIN is what keeps it from being a tell.
+
+**Consequences:** an in-place depth change rebuilds the unlocked tree (Settings' deactivate flow closes
+itself as it succeeds; the selected tab is kept) and locks the vault, so the new depth needs its own Face
+ID. Leaving the app past the grace period ends the session even for the same person.
+
+**Full reasoning:** `bugs.md` Bug 140.
