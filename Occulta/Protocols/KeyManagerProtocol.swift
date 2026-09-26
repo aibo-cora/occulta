@@ -342,7 +342,9 @@ final class TestKeyManager: KeyManagerProtocol {
         )
     }
 
-    private func deriveCustodySEKey(info: Data) throws -> SymmetricKey? {
+    /// Internal, not private, so a test can derive under a literal info string: the migration
+    /// tests seal legacy rows exactly as v1.10.3 did (`bugs.md` Bug 137).
+    func deriveCustodySEKey(info: Data) throws -> SymmetricKey? {
         guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
 
         var err: Unmanaged<CFError>?

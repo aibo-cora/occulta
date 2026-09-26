@@ -56,9 +56,13 @@ private func makeShardAttribute(signer: TestKeyManager, entryID: UUID) throws ->
     )
 }
 
-/// Inserts a legacy `ReconstructShard` row directly, sealed exactly as the retired
-/// mechanism used to seal it — bypassing `absorbShard` entirely, since the whole point
-/// is to fix a population that predates it.
+/// v1.10.3's HKDF info string for the key that sealed `ReconstructShard` rows
+/// (`deriveRecoveryBufferKey`), written out rather than read from `SaltInfo`, so these rows
+/// stay shaped like the release's even if the constant changes (`bugs.md` Bug 137).
+private let v1_10_3RecoveryBufferInfo = Data("Occulta-v1-recovery-buffer-2026".utf8)
+
+/// Inserts a legacy `ReconstructShard` row directly, sealed as v1.10.3 sealed it — bypassing
+/// `absorbShard` entirely, since the whole point is to fix a population that predates it.
 @MainActor
 private func insertLegacyRow(
     vault: VaultManager,
@@ -67,8 +71,8 @@ private func insertLegacyRow(
     attribute: SignedAttribute,
     senderIdentifier: String
 ) throws {
-    guard let restoreKey = try km.deriveRestoreVaultKey() else {
-        Issue.record("expected restore vault key")
+    guard let restoreKey = try km.deriveCustodySEKey(info: v1_10_3RecoveryBufferInfo) else {
+        Issue.record("expected v1.10.3's restore key")
         return
     }
     let rowID   = UUID()

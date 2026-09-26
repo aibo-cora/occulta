@@ -46,7 +46,14 @@ struct SaltInfo {
     /// the transient set of returned shards Alice's device collects during
     /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
     /// blob and a reconstruct blob are never decryptable with the same key.
-    static let kRestoreVaultKeyInfo = "Occulta-v1-restore-vault-2026".data(using: .utf8)!
+    ///
+    /// **The value must never change.** It keys every banked recovery piece on disk,
+    /// including the `ReconstructShard` rows v1.10.3 wrote, which is why it still reads
+    /// "recovery-buffer" after `deriveRecoveryBufferKey` was renamed. That rename once
+    /// changed this string too, re-keying the key, so the upgrade migration couldn't open
+    /// a single legacy row and deleted them all (`bugs.md` Bug 137). Pinned by
+    /// `RecoveryBufferKeyTests.infoStringIsV1_10_3s`.
+    static let kRestoreVaultKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
     nonisolated static let kFileKeyInfo           = "Occulta-v1-file-key-2025".data(using: .utf8)!
 }
 

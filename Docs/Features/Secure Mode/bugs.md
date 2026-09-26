@@ -11686,3 +11686,70 @@ busy main thread can't beat the timer. The UI calls have no test harness here; t
 `decisions.md` is what reviews check against. Device check: keep tapping in the vault past five
 minutes and it stays unlocked; stay idle on a vault screen, or use other tabs, for five minutes and it
 locks.
+
+---
+
+## Bug 137 — Upgrading from v1.10.3 deletes every banked recovery piece: the migration derives the key under a renamed HKDF info string
+
+**Status:** Fixed 2026-09-26, on `v1.11.0/vault-key-layering`. Filed the same day, found by the branch
+security review against `develop`, then confirmed against the `v1.10.3` tree.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (data loss on upgrade)
+
+Silent and permanent for anyone upgrading mid-recovery. Recovering needs every trustee to send their
+piece again, in person-paired messages, and nothing tells the owner the pieces were lost.
+
+### What happens
+
+v1.10.3 banks returned recovery pieces in `ReconstructShard` rows: both backup-key restore pieces and
+per-entry key reconstruction pieces. Each row's payload is sealed under
+`deriveRecoveryBufferKey()`: ECDH with the shard-custody SE key, then HKDF with salt = that key's public
+bytes and **info = `SaltInfo.kRecoveryBufferKeyInfo` = `"Occulta-v1-recovery-buffer-2026"`**.
+
+`44c983e` ("Rename deriveRecoveryBufferKey to deriveRestoreVaultKey…") renamed the function and, with
+it, the info string: `deriveRestoreVaultKey()` uses the same SE key and salt but
+**`SaltInfo.kRestoreVaultKeyInfo` = `"Occulta-v1-restore-vault-2026"`** (`Key+Manager.swift:49`). A
+different info string derives a different key.
+
+`migrateReconstructShardsIfNeeded()` (`Vault+Manager+ReturnBuffer.swift`), run on every unlock, opens
+each legacy row with `deriveRestoreVaultKey()`. No v1.10.3 row authenticates under it, and the function's
+own rule is to delete a row it can't read (`defer { self.modelContext.delete(row) }`, then `continue`).
+So the first unlock after upgrading deletes every banked piece without absorbing any of them.
+
+The payload format is not the obstacle: v1.10.3's `Payload` has an `attestation` field and no `depth`;
+the current one drops `attestation` and adds an optional `depth`. `JSONDecoder` ignores the unknown key
+and reads the missing optional as `nil`, so a v1.10.3 payload would decode once decrypted.
+
+**Why tests missed it:** `ReconstructShardMigrationTests` builds its legacy rows with
+`km.deriveRestoreVaultKey()` while describing them as "sealed exactly as the retired mechanism used to
+seal it". They are sealed with the new key, so the migration reads them. The same gap as Bug 133: no
+test builds data the way the last release actually wrote it.
+
+### Fix, as built
+
+**`SaltInfo.kRestoreVaultKeyInfo` is back to `"Occulta-v1-recovery-buffer-2026"`,** v1.10.3's value. Same
+SE key, same salt, same info: `deriveRestoreVaultKey()` produces v1.10.3's key again, and the migration
+opens and absorbs every legacy row unchanged. The constant's doc comment says the value must never
+change, and why the name and the string no longer match. Domain separation from the custody key is
+unaffected (`distinctFromCustodyKey` still passes).
+
+Rejected: keeping the new string and adding a legacy constant for the migration to try as well. The
+rename had no security reason to change the key; HKDF info strings are protocol constants (as
+`RUST_PACKAGES_SPEC.md` already states), and a second key would have been carried only to undo the
+change.
+
+**Cost, development phones only:** `PendingShamirSecretRestore` rows banked by this branch's builds were
+sealed under the other string and no longer decrypt. `decodedSlots` reads such a row as empty, and the
+next piece to arrive is saved into it under the reverted key, so collection carries on; the pieces
+banked before the revert are lost. No release ever had that model.
+
+### Guard
+
+- `ReconstructShardMigrationTests` now seals its legacy rows under v1.10.3's derivation, with the info
+  string written out literally (`TestKeyManager.deriveCustodySEKey(info:)`, made internal for this),
+  not through the current constant. Against the renamed string, 5 of its 7 tests failed, reproducing
+  this bug; all pass after the revert.
+- `RecoveryBufferKeyTests.infoStringIsV1_10_3s` pins the constant's exact bytes and checks the derived
+  key equals the literal-string derivation, so a future rename can't pass silently.

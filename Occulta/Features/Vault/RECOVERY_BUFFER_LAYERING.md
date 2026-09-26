@@ -1172,6 +1172,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 128 | "Erase all data" deletes no files, so the held `.occbak` and `backup-export-meta.dat` survive a wipe | **fixed, 2026-09-23** — the wipe deletes the files |
 | 129 | A restore whose entry import fails after the key is saved leaves the depth stuck (key in place, entries missing, retries refused) | **fixed, 2026-09-23** — check everything, then write once with rollback; shards kept on a bad file |
 | 130 | Three of the four custody-shard deletions don't re-seal survivors, so a snapshot diff shows which row went | fixed 2026-09-23 — every deletion path re-seals survivors; three share `deleteCustodyShards` |
+| 137 | Upgrading from v1.10.3 deletes every banked piece: `migrateReconstructShardsIfNeeded` opens `ReconstructShard` rows with `deriveRestoreVaultKey()`, whose HKDF info string was renamed from v1.10.3's, so no row opens and each is deleted | **fixed, 2026-09-26** — the info string is back to v1.10.3's value and pinned by a test; pieces banked by this branch's development builds are lost (`bugs.md` Bug 137) |
 
 **Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
 `bugs.md` Bug 99.** This table's Bug 99 row qualifies its subsumption with "except the pending-file

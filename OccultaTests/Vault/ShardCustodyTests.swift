@@ -156,6 +156,20 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
                 "buffer key and custody key must differ — same SE source, different HKDF info")
     }
 
+    /// Bug 137: renaming this string re-keys every banked piece on disk, and v1.10.3's
+    /// `ReconstructShard` rows stop opening. Pinned to the exact bytes v1.10.3 used.
+    @Test("The restore vault key's info string is still v1.10.3's")
+    func infoStringIsV1_10_3s() throws {
+        let legacy = Data("Occulta-v1-recovery-buffer-2026".utf8)
+        #expect(SaltInfo.kRestoreVaultKeyInfo == legacy)
+
+        let km = TestKeyManager()
+        var current = Data(), v1_10_3 = Data()
+        try km.deriveRestoreVaultKey()?.withUnsafeBytes { current = Data($0) }
+        try km.deriveCustodySEKey(info: legacy)?.withUnsafeBytes { v1_10_3 = Data($0) }
+        #expect(current.count == 32 && current == v1_10_3)
+    }
+
     @Test("Recovery buffer key is deterministic for the same key manager")
     func deterministic() throws {
         let km = TestKeyManager()
