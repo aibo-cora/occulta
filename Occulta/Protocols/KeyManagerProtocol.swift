@@ -143,6 +143,9 @@ final class TestKeyManager: KeyManagerProtocol {
 
     /// Set to true to make deriveVaultKey(context:) throw — tests lock-on-failure behaviour.
     var simulateVaultKeyFailure = false
+    /// How many times `deriveVaultKey(context:)` ran, so a test can pin how often a path
+    /// derives the vault key (the Vault tab's list, derived once per rebuild).
+    private(set) var vaultKeyDerivations = 0
 
     /// Fixed generator point G for ECDH derivation.
     private let fixedX963 = Data([
@@ -287,6 +290,7 @@ final class TestKeyManager: KeyManagerProtocol {
     /// `simulateVaultKeyFailure = true` makes this throw to test lock-on-failure.
     func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
         if simulateVaultKeyFailure { throw SimulatedFailure() }
+        self.vaultKeyDerivations += 1
 
         guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
 

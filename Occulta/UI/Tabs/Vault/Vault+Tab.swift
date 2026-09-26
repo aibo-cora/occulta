@@ -87,6 +87,8 @@ struct VaultTab: View {
     @State private var unlocking = false
     @State private var showExportEducation = false
     @State private var showRestore = false
+    /// The entry list's rows, decrypted once per data change (`refreshListRows()`).
+    @State private var listRows: [VaultManager.EntryListRow] = []
     @State private var showBEKSetup = false
 
     private enum Filter: String, CaseIterable {
@@ -162,6 +164,15 @@ struct VaultTab: View {
                     self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
                 }
             }
+            // Rebuilds the entry rows only when entries, depth or the lock state change —
+            // not on the many redraws a save anywhere causes through `recoveryHealth`.
+            .task(id: ListInputs(
+                entryIDs: self.entries.map(\.id),
+                depth:    self.security.currentDepth,
+                unlocked: self.vault.isUnlocked
+            )) {
+                self.refreshListRows()
+            }
             .onAppear {
                 // Switching to this tab, or coming back to it, is vault activity (Bug 136).
                 self.vault.extendSession()
@@ -218,19 +229,35 @@ struct VaultTab: View {
 
     // MARK: Entry list
 
-    /// Entries visible at the current depth — see `Manager.Security.visibleVaultEntries`
-    /// (Bug 113) for the filtering itself: excludes orphaned rows and applies the
-    /// exact-depth match at every depth, including 0.
-    private var visibleEntries: [VaultEntry] {
-        self.security.visibleVaultEntries(from: self.entries)
+    /// What decides the entry rows: which entries exist, the depth, and whether the vault is
+    /// unlocked. The rows are rebuilt only when this changes, not on every redraw.
+    private struct ListInputs: Hashable {
+        let entryIDs: [UUID]
+        let depth:    Int
+        let unlocked: Bool
+    }
+
+    /// Rebuilds `listRows`: the entries visible at the current depth (see
+    /// `Manager.Security.visibleVaultEntries`, Bug 113: orphaned rows excluded, exact-depth
+    /// match at every depth), decrypted once with one vault-key derivation. Empty while locked,
+    /// so no decrypted label stays in view state over a locked vault.
+    private func refreshListRows() {
+        guard self.vault.isUnlocked else {
+            self.listRows = []
+            return
+        }
+        self.listRows = self.vault.entryListRows(for: self.security.visibleVaultEntries(from: self.entries))
     }
 
     private var list: some View {
-        let visibleEntries = self.visibleEntries
-        let visibleIDs     = Set(visibleEntries.map(\.id))
+        let rows           = self.listRows
+        let visibleIDs     = Set(rows.map(\.id))
         let affected       = (self.vault.recoveryHealth?.affected ?? []).filter { visibleIDs.contains($0.entryID) }
         let affectedIDs    = Set(affected.map(\.entryID))
-        let normalEntries  = visibleEntries.filter { !affectedIDs.contains($0.id) }
+        let personalRows   = rows.filter { !affectedIDs.contains($0.id) }
+        // Each of these derives keys and decrypts; read once per redraw, not per use.
+        let setupState     = self.vault.backupSetupState(currentDepth: self.security.currentDepth)
+        let custodianRows  = self.custodianRows
 
         // Backup-key erosion: read the stored property computed by refreshBackupErosion().
         // Same pending+confirmed logic as PEK — no crypto calls at render time.
@@ -327,21 +354,21 @@ struct VaultTab: View {
             // Personal entries (excludes entries already shown in attention section)
             if self.filter != .shards {
                 Section {
-                    if visibleEntries.isEmpty {
+                    if rows.isEmpty {
                         Text("No entries yet. Tap + to add one.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(normalEntries) { entry in
-                            NavigationLink(value: entry.id) {
-                                VaultEntryRow(entry: entry)
+                        ForEach(personalRows) { row in
+                            NavigationLink(value: row.id) {
+                                VaultEntryRow(row: row)
                             }
                         }
                         .onDelete { offsets in
                             self.vault.extendSession()
                             for i in offsets {
-                                _ = try? self.vault.deleteEntry(id: normalEntries[i].id)
+                                _ = try? self.vault.deleteEntry(id: personalRows[i].id)
                             }
                         }
                     }
@@ -353,16 +380,16 @@ struct VaultTab: View {
                         Text("Personal")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .tracking(1.6)
-                        if !visibleEntries.isEmpty {
+                        if !rows.isEmpty {
                             Spacer()
-                            Text("\(visibleEntries.count)")
+                            Text("\(rows.count)")
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
                     }
                 } footer: {
-                    if !visibleEntries.isEmpty {
-                        Text("\(visibleEntries.count) \(visibleEntries.count == 1 ? "entry" : "entries") · se-bound · this device only")
+                    if !rows.isEmpty {
+                        Text("\(rows.count) \(rows.count == 1 ? "entry" : "entries") · se-bound · this device only")
                             .font(.system(size: 10, design: .monospaced))
                     }
                 }
@@ -374,10 +401,10 @@ struct VaultTab: View {
                     NavigationLink {
                         VaultShardSetup(mode: .backup)
                     } label: {
-                        VaultBackupRow(state: self.vault.backupSetupState(currentDepth: self.security.currentDepth))
+                        VaultBackupRow(state: setupState)
                     }
                 } footer: {
-                    if self.vault.backupSetupState(currentDepth: self.security.currentDepth) == .ready {
+                    if setupState == .ready {
                         Button {
                             self.showExportEducation = true
                         } label: {
@@ -391,13 +418,13 @@ struct VaultTab: View {
 
             if self.filter != .personal {
                 Section {
-                    if self.custodianRows.isEmpty {
+                    if custodianRows.isEmpty {
                         Text("Shards appear here once you get one from a contact for custody via .occ.")
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(self.custodianRows, id: \.ownerIdentifier) { row in
+                        ForEach(custodianRows, id: \.ownerIdentifier) { row in
                             HStack(spacing: 12) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 9)
@@ -501,21 +528,14 @@ struct VaultTab: View {
 // MARK: - Entry Row
 
 private struct VaultEntryRow: View {
-    let entry: VaultEntry
-    @Environment(VaultManager.self) private var vault
-
-    private var labelPayload: SealedLabelPayload? {
-        try? self.vault.decryptLabelPayload(for: self.entry)
-    }
-
-    private var hasShards: Bool {
-        (try? self.vault.shardDistributionMetadata(for: self.entry.id)) != nil
-    }
+    /// Built once per data change by `VaultManager.entryListRows(for:)`; this view decrypts
+    /// nothing itself.
+    let row: VaultManager.EntryListRow
 
     var body: some View {
-        let payload = self.labelPayload
-        let label     = payload?.label ?? "–"
-        let entryType = payload?.type  ?? .note
+        let label     = self.row.label
+        let entryType = self.row.type
+        let isSplit   = self.row.isSplit
 
         return HStack(spacing: 12) {
             ZStack {
@@ -530,7 +550,7 @@ private struct VaultEntryRow: View {
                 Text(label)
                     .font(.system(size: 16, weight: .medium))
                     .lineLimit(1)
-                Text("\(entryType.displayName) · \(self.entry.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                Text("\(entryType.displayName) · \(self.row.createdAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -540,10 +560,10 @@ private struct VaultEntryRow: View {
 
             Text("🔮")
                 .font(.system(size: 13))
-                .grayscale(self.hasShards ? 0 : 1)
-                .opacity(self.hasShards ? 1 : 0.3)
+                .grayscale(isSplit ? 0 : 1)
+                .opacity(isSplit ? 1 : 0.3)
                 .shadow(
-                    color: self.hasShards
+                    color: isSplit
                         ? VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)).opacity(0.55)
                         : .clear,
                     radius: 4

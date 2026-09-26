@@ -244,6 +244,37 @@ private func makeContainer() throws -> ModelContainer {
 @Suite("Phase 4 — VaultManager CRUD")
 @MainActor struct VaultManagerCRUDTests {
 
+    /// The Vault tab builds its rows with this once per data change. It used to decrypt each row
+    /// in the row's own body, deriving the vault key once or more per row on every redraw.
+    @Test("entryListRows decrypts every row with one vault-key derivation")
+    func entryListRowsDerivesOnce() throws {
+        let (vm, km) = try makeVaultManager()
+        vm.unlock(context: LAContext())
+        let seed  = try vm.addEntry(label: "Seed", content: Data("a b c".utf8), type: .seedPhrase)
+        let note  = try vm.addEntry(label: "Note", content: Data("hello".utf8), type: .note)
+        note.shardDistributionEncrypted = Data([0x01])   // marked split; the row reads presence only
+        let before = km.vaultKeyDerivations
+
+        let rows = vm.entryListRows(for: [seed, note])
+
+        #expect(km.vaultKeyDerivations - before == 1)
+        #expect(rows.map(\.id) == [seed.id, note.id])
+        #expect(rows.map(\.label) == ["Seed", "Note"])
+        #expect(rows.map(\.type) == [.seedPhrase, .note])
+        #expect(rows.map(\.isSplit) == [false, true])
+        #expect(rows[0].createdAt == seed.createdAt)
+    }
+
+    @Test("entryListRows is empty while the vault is locked")
+    func entryListRowsLocked() throws {
+        let (vm, _) = try makeVaultManager()
+        vm.unlock(context: LAContext())
+        let entry = try vm.addEntry(label: "Seed", content: Data("a".utf8), type: .seedPhrase)
+        vm.lock()
+
+        #expect(vm.entryListRows(for: [entry]).isEmpty)
+    }
+
     @Test("addEntry then decryptLabel round-trips the label")
     func addAndDecryptLabel() throws {
         let (vm, _) = try makeVaultManager()

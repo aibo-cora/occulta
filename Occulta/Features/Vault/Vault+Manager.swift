@@ -428,7 +428,39 @@ final class VaultManager {
     ///
     /// ⚠️ The returned payload is plaintext. Do not persist or log it.
     func decryptLabelPayload(for entry: VaultEntry) throws -> SealedLabelPayload {
-        let vaultKey  = try self.currentKey()
+        try self.labelPayload(for: entry, vaultKey: try self.currentKey())
+    }
+
+    /// One row of the Vault tab's entry list.
+    struct EntryListRow: Identifiable, Equatable {
+        let id:        UUID
+        let label:     String
+        let type:      VaultEntryType
+        let createdAt: Date
+        /// The entry's key has been split among trustees: whether its distribution field is
+        /// set, which needs no decryption.
+        let isSplit:   Bool
+    }
+
+    /// The Vault tab's rows for `entries`, deriving the vault key once for all of them. The tab
+    /// builds these once per data change instead of decrypting every row on every redraw, which
+    /// derived the key once or more per row each time. An entry whose label won't decrypt shows
+    /// as "–", a note, as the row view did. Empty while locked.
+    func entryListRows(for entries: [VaultEntry]) -> [EntryListRow] {
+        guard let vaultKey = try? self.currentKey() else { return [] }
+        return entries.map { entry in
+            let payload = try? self.labelPayload(for: entry, vaultKey: vaultKey)
+            return EntryListRow(
+                id:        entry.id,
+                label:     payload?.label ?? "–",
+                type:      payload?.type  ?? .note,
+                createdAt: entry.createdAt,
+                isSplit:   entry.shardDistributionEncrypted != nil
+            )
+        }
+    }
+
+    private func labelPayload(for entry: VaultEntry, vaultKey: SymmetricKey) throws -> SealedLabelPayload {
         let pek       = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
         let plaintext = try self.openField(entry.encryptedLabel, key: pek, aad: entry.aad(for: .label))
         do {
