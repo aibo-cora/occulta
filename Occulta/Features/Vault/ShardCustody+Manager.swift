@@ -232,10 +232,21 @@ final class ShardCustodyManager {
     /// since the key that signed the original shard no longer exists anywhere —
     /// there was never a way to recover content authenticity, with or without an
     /// attestation. So Branch A failing now means accept, not "try a second,
-    /// no-stronger check." `attribute.entryID` matching a real, live distribution
-    /// (checked downstream, in `acceptReturnedShard` and `restoreBackup`'s
-    /// own grouping) is what actually scopes this to real trustees, and that check
-    /// is untouched.
+    /// no-stronger check."
+    ///
+    /// Nothing checks that `attribute.entryID` names a real, live distribution: for a
+    /// backup-key restore it can't, since the restoring phone is usually new and the
+    /// record of what was distributed was on the lost one. `acceptReturnedShard` banks a
+    /// shard under any `entryID`. What scopes this instead (`bugs.md` Bug 125, 2026-09-26
+    /// note):
+    /// - one slot per `(entryID, sender)`, with the sender resolved from the transport,
+    ///   so no single contact can supply a threshold alone (Bug 94 remedy 2);
+    /// - `restoreBackup` counts only senders visible at the current depth, and refuses a
+    ///   depth that already has a backup key (Bug 94 remedy 1);
+    /// - a reconstructed key counts only if it opens the `.occbak` the owner chose to
+    ///   open, so shards alone restore nothing;
+    /// - a per-entry key is only finalised for an entry this device split, against that
+    ///   entry's own stored ciphertext.
     ///
     /// Acceptance is not gated on any restore being under way; a BEK restore
     /// shard is only banked here. `restoreBackup` decides, when the owner opens the

@@ -10927,6 +10927,23 @@ actually sent a share — that check is untouched, still runs, still does the ac
 scoped to trustees. Removing attestation removes a redundant second signature, not the binding to a real
 distribution.
 
+**Corrected 2026-09-26 (branch security review): the check the paragraph above relies on doesn't exist.**
+Nothing verifies that `attribute.entryID` names a real, live distribution. `acceptReturnedShard` and
+`absorbShard` bank a shard under any `entryID`, and `bekRestoreDistributionIDs` enumerates every row. For a
+backup-key restore it couldn't be checked anyway: the restoring phone is usually new, and the record of
+what was distributed was on the lost one. The conclusion still holds, for other reasons:
+- one slot per `(entryID, sender)`, with the sender resolved from the transport, so no single contact can
+  supply a threshold alone (Bug 94 remedy 2);
+- `restoreBackup` counts only senders visible at the current depth, and refuses a depth that already has
+  a backup key (Bug 94 remedy 1);
+- a reconstructed key counts only if it opens the `.occbak` the owner chose to open;
+- a per-entry key is only finalised for an entry this device split, checked against its own ciphertext.
+
+What remains is the case Bug 94 already accepts: two or more contacts visible at a depth with no backup
+key, plus the owner choosing to open their file. The stray rows a non-trustee can create are Bug 96
+item 2's accepted unbounded growth. `ShardCustody+Manager.swift`'s `handleHandback` comment, which
+repeated the claim, is corrected to match.
+
 ### Remedy — both surfaces done
 
 - **Foundation model:** settled the question `bugs.md` Bug 124 paused and then answered incompletely —
