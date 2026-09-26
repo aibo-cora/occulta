@@ -7398,6 +7398,11 @@ addresses are unchanged), and it fails if a second reference is introduced. **No
 be:** `JSONEncoder`/`JSONDecoder` internals, labels while they pass through Swift `String`s
 (`decryptLabelPayload` returns one), and CryptoKit's own buffers.
 
+**Follow-up, 2026-09-26 (branch code review):** per-entry key reconstruction had the same gap.
+`reconstructEntry` (`Vault+Manager+Reconstruction.swift`) opened the entry's content to check the GCM tag
+and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` does. Not
+covered by a test, like the other zeroing points: a leftover copy in freed memory isn't observable from one.
+
 ### 4 — Minor, recorded so they are not rediscovered
 
 - **`VaultBackup.version` is decorative.** It is decoded and never read; `importBackup` accepts any
@@ -11161,6 +11166,13 @@ carry none of this. The OS copies in `Documents/Inbox` (Bug 101) survive a wipe 
 Have the erase path delete these files. §9.4's legacy-cleanup function already deletes the three restore
 files, so the wipe can call it and also remove `backup-export-meta.dat`. The Inbox copies belong with
 Bug 101's fix.
+
+**Follow-up, 2026-09-26 (branch code review):** the wipe also deleted the `Vault` singleton and every
+`BackupEncryptionKey` row, including the 32-row filler baseline, and only `VaultManager.init` recreated
+them. Erase all data doesn't relaunch the app, so until the next launch `absorbShard` threw
+`vaultNotFound` (returned pieces dropped), and a backup set up in that session sat without its filler, the
+row count revealing it. `deleteAllData()` now ends with `ensureBackupKeyFillerRows()` and
+`ensureVaultExists()`; `VaultBackupRoundTripTests.wipeRestoresFreshShape` pins it (fails without the fix).
 
 ### Guard
 

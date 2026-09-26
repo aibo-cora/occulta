@@ -161,7 +161,8 @@ extension VaultManager {
 
         for entry in entries {
             // decryptLabelPayload and decryptContent are internal — they call currentKey()
-            // internally which is redundant but harmless (resets inactivity timer only).
+            // internally, which only re-derives the key: redundant but harmless. It doesn't
+            // touch the inactivity timer (bugs.md Bug 136).
             let labelPayload = try self.decryptLabelPayload(for: entry)
             let content      = try self.decryptContent(for: entry)
             backupEntries.append(VaultBackupEntry(

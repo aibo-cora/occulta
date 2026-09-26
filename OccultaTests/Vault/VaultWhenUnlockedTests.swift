@@ -3,8 +3,13 @@
 //  OccultaTests
 //
 //  `VaultManager.whenUnlocked` runs a restore with the vault unlocked, asking for Face ID first if
-//  it has locked. The prompt itself can't run in a test; what is pinned is that an unlocked vault
-//  runs the action at once, and a locked one never runs it before the prompt succeeds.
+//  it has locked. What is pinned is that an unlocked vault runs the action at once.
+//
+//  The locked path is not tested here: it calls `LAContext.evaluatePolicy`, and on a host with
+//  Face ID enrolled that raises a real system prompt in the test process, which resigns the app
+//  active and locks every `VaultManager` in it, breaking concurrent vault tests (found by the
+//  branch code review). It is a device check instead (`decisions.md`, "Restore discoverability",
+//  the 2026-09-25 note).
 //
 
 import Testing
@@ -36,19 +41,5 @@ struct VaultWhenUnlockedTests {
         vault.whenUnlocked { ran = true }
 
         #expect(ran)
-    }
-
-    /// The restore must not run against a locked vault: it waits for Face ID, and never runs if
-    /// the prompt fails or is cancelled.
-    @Test("A locked vault doesn't run the action before Face ID")
-    func lockedWaitsForFaceID() throws {
-        let vault = try makeVault()
-        #expect(!vault.isUnlocked)
-        var ran = false
-
-        vault.whenUnlocked { ran = true }
-
-        #expect(!ran)
-        #expect(!vault.isUnlocked)
     }
 }

@@ -90,10 +90,13 @@ extension VaultManager {
         // ── 4. GCM authentication — integrity check ───────────────────────────
         // A wrong PEK produces a random value; the 128-bit GCM tag rejects it.
         let contentBox = try AES.GCM.SealedBox(combined: entry.encryptedContent)
-        guard (try? AES.GCM.open(contentBox, using: candidatePEK,
-                                  authenticating: entry.aad(for: .content))) != nil else {
+        guard var contentPlain = try? AES.GCM.open(contentBox, using: candidatePEK,
+                                                   authenticating: entry.aad(for: .content)) else {
             throw VaultError.decryptionFailed
         }
+        // Only the tag matters here; the decrypted secret itself is zeroed at once, as
+        // `Backup.keyOpening` does (bugs.md Bug 96 item 3).
+        contentPlain.resetBytes(in: contentPlain.startIndex..<contentPlain.endIndex)
 
         // ── 5. Re-wrap PEK under current vault key ────────────────────────────
         let sealedKey = try AES.GCM.seal(

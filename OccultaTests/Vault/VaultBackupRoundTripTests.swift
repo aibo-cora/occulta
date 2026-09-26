@@ -429,4 +429,27 @@ struct VaultBackupRoundTripTests {
             #expect(!FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) survived the wipe")
         }
     }
+    /// Erase all data doesn't relaunch the app, and `init` was the only place the Vault row and
+    /// the backup-key filler baseline were created.
+    @Test("Wiping the vault restores a fresh install's Vault row and filler baseline")
+    func wipeRestoresFreshShape() throws {
+        let schema = Schema([
+            VaultEntry.self, BackupEncryptionKey.self, CustodyShard.self, PendingShardDistribute.self,
+            PendingShardStatusUpdate.self, PendingShamirSecretRestore.self, Vault.self,
+            ReconstructShard.self, GlobalShardConfig.self, PotentiallyLostShard.self, AppLayerConfig.self,
+        ])
+        let container = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+        let context = ModelContext(container)
+        let baseline = try context.fetchCount(FetchDescriptor<BackupEncryptionKey>())
+        #expect(baseline == AppLayerConfig.maxDepthCount)
+
+        try vault.deleteAllData()
+
+        #expect(try context.fetchCount(FetchDescriptor<Vault>()) == 1)
+        #expect(try context.fetchCount(FetchDescriptor<BackupEncryptionKey>()) == baseline)
+        #expect(throws: Never.self) { _ = try vault.requireVault() }
+    }
 }

@@ -399,6 +399,12 @@ final class VaultManager {
         // Files outlive row deletion and key deletion alike (bugs.md Bug 128).
         self.deleteLegacyRestoreState()
         self.deleteBackupExportMetadata()
+        // Back to a fresh install's shape without waiting for a relaunch, which Erase all data
+        // doesn't do: `init` is otherwise the only place these run. Without the Vault row,
+        // `absorbShard` throws `vaultNotFound`; without the filler baseline, a backup set up
+        // before the next launch sits in a table whose row count reveals it.
+        self.ensureBackupKeyFillerRows()
+        self.ensureVaultExists()
     }
 
     private func deleteAll<T: PersistentModel>(_ type: T.Type) throws {
