@@ -11912,3 +11912,89 @@ three are gone (Enclave-gated); and with nothing there, deletion still reports s
 helper rather than `deleteAllKeys()`, which would delete the canonical keys other tests in the process
 use. If the launch clean-up is built: a test per state (post-commit leftovers deleted; staged-only
 leftovers deleted; canonical missing with `.superseded` present, left untouched).
+
+---
+
+## Bug 140 — Session state outlives the session: nothing clears it at a new unlock or an in-place depth change
+
+**Status:** Open, filed 2026-09-26. Found by the branch code review against `develop` as a pending restore
+prompt surviving the PIN screen; rewritten the same day around the invariant that case breaks.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (state from one session, at one depth, reaches the next, possibly a coercer's)
+
+### The invariant
+
+Everything the app holds in memory is one of two kinds:
+1. **Input queued before anyone authenticated.** A file or share that arrives while the PIN screen is up
+   (`pendingFileData`, `pendingShareSession`, a `.occbak` opened at the PIN screen) is kept on purpose and
+   delivered after whichever PIN is entered, the same at every depth; treating it differently by depth
+   would itself be a tell.
+2. **State created during an authenticated session, at one depth.** Presented screens and sheets,
+   decrypted content, unanswered decisions (a pending prompt, a draft, a trustee selection), values
+   computed for "this depth", and an unlocked vault. This must end when the session or the depth changes:
+   the next session may be someone else, in another layer.
+
+The code has no single boundary where kind 2 ends.
+
+### Two ways the session changes, and what each clears today
+
+1. **Leaving `.unlocked`** (the PIN screen after the grace period). `AppScreen` switches to
+   `.pinRequired`, which tears down the unlocked view tree, so state *inside* it goes. State held *above*
+   it, on `RootView` or in the managers, survives unless cleared by hand. `RootView`'s
+   `onChange(of: appScreen.phase)` clears a hand-picked list, `openedFileContents` and `shareResult`,
+   because "their item state outlives the branch … otherwise the next unlock re-presents a sheet the user
+   already finished with". The restore prompt added on this branch (`pendingRestoreFile`,
+   `showRestoreConfirmation`) isn't on the list: the same manual-sync weakness as Bug 126.
+2. **Depth changing while the app stays unlocked.** `Manager.Security.deactivateSecureMode` moves
+   `currentDepth` from N to N−1 in place, called from `SecureModeDeactivateFlow` in Settings; no PIN screen,
+   nothing torn down, nothing cleared. (`forceDeactivateForRecovery`, which moves to 0 the same way, has no
+   caller in the app today.)
+
+### What survives, and into which session
+
+| State | Held by | After the PIN screen | After an in-place depth change |
+|---|---|---|---|
+| Pending restore prompt and the `.occbak` bytes | `RootView` | **survives** | **survives** |
+| An opened message, a share result | `RootView` | cleared | **survives** |
+| The vault's unlocked session (`authContext`) | `VaultManager` | locked (the app resigned active) | **survives: the new depth has an unlocked vault with no Face ID of its own** |
+| Post-restore prompt, recovery health, backup erosion, staleness | `VaultManager` | cleared on lock | **survives, computed for the old depth until a view refreshes it** |
+| Pushed vault screens (an entry's detail, backup setup) and their cached `@State` | the Vault tab's navigation stack | torn down | **survives: switch to Settings, deactivate, come back, and the old depth's screen is still open** |
+
+The case that surfaced this: the owner opens their real `.occbak` and leaves without answering. Past the
+grace period a coercer enters the duress PIN; the unlocked tree is rebuilt around the same `RootView`
+state, the owner's file bytes are still held, and the "Restore from this backup?" prompt can be offered
+in the duress layer. That both tells the coercer a restore was in progress and lets Accept run the
+owner's restore there, completing whenever the owner's trustees are visible in that layer (the case Bug 99
+and §9.4 accept), without the coercer ever holding the file. Whether the prompt itself reappears depends
+on SwiftUI writing `false` back to `showRestoreConfirmation` when its host is torn down; the bytes stay
+either way.
+
+### Remedy (proposed, not built): one session boundary
+
+- **A session identifier** owned by `Manager.Security`, changed on every successful unlock and every
+  in-place depth change.
+- **The unlocked view tree keyed by it** (`.id(session)` on the `.unlocked` branch). A change rebuilds the
+  whole tree, discarding every pushed screen, sheet and cached `@State` at once, with no list to keep.
+- **State above the tree resets through one hook** on the same change: `RootView` clears its
+  session presentations (replacing the hand-picked clearing in the phase handler), and `VaultManager`
+  locks and drops its depth-scoped values, so a new depth needs its own Face ID.
+- **Queued input is exempt by an explicit, documented list** kept outside the session scope on purpose:
+  `pendingFileData`, `pendingShareSession`, and a `.occbak` staged while `.pinRequired`.
+
+Out of scope, worth its own look: which depth `deactivateSecureMode` lands on when used from a duress
+depth. The boundary makes any in-place change safe to leave behind; whether that transition should be
+allowed is a separate question.
+
+### Guard
+
+- `Manager.Security`: the session identifier changes on a successful verify and on `deactivateSecureMode`,
+  and not on a wrong PIN.
+- `VaultManager`: the reset hook locks the vault and clears the post-restore prompt and the depth-scoped
+  values (testable without the UI).
+- `RootView` and the view tree can't be built in a unit test. Device or simulator check (needs a PIN):
+  open a `.occbak`, leave without answering, return past the grace period, enter a PIN, and confirm no
+  prompt; open an entry, switch to Settings, deactivate, return to the Vault tab, and confirm the entry is
+  closed and the vault asks for Face ID; open a `.occbak` while the PIN screen is up and confirm the prompt
+  appears after the PIN.
