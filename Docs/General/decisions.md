@@ -135,6 +135,11 @@ and it's explicit — `rotate()` is its own call, never a side effect of anythin
 **Full reasoning:** this conversation, 2026-09-12 — not yet folded into `VAULT_KEY_LAYERING.md`'s
 own prose.
 
+**Revised, 2026-09-26: removing a trustee now generates a new key** (`bugs.md` Bug 141; the entry "Rotate
+the backup key when a trustee is removed; re-send automatically otherwise"). Reuse still holds for adding a
+trustee and for re-sending. For a removal it left the removed trustee's piece working, together with any
+k−1 other pieces of the same split, against every backup exported afterwards; no label change prevents that.
+
 **Addendum, 2026-09-14 — this decision is about `bekBytes` specifically, and does not extend to
 `distributionID`.** Found while tracing `bugs.md` Bug 124 (a removed trustee's shard stays valid
 forever, since neither `distributionID` nor `entryID` changes on a trustee-set mutation): the two
@@ -630,3 +635,48 @@ itself as it succeeds; the selected tab is kept) and locks the vault, so the new
 ID. Leaving the app past the grace period ends the session even for the same person.
 
 **Full reasoning:** `bugs.md` Bug 140.
+
+---
+
+## Rotate the backup key when a trustee is removed; re-send automatically otherwise
+
+**Status:** Decided 2026-09-26 (`bugs.md` Bug 141, with Bug 142), not built.
+
+**Context:** implicit revoke (`expectedShards`) deleted trustees' backup-key pieces, because the owner never
+listed them. Listing them correctly would mean a message sent at one depth describing every depth's pieces,
+which reads other depths' backup keys. v2.0.0 derives each depth's keys from its own passphrase
+(`PASSPHRASE_LAYER_KEYS.md`), so that can't work and isn't wanted now either.
+
+**Decision:**
+- **Implicit revoke and the `expectedShards` field are removed.** Old bundles still decode (keyed
+  decoding ignores the unknown key), and a `v1.10.3` trustee reads the missing 1:1 field as `nil`. Groups
+  always send `shardMetadataAttempted = false`, because a `v1.10.3` member reads `true` with no list as
+  "expects nothing"; so our group messages carry no manifest, and 1:1 messages carry it instead. First
+  decided as an exemption for backup-key pieces only; changed 2026-09-27 because the only way to tell the
+  kinds apart is the piece's `label`, which isn't signed and which no code read, and once the owner sends
+  nothing the field has no use.
+- **Revocation is cryptographic.** A distribution that drops a trustee splits a new backup key. The owner
+  confirms knowing that existing backup files stop working, and is asked to export a new one.
+- **No friction otherwise.** A trustee whose identity key changes, or whose manifest no longer lists a
+  confirmed piece, gets one automatically: the same key is re-split for the same trustees. "Lost" is left for
+  a trustee who has been deleted.
+- **Depth-local throughout.** Each depth acts on its own backup-key row: the key-change trigger at the current
+  depth, the manifest trigger at each depth's own vault unlock, from watch rows that persist until their split
+  is replaced.
+
+**Why:**
+- **A new distribution ID isn't a revocation.** It labels pieces for grouping on restore; any k pieces of an
+  old split rebuild the same key whatever they're labelled.
+- **Only a new secret works without the trustee's cooperation.** It also holds against a trustee who ignores
+  a deletion request.
+- **The identity key only changes through the in-person exchange**, so sending a piece at that point is what
+  the trust model already allows.
+
+**Consequences:**
+- Removing a trustee costs one re-export.
+- Re-sending replaces every trustee's piece, not just the affected one. Until k trustees hold the new split, a
+  restore relies on the old one, which only matters where the threshold equals the number of trustees.
+- A trustee who hides a piece and reports it missing causes a re-split each time, which is traffic, not
+  exposure: one piece per split is no use on its own.
+
+**Full reasoning:** `bugs.md` Bug 141, "Decision" and "Found while designing the fix".

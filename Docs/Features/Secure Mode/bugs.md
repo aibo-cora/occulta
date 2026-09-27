@@ -10451,6 +10451,10 @@ document.
 **Status:** Open. Filed 2026-09-12, found while explaining what rotating a BEK actually looks like to a
 user and confirming directly against code that nothing calls it.
 
+**Partly overtaken, 2026-09-26:** Bug 141's decision generates a new backup key whenever a trustee is removed,
+so that path reaches a key change with its own confirmation and re-export prompt. A deliberate "rotate now"
+without changing trustees is still missing.
+
 **Target:** v2.0.0 — not urgent for the current release. Nothing depends on rotation existing today;
 `decisions.md`'s "reuse the same BEK across trustee-set changes" entry treats rotation as the rare,
 deliberate escape hatch, not something routine use ever needs.
@@ -12042,8 +12046,9 @@ allowed is a separate question.
 
 ## Bug 141 — Messaging a trustee with the vault unlocked makes them delete their backup-key piece: `expectedShards` never lists backup-key pieces
 
-**Status:** Open, filed 2026-09-26, reproduced the same day. Found while inventorying per-entry shard
-splitting for retirement. **Shipped:** `v1.10.3` builds the list the same way.
+**Status:** Open, filed 2026-09-26, reproduced the same day; **remedy decided 2026-09-26** (see
+"Decision" below), not built. Found while inventorying per-entry shard splitting for retirement.
+**Shipped:** `v1.10.3` builds the list the same way.
 
 **Target:** `v1.11.0`. **Release blocker, and a blocker for retiring per-entry splitting.**
 
@@ -12114,6 +12119,78 @@ sent at depth *d* should say about backup-key pieces isn't obvious:
 Whichever is chosen, `drainPotentiallyLostShards` and `markShardsLost` need backup-key records so a lost
 piece shows up in the owner's backup health.
 
+A fourth option was added in discussion: **generate a new backup key whenever a trustee is removed.** Option 2
+was rejected because the owner's device would read other depths' backup keys to build a bundle, and v2.0.0
+derives each depth's keys from its own passphrase (`PASSPHRASE_LAYER_KEYS.md`), so no depth can read another's.
+Every part of the remedy has to work from the current depth's own data.
+
+### Decision, 2026-09-26
+
+**Option 3 + option 4, plus automatic re-sending.** Recorded in `decisions.md`, "Rotate the backup key when
+a trustee is removed; re-send automatically otherwise".
+
+1. **Implicit revoke and the `expectedShards` field are removed (option 3, widened 2026-09-27).**
+   - The field goes from every payload that carries it (`WireHandle`'s 1:1 payload, `SealedPayload`, the
+     group recipient payload with `expectedShardsCount`), with its three builders, `buildExpectedShards`,
+     `handleInbound`'s parameter and `processExpectedShards`.
+   - Old bundles still decode: every payload reads the field with `decodeIfPresent` from a keyed container,
+     which ignores keys it doesn't know, so a `v1.10.3` owner's `[]` is dropped unread. A `v1.10.3` trustee
+     decodes a missing 1:1 field as `nil` and deletes nothing.
+   - **Groups always send `shardMetadataAttempted = false`.** A `v1.10.3` member reads a group recipient's
+     list as `attempted ? prefix(expectedShardsCount) : nil`, and a missing list decodes as `[]` with count 0,
+     so `attempted = true` would tell it to delete every piece it holds from us. The flag also gates the
+     manifest, so our group messages carry no manifest; the block building both for group recipients goes.
+     Manifests still travel in 1:1 messages and the share flow, and a `v1.10.3` sender's group manifest is
+     still read. Re-enabling group manifests for new members (a capability bit plus version gating) was
+     rejected: it only speeds up absence detection.
+
+   First decided as an exemption for backup-key pieces only, checked by `label != "vault-bek-shard"`, with the
+   owner sending `nil`. Changed the same weekend, first to ignoring the field, then to removing it: the label is the only field that tells the two kinds apart (`category`, value
+   size and `entryID` are the same shape for both), it isn't covered by the signature, and no code had ever
+   read it. With the owner no longer sending the list, the only lists left come from `v1.10.3` owners, and
+   the one thing lost is such an owner removing a per-entry piece by omission; per-entry splitting is being
+   retired, and `.replace` still removes pieces.
+2. **Removing a trustee generates a new backup key (option 4).** A distribution that drops any trustee
+   splits a freshly generated key instead of the current one, in the same save. Only a new secret makes the
+   removed trustee's piece useless: the distribution ID is a label for grouping on restore, and any k pieces
+   of the old split still rebuild the old key whatever they are labelled. Every `.occbak` exported before
+   the change stops being restorable, so the owner confirms the removal knowing that, and the backup status
+   asks for a new export. Adding a trustee, or re-sending, keeps the key.
+3. **A piece the trustee no longer has is re-sent automatically; the owner does nothing.** Two triggers,
+   both depth-local:
+   - the trustee's identity key changes (only possible through the in-person key exchange,
+     `KeyExchange.swift`), handled at the current depth at once;
+   - a confirmed piece is missing from the trustee's `custodyManifest`, handled by each depth at its own
+     next vault unlock. This also catches a key change for the depths that weren't current: the trustee's
+     new phone reports holding nothing.
+
+   Re-sending re-splits the **same** key for the same trustees and threshold, and queues `.replace` for
+   each; the owner doesn't keep the old split's coefficients, so a single piece can't be re-created. Until
+   k trustees have the new split, restore relies on the old split's pieces, which are no longer revoked.
+4. **Lost** is kept for what a re-send can't fix: a trustee whose contact was deleted. That shows through the
+   existing backup erosion warning, and the owner removes them, which is step 2.
+5. **Bug 142's queue fix:** before queuing a new split, the depth deletes the queued rows, and the watch rows
+   below, of its previous split, found by its own previous `distributionID`.
+
+### Found while designing the fix, 2026-09-26
+
+Three defects the decision depends on, fixed with it:
+- **Absence detection works once per piece.** `processInboundManifest` inserts a `PotentiallyLostShard` watch
+  row only when a queued piece is first confirmed, and `drainPotentiallyLostShards` deletes **every** row at
+  every vault unlock. After one unlock nothing watches the piece, so a later disappearance is never seen.
+  Watch rows become persistent: removed only when their split is replaced or their contact deleted, and
+  created at unlock for any confirmed backup-key piece that lacks one.
+- **Backup-key status updates read every depth's backup key.** `Backup.updateShardStatus` tries each live
+  `BackupEncryptionKey` row until one holds the ID (reached from `processInboundManifest`,
+  `drainPendingShardStatusUpdates` and `markForDistribution`), which the decision above rules out. Backup-key
+  status is instead reconciled by the current depth against the watch rows: at vault unlock, and when a
+  manifest arrives while the vault is unlocked.
+- **Every redistribution reports "BEK rotated — Existing backup file is permanently unrestorable".**
+  `refreshBackupStaleness` detects rotation by comparing `distributionID`s, and since Bug 124 every
+  redistribution mints a new one. The export record stores a key identifier derived from the backup key
+  instead (HKDF, 16 bytes, in the same field). An existing record still matches if it holds the current
+  `distributionID`, so an upgrade doesn't show a false warning.
+
 **Related, filed 2026-09-26:** Bug 142. Redistributing never removes the previous split's queued pieces,
 so a trustee removed before delivery still receives theirs. That part is a queue fix; a removed trustee
 whose piece was already delivered is this entry's decision.
@@ -12125,12 +12202,22 @@ unlocked, builds `expectedShards` for that trustee (with no entries split, and w
 processes it; the backup-key piece is still there. Plus: a piece missing from a later manifest is marked
 `.lost` in the backup-key metadata.
 
+**Revised with the decision, 2026-09-26.** The guards become:
+- a bundle from a `v1.10.3` owner carrying `expectedShards: []` decodes, and the trustee keeps every piece;
+- our group recipient payloads always have `shardMetadataAttempted == false`;
+- dropping a trustee changes the backup key, and an old `.occbak` no longer opens; adding one doesn't;
+- a trustee's key change re-queues a piece for every current trustee, at the current depth only;
+- a confirmed piece missing from a manifest is re-sent at that depth's next unlock, and still after an
+  earlier unlock (the watch row persists); another depth's pieces are untouched;
+- a redistribution without a key change doesn't report "BEK rotated"; a rotation does.
+
 ---
 
 ## Bug 142 — Redistributing leaves the superseded split's pieces queued: a removed trustee still gets one, and kept trustees get old and new together
 
-**Status:** Open, filed 2026-09-26. Found while verifying how backup-key pieces reach trustees after a
-trustee-list change, for Bug 141's decision; reproduced with a throwaway test.
+**Status:** Open, filed 2026-09-26; **remedy decided 2026-09-26** as part of Bug 141's decision (step 5), not
+built. Found while verifying how backup-key pieces reach trustees after a trustee-list change, for Bug 141's
+decision; reproduced with a throwaway test.
 
 **Target:** `v1.11.0`.
 
@@ -12182,3 +12269,6 @@ decision; if that is option 4 (a new backup key whenever a trustee is removed), 
 A test through the queue: distribute to A, B, C; change to A, B, D before delivery; then C's next message
 carries no piece, A's and B's carry only the round-2 piece, and D's carries its round-2 piece. Also: a piece
 already confirmed by C is outside this fix (Bug 141).
+
+**Decided 2026-09-26:** Bug 141 chose option 4, so dropping C also generates a new backup key; a piece C
+already holds then opens nothing exported afterwards.
