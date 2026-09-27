@@ -575,8 +575,8 @@ enum ShardStatus: String, Codable {
     case pending
     /// Contact's app acknowledged receipt.
     case confirmed
-    /// Revocation queued; trustee deletes it once a bundle omits it from
-    /// `expectedShards` (`ShardCustodyManager.processExpectedShards`).
+    /// Revocation queued. Nothing on the trustee acts on it since implicit revoke
+    /// (`expectedShards`) was removed (`bugs.md` Bug 141).
     case revokePending
     /// Owner has revoked this shard and the trustee confirmed deletion.
     case revoked
@@ -755,13 +755,9 @@ final class VaultEntry {
     /// this entry was created at, for the historical record) since exclusion from every
     /// read makes its value moot going forward.
     ///
-    /// A side effect worth knowing, not something this field has to implement itself: an
-    /// orphaned entry's `ShardRecord`s stop appearing in `VaultManager.
-    /// shardRecordsForTrustee(_:)` (which reads through `fetchAllEntries()`), so the next
-    /// bundle sent to a trustee holding one of this entry's shards omits it from
-    /// `expectedShards` — the trustee deletes their own copy via `ShardCustodyManager.
-    /// processExpectedShards`'s existing implicit-revoke handling. No new shard-status
-    /// bookkeeping needed for that to happen.
+    /// An orphaned entry's `ShardRecord`s stop appearing in `VaultManager.
+    /// shardRecordsForTrustee(_:)` (which reads through `fetchAllEntries()`). Trustees keep
+    /// their copies: implicit revoke (`expectedShards`) was removed (`bugs.md` Bug 141).
     ///
     /// Cap: 50 orphaned rows; when full, the oldest is hard-deleted before a new one is
     /// written — same cap `Contact.Profile.deletionToken` uses.

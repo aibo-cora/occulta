@@ -495,8 +495,7 @@ final class VaultManager {
 
     /// Delete a vault entry and return its shard distribution metadata, if any.
     ///
-    /// The metadata is read before deletion so the caller can omit each trustee's
-    /// shard ID from future `expectedShards` bundles, triggering implicit revoke.
+    /// The metadata is read before deletion and returned to the caller.
     /// Returns `nil` when the entry had no
     /// distributed shards (no action needed from `ShardCustodyManager`).
     @discardableResult

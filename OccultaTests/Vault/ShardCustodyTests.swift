@@ -197,7 +197,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         _ = custody.handleInbound(
             shardOperations:  [op],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -220,7 +219,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         _ = custody.handleInbound(
             shardOperations:  [op],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  imposterPub,
             senderIdentifier: "imposter",
             vaultManager:     try makeAlice().vault
@@ -241,7 +239,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         _ = custody.handleInbound(
             shardOperations:  [.init(kind: .distribute, attribute: oldAttr)],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -253,7 +250,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         _ = custody.handleInbound(
             shardOperations:  [.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id)],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -276,7 +272,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         _ = custody.handleInbound(
             shardOperations:  [.init(kind: .distribute, attribute: aliceAttr)],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -290,7 +285,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         _ = custody.handleInbound(
             shardOperations:  [.init(kind: .replace, attribute: malloryAttr, attributeID: aliceAttr.id)],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  malloryPub,
             senderIdentifier: "mallory",
             vaultManager:     try makeAlice().vault
@@ -305,84 +299,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let byOwner = Dictionary(uniqueKeysWithValues: custody.heldShards(from: rows).map { ($0.ownerContactIdentifier, $0.count) })
         #expect(byOwner["alice"] == 1)
         #expect(byOwner["mallory"] == 1)
-    }
-}
-
-// MARK: - Implicit revoke via expectedShards
-
-@Suite("ShardCustodyManager — implicit revoke via expectedShards")
-@MainActor struct ImplicitRevokeTests {
-
-    @Test("processExpectedShards removes same-fingerprint shard absent from list")
-    func expectedShardsDeletesAbsent() throws {
-        let alice = TestKeyManager()
-        let (custody, _, container) = try makeBob()
-        let alicePub = try alice.retrieveIdentity()
-        let aliceVault = try makeAlice().vault
-
-        let attr = try makeShardAttr(signer: alice)
-        _ = custody.handleInbound(
-            shardOperations:  [.init(kind: .distribute, attribute: attr)],
-            custodyManifest:  nil,
-            expectedShards:   nil,
-            senderPublicKey:  alicePub,
-            senderIdentifier: "alice",
-            vaultManager:     aliceVault
-        )
-        #expect(try custodyShardCount(in: container) == 1)
-
-        // Empty expectedShards for Alice → implicit revoke of her shard.
-        try custody.processExpectedShards([], from: "alice", senderPublicKey: alicePub)
-        #expect(try custodyShardCount(in: container) == 0)
-    }
-
-    @Test("processExpectedShards retains shard that IS in the list")
-    func expectedShardsRetainsPresent() throws {
-        let alice = TestKeyManager()
-        let (custody, _, container) = try makeBob()
-        let alicePub = try alice.retrieveIdentity()
-        let aliceVault = try makeAlice().vault
-
-        let attr = try makeShardAttr(signer: alice)
-        _ = custody.handleInbound(
-            shardOperations:  [.init(kind: .distribute, attribute: attr)],
-            custodyManifest:  nil,
-            expectedShards:   nil,
-            senderPublicKey:  alicePub,
-            senderIdentifier: "alice",
-            vaultManager:     aliceVault
-        )
-        #expect(try custodyShardCount(in: container) == 1)
-
-        // Shard IS in expectedShards → retained.
-        try custody.processExpectedShards([attr.id], from: "alice", senderPublicKey: alicePub)
-        #expect(try custodyShardCount(in: container) == 1)
-    }
-
-    @Test("processExpectedShards does not delete mismatch-fingerprint shards")
-    func expectedShardsSparesMismatch() throws {
-        let alice = TestKeyManager()
-        let alice2 = TestKeyManager() // Alice's new key
-        let (custody, _, container) = try makeBob()
-        let alicePub = try alice.retrieveIdentity()
-        let alice2Pub = try alice2.retrieveIdentity()
-        let aliceVault = try makeAlice().vault
-
-        let attr = try makeShardAttr(signer: alice)
-        _ = custody.handleInbound(
-            shardOperations:  [.init(kind: .distribute, attribute: attr)],
-            custodyManifest:  nil,
-            expectedShards:   nil,
-            senderPublicKey:  alicePub,
-            senderIdentifier: "alice",
-            vaultManager:     aliceVault
-        )
-        #expect(try custodyShardCount(in: container) == 1)
-
-        // Alice2 sends expectedShards: [] but with a DIFFERENT public key (fingerprint mismatch).
-        // Bob must NOT delete the old shard — it's a mismatch shard, immune to implicit revoke.
-        try custody.processExpectedShards([], from: "alice", senderPublicKey: alice2Pub)
-        #expect(try custodyShardCount(in: container) == 1)
     }
 }
 
@@ -414,7 +330,6 @@ private func distribute(
     _ = custody.handleInbound(
         shardOperations:  [.init(kind: kind, attribute: attr, attributeID: oldID)],
         custodyManifest:  nil,
-        expectedShards:   nil,
         senderPublicKey:  try signer.retrieveIdentity(),
         senderIdentifier: identifier,
         vaultManager:     vault
@@ -483,45 +398,6 @@ private func distribute(
         let after = try custodySnapshot(in: container, using: km)
         #expect(after.count == 3)
         self.expectResealed(before: before, after: after, deleted: [try self.rowID(of: oldAttr, in: before)])
-    }
-
-    @Test("processExpectedShards re-seals every survivor when it revokes")
-    func expectedShardsResealsSurvivors() throws {
-        let alice = TestKeyManager()
-        let carol = TestKeyManager()
-        let (custody, km, container) = try makeBob()
-        let vault = try makeAlice().vault
-
-        let revoked = try makeShardAttr(signer: alice)
-        let kept    = try makeShardAttr(signer: alice)
-        try distribute(revoked, from: alice, as: "alice", into: custody, vault: vault)
-        try distribute(kept, from: alice, as: "alice", into: custody, vault: vault)
-        try distribute(try makeShardAttr(signer: carol), from: carol, as: "carol", into: custody, vault: vault)
-        let before = try custodySnapshot(in: container, using: km)
-
-        try custody.processExpectedShards([kept.id], from: "alice", senderPublicKey: try alice.retrieveIdentity())
-
-        let after = try custodySnapshot(in: container, using: km)
-        #expect(after.count == 2)
-        self.expectResealed(before: before, after: after, deleted: [try self.rowID(of: revoked, in: before)])
-    }
-
-    /// Re-sealing only on deletion leaks nothing extra: the row count already shows whether
-    /// anything was deleted. Pinned so a later change to always re-seal is a deliberate one.
-    @Test("processExpectedShards that revokes nothing leaves every row untouched")
-    func expectedShardsWithoutRevokeLeavesBytes() throws {
-        let alice = TestKeyManager()
-        let (custody, km, container) = try makeBob()
-        let vault = try makeAlice().vault
-
-        let attr = try makeShardAttr(signer: alice)
-        try distribute(attr, from: alice, as: "alice", into: custody, vault: vault)
-        let before = try custodySnapshot(in: container, using: km)
-
-        try custody.processExpectedShards([attr.id], from: "alice", senderPublicKey: try alice.retrieveIdentity())
-
-        let after = try custodySnapshot(in: container, using: km)
-        #expect(after.mapValues(\.bytes) == before.mapValues(\.bytes))
     }
 
     private func rowID(of attr: SignedAttribute, in snapshot: [UUID: (bytes: Data, attributeID: UUID)]) throws -> UUID {

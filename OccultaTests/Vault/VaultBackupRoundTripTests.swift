@@ -49,7 +49,7 @@ private func secureEnclaveAvailable() -> Bool {
 
 /// Export refuses to run below the shard threshold, so a usable vault needs a BEK *and*
 /// enough confirmed BEK shards. `prepareBackupShards` creates them `.pending`;
-/// `updateShardStatus` is the seam that confirms them without driving the whole
+/// `setBackupShardStatuses` is the seam that confirms them without driving the whole
 /// distribution and manifest flow.
 @MainActor
 private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer, [SignedAttribute]) {
@@ -107,9 +107,7 @@ private func setUpConfirmedBEK(for vault: VaultManager, currentDepth: Int) throw
     let recipients = (0..<2).map { _ in UUID().uuidString }
 
     let attributes = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: currentDepth)
-    for attribute in attributes {
-        try vault.updateShardStatus(attributeID: attribute.id, to: .confirmed)
-    }
+    try vault.setBackupShardStatuses(Dictionary(uniqueKeysWithValues: attributes.map { ($0.id, .confirmed) }), currentDepth: currentDepth)
     return attributes
 }
 
@@ -367,16 +365,62 @@ struct VaultBackupRoundTripTests {
         #expect(vault.backupStaleness == nil, "a fresh export must read back cleanly under the new format")
     }
 
-    // MARK: - Shard status routing (VAULT_KEY_LAYERING.md §8, updateShardStatus)
+    // MARK: - Key changes and staleness (Bug 141)
 
-    /// `updateShardStatus` (the backup-key fallback inside it) takes no `currentDepth` — it searches all 32 slots for
-    /// whichever one's `shardMetadata` actually contains the `attributeID`, because a
-    /// trustee's confirmation is not guaranteed to arrive while the depth it was
-    /// distributed from happens to be the active one. This test proves the search finds
-    /// the right slot and touches nothing else: confirming one of depth 2's shards must
-    /// not disturb depth 0's already-confirmed shards, and must not confirm depth 2's
-    /// *other* shard either.
-    @Test("A shard confirmation is applied to whichever depth's slot actually owns the attributeID",
+    @Test("A redistribution that keeps the key does not report it rotated",
+          .enabled(if: secureEnclaveAvailable()))
+    func redistributionIsNotRotation() throws {
+        let (vault, _, _) = try makeBackupReadyVault()
+        _ = try vault.exportBackup(currentDepth: 0)
+
+        _ = try vault.prepareBackupShards(threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], currentDepth: 0)
+
+        vault.refreshBackupStaleness(currentDepth: 0)
+        #expect(vault.backupStaleness?.bekRotated != true,
+                "a new distributionID alone used to read as a rotation")
+    }
+
+    @Test("A new key reports the key rotated, and an earlier backup no longer opens",
+          .enabled(if: secureEnclaveAvailable()))
+    func newKeyIsRotation() throws {
+        let (vault, _, _) = try makeBackupReadyVault()
+        let earlier = try vault.exportBackup(currentDepth: 0)
+
+        _ = try vault.prepareBackupShards(
+            threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], newKey: true, currentDepth: 0
+        )
+
+        vault.refreshBackupStaleness(currentDepth: 0)
+        #expect(vault.backupStaleness?.bekRotated == true)
+
+        let box = try AES.GCM.SealedBox(combined: earlier.dropFirst(VaultManager.backupMagic.count))
+        #expect(throws: (any Error).self) {
+            try AES.GCM.open(box, using: try vault.currentBackupKey(currentDepth: 0), authenticating: VaultManager.backupFileAAD)
+        }
+    }
+
+    /// Before Bug 141 the export record held the `distributionID`; one that still matches
+    /// means nothing has changed since that export.
+    @Test("An export record from before the fix, holding the current distributionID, is not a rotation",
+          .enabled(if: secureEnclaveAvailable()))
+    func legacyRecordMatchingDistributionIsNotRotation() throws {
+        let (vault, _, shards) = try makeBackupReadyVault()
+        let distributionID = try #require(shards.first?.entryID)
+        try vault.writeBackupExportMetadata(
+            VaultManager.BackupExportMetadata(exportedAt: Date(), keyID: distributionID, shardCount: 2, entryCount: 0),
+            at: 0, vaultKey: try vault.currentKey()
+        )
+
+        vault.refreshBackupStaleness(currentDepth: 0)
+        #expect(vault.backupStaleness == nil)
+    }
+
+    // MARK: - Shard status routing (VAULT_KEY_LAYERING.md §8, Bug 141)
+
+    /// Backup-key statuses change only at the depth that owns them (`bugs.md` Bug 141).
+    /// `updateShardStatus` used to search every depth's row for the ID; now a depth
+    /// writes only its own row, and an ID another depth owns is ignored.
+    @Test("A backup-key status change touches only the current depth's row",
           .enabled(if: secureEnclaveAvailable()))
     func shardConfirmationAppliesToOwningDepthOnly() throws {
         let (vault, _, _) = try makeBackupReadyVault() // depth 0: both shards pre-confirmed
@@ -386,7 +430,9 @@ struct VaultBackupRoundTripTests {
         let recipients = (0..<2).map { _ in UUID().uuidString }
         let depth2Shards = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: 2)
 
-        try vault.updateShardStatus(attributeID: depth2Shards[0].id, to: .confirmed)
+        // Named from depth 0: not depth 0's piece, so nothing changes anywhere.
+        try vault.setBackupShardStatuses([depth2Shards[1].id: .confirmed], currentDepth: 0)
+        try vault.setBackupShardStatuses([depth2Shards[0].id: .confirmed], currentDepth: 2)
 
         let depth0Meta = try vault.backupShardMetadata(currentDepth: 0)
         #expect(depth0Meta?.shards.allSatisfy { $0.status == .confirmed } == true,

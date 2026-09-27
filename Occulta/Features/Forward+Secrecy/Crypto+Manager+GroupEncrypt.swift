@@ -27,18 +27,11 @@ struct GroupRecipient {
     /// type performs no eligibility or padding logic itself, it just carries whatever
     /// it's given straight into `RecipientPayload`. Defaulted to empty/0 so existing
     /// callers that never mention shard content keep compiling unchanged.
+    ///
+    /// No custody manifest: group recipients are always sent
+    /// `shardMetadataAttempted = false` (`RecipientPayload.shardMetadataAttempted`,
+    /// `bugs.md` Bug 141), so there is nothing to carry.
     let shardOperations: [OccultaBundle.ShardOperation]
-    let custodyManifest: [UUID]
-    let custodyManifestCount: Int
-    let expectedShards: [UUID]
-    let expectedShardsCount: Int
-    /// Whether the caller actually attempted to build `custodyManifest`/
-    /// `expectedShards` for this recipient (always both together — see
-    /// `RecipientPayload.shardMetadataAttempted` for why this can't be inferred
-    /// from the two count fields alone). Defaults to `false` so existing callers
-    /// that never mention shard content keep compiling unchanged and correctly
-    /// report "not attempted".
-    let shardMetadataAttempted: Bool
 
     /// Whether this recipient's build verifies `senderEphemeralSignature` over the
     /// domain-separated payload rather than the bare ephemeral public key — i.e. whether
@@ -57,11 +50,6 @@ struct GroupRecipient {
         contactPrekey: Prekey?,
         pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?,
         shardOperations: [OccultaBundle.ShardOperation] = [],
-        custodyManifest: [UUID] = [],
-        custodyManifestCount: Int = 0,
-        expectedShards: [UUID] = [],
-        expectedShardsCount: Int = 0,
-        shardMetadataAttempted: Bool = false,
         prefixesEphemeralSignature: Bool = false
     ) {
         self.publicKey              = publicKey
@@ -69,11 +57,6 @@ struct GroupRecipient {
         self.contactPrekey           = contactPrekey
         self.pendingBatch            = pendingBatch
         self.shardOperations         = shardOperations
-        self.custodyManifest         = custodyManifest
-        self.custodyManifestCount    = custodyManifestCount
-        self.expectedShards          = expectedShards
-        self.expectedShardsCount     = expectedShardsCount
-        self.shardMetadataAttempted  = shardMetadataAttempted
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
     }
 }
@@ -154,7 +137,6 @@ extension Manager.Crypto {
             identityChallenge: sealedPayload.identityChallenge,
             shardOperations:   sealedPayload.shardOperations,
             custodyManifest:   sealedPayload.custodyManifest,
-            expectedShards:    sealedPayload.expectedShards,
             appVersion:        sealedPayload.appVersion,
             senderProof:       senderProof,
             groupID:           groupID
@@ -234,11 +216,9 @@ extension Manager.Crypto {
             sessionKey:               sessionKeyData,
             prekeyBatch:              r.pendingBatch,
             shardOperations:          r.shardOperations,
-            custodyManifest:          r.custodyManifest,
-            custodyManifestCount:     r.custodyManifestCount,
-            expectedShards:           r.expectedShards,
-            expectedShardsCount:      r.expectedShardsCount,
-            shardMetadataAttempted:   r.shardMetadataAttempted,
+            // Always false: a v1.10.3 receiver reads true with no expected-shards list
+            // as "delete every piece you hold from me" (bugs.md Bug 141).
+            shardMetadataAttempted:   false,
             senderEphemeralSignature: senderEphemeralSignature
         )
         let encodedPayload = try JSONEncoder().encode(payload)

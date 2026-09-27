@@ -251,10 +251,11 @@ extension VaultManager {
         }
     }
 
-    /// Update the status of one ShardRecord identified by its `attributeID`.
+    /// Update the status of one per-entry ShardRecord identified by its `attributeID`.
     ///
     /// Walks every entry's encrypted ShardDistributionMetadata until a matching
-    /// `attributeID` is found, applies `newStatus`, and re-seals. No-op if no match.
+    /// `attributeID` is found, applies `newStatus`, and re-seals. No-op if no match,
+    /// including for a backup-key piece.
     /// Requires the vault unlocked.
     ///
     /// Used by ShardCustodyManager for `.acknowledge` (`.confirmed`) and
@@ -288,9 +289,8 @@ extension VaultManager {
 
             return
         }
-
-        // No per-entry shard matched — check the backup key's own shard metadata.
-        try? self.backup.updateShardStatus(vaultKey: vaultKey, attributeID: attributeID, to: newStatus, modelContext: self.modelContext)
+        // Per-entry records only. A backup-key piece's status is reconciled by its own
+        // depth (`ShardCustodyManager.reconcileBackupPieces`, `bugs.md` Bug 141).
     }
 
     // MARK: - Deferred status updates
@@ -330,41 +330,48 @@ extension VaultManager {
 
     // MARK: - Potentially lost shards
 
-    /// Check shards that disappeared from a trustee's custodyManifest while the vault
-    /// was locked and mark confirmed ones as .lost.
+    /// Check per-entry shards that disappeared from a trustee's custodyManifest while the
+    /// vault was locked and mark confirmed ones as .lost.
     ///
     /// Called from unlock() after drainPendingShardStatusUpdates() so all queued
     /// .confirmed transitions are applied first — ensuring .lost only replaces
     /// .confirmed, never .pending (can't lose something the trustee never had).
     ///
-    /// All PotentiallyLostShard rows are deleted regardless of outcome; the vault
-    /// is now unlocked and serves as the authoritative source of truth.
+    /// Deletes the rows it handled, and rows that don't open. A row whose piece is not a
+    /// per-entry one is a backup-key piece's watch row and is kept: it persists until its
+    /// split is replaced, so the depth that owns it can check it at each of its own
+    /// unlocks (`ShardCustodyManager.reconcileBackupPieces`, `bugs.md` Bug 141). Deleting
+    /// every row here, as this used to, meant a piece was watched only until the next
+    /// unlock.
     func drainPotentiallyLostShards() {
         let rows = (try? self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())) ?? []
-        guard !rows.isEmpty else { return }
+        guard !rows.isEmpty,
+              let custodyKey = try? self.keyManager.deriveShardCustodyKey()
+        else { return }
 
-        guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else {
-            for row in rows { self.modelContext.delete(row) }
-            try? self.modelContext.save()
-            return
-        }
-
+        var changed = false
         for row in rows {
             guard
                 let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
                 let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(PotentiallyLostShard.Payload.self, from: plaintext),
-                payload.isAbsent
-            else { continue }
+                let payload   = try? JSONDecoder().decode(PotentiallyLostShard.Payload.self, from: plaintext)
+            else {
+                self.modelContext.delete(row)
+                changed = true
+                continue
+            }
 
             let records = self.shardRecordsForTrustee(payload.contactIdentifier)
-            if records.first(where: { $0.attributeID == payload.attributeID })?.status == .confirmed {
+            guard let record = records.first(where: { $0.attributeID == payload.attributeID }) else { continue }
+
+            if payload.isAbsent && record.status == .confirmed {
                 try? self.updateShardStatus(attributeID: payload.attributeID, to: .lost)
             }
+            self.modelContext.delete(row)
+            changed = true
         }
 
-        for row in rows { self.modelContext.delete(row) }
-        try? self.modelContext.save()
+        if changed { try? self.modelContext.save() }
     }
 
     // MARK: - Recovery health

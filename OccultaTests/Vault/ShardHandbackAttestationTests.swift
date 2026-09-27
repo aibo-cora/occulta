@@ -130,7 +130,7 @@ struct ShardHandbackAttestationTests {
         let op   = OccultaBundle.ShardOperation(kind: .handback, attribute: attr)
 
         _ = custody.handleInbound(
-            shardOperations: [op], custodyManifest: nil, expectedShards: nil,
+            shardOperations: [op], custodyManifest: nil,
             senderPublicKey: try ownerKey.retrieveIdentity(), senderIdentifier: "trustee-a",
             vaultManager: vault
         )
@@ -153,7 +153,7 @@ struct ShardHandbackAttestationTests {
         let op   = OccultaBundle.ShardOperation(kind: .handback, attribute: attr)
 
         _ = custody.handleInbound(
-            shardOperations: [op], custodyManifest: nil, expectedShards: nil,
+            shardOperations: [op], custodyManifest: nil,
             senderPublicKey: try trusteeKey.retrieveIdentity(), senderIdentifier: "trustee-b",
             vaultManager: vault
         )
@@ -177,7 +177,7 @@ struct ShardHandbackAttestationTests {
             let attr = try makeShardAttr(signer: ownerOldKey, entryID: entryID, id: UUID())
             let op   = OccultaBundle.ShardOperation(kind: .handback, attribute: attr)
             _ = custody.handleInbound(
-                shardOperations: [op], custodyManifest: nil, expectedShards: nil,
+                shardOperations: [op], custodyManifest: nil,
                 senderPublicKey: senderPub, senderIdentifier: "same-trustee",
                 vaultManager: vault
             )
@@ -207,7 +207,7 @@ struct ShardHandbackAttestationTests {
             let attr = try makeShardAttr(signer: attacker, entryID: entryID, id: UUID())
             let op   = OccultaBundle.ShardOperation(kind: .handback, attribute: attr)
             _ = custody.handleInbound(
-                shardOperations: [op], custodyManifest: nil, expectedShards: nil,
+                shardOperations: [op], custodyManifest: nil,
                 senderPublicKey: attackerPub, senderIdentifier: "lone-attacker",
                 vaultManager: vault
             )
@@ -257,7 +257,7 @@ struct ShardHandbackAttestationTests {
         let distributedAttr = try makeShardAttr(signer: ownerOldKey, entryID: entryID)
         let distributeOp = OccultaBundle.ShardOperation(kind: .distribute, attribute: distributedAttr)
         _ = trusteeCustody.handleInbound(
-            shardOperations: [distributeOp], custodyManifest: nil, expectedShards: nil,
+            shardOperations: [distributeOp], custodyManifest: nil,
             senderPublicKey: ownerOldPub, senderIdentifier: "owner",
             vaultManager: dummyVault
         )

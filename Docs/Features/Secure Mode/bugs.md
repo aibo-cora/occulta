@@ -12046,8 +12046,8 @@ allowed is a separate question.
 
 ## Bug 141 — Messaging a trustee with the vault unlocked makes them delete their backup-key piece: `expectedShards` never lists backup-key pieces
 
-**Status:** Open, filed 2026-09-26, reproduced the same day; **remedy decided 2026-09-26** (see
-"Decision" below), not built. Found while inventorying per-entry shard splitting for retirement.
+**Status:** Fixed 2026-09-27, not committed (see "Built" below); filed and reproduced 2026-09-26,
+remedy decided the same day. Found while inventorying per-entry shard splitting for retirement.
 **Shipped:** `v1.10.3` builds the list the same way.
 
 **Target:** `v1.11.0`. **Release blocker, and a blocker for retiring per-entry splitting.**
@@ -12211,12 +12211,39 @@ processes it; the backup-key piece is still there. Plus: a piece missing from a 
   earlier unlock (the watch row persists); another depth's pieces are untouched;
 - a redistribution without a key change doesn't report "BEK rotated"; a rotation does.
 
+### Built, 2026-09-27
+
+- **Wire:** `expectedShards` removed from `SealedPayload`, `WireHandle`'s metadata, the group
+  `RecipientPayload` (with `expectedShardsCount`) and `GroupRecipient`; the group path always sends
+  `shardMetadataAttempted: false` and no manifest (`GroupRecipient` no longer carries one, and
+  `encryptGroupBundle` lost its `vaultManager` parameter, as did `ComposeViewModel.encrypt` and its four
+  callers). `processExpectedShards` and `buildExpectedShards` are deleted.
+- **Rotation:** `Backup.prepareShards(newKey:)` splits a fresh key in the same save.
+  `ShardCustodyManager.distributeBackup` re-splits, deletes the previous split's queued and watch rows, and
+  queues `.replace`/`.distribute`. `VaultShardSetup` in backup mode asks "Remove trustee?" when the selection
+  drops a current trustee, then splits a new key; its per-trustee "Revoke Shard" menu is entry-mode only.
+- **Reconcile:** `ShardCustodyManager.reconcileBackupPieces`, from `RootView` at vault unlock, after every
+  inbound bundle, and on `contactKeyRotated`. `Backup.updateShardStatus` (the all-depths scan) is replaced
+  by the depth-local `setShardStatuses`; `VaultManager.updateShardStatus` is per-entry only.
+  `drainPotentiallyLostShards` keeps backup-key watch rows.
+- **Staleness:** the export record stores `backupKeyIdentifier(for:)` (`keyID`). Settings' Vault Recovery screen now
+  words the warning as the Vault tab does ("Backup can't be restored" / "Backup key changed — export a new
+  backup", was "BEK rotated"), and drops "BEK" from its other strings; the "not set up" row pointed to
+  Export, which fails without a key, and now points to Backup Key Trustees, where the key is created.
+- **Tests:** `BackupPieceReconcileTests.swift` (12), three staleness/rotation tests in
+  `VaultBackupRoundTripTests`, group-payload tests in `GroupEncryptTests`; the implicit-revoke tests in
+  `ShardManifestTests` and `ShardCustodyTests` are deleted, and backup-key tests confirm pieces through
+  `setBackupShardStatuses`.
+- **Not handled:** per-entry revoke (the context menu, `.revokePending`) no longer reaches trustees; per-entry
+  splitting is retired next. `Backup.distributeShards` has no callers (pre-existing).
+- **Full suite:** 928 tests, 922 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+  Not walked through on a device: the "Remove trustee?" prompt, and a re-send reaching a real trustee.
+
 ---
 
 ## Bug 142 — Redistributing leaves the superseded split's pieces queued: a removed trustee still gets one, and kept trustees get old and new together
 
-**Status:** Open, filed 2026-09-26; **remedy decided 2026-09-26** as part of Bug 141's decision (step 5), not
-built. Found while verifying how backup-key pieces reach trustees after a trustee-list change, for Bug 141's
+**Status:** Fixed 2026-09-27 with Bug 141 (step 5), not committed; remedy decided 2026-09-26. Found while verifying how backup-key pieces reach trustees after a trustee-list change, for Bug 141's
 decision; reproduced with a throwaway test.
 
 **Target:** `v1.11.0`.

@@ -18,8 +18,8 @@
 //  - Inserted on `.distribute` (new shard) or `.replace` (superseding an old
 //    shard: the old CustodyShard identified by `attributeID` is deleted and a
 //    new row is inserted for the replacement).
-//  - Deleted when absent from the owner's `expectedShards` (implicit revoke —
-//    `ShardCustodyManager.processExpectedShards`).
+//  - Never deleted for being absent from an owner's list: implicit revoke
+//    (`expectedShards`) was removed (`bugs.md` Bug 141).
 //  - Deleted after auto-return: when a proximity re-exchange reveals the owner's
 //    key has changed, the trustee queues a `.handback` operation. The CustodyShard
 //    row is deleted once the handback bundle is sent and acknowledged.

@@ -130,7 +130,6 @@ struct InboundShardCustodyDuressTests {
         _ = custody.handleInbound(
             shardOperations:  [op],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -177,7 +176,6 @@ struct InboundShardCustodyDuressTests {
         _ = custody.handleInbound(
             shardOperations:  [op],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  bobPub,
             senderIdentifier: "bob",
             vaultManager:     vault

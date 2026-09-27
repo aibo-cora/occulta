@@ -13,8 +13,12 @@
 //    is deleted.
 //  - isAbsent is set to true when a subsequent manifest does not include the ID,
 //    and reset to false when a manifest includes it again.
-//  - All rows are deleted at vault unlock. Absent rows (isAbsent == true) with
+//  - Per-entry rows are deleted at vault unlock. Absent rows (isAbsent == true) with
 //    vault status .confirmed trigger updateShardStatus(.lost) before deletion.
+//  - Backup-key rows persist until their split is replaced
+//    (`ShardCustodyManager.distributeBackup`). Each depth reads them at its own unlock
+//    (`reconcileBackupPieces`): present → confirmed, absent → re-sent (`bugs.md` Bug 141).
+//    Also inserted there for a confirmed piece that has none.
 //
 //  Privacy model — encryption at rest:
 //  - Plaintext column (id) carries no identifying data.

@@ -67,14 +67,14 @@ struct VaultRecoverySettings: View {
     private var bekSection: some View {
         Section {
             if !vault.isUnlocked {
-                self.lockedRow(reason: "BEK status requires vault access.")
+                self.lockedRow(reason: "Unlock the vault to see backup key status.")
             } else {
                 self.bekStatusRow
             }
         } header: {
-            Text("Backup Encryption Key")
+            Text("Backup Key")
         } footer: {
-            Text("The BEK encrypts exported vault backups. Distribute its shards to trustees so the key can be reconstructed if this device is lost.")
+            Text("Your backup key encrypts exported backups. Trustees each hold a piece of it, so it can be rebuilt if this device is lost.")
         }
     }
 
@@ -85,7 +85,7 @@ struct VaultRecoverySettings: View {
         case .notSetup:
             statusRow(dot: .occultaDanger,
                       label: "Not configured",
-                      sub: "BEK not set up. Export a backup to generate one.")
+                      sub: "Not set up yet. Choose trustees in Backup Key Trustees to create it.")
         case .waitingForConfirmations(let confirmed, let threshold):
             statusRow(dot: Self.amber,
                       label: "Awaiting confirmations",
@@ -160,8 +160,8 @@ struct VaultRecoverySettings: View {
         if let s = vault.backupStaleness {
             if s.bekRotated {
                 statusRow(dot: .occultaDanger,
-                          label: "BEK rotated",
-                          sub: "Existing backup file is permanently unrestorable")
+                          label: "Backup can't be restored",
+                          sub: "Backup key changed — export a new backup")
             } else if s.newEntryCount > 0 {
                 statusRow(dot: Self.amber,
                           label: "\(s.newEntryCount) new \(s.newEntryCount == 1 ? "entry" : "entries") missing",

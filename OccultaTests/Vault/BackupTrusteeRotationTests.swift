@@ -136,9 +136,7 @@ struct BackupTrusteeRotationTests {
         let round2 = try vault.prepareBackupShards(
             threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], currentDepth: 0
         )
-        for shard in round2 {
-            try vault.updateShardStatus(attributeID: shard.id, to: .confirmed)
-        }
+        try vault.setBackupShardStatuses(Dictionary(uniqueKeysWithValues: round2.map { ($0.id, .confirmed) }), currentDepth: 0)
 
         let backupData = try vault.exportBackup(currentDepth: 0)
         let realBEK     = try bekBytes(of: vault)

@@ -387,11 +387,18 @@ struct RootView: View {
                 }
             }
             // Key-rotation → two-sided response:
-            // Alice's path: mark any shards distributed TO this contact as .lost.
+            // Alice's path: mark per-entry shards distributed TO this contact as .lost, and
+            // re-send this depth's backup-key pieces (Bug 141). Other depths notice at their
+            // own unlock, from the trustee's next manifest.
             // Bob's path: mismatch-fingerprint shards are returned via .handback on
             // the next outbound bundle (detected at build time, no scheduling needed).
             .onReceive(self.contactManager.contactKeyRotated) { identifier in
                 self.vaultManager.markShardsLost(forContact: identifier)
+                self.reconcileBackupPieces(keyChangedFor: identifier)
+            }
+            // A depth's backup-key pieces are checked when its vault unlocks (Bug 141).
+            .onChange(of: self.vaultManager.isUnlocked) { _, isUnlocked in
+                if isUnlocked { self.reconcileBackupPieces() }
             }
             // Reapply .completeFileProtection after every save.
             // SwiftData recreates -wal/-shm sidecar files on WAL merges,
@@ -537,6 +544,19 @@ struct RootView: View {
     /// Ends the session's state held above the unlocked tree (`bugs.md` Bug 140): what this
     /// session presented or staged, and the vault's unlocked session, so a new depth needs its
     /// own Face ID. Queued pre-authentication input is left alone (see the list above).
+    /// Reconcile the current depth's backup-key pieces with what trustees have reported,
+    /// re-sending any a trustee no longer has (`ShardCustodyManager.reconcileBackupPieces`,
+    /// `bugs.md` Bug 141). No-op while the vault is locked.
+    private func reconcileBackupPieces(keyChangedFor contact: String? = nil) {
+        let liveContacts = Set(((try? self.contactManager.fetchAllContacts()) ?? []).map(\.identifier))
+        self.shardCustodyManager.reconcileBackupPieces(
+            currentDepth:   self.security.currentDepth,
+            keyChangedFor:  contact,
+            liveContacts:   liveContacts,
+            vaultManager:   self.vaultManager
+        )
+    }
+
     private func endSession() {
         self.openedFileContents      = nil
         self.shareResult             = nil
@@ -938,7 +958,7 @@ struct RootView: View {
                     // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
                     // (messages, shards, custody ops) use this path. Shard-only bundles signal
                     // "no basket" via an empty message field.
-                    let (sealed, ownerID, _, recipShardOps, recipManifest, recipExpected) =
+                    let (sealed, ownerID, _, recipShardOps, recipManifest) =
                         try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version
 
@@ -965,11 +985,11 @@ struct RootView: View {
                                 from: ownerID
                             ),
                             custodyManifest:  recipManifest ?? sealed.custodyManifest,
-                            expectedShards:   recipExpected ?? sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
                             vaultManager:     self.vaultManager
                         )
+                        self.reconcileBackupPieces()
                     }
 
                     // Shard-only bundle (empty message) — ops handled above, no basket.
@@ -1000,7 +1020,6 @@ struct RootView: View {
 
                     #if DEBUG
                     debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
-                    debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
                     #endif
 
                     // Handle shard operations and manifest reconciliation.
@@ -1012,11 +1031,11 @@ struct RootView: View {
                                 from: ownerID
                             ),
                             custodyManifest:  sealed.custodyManifest,
-                            expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
                             vaultManager:     self.vaultManager
                         )
+                        self.reconcileBackupPieces()
                     }
 
                     decodedBundleVersion = bundle.version
@@ -1128,14 +1147,12 @@ struct RootView: View {
                 let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
                 let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
                 let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
-                let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
 
                 occData = try self.contactManager.encryptBundle(
                     basket:          basket,
                     for:             contactID,
                     shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: custody,
-                    expectedShards:  expected
+                    custodyManifest: custody
                 )
 
             case .group(let groupID):
@@ -1144,8 +1161,7 @@ struct RootView: View {
                 occData = try self.contactManager.encryptGroupBundle(
                     basket:              basket,
                     groupID:             groupID,
-                    shardCustodyManager: self.shardCustodyManager,
-                    vaultManager:        self.vaultManager
+                    shardCustodyManager: self.shardCustodyManager
                 )
             }
 

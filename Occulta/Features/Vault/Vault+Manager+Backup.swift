@@ -99,9 +99,13 @@ extension VaultManager {
     struct BackupExportMetadata: Codable {
         /// When the export was performed.
         let exportedAt:     Date
-        /// Backup key distributionID at export time. A mismatch means `backup.rotate()`
-        /// was called.
-        let distributionID: UUID
+        /// Identifies the backup key the file was sealed under, from
+        /// `VaultManager.backupKeyIdentifier(for:)`. A mismatch means the key changed since
+        /// the export (`bugs.md` Bug 141).
+        ///
+        /// Records written before that fix hold the `distributionID` at export time
+        /// instead, in the same 16 bytes; `refreshBackupStaleness` accepts either.
+        let keyID: UUID
         /// Trustee count at export time. A count change means trustees were added/removed.
         /// NOTE: count-based — does not detect a same-size trustee swap in V1.
         let shardCount:     Int
@@ -195,7 +199,7 @@ extension VaultManager {
         // same depth — entryCount here is this depth's count, not the vault's.
         let exportMeta = BackupExportMetadata(
             exportedAt:     Date(),
-            distributionID: decoded.payload.distributionID,
+            keyID:          Self.backupKeyIdentifier(for: decoded.bek),
             shardCount:     decoded.payload.shardMetadata?.shards.count ?? 0,
             entryCount:     entries.count
         )
@@ -487,12 +491,20 @@ extension VaultManager {
     }
 
     /// Split `currentDepth`'s backup key into signed shards, one per identifier in
-    /// `recipients`, and persist the distribution metadata.
-    func prepareBackupShards(threshold: Int, recipients: [String], currentDepth: Int) throws -> [SignedAttribute] {
+    /// `recipients`, and persist the distribution metadata. `newKey` splits a freshly
+    /// generated key instead, replacing the current one (`bugs.md` Bug 141).
+    func prepareBackupShards(threshold: Int, recipients: [String], newKey: Bool = false, currentDepth: Int) throws -> [SignedAttribute] {
         let vaultKey = try self.currentKey()
         return try self.backup.prepareShards(
-            vaultKey: vaultKey, threshold: threshold, recipients: recipients, currentDepth: currentDepth, modelContext: self.modelContext
+            vaultKey: vaultKey, threshold: threshold, recipients: recipients, newKey: newKey,
+            currentDepth: currentDepth, modelContext: self.modelContext
         )
+    }
+
+    /// Apply `changes` to `currentDepth`'s own backup-key piece statuses, in one write.
+    func setBackupShardStatuses(_ changes: [UUID: ShardStatus], currentDepth: Int) throws {
+        let vaultKey = try self.currentKey()
+        try self.backup.setShardStatuses(changes, vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
     }
 
     /// `currentDepth`'s backup key as a `SymmetricKey`.
@@ -720,7 +732,7 @@ extension VaultManager {
     /// ```
     /// byte 0      presence tag: 0xA5 = real record, anything else = absent/filler
     /// byte 1–8    exportedAt   — UInt64 seconds since 1970, big-endian
-    /// byte 9–24   distributionID — UUID's raw 16 bytes
+    /// byte 9–24   keyID        — UUID's raw 16 bytes (a `distributionID` before Bug 141)
     /// byte 25     shardCount   — UInt8, saturating
     /// byte 26–27  entryCount   — UInt16, big-endian, saturating
     /// ```
@@ -750,7 +762,7 @@ extension VaultManager {
             var ts = UInt64(max(0, meta.exportedAt.timeIntervalSince1970)).bigEndian
             withUnsafeBytes(of: &ts) { out.append(contentsOf: $0) }
 
-            out.append(Self.uuidBytes(meta.distributionID))
+            out.append(Self.uuidBytes(meta.keyID))
             out.append(UInt8(clamping: meta.shardCount))
 
             var entryCount = UInt16(clamping: meta.entryCount).bigEndian
@@ -771,14 +783,14 @@ extension VaultManager {
             let ts = bytes[1..<9].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
             let exportedAt = Date(timeIntervalSince1970: TimeInterval(ts))
 
-            guard let distributionID = Self.uuid(fromBytes: Array(bytes[9..<25])) else { return nil }
+            guard let keyID = Self.uuid(fromBytes: Array(bytes[9..<25])) else { return nil }
 
             let shardCount = Int(bytes[25])
             let entryCount = Int(bytes[26]) << 8 | Int(bytes[27])
 
             return BackupExportMetadata(
                 exportedAt:     exportedAt,
-                distributionID: distributionID,
+                keyID:          keyID,
                 shardCount:     shardCount,
                 entryCount:     entryCount
             )
@@ -807,6 +819,18 @@ extension VaultManager {
     private static let backupExportMetaAAD: Data =
         Data("occulta.backup-export-meta-v1".utf8)
 
+    /// 16 bytes identifying `bek` without revealing it: HKDF-SHA256 with a fixed info
+    /// string, recorded at export so staleness can tell whether the key has changed since.
+    static func backupKeyIdentifier(for bek: SymmetricKey) -> UUID {
+        let derived = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: bek, info: Data("occulta-backup-key-id".utf8), outputByteCount: 16
+        )
+        return derived.withUnsafeBytes { raw in
+            UUID(uuid: (raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                        raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]))
+        }
+    }
+
     /// Removes the export metadata file. Only the wipe calls this (`bugs.md` Bug 128).
     func deleteBackupExportMetadata() {
         try? FileManager.default.removeItem(at: Self.backupExportMetaURL)
@@ -834,7 +858,13 @@ extension VaultManager {
 
         let decoded = try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
 
-        let bekRotated        = decoded.map { $0.payload.distributionID != meta.distributionID } ?? false
+        // A key identifier, not the distributionID: every redistribution mints a new
+        // distributionID (Bug 124) without changing the key, and comparing those reported
+        // every redistribution as a rotation (Bug 141). A record from before that fix holds
+        // the distributionID; if it still matches, nothing has changed since the export.
+        let bekRotated = decoded.map {
+            meta.keyID != Self.backupKeyIdentifier(for: $0.bek) && meta.keyID != $0.payload.distributionID
+        } ?? false
         let currentEntryCount = (try? self.entriesVisible(atDepth: currentDepth).count) ?? 0
         let newEntryCount     = max(0, currentEntryCount - meta.entryCount)
         let currentShardCount = decoded?.payload.shardMetadata?.shards.count ?? 0
@@ -851,7 +881,10 @@ extension VaultManager {
     /// Write `meta` into `depth`'s slot only. Every other slot's plaintext is carried
     /// through byte-for-byte. Out-of-range depths no-op, matching
     /// `AppLayerConfig.writeDuressVerifier`'s own convention for the same situation.
-    private func writeBackupExportMetadata(_ meta: BackupExportMetadata, at depth: Int, vaultKey: SymmetricKey) throws {
+    ///
+    /// Internal, not private, so a test can write a record in the pre-Bug-141 form (a
+    /// `distributionID` in `keyID`).
+    func writeBackupExportMetadata(_ meta: BackupExportMetadata, at depth: Int, vaultKey: SymmetricKey) throws {
         var slots = (try? self.loadAllExportMetaSlots(vaultKey: vaultKey))
             ?? Array<BackupExportMetadata?>(repeating: nil, count: ExportMetaSlotCodec.slotCount)
         guard depth >= 0, depth < slots.count else { return }
@@ -951,10 +984,10 @@ extension VaultManager {
             return key
         }
 
-        /// Every row currently live (claimed, not orphaned, not filler). Both the
-        /// per-depth lookup below and `updateShardStatus`'s full scan go through this,
-        /// so there is exactly one place that knows "live vs. everything else," and a
-        /// filler or orphaned row can never be read as a candidate for either.
+        /// Every row currently live (claimed, not orphaned, not filler). The per-depth
+        /// lookup below goes through this, so there is exactly one place that knows
+        /// "live vs. everything else," and a filler or orphaned row can never be read as
+        /// a candidate.
         private func liveRows(modelContext: ModelContext) throws -> (rows: [BackupEncryptionKey], key: SymmetricKey) {
             let key  = try self.localKey()
             let rows = try modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
@@ -1085,8 +1118,15 @@ extension VaultManager {
         /// orphan every already-exported `.occbak` (`decisions.md`'s "reuse the same BEK
         /// across trustee-set changes"); the id costs nothing there since
         /// `VaultManager.backupFileAAD` never depends on it.
+        ///
+        /// `newKey` splits a freshly generated key instead, written in the same save as the
+        /// new distribution record (`bugs.md` Bug 141). A distribution that drops a trustee
+        /// passes it: a new distributionID only labels pieces, and any k pieces of the old
+        /// split still rebuild the old key, so only a new secret revokes the removed
+        /// trustee's piece. Every backup exported under the old key stops opening.
         func prepareShards(
-            vaultKey: SymmetricKey, threshold: Int, recipients: [String], currentDepth: Int, modelContext: ModelContext
+            vaultKey: SymmetricKey, threshold: Int, recipients: [String], newKey: Bool = false,
+            currentDepth: Int, modelContext: ModelContext
         ) throws -> [SignedAttribute] {
             guard let decoded = try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) else {
                 throw BackupError.bekNotSetup
@@ -1096,7 +1136,16 @@ extension VaultManager {
             let distributionID = UUID()
 
             var bekBytes = Data()
-            decoded.bek.withUnsafeBytes { bekBytes = Data($0) }
+            if newKey {
+                var fresh = [UInt8](repeating: 0, count: 32)
+                guard SecRandomCopyBytes(kSecRandomDefault, 32, &fresh) == errSecSuccess else {
+                    throw BackupError.encryptionFailed
+                }
+                bekBytes = Data(fresh)
+                for i in fresh.indices { fresh[i] = 0 }
+            } else {
+                decoded.bek.withUnsafeBytes { bekBytes = Data($0) }
+            }
             defer { for i in bekBytes.indices { bekBytes[i] = 0 } }
 
             var rawShares = try ShamirSecretSharing.split(secret: bekBytes, threshold: threshold, shares: n)
@@ -1147,7 +1196,7 @@ extension VaultManager {
 
             try self.persist(
                 BackupEncryptionKey.Payload(
-                    bekBytes:      decoded.payload.bekBytes,
+                    bekBytes:      bekBytes,
                     distributionID: distributionID,
                     shardMetadata: ShardDistributionMetadata(threshold: threshold, shards: shards)
                 ),
@@ -1327,63 +1376,43 @@ extension VaultManager {
 
         // MARK: - Shard status
 
-        /// Update the status of one ShardRecord identified by `attributeID`, in
-        /// whichever depth's own shard metadata actually contains it.
+        /// Apply `changes` (attributeID → new status) to `currentDepth`'s own shard
+        /// records, in one write. Changes the state machine rejects
+        /// (`ShardStatus.isValidTransition`) and IDs not in this depth's records are skipped.
         ///
-        /// Called from `updateShardStatus(attributeID:)` (`Vault+Manager+Shards.swift`,
-        /// the per-entry version) as a fallback when no per-entry shard row matches.
-        /// Backup-key and per-entry shards share the same attrID namespace; the
-        /// caller need not know which kind a given attrID is.
-        ///
-        /// **Deliberately does not take a `currentDepth` parameter — found 2026-09-08
-        /// that "whatever depth is current" is not a reliable way to find where an
-        /// attrID lives, even in the ordinary, non-adversarial case.** A trustee's
-        /// confirmation arrives whenever they respond, independent of which depth
-        /// the owner happens to have active at that moment — distribute from depth
-        /// 0, switch depths for an unrelated reason, and a depth-0 confirmation
-        /// arriving while depth 2 is current would silently fail to apply if this
-        /// only checked `currentDepth`'s own row. Scans every live row instead —
-        /// only on this relatively rare, async confirmation path, not a hot path. A
-        /// row that fails to open here is skipped, not fatal to the search — the
-        /// attrID being sought may live in a different, perfectly healthy row; that
-        /// should never actually happen for a row `liveRows` already vouched for as
-        /// live, but the search stays lenient rather than fatal on one bad row.
-        ///
-        /// Still takes `vaultKey`, unlike the rest of this file's `currentDepth`
-        /// omission pattern — the *depth* is what's unreliable to guess here, not
-        /// the key; `vaultKey` itself is derived from biometric auth, not from a
-        /// depth, so the caller always has exactly one to hand regardless of which
-        /// row this ends up matching.
-        func updateShardStatus(vaultKey: SymmetricKey, attributeID: UUID, to newStatus: ShardStatus, modelContext: ModelContext) throws {
-            let (rows, _) = try self.liveRows(modelContext: modelContext)
+        /// Only `currentDepth`'s row is read or written (`bugs.md` Bug 141). This replaced
+        /// `updateShardStatus(attributeID:)`, which tried every depth's row until one held
+        /// the ID, so a confirmation arriving at one depth rewrote another's. A depth now
+        /// reconciles its own pieces when its vault is unlocked
+        /// (`ShardCustodyManager.reconcileBackupPieces`).
+        func setShardStatuses(
+            _ changes: [UUID: ShardStatus], vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext
+        ) throws {
+            guard !changes.isEmpty,
+                  let decoded = try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext),
+                  var meta    = decoded.payload.shardMetadata
+            else { return }
 
-            for row in rows {
-                guard let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                      let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: row.aad()),
-                      let payload   = PayloadCodec.decode(plaintext)
+            var changed = false
+            for i in meta.shards.indices {
+                guard let newStatus = changes[meta.shards[i].attributeID],
+                      ShardStatus.isValidTransition(from: meta.shards[i].status, to: newStatus)
                 else { continue }
-                guard var meta = payload.shardMetadata else { continue }
-                guard let idx = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { continue }
-
-                // Reject illegal state machine transitions — prevents inbound
-                // traffic from un-revoking a shard or moving confirmed back to
-                // pending.
-                guard ShardStatus.isValidTransition(from: meta.shards[idx].status, to: newStatus) else { return }
-
-                meta.shards[idx].status = newStatus
-
-                try self.seal(
-                    BackupEncryptionKey.Payload(
-                        bekBytes:      payload.bekBytes,
-                        distributionID: payload.distributionID,
-                        shardMetadata: meta
-                    ),
-                    vaultKey: vaultKey,
-                    into: row
-                )
-                try modelContext.save()
-                return
+                meta.shards[i].status = newStatus
+                changed = true
             }
+            guard changed else { return }
+
+            try self.persist(
+                BackupEncryptionKey.Payload(
+                    bekBytes:      decoded.payload.bekBytes,
+                    distributionID: decoded.payload.distributionID,
+                    shardMetadata: meta
+                ),
+                vaultKey: vaultKey,
+                currentDepth: currentDepth,
+                modelContext: modelContext
+            )
         }
 
         // MARK: - Payload codec

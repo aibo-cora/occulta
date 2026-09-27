@@ -221,8 +221,7 @@ final class ComposeViewModel {
 
     func encrypt(
         contactManager:      ContactManager,
-        shardCustodyManager: ShardCustodyManager? = nil,
-        vaultManager:        VaultManager?        = nil
+        shardCustodyManager: ShardCustodyManager? = nil
     ) async {
         await MainActor.run { self.isEncrypting = true }
         switch self.recipient {
@@ -230,15 +229,13 @@ final class ComposeViewModel {
             await self.encrypt(
                 for:                 identifier,
                 contactManager:      contactManager,
-                shardCustodyManager: shardCustodyManager,
-                vaultManager:        vaultManager
+                shardCustodyManager: shardCustodyManager
             )
         case .group(let groupID):
             await self.encrypt(
                 groupID:             groupID,
                 contactManager:      contactManager,
-                shardCustodyManager: shardCustodyManager,
-                vaultManager:        vaultManager
+                shardCustodyManager: shardCustodyManager
             )
         }
     }
@@ -246,8 +243,7 @@ final class ComposeViewModel {
     private func encrypt(
         for identifier:      String,
         contactManager:      ContactManager,
-        shardCustodyManager: ShardCustodyManager?,
-        vaultManager:        VaultManager?
+        shardCustodyManager: ShardCustodyManager?
     ) async {
         do {
             var allFiles = self.messages
@@ -284,13 +280,6 @@ final class ComposeViewModel {
 
             let shardOps   = try shardCustodyManager?.buildShardOperations(for: identifier, currentContactPublicKey: contactPub) ?? []
             let manifest   = try? shardCustodyManager?.buildCustodyManifest(for: identifier)
-            let expected: [UUID]?
-
-            if let custody = shardCustodyManager, let vm = vaultManager {
-                expected = try? custody.buildExpectedShards(for: identifier, vaultManager: vm)
-            } else {
-                expected = nil
-            }
 
             let encrypted: Data
 
@@ -299,8 +288,7 @@ final class ComposeViewModel {
                     basket:          basket,
                     for:             identifier,
                     shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: manifest,
-                    expectedShards:  expected
+                    custodyManifest: manifest
                 )
             } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
                 encrypted = try contactManager.encryptBundle(basket: basket, for: identifier)
@@ -332,8 +320,7 @@ final class ComposeViewModel {
     private func encrypt(
         groupID: UUID,
         contactManager: ContactManager,
-        shardCustodyManager: ShardCustodyManager? = nil,
-        vaultManager: VaultManager? = nil
+        shardCustodyManager: ShardCustodyManager? = nil
     ) async {
         do {
             var allFiles = self.messages
@@ -363,7 +350,7 @@ final class ComposeViewModel {
             let basket    = Basket(files: processed)
             let encrypted = try contactManager.encryptGroupBundle(
                 basket: basket, groupID: groupID,
-                shardCustodyManager: shardCustodyManager, vaultManager: vaultManager
+                shardCustodyManager: shardCustodyManager
             )
             
             guard !encrypted.isEmpty else {

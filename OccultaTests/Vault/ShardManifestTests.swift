@@ -113,7 +113,6 @@ private func distribute(
     _ = bobCustody.handleInbound(
         shardOperations:  [.init(kind: .distribute, attribute: attr)],
         custodyManifest:  nil,
-        expectedShards:   nil,
         senderPublicKey:  alicePub,
         senderIdentifier: "alice",
         vaultManager:     vaultManager
@@ -185,7 +184,6 @@ private func distribute(
         _ = bobCustody.handleInbound(
             shardOperations:  [.init(kind: .distribute, attribute: oldAttr)],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -196,7 +194,6 @@ private func distribute(
         _ = bobCustody.handleInbound(
             shardOperations:  [.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id)],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -206,35 +203,6 @@ private func distribute(
         let manifest = try bobCustody.buildCustodyManifest(for: "alice")
         #expect(manifest.contains(newAttr.id))
         #expect(!manifest.contains(oldAttr.id))
-    }
-}
-
-// MARK: - Case 4: Revocation (implicit via expectedShards)
-
-@Suite("Case 4 — Revocation via expectedShards")
-@MainActor struct Case4_Revocation {
-
-    @Test("Empty expectedShards from Alice causes Bob to delete same-fingerprint shard")
-    func implicitRevoke() throws {
-        let (vault, _, km, _) = try makeAlice()
-        let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext())
-
-        let alicePub = try km.retrieveIdentity()
-        let attr     = try distribute(from: km, to: bobCustody, vaultManager: vault)
-        #expect(try custodyCount(in: bobCont) == 1)
-
-        // Alice sends expectedShards: [] — shard absent → implicit revoke.
-        _ = bobCustody.handleInbound(
-            shardOperations:  nil,
-            custodyManifest:  nil,
-            expectedShards:   [],
-            senderPublicKey:  alicePub,
-            senderIdentifier: "alice",
-            vaultManager:     vault
-        )
-        #expect(try custodyCount(in: bobCont) == 0)
-        _ = attr // silence warning
     }
 }
 
@@ -375,7 +343,6 @@ private func distribute(
         _ = aliceCustody.handleInbound(
             shardOperations:  nil,
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "bob",
             vaultManager:     vault
@@ -415,7 +382,6 @@ private func distribute(
         _ = aliceCustody.handleInbound(
             shardOperations:  [.init(kind: .handback, attribute: attrs[0])],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "bob",
             vaultManager:     vault
@@ -443,9 +409,9 @@ private func distribute(
         let alicePub = try km.retrieveIdentity()
         let op       = OccultaBundle.ShardOperation(kind: .distribute, attribute: attr)
 
-        _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, expectedShards: nil, senderPublicKey: alicePub,
+        _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, senderPublicKey: alicePub,
                                      senderIdentifier: "alice", vaultManager: vault)
-        _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, expectedShards: nil, senderPublicKey: alicePub,
+        _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, senderPublicKey: alicePub,
                                      senderIdentifier: "alice", vaultManager: vault)
 
         #expect(try custodyCount(in: bobCont) == 1, "duplicate must not insert a second row")
@@ -471,7 +437,6 @@ private func distribute(
         _ = bobCustody.handleInbound(
             shardOperations:  [.init(kind: .distribute, attribute: attr)],
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  imposterPub,
             senderIdentifier: "imposter",
             vaultManager:     vault
@@ -504,42 +469,6 @@ private func distribute(
     }
 }
 
-// MARK: - Case 18: expectedShards arrives while distribute is in flight
-
-@Suite("Case 18 — expectedShards does not revoke in-flight shard")
-@MainActor struct Case18_ExpectedShardsInFlight {
-
-    @Test("expectedShards containing the shard ID retains the shard")
-    func expectedShardsRetainsInFlight() throws {
-        let (vault, _, km, _)        = try makeAlice()
-        let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext())
-
-        let attr     = try distribute(from: km, to: bobCustody, vaultManager: vault)
-        let alicePub = try km.retrieveIdentity()
-
-        // Alice sends expectedShards that includes the shard ID.
-        try bobCustody.processExpectedShards([attr.id], from: "alice", senderPublicKey: alicePub)
-
-        #expect(try custodyCount(in: bobCont) == 1, "shard in expectedShards must not be deleted")
-    }
-
-    @Test("expectedShards NOT containing a same-fingerprint shard deletes it")
-    func expectedShardsDeletesAbsent() throws {
-        let (vault, _, km, _)        = try makeAlice()
-        let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext())
-
-        let alicePub = try km.retrieveIdentity()
-        _ = try distribute(from: km, to: bobCustody, vaultManager: vault)
-
-        // Empty expectedShards → implicit revoke.
-        try bobCustody.processExpectedShards([], from: "alice", senderPublicKey: alicePub)
-
-        #expect(try custodyCount(in: bobCont) == 0)
-    }
-}
-
 // MARK: - Case 19: ShardStatus.revokePending (legacy decode)
 
 @Suite("Case 19 — revokePending is decoded as inactive (legacy compat)")
@@ -558,25 +487,6 @@ private func distribute(
 
 @Suite("Manifest invariants")
 @MainActor struct ManifestInvariants {
-
-    @Test("Invariant 1: mismatch-fingerprint shard is immune to expectedShards deletion")
-    func mismatchImmune() throws {
-        let aliceOld = TestKeyManager()
-        let aliceNew = TestKeyManager()
-        let (vault, _, _, _)         = try makeAlice()
-        let (bobCustody, _, bobCont) = try makeBob()
-        vault.unlock(context: LAContext())
-
-        let aliceNewPub = try aliceNew.retrieveIdentity()
-
-        // Bob holds a shard stored under Alice's OLD fingerprint.
-        _ = try distribute(from: aliceOld, to: bobCustody, vaultManager: vault)
-        #expect(try custodyCount(in: bobCont) == 1)
-
-        // Alice's NEW key sends expectedShards: [] — different fingerprint → immune.
-        try bobCustody.processExpectedShards([], from: "alice", senderPublicKey: aliceNewPub)
-        #expect(try custodyCount(in: bobCont) == 1, "mismatch shard must survive expectedShards")
-    }
 
     @Test("Invariant 2: PendingShardDistribute row is deleted only on manifest confirmation")
     func distributeRowSurvivesSend() throws {
@@ -639,22 +549,22 @@ private func distribute(
 
     @Test("Invariant 5: unknown JSON fields in SealedPayload are silently ignored (old-build compat)")
     func unknownFieldsIgnored() throws {
-        // Encode a SealedPayload that includes the new manifest fields, then decode
-        // it WITHOUT those fields in the type (simulated by just checking Codable round-trip).
+        // A v1.10.3 sender still writes `expectedShards`, removed with implicit revoke
+        // (bugs.md Bug 141); the payload must still decode, the field dropped unread.
         let original = OccultaBundle.SealedPayload(
             message: Data("hello".utf8),
-            custodyManifest: [UUID()],
-            expectedShards:  [UUID()]
+            custodyManifest: [UUID()]
         )
-        let encoded = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: encoded)
-        // New fields survive the round-trip.
+        var json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        json["expectedShards"] = [UUID().uuidString]
+        let decoded = try JSONDecoder().decode(
+            OccultaBundle.SealedPayload.self, from: try JSONSerialization.data(withJSONObject: json)
+        )
         #expect(decoded.custodyManifest?.count == 1)
-        #expect(decoded.expectedShards?.count  == 1)
     }
 }
 
-// MARK: - buildCustodyManifest and buildExpectedShards
+// MARK: - buildCustodyManifest
 
 @Suite("Manifest building helpers")
 @MainActor struct ManifestBuilding {
@@ -685,22 +595,6 @@ private func distribute(
         let carolManifest = try bobCustody.buildCustodyManifest(for: "carol")
         #expect(carolManifest.isEmpty)
     }
-
-    @Test("buildExpectedShards returns active (pending/confirmed) shard IDs for a trustee")
-    func expectedShardsActiveOnly() throws {
-        let (vault, aliceCustody, km, _) = try makeAlice()
-        vault.unlock(context: LAContext())
-        let entry      = try vault.addEntry(label: "s", content: Data(), type: .note)
-        let recipients = try makeProfiles(count: 3)
-        let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-
-        // attrs[0] → recipients[0] (pending)
-        try aliceCustody.queueDistribute(attribute: attrs[0], for: recipients[0].identifier)
-
-        let expected = try aliceCustody.buildExpectedShards(for: recipients[0].identifier, vaultManager: vault)
-        #expect(expected.contains(attrs[0].id))
-        _ = km // silence warning
-    }
 }
 
 // MARK: - handleInbound routing
@@ -717,7 +611,6 @@ private func distribute(
         let result = bobCustody.handleInbound(
             shardOperations:  nil,
             custodyManifest:  nil,
-            expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -734,24 +627,6 @@ private func distribute(
         let result = bobCustody.handleInbound(
             shardOperations:  nil,
             custodyManifest:  [],
-            expectedShards:   nil,
-            senderPublicKey:  try km.retrieveIdentity(),
-            senderIdentifier: "alice",
-            vaultManager:     vault
-        )
-        #expect(result)
-    }
-
-    @Test("handleInbound returns true when expectedShards is present")
-    func returnsTrueWithExpectedShards() throws {
-        let (vault, _, km, _)  = try makeAlice()
-        let (bobCustody, _, _) = try makeBob()
-        vault.unlock(context: LAContext())
-
-        let result = bobCustody.handleInbound(
-            shardOperations:  nil,
-            custodyManifest:  nil,
-            expectedShards:   [],
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
             vaultManager:     vault

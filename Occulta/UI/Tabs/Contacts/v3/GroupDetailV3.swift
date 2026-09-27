@@ -18,7 +18,6 @@ struct GroupDetailV3: View {
     @Environment(ContactManager.self)      private var contactManager
     @Environment(Manager.Security.self)    private var security
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
-    @Environment(VaultManager.self)        private var vaultManager: VaultManager?
     @Environment(\.dismiss)                private var dismiss
     @Environment(\.scenePhase)             private var scenePhase
 
@@ -89,12 +88,11 @@ struct GroupDetailV3: View {
                     } else {
                         let cm  = self.contactManager
                         let scm = self.shardCustodyManager
-                        let vlt = self.vaultManager
                         ComposeHeroV3(
                             vm:           self.composeVM,
                             headerRight:  "→ \(count) RECIPIENT\(count == 1 ? "" : "S")",
                             encryptLabel: "Encrypt for \(count)",
-                            onEncrypt:    { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
+                            onEncrypt:    { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm) }
                         )
                     }
 

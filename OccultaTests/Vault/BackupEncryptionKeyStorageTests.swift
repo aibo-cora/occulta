@@ -260,10 +260,10 @@ struct BackupKeyOrphaningTests {
                 "must not be orphaned — its own depth was never freed")
     }
 
-    @Test("updateShardStatus never mutates an orphaned row, even when it targets that row's own shard",
+    @Test("setBackupShardStatuses never mutates an orphaned row, even when it targets that row's own shard",
           .enabled(if: secureEnclaveAvailable()))
     @MainActor
-    func updateShardStatusIgnoresOrphanedRow() throws {
+    func setBackupShardStatusesIgnoresOrphanedRow() throws {
         let c = try self.makeComponents()
         try c.security.configurePIN("111111")
 
@@ -295,12 +295,12 @@ struct BackupKeyOrphaningTests {
         let payloadBefore = before.encryptedPayload
 
         // Targeting the orphaned row's own shard must be a silent no-op — the row is
-        // excluded from `liveRows`, so `updateShardStatus` must never reach it at all.
-        try c.vault.updateShardStatus(attributeID: attributeID, to: .confirmed)
+        // excluded from `liveRows`, so depth 1 has no live row to write.
+        try c.vault.setBackupShardStatuses([attributeID: .confirmed], currentDepth: 1)
 
         let after = try depth1Row()
         #expect(after.encryptedPayload == payloadBefore,
-                "updateShardStatus must never touch an orphaned row's payload, even when its own attributeID is targeted")
+                "setBackupShardStatuses must never touch an orphaned row's payload, even when its own attributeID is targeted")
     }
 }
 

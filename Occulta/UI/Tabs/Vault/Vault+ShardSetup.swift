@@ -33,6 +33,9 @@ struct VaultShardSetup: View {
     @State private var snapshotThreshold: Int = 2
     @State private var confirmationMessage: String? = nil
     @State private var revokeTarget: ShardRecord? = nil
+    /// Backup mode: the selection drops a current trustee, so updating replaces the
+    /// backup key; asked before `commitDistribution` runs (`bugs.md` Bug 141).
+    @State private var confirmingKeyReplacement = false
 
     /// Shards in these two states count toward active recovery coverage.
     private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
@@ -126,6 +129,7 @@ struct VaultShardSetup: View {
             self.threshold         = 2
             self.snapshotThreshold = 2
             self.revokeTarget      = nil
+            self.confirmingKeyReplacement = false
             self.dismiss()
         }
         .confirmationDialog(
@@ -143,6 +147,12 @@ struct VaultShardSetup: View {
             Button("Cancel", role: .cancel) { self.revokeTarget = nil }
         } message: {
             Text("The shard will be remotely erased from the trustee's device on their next interaction.")
+        }
+        .alert("Remove trustee?", isPresented: self.$confirmingKeyReplacement) {
+            Button("Remove and Replace Key", role: .destructive) { self.commitDistribution() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removing a trustee replaces your backup key. Backup files you've already exported will no longer restore — export a new backup afterwards.")
         }
     }
 
@@ -372,7 +382,9 @@ struct VaultShardSetup: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if let record = record, Self.activeStatuses.contains(record.status) {
+            // Backup mode has no per-trustee revoke: removing a backup-key trustee means
+            // deselecting them and updating, which replaces the key (bugs.md Bug 141).
+            if case .entry = self.mode, let record = record, Self.activeStatuses.contains(record.status) {
                 Button(role: .destructive) {
                     self.revokeTarget = record
                 } label: {
@@ -588,6 +600,22 @@ struct VaultShardSetup: View {
 
     private func markForDistribution() {
         self.vault.extendSession()
+        if case .backup = self.mode, !self.droppedBackupTrustees().isEmpty {
+            self.confirmingKeyReplacement = true
+            return
+        }
+        self.commitDistribution()
+    }
+
+    /// Current backup-key trustees the selection leaves out.
+    private func droppedBackupTrustees() -> [String] {
+        (self.fetchDistributionMeta()?.shards ?? [])
+            .filter { Self.activeStatuses.contains($0.status) && !self.selectedIDs.contains($0.contactIdentifier) }
+            .map(\.contactIdentifier)
+    }
+
+    private func commitDistribution() {
+        self.vault.extendSession()
         self.marking = true
         self.error = nil
 
@@ -596,33 +624,20 @@ struct VaultShardSetup: View {
         let k        = max(2, min(self.threshold, max(2, selected.count)))
 
         do {
-            // Capture old attrIDs BEFORE prepareShards overwrites the metadata.
-            // Contacts staying in the distribution get a .replace op; new ones get .distribute.
-            var oldAttrIDs: [String: UUID] = [:]
-
-            if let existingMeta = self.fetchDistributionMeta() {
-                let newIDs  = Set(selected.map(\.identifier))
-                let removed = existingMeta.shards.filter {
-                    !newIDs.contains($0.contactIdentifier)
-                        && $0.status != .revoked
-                        && $0.status != .revokePending
-                        && $0.status != .lost
-                }
-                for shard in removed {
-                    try? self.vault.updateShardStatus(attributeID: shard.attributeID, to: .revoked)
-                }
-                for shard in existingMeta.shards where newIDs.contains(shard.contactIdentifier) {
-                    oldAttrIDs[shard.contactIdentifier] = shard.attributeID
-                }
-            }
-
-            let attributes = try self.performPrepareShards(k: k, recipients: selected)
-            for (contact, attribute) in zip(selected, attributes) {
-                try self.shardCustodyManager?.queueDistribute(
-                    attribute: attribute,
-                    for:       contact.identifier,
-                    replacing: oldAttrIDs[contact.identifier]
+            switch self.mode {
+            case .backup:
+                guard let custody = self.shardCustodyManager else { throw ShardCustodyManager.CustodyError.keyDerivationFailed }
+                // Dropping anyone splits a new key: a removed trustee's piece otherwise
+                // still rebuilds the key with k−1 others from the old split (Bug 141).
+                try custody.distributeBackup(
+                    threshold:    k,
+                    recipients:   selected.map(\.identifier),
+                    newKey:       !self.droppedBackupTrustees().isEmpty,
+                    currentDepth: self.security.currentDepth,
+                    vaultManager: self.vault
                 )
+            case .entry(let id):
+                try self.distributeEntry(id, k: k, selected: selected)
             }
             let activeIDs = Set(
                 self.fetchDistributionMeta()?.shards
@@ -642,19 +657,33 @@ struct VaultShardSetup: View {
         }
     }
 
-    /// Call the correct prepare function for the current mode.
-    ///
-    /// Backup-key shards only ever need the recipient's identifier — see
-    /// `Backup.prepareShards`'s own doc comment — so this narrows to `[String]` on
-    /// that branch. The entry branch still passes the full `[Contact.Profile]` through:
-    /// `VaultManager.prepareShards(for:threshold:recipients:)` isn't part of this
-    /// change.
-    private func performPrepareShards(k: Int, recipients: [Contact.Profile]) throws -> [SignedAttribute] {
-        switch self.mode {
-        case .entry(let id): return try self.vault.prepareShards(for: id, threshold: k, recipients: recipients)
-        case .backup:
-            return try self.vault.prepareBackupShards(
-                threshold: k, recipients: recipients.map(\.identifier), currentDepth: self.security.currentDepth
+    private func distributeEntry(_ id: UUID, k: Int, selected: [Contact.Profile]) throws {
+        // Capture old attrIDs BEFORE prepareShards overwrites the metadata.
+        // Contacts staying in the distribution get a .replace op; new ones get .distribute.
+        var oldAttrIDs: [String: UUID] = [:]
+
+        if let existingMeta = self.fetchDistributionMeta() {
+            let newIDs  = Set(selected.map(\.identifier))
+            let removed = existingMeta.shards.filter {
+                !newIDs.contains($0.contactIdentifier)
+                    && $0.status != .revoked
+                    && $0.status != .revokePending
+                    && $0.status != .lost
+            }
+            for shard in removed {
+                try? self.vault.updateShardStatus(attributeID: shard.attributeID, to: .revoked)
+            }
+            for shard in existingMeta.shards where newIDs.contains(shard.contactIdentifier) {
+                oldAttrIDs[shard.contactIdentifier] = shard.attributeID
+            }
+        }
+
+        let attributes = try self.vault.prepareShards(for: id, threshold: k, recipients: selected)
+        for (contact, attribute) in zip(selected, attributes) {
+            try self.shardCustodyManager?.queueDistribute(
+                attribute: attribute,
+                for:       contact.identifier,
+                replacing: oldAttrIDs[contact.identifier]
             )
         }
     }

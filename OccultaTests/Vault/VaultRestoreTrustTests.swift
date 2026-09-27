@@ -90,9 +90,7 @@ private func makeBackupReadyVault(threshold: Int = 2, trustees: Int = 2) throws 
     let recipients = (0..<trustees).map { _ in UUID().uuidString }
 
     let shards = try vault.prepareBackupShards(threshold: threshold, recipients: recipients, currentDepth: 0)
-    for shard in shards {
-        try vault.updateShardStatus(attributeID: shard.id, to: .confirmed)
-    }
+    try vault.setBackupShardStatuses(Dictionary(uniqueKeysWithValues: shards.map { ($0.id, .confirmed) }), currentDepth: 0)
     return (vault, container, shards)
 }
 

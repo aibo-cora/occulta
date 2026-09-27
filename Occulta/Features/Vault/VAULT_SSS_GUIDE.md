@@ -461,6 +461,11 @@ the vault SE key.
 
 ## Shard revocation
 
+> **Removed 2026-09-27 (`bugs.md` Bug 141).** Implicit revoke is gone. For the backup key, dropping a trustee
+> splits a new key (`ShardCustodyManager.distributeBackup(newKey: true)`), which makes the
+> removed trustee's piece useless without their cooperation; the owner confirms, since earlier
+> backup files stop opening. The text below describes the removed mechanism.
+
 Revocation is implicit — no `.revoke` operation is required.
 
 **What triggers revocation:**
@@ -562,6 +567,11 @@ Processing order when a bundle arrives:
 
 ## Trustee key rotation = implicit shard loss
 
+> **Changed 2026-09-27 (`bugs.md` Bug 141), backup key.** A trustee's key change no longer marks a backup-key
+> piece lost: the current depth re-sends at once, and other depths re-send at their own unlock
+> when the trustee's next manifest shows the piece missing. `markShardsLost` still applies to
+> per-entry pieces.
+
 When a trustee (Bob) re-exchanges keys with Alice, Bob's identity key fingerprint
 has changed. Since Occulta has no in-app identity key rotation, this can only mean
 Bob is on a new device. A new device is a clean app install: Bob's SwiftData store
@@ -643,6 +653,10 @@ trustees, and that check is unaffected.
 ---
 
 ## Shard custody reconciliation
+
+> **Removed 2026-09-27 (`bugs.md` Bug 141).** Only `custodyManifest` remains, sent in 1:1 bundles. Backup-key
+> pieces are reconciled per depth from persistent watch rows (`PotentiallyLostShard`):
+> present → confirmed, missing → re-sent, deleted trustee → lost.
 
 ### The approach: manifest-based (push, continuous)
 

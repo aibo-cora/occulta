@@ -640,7 +640,7 @@ ID. Leaving the app past the grace period ends the session even for the same per
 
 ## Rotate the backup key when a trustee is removed; re-send automatically otherwise
 
-**Status:** Decided 2026-09-26 (`bugs.md` Bug 141, with Bug 142), not built.
+**Status:** Decided 2026-09-26, built 2026-09-27 (`bugs.md` Bug 141, with Bug 142).
 
 **Context:** implicit revoke (`expectedShards`) deleted trustees' backup-key pieces, because the owner never
 listed them. Listing them correctly would mean a message sent at one depth describing every depth's pieces,

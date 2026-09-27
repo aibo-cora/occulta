@@ -74,7 +74,6 @@ private func receiveShard(
     _ = custody.handleInbound(
         shardOperations:  [.init(kind: .distribute, attribute: attr)],
         custodyManifest:  nil,
-        expectedShards:   nil,
         senderPublicKey:  try ownerKM.retrieveIdentity(),
         senderIdentifier: ownerIdentifier,
         vaultManager:     vault

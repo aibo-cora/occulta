@@ -1009,10 +1009,9 @@ extension ContactManager {
         basket: Basket? = nil,
         for identifier: String,
         shardOperations: [OccultaBundle.ShardOperation]? = nil,
-        custodyManifest: [UUID]? = nil,
-        expectedShards: [UUID]? = nil
+        custodyManifest: [UUID]? = nil
     ) throws -> Data {
-        guard basket != nil || shardOperations != nil || custodyManifest != nil || expectedShards != nil else { throw Errors.messageHasNoData }
+        guard basket != nil || shardOperations != nil || custodyManifest != nil else { throw Errors.messageHasNoData }
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
@@ -1082,10 +1081,10 @@ extension ContactManager {
         // decrypted later even if the shard itself is later obtained.
         if targetVersion.supportsGroups {
             // Drop all shard-protocol fields — not just ops — if no prekey is
-            // available. FS is required for shard content on this path (ops,
-            // custody manifest, and expected-shards alike); message delivery must
-            // not be blocked by prekey exhaustion.
-            let hasShardContent = isCarryingShard || custodyManifest != nil || expectedShards != nil
+            // available. FS is required for shard content on this path (ops and
+            // custody manifest alike); message delivery must not be blocked by
+            // prekey exhaustion.
+            let hasShardContent = isCarryingShard || custodyManifest != nil
             let onFallback       = hasShardContent && contactPrekey == nil
             // Shard-only bundles (basket == nil) use Data() as a sentinel so the
             // receiver can detect "no basket" without trying to parse the payload.
@@ -1094,7 +1093,6 @@ extension ContactManager {
                 message:         groupMessage,
                 shardOperations: onFallback ? nil : shardOperations,
                 custodyManifest: onFallback ? nil : custodyManifest,
-                expectedShards:  onFallback ? nil : expectedShards,
                 appVersion:      Bundle.main.appVersion
             )
             let bundle = try Manager.Crypto().seal(
@@ -1118,7 +1116,6 @@ extension ContactManager {
             prekeyBatch:     outboundBatch,
             shardOperations: shardOperations,
             custodyManifest: custodyManifest,
-            expectedShards:  expectedShards,
             appVersion:      Bundle.main.appVersion
         )
         let encoded = wireVersion == .v4
@@ -1155,15 +1152,6 @@ private struct PendingGroupRecipient {
     let contactPrekey: Prekey?
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
     let realShardOperations: [OccultaBundle.ShardOperation]
-    let realCustodyManifest: [UUID]
-    let realExpectedShards: [UUID]
-    /// Whether `realCustodyManifest`/`realExpectedShards` were actually attempted
-    /// for this member (always both together — see
-    /// `RecipientPayload.shardMetadataAttempted`). `false` means this member was
-    /// ineligible, or the attempt failed (e.g. a locked vault) — in either case
-    /// the empty arrays above carry no meaning and must not be sent as a real
-    /// "zero" signal.
-    let shardMetadataAttempted: Bool
     /// Whether this member's build verifies the domain-separated ephemeral signature.
     /// Resolved per member, since a group's members can be on different builds.
     let prefixesEphemeralSignature: Bool
@@ -1178,19 +1166,18 @@ extension ContactManager {
     /// the replenishment threshold. The shared ciphertext is sealed once with a
     /// random session key bound to the group UUID.
     ///
-    /// Shard distribution (`shardCustodyManager`/`vaultManager`) is per-member:
-    /// a member only receives real shard ops/custody manifest/expected-shards if
-    /// their build is `.groupShardCapable`, they have ML-KEM material, and a
-    /// prekey was available for this send (forward secrecy required — shard
-    /// content must never travel on the fallback path). Every member's shard
-    /// arrays — real or not — are padded to the same per-field tier computed
-    /// across this send's whole membership, so a recipient's ciphertext length
-    /// never reveals whether they carry real shard content (see `ShardPadding`).
+    /// Shard distribution (`shardCustodyManager`) is per-member: a member only
+    /// receives real shard ops if their build is `.groupShardCapable`, they have
+    /// ML-KEM material, and a prekey was available for this send (forward secrecy
+    /// required — shard content must never travel on the fallback path). Every
+    /// member's ops — real or not — are padded to the same tier computed across
+    /// this send's whole membership, so a recipient's ciphertext length never
+    /// reveals whether they carry real shard content (see `ShardPadding`). No
+    /// custody manifest is sent to group members (`bugs.md` Bug 141).
     func encryptGroupBundle(
         basket: Basket,
         groupID: UUID,
-        shardCustodyManager: ShardCustodyManager? = nil,
-        vaultManager: VaultManager? = nil
+        shardCustodyManager: ShardCustodyManager? = nil
     ) throws -> Data {
         // Pass 1 below pops each member's oldest prekey (mutating
         // contact.forwardSecrecyEncrypted in memory) before any of the fallible work
@@ -1255,35 +1242,13 @@ extension ContactManager {
             let canReceiveShardContent = memberIsShardCapable && quantumMaterial != nil && contactPrekey != nil
 
             var realOps: [OccultaBundle.ShardOperation] = []
-            var realManifest: [UUID] = []
-            var realExpected: [UUID] = []
             if canReceiveShardContent, let shardCustodyManager {
                 realOps = try shardCustodyManager.buildShardOperations(for: contact.identifier, currentContactPublicKey: recipientMaterial)
             }
-
-            // custodyManifest/expectedShards are attempted together, and only together —
-            // never one without the other. A count of 0 is genuinely ambiguous on its
-            // own (see RecipientPayload.shardMetadataAttempted): "sender attempted this
-            // and found nothing" (a real, meaningful signal — loss detection, or an
-            // intentional revoke-all) is indistinguishable on the wire from "sender never
-            // attempted this" (ineligible member, or a locked vault) unless the two
-            // fields' attempt status can never disagree with each other. Requiring
-            // `vaultManager` up front for both (rather than gating expectedShards alone
-            // on it, as before) and rolling both back to "not attempted" on any failure
-            // (do/catch, not `try?`) is what guarantees that.
-            var metadataAttempted = false
-            if canReceiveShardContent, let shardCustodyManager, let vaultManager {
-                do {
-                    realManifest = try shardCustodyManager.buildCustodyManifest(for: contact.identifier)
-                    realExpected = try shardCustodyManager.buildExpectedShards(for: contact.identifier, vaultManager: vaultManager)
-                    metadataAttempted = true
-                } catch {
-                    // Vault locked, or any other failure — leave both empty and
-                    // unattempted rather than risk a half-built pair.
-                    realManifest = []
-                    realExpected = []
-                }
-            }
+            // No custody manifest in group bundles: it travels only under
+            // `shardMetadataAttempted`, which a v1.10.3 member reads as "an
+            // expected-shards list is present" — and a missing list as "delete
+            // everything you hold from me" (bugs.md Bug 141). 1:1 bundles carry it.
 
             return PendingGroupRecipient(
                 publicKey:              recipientMaterial,
@@ -1291,33 +1256,21 @@ extension ContactManager {
                 contactPrekey:          contactPrekey,
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
-                realCustodyManifest:    realManifest,
-                realExpectedShards:     realExpected,
-                shardMetadataAttempted: metadataAttempted,
                 prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
             )
         }
 
         // ── Shared per-field tiers across every member in this send ──
-        let opsTier      = ShardPadding.tier(for: pending.map { $0.realShardOperations.count }.max() ?? 0)
-        let manifestTier = ShardPadding.tier(for: pending.map { $0.realCustodyManifest.count }.max() ?? 0)
-        let expectedTier = ShardPadding.tier(for: pending.map { $0.realExpectedShards.count }.max() ?? 0)
+        let opsTier = ShardPadding.tier(for: pending.map { $0.realShardOperations.count }.max() ?? 0)
 
         // ── Pass 2: pad every member — including fully-ineligible ones — to those tiers ──
         let recipients: [GroupRecipient] = pending.map { p in
-            let (paddedManifest, manifestCount) = Self.paddedUUIDs(p.realCustodyManifest, to: manifestTier)
-            let (paddedExpected, expectedCount) = Self.paddedUUIDs(p.realExpectedShards, to: expectedTier)
-            return GroupRecipient(
+            GroupRecipient(
                 publicKey:              p.publicKey,
                 quantumMaterial:        p.quantumMaterial,
                 contactPrekey:          p.contactPrekey,
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
-                custodyManifest:        paddedManifest,
-                custodyManifestCount:   manifestCount,
-                expectedShards:         paddedExpected,
-                expectedShardsCount:    expectedCount,
-                shardMetadataAttempted: p.shardMetadataAttempted,
                 prefixesEphemeralSignature: p.prefixesEphemeralSignature
             )
         }
@@ -1334,16 +1287,6 @@ extension ContactManager {
         }
 
         return encodedBundle
-    }
-
-    /// Pad `real` with random filler UUIDs up to `tier` entries. Filler is
-    /// indistinguishable from real entries to anyone without this recipient's
-    /// wrapping key; the legitimate recipient uses the returned count to know
-    /// how many leading entries are real.
-    private static func paddedUUIDs(_ real: [UUID], to tier: Int) -> (padded: [UUID], count: Int) {
-        var padded = real
-        while padded.count < tier { padded.append(UUID()) }
-        return (padded, real.count)
     }
 
     /// Pad `real` with filler `ShardOperation`s (`kind: .unsupported`, already
@@ -1826,8 +1769,7 @@ extension ContactManager {
         ownerID:                  String,
         groupID:                  UUID,
         recipientShardOperations: [OccultaBundle.ShardOperation]?,
-        recipientCustodyManifest: [UUID]?,
-        recipientExpectedShards:  [UUID]?
+        recipientCustodyManifest: [UUID]?
     ) {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
@@ -1958,11 +1900,10 @@ extension ContactManager {
         let isFallback = recipientMode == .longTermFallback || recipientMode == .longTermNoPQ
         let recipOps = isFallback ? [] : recipientPayload.shardOperations.filter { $0.kind != .unsupported }
 
-        // custodyManifest/expectedShards: `custodyManifestCount == 0` is genuinely
-        // ambiguous on its own — it means either "sender attempted this and found
-        // nothing" (a real signal: e.g. loss detection, or an intentional revoke-all,
-        // which must reach ShardCustodyManager.processInboundManifest/
-        // processExpectedShards below) or "sender never attempted this at all"
+        // custodyManifest: `custodyManifestCount == 0` is genuinely ambiguous on its
+        // own — it means either "sender attempted this and found nothing" (a real
+        // signal: loss detection, which must reach
+        // ShardCustodyManager.processInboundManifest) or "sender never attempted this at all"
         // (ineligible member, or their vault was locked at send time — no signal was
         // intended). `shardMetadataAttempted` is the explicit flag that tells the two
         // apart (see its doc comment on RecipientPayload); a fallback slot is treated
@@ -1974,17 +1915,13 @@ extension ContactManager {
         let recipManifest: [UUID]? = metadataAttempted
             ? Array(recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount))
             : nil
-        let recipExpected: [UUID]? = metadataAttempted
-            ? Array(recipientPayload.expectedShards.prefix(recipientPayload.expectedShardsCount))
-            : nil
 
         return (
             decoded,
             sender.identifier,
             groupID,
             recipOps.isEmpty ? nil : recipOps,
-            recipManifest,
-            recipExpected
+            recipManifest
         )
     }
 }
