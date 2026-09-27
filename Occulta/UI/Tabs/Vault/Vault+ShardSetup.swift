@@ -2,27 +2,21 @@
 //  Vault+ShardSetup.swift
 //  Occulta
 //
-//  V5: status chips, manual revocation, dirty tracking, context-aware CTA.
+//  Backup-key trustee setup: status chips, dirty tracking, context-aware CTA.
+//  Backup-key only since per-entry splitting was retired (`decisions.md`, "Retire
+//  per-entry splitting").
 //
 
 import SwiftUI
 import SwiftData
 
 struct VaultShardSetup: View {
-    enum Mode {
-        case entry(UUID)
-        case backup
-    }
-
-    let mode: Mode
-
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(ContactManager.self) private var contactManager
     @Environment(Manager.Security.self) private var security
     @Environment(\.dismiss) private var dismiss
 
-    @Query private var vaultEntries: [VaultEntry]
     @Query private var bekRows:      [BackupEncryptionKey]
 
     @State private var selectedIDs: Set<String> = []
@@ -32,9 +26,8 @@ struct VaultShardSetup: View {
     @State private var snapshotIDs: Set<String> = []
     @State private var snapshotThreshold: Int = 2
     @State private var confirmationMessage: String? = nil
-    @State private var revokeTarget: ShardRecord? = nil
-    /// Backup mode: the selection drops a current trustee, so updating replaces the
-    /// backup key; asked before `commitDistribution` runs (`bugs.md` Bug 141).
+    /// The selection drops a current trustee, so updating replaces the backup key; asked
+    /// before `commitDistribution` runs (`bugs.md` Bug 141).
     @State private var confirmingKeyReplacement = false
 
     /// Shards in these two states count toward active recovery coverage.
@@ -98,12 +91,7 @@ struct VaultShardSetup: View {
             }
             .padding(.top, 8)
         }
-        .navigationTitle({
-            switch self.mode {
-            case .entry: "Shard Distribution"
-            case .backup: "Backup Recovery"
-            }
-        }())
+        .navigationTitle("Backup Recovery")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -128,25 +116,8 @@ struct VaultShardSetup: View {
             self.snapshotIDs       = []
             self.threshold         = 2
             self.snapshotThreshold = 2
-            self.revokeTarget      = nil
             self.confirmingKeyReplacement = false
             self.dismiss()
-        }
-        .confirmationDialog(
-            "Revoke Shard",
-            isPresented: Binding(
-                get: { self.revokeTarget != nil },
-                set: { if !$0 { self.revokeTarget = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Revoke", role: .destructive) {
-                if let target = self.revokeTarget { self.revokeShard(target) }
-                self.revokeTarget = nil
-            }
-            Button("Cancel", role: .cancel) { self.revokeTarget = nil }
-        } message: {
-            Text("The shard will be remotely erased from the trustee's device on their next interaction.")
         }
         .alert("Remove trustee?", isPresented: self.$confirmingKeyReplacement) {
             Button("Remove and Replace Key", role: .destructive) { self.commitDistribution() }
@@ -381,17 +352,6 @@ struct VaultShardSetup: View {
             .padding(.vertical, 10)
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            // Backup mode has no per-trustee revoke: removing a backup-key trustee means
-            // deselecting them and updating, which replaces the key (bugs.md Bug 141).
-            if case .entry = self.mode, let record = record, Self.activeStatuses.contains(record.status) {
-                Button(role: .destructive) {
-                    self.revokeTarget = record
-                } label: {
-                    Label("Revoke Shard", systemImage: "xmark.circle")
-                }
-            }
-        }
     }
 
     // MARK: - Info note
@@ -421,16 +381,8 @@ struct VaultShardSetup: View {
         let amber   = VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66))
         let amberBg = VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00))
 
-        let title: String
-        let body:  String
-        switch self.mode {
-        case .entry:
-            title = "Key recovery only"
-            body  = "Shards protect your encryption key — not the entry content. Export a separate vault backup to recover content after device loss. Any k trustees together can reconstruct your key — pick people who are independent of each other."
-        case .backup:
-            title = "Export gate"
-            body  = "Export becomes available once \(k) trustees confirm receipt. A trustee who hasn't confirmed cannot return their piece during recovery."
-        }
+        let title = "Export gate"
+        let body  = "Export becomes available once \(k) trustees confirm receipt. A trustee who hasn't confirmed cannot return their piece during recovery."
 
         return HStack(alignment: .top, spacing: 8) {
             Text("⚠️")
@@ -553,23 +505,14 @@ struct VaultShardSetup: View {
         }
     }
 
-    // MARK: - Mode helpers
+    // MARK: - Distribution metadata
 
-    /// Fetches the current shard-distribution metadata for this entry (or BEK).
+    /// Fetches the current depth's backup-key distribution metadata.
     /// Not cached — call once per need (once in `body`, once each in the action
     /// methods below) rather than from a redundantly-read computed property.
-    /// `VaultManager.shardDistributionMetadata(for:)` already derives its own
-    /// vault key once per call internally; the fix here is call frequency, not
-    /// key derivation.
     private func fetchDistributionMeta() -> ShardDistributionMetadata? {
-        switch self.mode {
-        case .entry(let id):
-            _ = self.vaultEntries
-            return try? self.vault.shardDistributionMetadata(for: id)
-        case .backup:
-            _ = self.bekRows
-            return try? self.vault.backupShardMetadata(currentDepth: self.security.currentDepth)
-        }
+        _ = self.bekRows
+        return try? self.vault.backupShardMetadata(currentDepth: self.security.currentDepth)
     }
 
     // MARK: - Initial state seeding
@@ -578,10 +521,10 @@ struct VaultShardSetup: View {
     ///
     /// - Existing distribution: seed selectedIDs and threshold from the persisted
     ///   ShardDistributionMetadata, using only active (.pending/.confirmed) shards.
-    /// - New entry (no distribution): seed selectedIDs from the global trustee config
+    /// - No distribution yet: seed selectedIDs from the global trustee config
     ///   if set; threshold stays at its default of 2.
     private func seedInitialState() {
-        if case .backup = self.mode { try? self.vault.setupBackup(currentDepth: self.security.currentDepth) }
+        try? self.vault.setupBackup(currentDepth: self.security.currentDepth)
 
         if let meta = self.fetchDistributionMeta() {
             let activeIDs = Set(meta.shards
@@ -600,7 +543,7 @@ struct VaultShardSetup: View {
 
     private func markForDistribution() {
         self.vault.extendSession()
-        if case .backup = self.mode, !self.droppedBackupTrustees().isEmpty {
+        if !self.droppedBackupTrustees().isEmpty {
             self.confirmingKeyReplacement = true
             return
         }
@@ -624,21 +567,16 @@ struct VaultShardSetup: View {
         let k        = max(2, min(self.threshold, max(2, selected.count)))
 
         do {
-            switch self.mode {
-            case .backup:
-                guard let custody = self.shardCustodyManager else { throw ShardCustodyManager.CustodyError.keyDerivationFailed }
-                // Dropping anyone splits a new key: a removed trustee's piece otherwise
-                // still rebuilds the key with k−1 others from the old split (Bug 141).
-                try custody.distributeBackup(
-                    threshold:    k,
-                    recipients:   selected.map(\.identifier),
-                    newKey:       !self.droppedBackupTrustees().isEmpty,
-                    currentDepth: self.security.currentDepth,
-                    vaultManager: self.vault
-                )
-            case .entry(let id):
-                try self.distributeEntry(id, k: k, selected: selected)
-            }
+            guard let custody = self.shardCustodyManager else { throw ShardCustodyManager.CustodyError.keyDerivationFailed }
+            // Dropping anyone splits a new key: a removed trustee's piece otherwise
+            // still rebuilds the key with k−1 others from the old split (Bug 141).
+            try custody.distributeBackup(
+                threshold:    k,
+                recipients:   selected.map(\.identifier),
+                newKey:       !self.droppedBackupTrustees().isEmpty,
+                currentDepth: self.security.currentDepth,
+                vaultManager: self.vault
+            )
             let activeIDs = Set(
                 self.fetchDistributionMeta()?.shards
                     .filter { Self.activeStatuses.contains($0.status) }
@@ -654,50 +592,6 @@ struct VaultShardSetup: View {
         } catch {
             self.error   = "Failed: \(error.localizedDescription)"
             self.marking = false
-        }
-    }
-
-    private func distributeEntry(_ id: UUID, k: Int, selected: [Contact.Profile]) throws {
-        // Capture old attrIDs BEFORE prepareShards overwrites the metadata.
-        // Contacts staying in the distribution get a .replace op; new ones get .distribute.
-        var oldAttrIDs: [String: UUID] = [:]
-
-        if let existingMeta = self.fetchDistributionMeta() {
-            let newIDs  = Set(selected.map(\.identifier))
-            let removed = existingMeta.shards.filter {
-                !newIDs.contains($0.contactIdentifier)
-                    && $0.status != .revoked
-                    && $0.status != .revokePending
-                    && $0.status != .lost
-            }
-            for shard in removed {
-                try? self.vault.updateShardStatus(attributeID: shard.attributeID, to: .revoked)
-            }
-            for shard in existingMeta.shards where newIDs.contains(shard.contactIdentifier) {
-                oldAttrIDs[shard.contactIdentifier] = shard.attributeID
-            }
-        }
-
-        let attributes = try self.vault.prepareShards(for: id, threshold: k, recipients: selected)
-        for (contact, attribute) in zip(selected, attributes) {
-            try self.shardCustodyManager?.queueDistribute(
-                attribute: attribute,
-                for:       contact.identifier,
-                replacing: oldAttrIDs[contact.identifier]
-            )
-        }
-    }
-
-    private func revokeShard(_ record: ShardRecord) {
-        self.vault.extendSession()
-        do {
-            try self.vault.updateShardStatus(attributeID: record.attributeID, to: .revoked)
-            // Remove from selection so the UI reflects the change.
-            self.selectedIDs.remove(record.contactIdentifier)
-            self.snapshotIDs.remove(record.contactIdentifier)
-            self.confirmationMessage = nil
-        } catch {
-            self.error = "Revoke failed: \(error.localizedDescription)"
         }
     }
 }

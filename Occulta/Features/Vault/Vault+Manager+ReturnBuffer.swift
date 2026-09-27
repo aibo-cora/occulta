@@ -3,13 +3,13 @@
 //  Occulta
 //
 //  Owner-side reconstruction buffer.
-//  Absorbs `.handback` shards into `PendingShamirSecretRestore` rows, finalises
-//  reconstruction once a secret's threshold is reached.
+//  Banks `.handback` backup-key pieces in `PendingShamirSecretRestore` rows until the owner
+//  opens a `.occbak` (`restoreBackup`). Per-entry reconstruction was retired 2026-09-27
+//  (`decisions.md`, "Retire per-entry splitting").
 //
 //  Replaces the `ReconstructShard`-based mechanism (RECOVERY_BUFFER_LAYERING.md §9.3,
 //  2026-09-21) — one model instead of two, keyed by the secret's own identity
-//  (`attributeID`: a BEK `distributionID`, or a PEK's `VaultEntry.id`) rather than
-//  BEK/PEK living in separate shapes. Collection is depth-blind by design — see
+//  (`attributeID`: a backup key's `distributionID`). Collection is depth-blind by design — see
 //  `PendingShamirSecretRestore`'s own doc comment for why that's safe: the model
 //  carries no depth information at all, so a coercer who fully decrypts every row
 //  still learns only "a secret was restored," never which depth.
@@ -22,8 +22,8 @@
 //
 //  All buffer rows are readable/writable while the vault is locked — `attributeID`/
 //  `deletionToken` sealed under the local DB key, `shards` under the restore vault
-//  key, neither requiring biometric access. Finalisation itself requires the vault
-//  unlocked because it re-wraps the recovered PEK (or BEK) under the vault key.
+//  key, neither requiring biometric access. Completion requires the vault unlocked
+//  because it stores the recovered backup key under the vault key.
 //
 
 import Foundation
@@ -47,79 +47,29 @@ extension VaultManager {
     ///      a second share from the same sender replaces the first rather than
     ///      accumulating, so a threshold-reaching group structurally requires distinct
     ///      senders, not just distinct `SignedAttribute.id`s.
-    ///   2. For a per-entry PEK this device split itself, opportunistically try to
-    ///      finalise; it no-ops harmlessly if its preconditions aren't met. A BEK
-    ///      restore shard is only banked: completion happens when the owner opens the
-    ///      `.occbak` (`restoreBackup`).
+    ///   2. Nothing more: completion happens when the owner opens the `.occbak`
+    ///      (`restoreBackup`).
+    ///
+    /// Only backup-key pieces are banked. A trustee hands back every piece it holds
+    /// under the owner's old key, including per-entry pieces from before that splitting
+    /// was retired, and `restoreBackup` would try each such group against the whole
+    /// `.occbak` for nothing, on every attempt, forever. The label is the only thing that
+    /// tells the kinds apart and it isn't signed, but a trustee who changes it can only
+    /// get a real piece ignored, the same as withholding it (`decisions.md`, "Retire
+    /// per-entry splitting").
     func acceptReturnedShard(
         _ attribute: SignedAttribute,
         senderIdentifier: String
     ) throws {
-        guard attribute.category == .shard, let attributeID = attribute.entryID else {
+        guard attribute.category == .shard, attribute.entryID != nil else {
             throw VaultError.decryptionFailed
         }
+        guard attribute.label == SignedAttribute.backupKeyPieceLabel else { return }
 
         try self.absorbShard(attribute, senderIdentifier: senderIdentifier)
-
-        // ── Per-entry PEK reconstruction ──────────────────────────────────
-        if let entry = try? self.fetchEntry(by: attributeID), entry.shardDistributionEncrypted != nil {
-            try? self.tryFinalizeReconstruction(entryID: attributeID)
-        }
-    }
-
-    /// Attempt to finalise reconstruction for one entry: collect buffered shards,
-    /// run `reconstructEntry`, and orphan the buffer row on success.
-    ///
-    /// No-op when:
-    ///   - the vault is locked (vault key needed to read distribution metadata
-    ///     and to re-wrap the recovered PEK),
-    ///   - the entry has no distribution metadata (was never split),
-    ///   - fewer than `threshold` shards are buffered,
-    ///   - reconstruction throws (e.g. wrong shards, tampered bytes — GCM tag
-    ///     rejects the candidate PEK in `reconstructEntry`).
-    func tryFinalizeReconstruction(entryID: UUID) throws {
-        guard self.isUnlocked else { return }
-
-        let vaultKey = try self.currentKey()
-        guard let entry = try self.fetchEntry(by: entryID) else { return }
-        guard let metaCipher = entry.shardDistributionEncrypted else { return }
-
-        let metaBox       = try AES.GCM.SealedBox(combined: metaCipher)
-        let metaPlaintext = try AES.GCM.open(metaBox, using: vaultKey, authenticating: entry.aad(for: .shardDistribution))
-        let meta          = try JSONDecoder().decode(ShardDistributionMetadata.self, from: metaPlaintext)
-
-        let collected = try self.collectedShards(forAttributeID: entryID)
-        guard collected.count >= meta.threshold else { return }
-
-        let attributes = collected.map { $0.attribute }
-        let identity   = try? self.keyManager.retrieveIdentity()
-
-        // reconstructEntry handles GCM authentication — wrong shards fail there.
-        try self.reconstructEntry(entryID: entryID, shards: attributes, ownerIdentity: identity)
-
-        self.orphanShards(forAttributeID: entryID)
-    }
-
-    /// Sweep all entries with distribution metadata on vault unlock; finalise
-    /// any that reached threshold while the vault was locked.
-    func tryFinalizeAllReconstructions() {
-        guard self.isUnlocked else { return }
-        let entries = (try? self.fetchAllEntries()) ?? []
-        for entry in entries where entry.shardDistributionEncrypted != nil {
-            try? self.tryFinalizeReconstruction(entryID: entry.id)
-        }
-    }
-
-    /// User cancels reconstruction for one entry — drop all buffered shards for it.
-    func cancelReconstruction(entryID: UUID) throws {
-        self.orphanShards(forAttributeID: entryID)
     }
 
     // MARK: - Absorb / read / orphan
-    //
-    // The one mechanism both BEK restore and per-entry PEK reconstruction share —
-    // PendingShamirSecretRestore already disambiguates by attributeID, so neither
-    // needs its own branch here the way the old ReconstructShard split required.
 
     /// Absorb `attribute` into the row for `attribute.entryID` — creating one if none
     /// exists yet. At most one slot per `(attributeID, senderIdentifier)`: a second
@@ -154,8 +104,7 @@ extension VaultManager {
     }
 
     /// Every shard collected so far toward reconstructing the secret identified by
-    /// `attributeID` — a BEK `distributionID` or a PEK's `VaultEntry.id`, whichever
-    /// this row was opened for.
+    /// `attributeID`, a backup key's `distributionID`.
     ///
     /// Empty if no row exists yet, or if the row exists but has already been
     /// orphaned (`orphanShards` already consumed it) — a completed or abandoned
@@ -187,6 +136,23 @@ extension VaultManager {
         row.shards        = Data.randomBytes(PendingShamirSecretRestore.ShardsCodec.payloadSize + 28)
         row.deletionToken = try? PendingShamirSecretRestore.orphanedToken.encrypt(using: localKey)
         try? self.modelContext.save()
+    }
+
+    /// Orphans, in place, every live row whose secret is in `attributeIDs`. Doesn't save;
+    /// returns whether anything changed. Used by `retireEntrySplittingIfNeeded`.
+    func orphanRestoreRows(forAttributeIDs attributeIDs: Set<UUID>) -> Bool {
+        guard !attributeIDs.isEmpty, let localKey = try? Self.localKey() else { return false }
+        var changed = false
+        for row in (try? self.modelContext.fetch(FetchDescriptor<PendingShamirSecretRestore>())) ?? [] {
+            guard !row.isOrphaned(usingKey: localKey),
+                  let data = row.attributeID, let plain = data.decrypt(using: localKey),
+                  let id = Self.uuid(fromBytes: [UInt8](plain)), attributeIDs.contains(id)
+            else { continue }
+            row.shards        = Data.randomBytes(PendingShamirSecretRestore.ShardsCodec.payloadSize + 28)
+            row.deletionToken = try? PendingShamirSecretRestore.orphanedToken.encrypt(using: localKey)
+            changed = true
+        }
+        return changed
     }
 
     // MARK: - Private

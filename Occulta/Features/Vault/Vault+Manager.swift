@@ -58,11 +58,6 @@ final class VaultManager {
 
     // MARK: - Recovery health
 
-    /// Aggregate shard coverage across all distributed entries.
-    /// `nil` when the vault is locked. Updated automatically on unlock and
-    /// after every shard status mutation.
-    var recoveryHealth: RecoveryHealthSummary? = nil
-
     /// Backup key shard erosion state: non-nil when a distribution exists and
     /// active (pending + confirmed) shards fall below threshold.
     /// `nil` when the vault is locked, no distribution exists, or coverage is met.
@@ -70,7 +65,7 @@ final class VaultManager {
     /// Stays flat on `VaultManager`, not moved into `Backup` — `VaultManager` is
     /// `@Observable`, `Backup` is a plain class, so a property read through
     /// `vault.backup.erosion` would never trigger a SwiftUI view update. UI-facing
-    /// observed state stays here alongside `recoveryHealth`/`backupStaleness`;
+    /// observed state stays here alongside `backupStaleness`;
     /// `Backup` holds the operations, `VaultManager` holds what the UI watches.
     var backupErosion: (active: Int, threshold: Int)? = nil
 
@@ -171,22 +166,6 @@ final class VaultManager {
                 .sink { [weak self] _ in self?.lock() }
                 .store(in: &self.cancellables)
         }
-
-        // ── Auto-recompute on any ModelContext save ───────────────────────────
-        // We don't discriminate which ModelContext caused the notification —
-        // saves from other managers (ContactManager, ExchangeManager) may also
-        // fire it while the vault is unlocked. Extra recomputes cost little, since
-        // recomputeRecoveryHealth() exits cheaply when no shard data exists, and they
-        // don't extend the vault session: using the key never does (bugs.md Bug 136).
-        // The guard on isUnlocked is for correctness: currentKey() would throw
-        // when locked, and recoveryHealth/backupErosion are already nil from lock().
-        NotificationCenter.default.publisher(for: ModelContext.didSave)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self, self.isUnlocked else { return }
-                self.recomputeRecoveryHealth()
-            }
-            .store(in: &self.cancellables)
     }
 
     // MARK: - Unlock / lock
@@ -250,12 +229,7 @@ final class VaultManager {
         // runs unconditionally rather than nested in the block above.
         try? self.migrateReconstructShardsIfNeeded()
         self.deleteLegacyRestoreState()
-        // Drain reconstruction buffer entries that crossed threshold while locked.
-        self.tryFinalizeAllReconstructions()
-        // Replay shard status updates that arrived while locked, then check for losses.
-        self.drainPendingShardStatusUpdates()
-        self.drainPotentiallyLostShards()
-        self.recomputeRecoveryHealth()
+        self.retireEntrySplittingIfNeeded()
         // backupStaleness and backupErosion are both refreshed by the views that
         // display them (Vault+Tab, VaultRecoverySettings), not here: they're depth-scoped
         // and this scope has no depth. The views' onChange(of: isUnlocked) fires right
@@ -273,7 +247,6 @@ final class VaultManager {
         self.inactivityTimer = nil
         self.authContext?.invalidate()
         self.authContext     = nil
-        self.recoveryHealth  = nil
         self.backupErosion   = nil
         self.backupStaleness = nil
         self.postRestorePromptPending = false
@@ -423,9 +396,6 @@ final class VaultManager {
 
     /// Decrypt the sealed label payload (type + label string) for one entry.
     ///
-    /// Internal visibility so `Vault+Manager+Shards.swift` can call it from
-    /// `recomputeRecoveryHealth` without double-decrypting.
-    ///
     /// ⚠️ The returned payload is plaintext. Do not persist or log it.
     func decryptLabelPayload(for entry: VaultEntry) throws -> SealedLabelPayload {
         try self.labelPayload(for: entry, vaultKey: try self.currentKey())
@@ -437,9 +407,6 @@ final class VaultManager {
         let label:     String
         let type:      VaultEntryType
         let createdAt: Date
-        /// The entry's key has been split among trustees: whether its distribution field is
-        /// set, which needs no decryption.
-        let isSplit:   Bool
     }
 
     /// The Vault tab's rows for `entries`, deriving the vault key once for all of them. The tab
@@ -454,8 +421,7 @@ final class VaultManager {
                 id:        entry.id,
                 label:     payload?.label ?? "–",
                 type:      payload?.type  ?? .note,
-                createdAt: entry.createdAt,
-                isSplit:   entry.shardDistributionEncrypted != nil
+                createdAt: entry.createdAt
             )
         }
     }
@@ -493,21 +459,12 @@ final class VaultManager {
 
     // MARK: - Delete
 
-    /// Delete a vault entry and return its shard distribution metadata, if any.
-    ///
-    /// The metadata is read before deletion and returned to the caller.
-    /// Returns `nil` when the entry had no
-    /// distributed shards (no action needed from `ShardCustodyManager`).
-    @discardableResult
-    func deleteEntry(id: UUID) throws -> ShardDistributionMetadata? {
+    /// Delete a vault entry.
+    func deleteEntry(id: UUID) throws {
         guard let entry = try self.fetchEntry(by: id) else { throw VaultError.entryNotFound }
-
-        let metadata = try? self.shardDistributionMetadata(for: id)
 
         self.modelContext.delete(entry)
         try self.modelContext.save()
-
-        return metadata
     }
 
     // MARK: - Key access

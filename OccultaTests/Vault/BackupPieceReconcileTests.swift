@@ -78,7 +78,7 @@ private struct Owner {
 
     /// A trustee's manifest arriving: `held` is what it reports holding from us.
     func manifest(from trustee: String, held: [UUID]) throws {
-        try self.custody.processInboundManifest(held, from: trustee, vaultManager: self.vault)
+        try self.custody.processInboundManifest(held, from: trustee)
     }
 
     func reconcile(keyChangedFor changed: String? = nil, live: Set<String>, depth: Int = 0) {
@@ -215,7 +215,8 @@ struct BackupReconcileTests {
         let t = trustees(2)
         try owner.distributeAndConfirm(t)
 
-        owner.vault.drainPotentiallyLostShards()   // what unlock() runs
+        owner.vault.lock()
+        owner.vault.unlock(context: LAContext())
         #expect(try owner.watch().count == 2)
 
         try owner.manifest(from: t[1], held: [])

@@ -3,32 +3,24 @@
 //  Occulta
 //
 //  Vault recovery health dashboard — accessible from Settings › Vault Recovery.
-//  Surfaces three layers of recovery readiness:
+//  Surfaces two layers of recovery readiness:
 //
-//    • BEK  — Backup Encryption Key shard status (threshold met → backups restorable)
-//    • PEKs — Per-entry key shard health (how many entries are below threshold)
+//    • Backup key — its shard status (threshold met → backups restorable)
 //    • Backup — Staleness report for the last exported .occbak file
 //
-//  Requires vault unlocked for BEK + PEK data. Shows an inline unlock button if locked.
+//  Requires vault unlocked for backup-key data. Shows an inline unlock button if locked.
+//  Per-entry key health went with per-entry splitting (`decisions.md`, "Retire per-entry
+//  splitting").
 //
 
 import SwiftUI
-import SwiftData
 import LocalAuthentication
 
 struct VaultRecoverySettings: View {
 
     @Environment(VaultManager.self) private var vault
     @Environment(Manager.Security.self) private var security
-    @Query private var entries: [VaultEntry]
     @State private var unlocking = false
-
-    /// IDs of entries visible at the current depth — same filter `Vault+Tab.swift` applies to
-    /// `recoveryHealth.affected` (Bug 116: this view read that property unfiltered, leaking a
-    /// cross-depth critical/degraded count).
-    private var visibleEntryIDs: Set<UUID> {
-        Set(self.security.visibleVaultEntries(from: self.entries).map(\.id))
-    }
 
     // Amber consistent with the rest of the vault UI.
     private static let amber = VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66))
@@ -36,7 +28,6 @@ struct VaultRecoverySettings: View {
     var body: some View {
         List {
             self.bekSection
-            self.pekSection
             self.backupSection
             self.configSection
         }
@@ -97,54 +88,13 @@ struct VaultRecoverySettings: View {
         }
     }
 
-    // MARK: - PEKs
-
-    private var pekSection: some View {
-        Section {
-            if !vault.isUnlocked {
-                self.lockedRow(reason: "Entry key health requires vault access.")
-            } else {
-                self.pekSummaryRow
-            }
-        } header: {
-            Text("Per-Entry Keys")
-        } footer: {
-            Text("Each vault entry is encrypted with its own key (PEK). Distribute shards per entry so individual keys can be reconstructed independently.")
-        }
-    }
-
-    @ViewBuilder
-    private var pekSummaryRow: some View {
-        let affected = (vault.recoveryHealth?.affected ?? []).filter { self.visibleEntryIDs.contains($0.entryID) }
-        let critical = affected.filter { $0.status == .critical }.count
-        let degraded = affected.filter { $0.status == .degraded }.count
-
-        NavigationLink {
-            VaultShardHealth()
-        } label: {
-            if critical > 0 {
-                statusRow(dot: .occultaDanger,
-                          label: "\(critical) \(critical == 1 ? "entry" : "entries") critical",
-                          sub: "No active trustees — key unrecoverable")
-            } else if degraded > 0 {
-                statusRow(dot: Self.amber,
-                          label: "\(degraded) \(degraded == 1 ? "entry" : "entries") degraded",
-                          sub: "Below threshold — add or re-send shards")
-            } else {
-                statusRow(dot: .occultaVerified,
-                          label: "All entries healthy",
-                          sub: "Every distributed key meets its threshold")
-            }
-        }
-    }
-
     // MARK: - Backup
 
     private var backupSection: some View {
         Section {
             self.backupStatusRow
             NavigationLink {
-                VaultShardSetup(mode: .backup)
+                VaultShardSetup()
             } label: {
                 Label("Backup Key Trustees", systemImage: "person.3.fill")
             }

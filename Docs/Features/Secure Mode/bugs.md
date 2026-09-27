@@ -9880,7 +9880,8 @@ Full local suite run on a host with Secure Enclave access: 844 passed, 0 failed,
 
 ## Bug 115 — `VaultShardHealth` reads a raw, unfiltered `@Query` and renders decrypted entry labels from every depth
 
-**Status:** Closed (Fixed), verified 2026-09-11. Filed and fixed the same day, found while
+**Status:** Closed (Fixed), verified 2026-09-11. **Moot since 2026-09-27:** `VaultShardHealth` was deleted
+with per-entry splitting (`Docs/General/decisions.md`, "Retire per-entry splitting"). Filed and fixed the same day, found while
 answering "what's left to complete the vault entry refactor" — checked every remaining
 `@Query`/`FetchDescriptor<VaultEntry>` site in the UI against the pattern Bug 113 fixed for
 `Vault+Tab.swift`, since that fix was scoped to one file and never claimed to be exhaustive.
@@ -9973,7 +9974,8 @@ Bug 116's fix: 844 passed, 0 failed, 6 skipped (`KeychainMigrationSETests` only)
 
 ## Bug 116 — `VaultRecoverySettings`'s PEK summary reads `recoveryHealth.affected` unfiltered, leaking a cross-depth count
 
-**Status:** Closed (Fixed), verified 2026-09-11. Filed and fixed the same day, found alongside
+**Status:** Closed (Fixed), verified 2026-09-11. **Moot since 2026-09-27:** the PEK summary and
+`recoveryHealth` were deleted with per-entry splitting (`Docs/General/decisions.md`, "Retire per-entry splitting"). Filed and fixed the same day, found alongside
 Bug 115.
 
 ### Severity: Medium — a count leak, not a content leak
@@ -12234,8 +12236,8 @@ processes it; the backup-key piece is still there. Plus: a piece missing from a 
   `VaultBackupRoundTripTests`, group-payload tests in `GroupEncryptTests`; the implicit-revoke tests in
   `ShardManifestTests` and `ShardCustodyTests` are deleted, and backup-key tests confirm pieces through
   `setBackupShardStatuses`.
-- **Not handled:** per-entry revoke (the context menu, `.revokePending`) no longer reaches trustees; per-entry
-  splitting is retired next. `Backup.distributeShards` has no callers (pre-existing).
+- **Not handled:** per-entry revoke (the context menu, `.revokePending`) no longer reaches trustees. Resolved
+  2026-09-27: per-entry splitting was retired (`Docs/General/decisions.md`, "Retire per-entry splitting"). `Backup.distributeShards` has no callers (pre-existing).
 - **Full suite:** 928 tests, 922 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
   Not walked through on a device: the "Remove trustee?" prompt, and a re-send reaching a real trustee.
 

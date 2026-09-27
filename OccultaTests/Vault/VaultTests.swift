@@ -162,7 +162,6 @@ private func makeContainer() throws -> ModelContainer {
         vm.lock()
 
         #expect(vm.backupStaleness == nil)
-        #expect(vm.recoveryHealth == nil)
         #expect(vm.backupErosion == nil)
         #expect(!vm.postRestorePromptPending)
     }
@@ -252,7 +251,6 @@ private func makeContainer() throws -> ModelContainer {
         vm.unlock(context: LAContext())
         let seed  = try vm.addEntry(label: "Seed", content: Data("a b c".utf8), type: .seedPhrase)
         let note  = try vm.addEntry(label: "Note", content: Data("hello".utf8), type: .note)
-        note.shardDistributionEncrypted = Data([0x01])   // marked split; the row reads presence only
         let before = km.vaultKeyDerivations
 
         let rows = vm.entryListRows(for: [seed, note])
@@ -261,7 +259,6 @@ private func makeContainer() throws -> ModelContainer {
         #expect(rows.map(\.id) == [seed.id, note.id])
         #expect(rows.map(\.label) == ["Seed", "Note"])
         #expect(rows.map(\.type) == [.seedPhrase, .note])
-        #expect(rows.map(\.isSplit) == [false, true])
         #expect(rows[0].createdAt == seed.createdAt)
     }
 
@@ -567,134 +564,6 @@ private func secureEnclaveAvailable() -> Bool {
         security.applyVerifyState(for: .normal(depth: 4))
         visible = security.visibleVaultEntries(from: all)
         #expect(visible.isEmpty, "at depth 4, neither entry was stamped here")
-    }
-}
-
-// MARK: - Phase 6: prepareShards
-
-@Suite("Phase 6 — prepareShards")
-@MainActor struct PrepareSharedsTests {
-
-    private func makeProfiles(count: Int) throws -> [Contact.Profile] {
-        let schema = Schema([
-            Contact.Profile.self,
-            Contact.Profile.PhoneNumber.self,
-            Contact.Profile.EmailAddress.self,
-            Contact.Profile.PostalAddress.self,
-            Contact.Profile.URLAddress.self,
-            Contact.Profile.Key.self
-        ])
-        let config    = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        let container = try ModelContainer(for: schema, configurations: [config])
-        let ctx       = ModelContext(container)
-
-        return (0..<count).map { i in
-            let p = Contact.Profile(
-                identifier: "contact-\(i)",
-                givenName: "Contact", familyName: "\(i)",
-                middleName: "", nickname: "",
-                organizationName: "", departmentName: "", jobTitle: ""
-            )
-            ctx.insert(p)
-            return p
-        }
-    }
-
-    @Test("prepareShards returns one SignedAttribute per recipient")
-    func shardCountMatchesRecipients() throws {
-        let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data("secret".utf8), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-
-        let attrs = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        #expect(attrs.count == 3)
-    }
-
-    @Test("Each SignedAttribute has category .shard")
-    func categoryIsShard() throws {
-        let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 2)
-
-        let attrs = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        #expect(attrs.allSatisfy { $0.category == .shard })
-    }
-
-    @Test("Each shard signature verifies against our identity public key")
-    func shardSignaturesVerify() throws {
-        let (vm, km) = try makeVaultManager()
-        vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-
-        let attrs  = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        let ourPub = try km.retrieveIdentity()
-
-        for attr in attrs {
-            #expect(attr.verify(against: ourPub), "shard \(attr.label) signature must verify")
-        }
-    }
-
-    @Test("Each shard has a distinct value (different x-coordinates)")
-    func shardsAreDistinct() throws {
-        let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-
-        let attrs  = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        let values = attrs.map { $0.value }
-        #expect(Set(values).count == values.count, "all shard values must be distinct")
-    }
-
-    @Test("prepareShards persists encrypted ShardDistributionMetadata on the entry")
-    func metadataPersistedOnEntry() throws {
-        let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-
-        #expect(entry.shardDistributionEncrypted == nil)
-        _ = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        #expect(entry.shardDistributionEncrypted != nil)
-    }
-
-    @Test("prepareShards throws .locked when vault is not unlocked")
-    func prepareShardsRequiresUnlock() throws {
-        let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 2)
-        vm.lock()
-
-        #expect(throws: VaultManager.VaultError.locked) {
-            _ = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        }
-    }
-
-    @Test("SSS reconstruction from threshold shards recovers the entry's PEK")
-    func shardsReconstructPEK() throws {
-        let (vm, km) = try makeVaultManager()
-        vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data("plaintext".utf8), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-
-        let attrs = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-
-        // Extract raw shard bytes from any 2 attributes.
-        let rawShares = attrs.prefix(2).map { [UInt8]($0.value) }
-        let reconstituted = try ShamirSecretSharing.reconstruct(shares: rawShares)
-
-        // Compare against the entry's actual PEK — prepareShards splits the
-        // per-entry key, not the vault key.
-        let vaultKey  = try km.deriveVaultKey(context: LAContext())!
-        var pekBytes  = Data()
-        try vm.unwrapPEK(for: entry, vaultKey: vaultKey).withUnsafeBytes { pekBytes = Data($0) }
-
-        #expect(reconstituted == pekBytes,
-                "reconstructed secret must equal the entry's PEK")
     }
 }
 

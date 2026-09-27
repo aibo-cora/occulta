@@ -136,7 +136,7 @@ struct VaultTab: View {
                 .onAppear { self.vault.extendSession() }
             }
             .navigationDestination(isPresented: $showBEKSetup) {
-                VaultShardSetup(mode: .backup)
+                VaultShardSetup()
             }
             .navigationDestination(isPresented: self.$showRestore) {
                 VaultRestoreView()
@@ -165,7 +165,7 @@ struct VaultTab: View {
                 }
             }
             // Rebuilds the entry rows only when entries, depth or the lock state change —
-            // not on the many redraws a save anywhere causes through `recoveryHealth`.
+            // not on every redraw.
             .task(id: ListInputs(
                 entryIDs: self.entries.map(\.id),
                 depth:    self.security.currentDepth,
@@ -251,10 +251,6 @@ struct VaultTab: View {
 
     private var list: some View {
         let rows           = self.listRows
-        let visibleIDs     = Set(rows.map(\.id))
-        let affected       = (self.vault.recoveryHealth?.affected ?? []).filter { visibleIDs.contains($0.entryID) }
-        let affectedIDs    = Set(affected.map(\.entryID))
-        let personalRows   = rows.filter { !affectedIDs.contains($0.id) }
         // Each of these derives keys and decrypts; read once per redraw, not per use.
         let setupState     = self.vault.backupSetupState(currentDepth: self.security.currentDepth)
         let custodianRows  = self.custodianRows
@@ -268,8 +264,7 @@ struct VaultTab: View {
             ($0.bekRotated ? 1 : 0) + ($0.newEntryCount > 0 ? 1 : 0) + ($0.trusteeSetChanged ? 1 : 0)
         } ?? 0
 
-        let hasCritical    = affected.contains { $0.status == .critical }
-                          || bekAffected.map { $0.active == 0 } ?? false
+        let hasCritical    = bekAffected.map { $0.active == 0 } ?? false
                           || stale?.bekRotated == true
         let attentionColor = hasCritical ? Color.red : Color.occultaWarn
 
@@ -285,8 +280,8 @@ struct VaultTab: View {
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             }
 
-            // Attention section — entries with degraded or critical coverage + BEK erosion + stale backup
-            if self.filter != .shards, !affected.isEmpty || bekAffected != nil || staleCount > 0 {
+            // Attention section — backup-key erosion + stale backup
+            if self.filter != .shards, bekAffected != nil || staleCount > 0 {
                 Section {
                     // Stale backup rows — one per active staleness reason
                     if let s = stale {
@@ -324,14 +319,9 @@ struct VaultTab: View {
 
                     if let bek = bekAffected {
                         NavigationLink {
-                            VaultShardSetup(mode: .backup)
+                            VaultShardSetup()
                         } label: {
                             VaultBEKAttentionRow(active: bek.active, threshold: bek.threshold)
-                        }
-                    }
-                    ForEach(affected, id: \.entryID) { item in
-                        NavigationLink(value: item.entryID) {
-                            VaultAffectedEntryRow(item: item)
                         }
                     }
                 } header: {
@@ -344,14 +334,14 @@ struct VaultTab: View {
                             .tracking(1.6)
                             .foregroundStyle(attentionColor)
                         Spacer()
-                        Text("\(affected.count + (bekAffected != nil ? 1 : 0) + staleCount)")
+                        Text("\((bekAffected != nil ? 1 : 0) + staleCount)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
                 }
             }
 
-            // Personal entries (excludes entries already shown in attention section)
+            // Personal entries
             if self.filter != .shards {
                 Section {
                     if rows.isEmpty {
@@ -360,7 +350,7 @@ struct VaultTab: View {
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(personalRows) { row in
+                        ForEach(rows) { row in
                             NavigationLink(value: row.id) {
                                 VaultEntryRow(row: row)
                             }
@@ -368,7 +358,7 @@ struct VaultTab: View {
                         .onDelete { offsets in
                             self.vault.extendSession()
                             for i in offsets {
-                                _ = try? self.vault.deleteEntry(id: personalRows[i].id)
+                                try? self.vault.deleteEntry(id: rows[i].id)
                             }
                         }
                     }
@@ -399,7 +389,7 @@ struct VaultTab: View {
             if self.filter != .shards {
                 Section {
                     NavigationLink {
-                        VaultShardSetup(mode: .backup)
+                        VaultShardSetup()
                     } label: {
                         VaultBackupRow(state: setupState)
                     }
@@ -535,7 +525,6 @@ private struct VaultEntryRow: View {
     var body: some View {
         let label     = self.row.label
         let entryType = self.row.type
-        let isSplit   = self.row.isSplit
 
         return HStack(spacing: 12) {
             ZStack {
@@ -557,17 +546,6 @@ private struct VaultEntryRow: View {
             }
 
             Spacer()
-
-            Text("🔮")
-                .font(.system(size: 13))
-                .grayscale(isSplit ? 0 : 1)
-                .opacity(isSplit ? 1 : 0.3)
-                .shadow(
-                    color: isSplit
-                        ? VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)).opacity(0.55)
-                        : .clear,
-                    radius: 4
-                )
 
             Text("SE")
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -717,50 +695,3 @@ private struct VaultBackupStaleRow: View {
     }
 }
 
-// MARK: - Affected Entry Row
-
-private struct VaultAffectedEntryRow: View {
-    let item: RecoveryHealthSummary.AffectedEntry
-
-    private var accentColor: Color {
-        item.status == .critical ? .red : .occultaWarn
-    }
-
-    private var subtitleText: String {
-        switch item.status {
-        case .critical: "recovery unavailable"
-        case .degraded: "\(item.active) of \(item.threshold) recovery pieces"
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(item.entryType.tileBackground)
-                    .frame(width: 36, height: 36)
-                Text(item.entryType.emoji)
-                    .font(.system(size: 18))
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.label)
-                    .font(.system(size: 16, weight: .medium))
-                    .lineLimit(1)
-                Text(subtitleText)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(accentColor)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Image(systemName: item.status == .critical
-                  ? "exclamationmark.circle.fill"
-                  : "exclamationmark.triangle.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(accentColor)
-        }
-        .padding(.vertical, 3)
-    }
-}

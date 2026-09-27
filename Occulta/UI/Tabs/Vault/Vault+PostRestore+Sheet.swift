@@ -14,7 +14,7 @@ struct VaultPostRestoreSheet: View {
     let onDone: () -> Void
 
     /// Called when the user taps "Set up backup recovery". Caller dismisses the
-    /// sheet and pushes VaultShardSetup(mode: .backup) onto the NavigationStack.
+    /// sheet and pushes VaultShardSetup() onto the NavigationStack.
     let onSetupBackup: () -> Void
 
     @Environment(\.dismiss) private var dismiss

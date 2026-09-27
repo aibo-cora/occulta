@@ -1044,7 +1044,6 @@ struct GroupStructuralTests {
         let security  = try Manager.Security(modelContainer: container, keyManager: km)
         let cm        = ContactManager(modelContainer: container, security: security)
         let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
-        let vault     = VaultManager(modelContainer: container, keyManager: km)
 
         let target = UUID().uuidString
         let other  = UUID().uuidString
@@ -1054,7 +1053,7 @@ struct GroupStructuralTests {
         #expect(cm.isGlobalTrustee(target))
         #expect(cm.isGlobalTrustee(other))
 
-        try cm.deleteContact(identifier: target, vaultManager: vault, shardCustodyManager: custody)
+        try cm.deleteContact(identifier: target, shardCustodyManager: custody)
 
         #expect(!cm.isGlobalTrustee(target), "a deleted contact's trustee designation must become unreachable")
         #expect(cm.isGlobalTrustee(other), "an unrelated contact's designation must survive")

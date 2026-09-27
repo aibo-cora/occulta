@@ -65,22 +65,6 @@ private func makeRig() throws -> (
     return (custody, vault, container, km)
 }
 
-/// A VaultEntry with an outstanding per-entry distribution (`shardDistributionEncrypted`
-/// set) — the precondition Bug 94 remedy 2's per-entry gate checks for. Recipients are
-/// dummy contacts; only the entryID and threshold matter to the tests below.
-@MainActor
-private func makeDistributedEntry(vault: VaultManager, threshold: Int = 2) throws -> UUID {
-    let entry = try vault.addEntry(label: "seed", content: Data("payload".utf8), type: .seedPhrase)
-    let recipients = (0..<max(threshold, 2)).map { i -> Contact.Profile in
-        Contact.Profile(
-            identifier: "dummy-\(i)", givenName: "", familyName: "", middleName: "",
-            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-    }
-    _ = try vault.prepareShards(for: entry.id, threshold: threshold, recipients: recipients)
-    return entry.id
-}
-
 /// Build a `.shard` SignedAttribute as if `signer` had signed it.
 ///
 /// Default `shardBytes` is a genuine 33-byte shape (1-byte x-coordinate + 32-byte
@@ -101,7 +85,7 @@ private func makeShardAttr(
     )
     let signature = try signer.signData(payload)
     return SignedAttribute(
-        id: id, label: "vault-shard", value: shardBytes, category: .shard,
+        id: id, label: SignedAttribute.backupKeyPieceLabel, value: shardBytes, category: .shard,
         signature: signature, createdAt: createdAt, expiresAt: nil, entryID: entryID
     )
 }
@@ -124,7 +108,7 @@ struct ShardHandbackAttestationTests {
     @Test("Branch A: a shard signed by the owner's own current identity is accepted")
     func branchADirectVerifyStillWorks() throws {
         let (custody, vault, _, ownerKey) = try makeRig()
-        let entryID = try makeDistributedEntry(vault: vault)
+        let entryID = UUID()   // a backup key's distribution ID
 
         let attr = try makeShardAttr(signer: ownerKey, entryID: entryID)
         let op   = OccultaBundle.ShardOperation(kind: .handback, attribute: attr)
@@ -142,7 +126,7 @@ struct ShardHandbackAttestationTests {
     @Test("A rotated-identity shard is accepted unconditionally — Bug 125 removed the attestation fallback entirely")
     func rotatedIdentityAcceptedUnconditionally() throws {
         let (custody, vault, _, _) = try makeRig()
-        let entryID = try makeDistributedEntry(vault: vault)
+        let entryID = UUID()   // a backup key's distribution ID
 
         // Signed by the owner's OLD identity — unreachable from this device (rotated),
         // so custody's own retrieveIdentity() can never verify it. No attestation
@@ -168,7 +152,7 @@ struct ShardHandbackAttestationTests {
     @Test("A second share from the same sender replaces the first, never accumulates")
     func sameSenderReplacesNotAccumulates() throws {
         let (custody, vault, _, _) = try makeRig()
-        let entryID = try makeDistributedEntry(vault: vault)
+        let entryID = UUID()   // a backup key's distribution ID
 
         let ownerOldKey = TestKeyManager()
         let senderPub   = try TestKeyManager().retrieveIdentity()
@@ -197,7 +181,7 @@ struct ShardHandbackAttestationTests {
     @Test("A single sender cannot mint enough distinct shares to reach a 2-of-2 threshold alone")
     func singleSenderCannotReachThresholdAlone() throws {
         let (custody, vault, _, _) = try makeRig()
-        let entryID = try makeDistributedEntry(vault: vault, threshold: 2)
+        let entryID = UUID()   // a backup key's distribution ID
 
         let attacker = TestKeyManager()
         let attackerPub = try attacker.retrieveIdentity()

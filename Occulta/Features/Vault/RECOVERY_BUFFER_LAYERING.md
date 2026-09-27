@@ -1,5 +1,10 @@
 # Recovery-Buffer-Gated Storage — Shard Buffer and Restore State
 
+> **2026-09-27:** per-entry splitting was retired (`Docs/General/decisions.md`, "Retire per-entry
+> splitting"). `PendingShamirSecretRestore` now holds backup-key pieces only: handed-back per-entry pieces
+> are not banked, and rows left for a `VaultEntry.id` are orphaned by `retireEntrySplittingIfNeeded`.
+> Text below about PEK reconstruction through this buffer is historical.
+
 **Status:** ~~design, not built.~~ **Built, corrected 2026-09-25** — this line was never updated as
 stages landed. Stage 3's inbound gate shipped 2026-09-12 (§2.1, `OccultaApp.filterShardOperations`);
 `PendingShamirSecretRestore` replaced `ReconstructShard` 2026-09-21; §9.4's one-shot restore at the

@@ -2,10 +2,9 @@
 //  PotentiallyLostShard+Model.swift
 //  Occulta
 //
-//  Tracks shards that were confirmed delivered but have since disappeared from
-//  a trustee's custodyManifest. Populated while the vault is locked (when the
-//  vault key is unavailable); processed and cleared the next time the vault
-//  unlocks via VaultManager.drainPotentiallyLostShards().
+//  Watches a delivered backup-key piece: whether the trustee's latest custodyManifest
+//  still lists it. Written while the vault may be locked (custody key only); read by the
+//  owning depth's `ShardCustodyManager.reconcileBackupPieces`.
 //
 //  Lifecycle:
 //  - Inserted by ShardCustodyManager.processInboundManifest when a PendingShardDistribute
@@ -13,8 +12,8 @@
 //    is deleted.
 //  - isAbsent is set to true when a subsequent manifest does not include the ID,
 //    and reset to false when a manifest includes it again.
-//  - Per-entry rows are deleted at vault unlock. Absent rows (isAbsent == true) with
-//    vault status .confirmed trigger updateShardStatus(.lost) before deletion.
+//  - Rows for per-entry pieces, from before per-entry splitting was retired, are no longer
+//    read or deleted (`decisions.md`, "Retire per-entry splitting").
 //  - Backup-key rows persist until their split is replaced
 //    (`ShardCustodyManager.distributeBackup`). Each depth reads them at its own unlock
 //    (`reconcileBackupPieces`): present → confirmed, absent → re-sent (`bugs.md` Bug 141).

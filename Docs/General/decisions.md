@@ -680,3 +680,54 @@ which reads other depths' backup keys. v2.0.0 derives each depth's keys from its
   exposure: one piece per split is no use on its own.
 
 **Full reasoning:** `bugs.md` Bug 141, "Decision" and "Found while designing the fix".
+
+---
+
+## Retire per-entry splitting
+
+**Status:** Decided 2026-09-26, built 2026-09-27.
+
+**Context:** each vault entry is sealed under its own key (PEK), and that key could also be split among
+trustees. Reconstructing a PEK only ever worked on the phone that still held the entry
+(`tryFinalizeReconstruction` needed the entry's own ciphertext), where the entry was already readable; on a
+new phone the entries come from the `.occbak`, which the backup key opens. The owner also had no way to ask
+trustees for per-entry pieces back on the same phone. So the splitting protected nothing, while it kept a
+second distribution system, a health screen per entry, and cross-depth reads (`recomputeRecoveryHealth`
+opened every entry's record) alive.
+
+**Decision:** remove it completely. Each entry keeps its own PEK under the vault key; only splitting it goes.
+- **Code:** per-entry `prepareShards`, PEK rotation, reconstruction (`reconstructEntry`,
+  `tryFinalizeReconstruction` and friends), status tracking (`updateShardStatus`, `markShardsLost`, the
+  status-update and lost-piece drains), recovery health, and their UI (Shard Health, the Per-Entry Keys
+  section, the entry detail's shard row, banner and "Manage Shards", the Vault tab's per-entry attention
+  rows and split indicator, and the setup screen's entry mode).
+- **Handed-back pieces:** only backup-key pieces (`label == "vault-bek-shard"`) are banked. Trustees hand
+  back every piece they hold under an owner's old key, and a restore would try each per-entry group against
+  the whole `.occbak`. The label is unsigned, but changing it can only make a real piece be ignored, which a
+  trustee can already do by withholding it.
+- **Pieces on trustees' phones are left:** nothing deletes a piece a trustee holds, and deleting on the
+  trustee's side would mean acting on that unsigned label.
+- **Schema, cleared this release:** `VaultEntry.shardDistributionEncrypted` stays in the model but is never
+  written, and `retireEntrySplittingIfNeeded` (every unlock, idempotent) clears it on every row, deletes
+  `PendingShardStatusUpdate` rows, deletes queued per-entry pieces, and orphans banked ones. **The property and
+  the `PendingShardStatusUpdate` model leave the schema next release**, once every device has run the
+  clean-up, so a SwiftData migration failure could only ever meet empty data.
+- **The group padding filler** carries the backup-key label, so a real piece and a filler one are the same size.
+
+**Why:** simplicity and the depth rule. The backup key is now the only split secret, every depth reads only
+its own row, and the per-entry paths were the remaining reads across depths.
+
+**Consequences:**
+- Per-entry watch rows (`PotentiallyLostShard`) confirmed since the last unlock before the upgrade can't be
+  told apart without opening every entry's record, so they stay; nothing reads them.
+- A trustee's "held for this contact" count still includes old per-entry pieces.
+- Bugs 115 and 116 (per-entry health screens) are moot.
+
+**Full reasoning:** this conversation, 2026-09-26/27; `bugs.md` Bug 141 (which unblocked it).
+
+**Tests:** `EntrySplittingRetirementTests` (clean-up: removes per-entry state, keeps backup-key state,
+idempotent, no-op on a device that never split, runs at unlock) and `perEntryPieceNotBanked`; per-entry
+tests deleted or moved onto the backup key. Full suite: 913 tests, 907 passed, 0 failed, 6 skipped (the
+`KeychainMigrationSETests` baseline). Not walked through on a device: the Vault tab, entry detail and
+Vault Recovery screens without their shard rows.
+

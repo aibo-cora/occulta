@@ -1175,7 +1175,7 @@ extension VaultManager {
 
                 attributes.append(SignedAttribute(
                     id:        attrID,
-                    label:     "vault-bek-shard",
+                    label:     SignedAttribute.backupKeyPieceLabel,
                     value:     shardData,
                     category:  .shard,
                     signature: signature,

@@ -3,6 +3,11 @@
 Occulta Vault — Shamir's Secret Sharing engineering reference.  
 Commit this file alongside any PR that touches the vault or SSS implementation.
 
+> **Per-entry splitting was retired 2026-09-27** (`Docs/General/decisions.md`, "Retire per-entry splitting"). Each entry
+> still has its own PEK under the vault key, but it is no longer split; the backup key (BEK) is the only
+> secret distributed to trustees. Sections below that describe splitting a PEK, per-entry reconstruction,
+> `RecoveryHealthSummary` or the Shard Health screen are historical.
+
 ---
 
 ## Design intent

@@ -40,6 +40,9 @@ private func makeRig() throws -> (
         Contact.Profile.URLAddress.self,
         Contact.Profile.Key.self,
         VaultEntry.self,
+        BackupEncryptionKey.self,
+        Vault.self,
+        PendingShamirSecretRestore.self,
         CustodyShard.self,
         ReconstructShard.self,
         PendingShardDistribute.self,
@@ -70,12 +73,12 @@ private func insertPlainProfile(identifier: String, in cm: ContactManager) throw
 // MARK: - Tests
 
 @MainActor
-@Suite("Decoy vault entry shard distribution at a duress depth", .serialized)
+@Suite("Backup-key distribution at a duress depth", .serialized, .enabled(if: secureEnclaveAvailable()))
 struct DecoyShardDistributionTests {
 
-    @Test func decoyEntry_duressTrustees_prepareShardsAndQueueDistribute_worksAtDuressDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
-
+    /// Per-entry splitting was retired (decisions.md, "Retire per-entry splitting"); the
+    /// duress-depth chain this pins is now the backup key's.
+    @Test func duressTrustees_distributeBackup_worksAtDuressDepth() throws {
         let (vault, contacts, custody, security, container) = try makeRig()
 
         // Move to a duress depth — mirrors what a real coercion session looks like.
@@ -84,29 +87,23 @@ struct DecoyShardDistributionTests {
 
         // Two decoy trustees, marked as global trustees at exactly this depth (item 3) —
         // not real, pre-existing relationships, just what a coerced setup would produce.
-        let trustee1 = try insertPlainProfile(identifier: "trustee-1", in: contacts)
-        let trustee2 = try insertPlainProfile(identifier: "trustee-2", in: contacts)
+        // UUID identifiers: the backup key's fixed-width codec stores them as raw UUIDs.
+        let trustee1 = try insertPlainProfile(identifier: UUID().uuidString, in: contacts)
+        let trustee2 = try insertPlainProfile(identifier: UUID().uuidString, in: contacts)
         try contacts.saveGlobalTrusteeDepth(selectedIDs: [trustee1.identifier, trustee2.identifier])
         #expect(contacts.isGlobalTrustee(trustee1.identifier))
         #expect(contacts.isGlobalTrustee(trustee2.identifier))
 
-        // A decoy vault entry, stamped visible only at this exact duress depth.
+        // The chain Vault+ShardSetup.swift runs on save, at this depth.
         vault.unlock(context: LAContext())
-        let entry = try vault.addEntry(
-            label: "decoy note", content: Data("decoy".utf8), type: .note,
-            currentDepth: security.currentDepth
+        try vault.setupBackup(currentDepth: security.currentDepth)
+        try custody.distributeBackup(
+            threshold: 2, recipients: [trustee1.identifier, trustee2.identifier], newKey: false,
+            currentDepth: security.currentDepth, vaultManager: vault
         )
-
-        // The real distribution chain Vault+ShardSetup.swift runs on save — no
-        // depth parameter anywhere in this path, so nothing to route around.
-        let attributes = try vault.prepareShards(for: entry.id, threshold: 2, recipients: [trustee1, trustee2])
-        #expect(attributes.count == 2)
-        for (contact, attribute) in zip([trustee1, trustee2], attributes) {
-            try custody.queueDistribute(attribute: attribute, for: contact.identifier)
-        }
 
         let queued = try ModelContext(container).fetch(FetchDescriptor<PendingShardDistribute>())
         #expect(queued.count == 2,
-                "prepareShards/queueDistribute must succeed at a duress depth — no depth-0 assumption should block this chain")
+                "distributeBackup must succeed at a duress depth — no depth-0 assumption should block this chain")
     }
 }

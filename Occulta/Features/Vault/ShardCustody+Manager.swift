@@ -89,7 +89,7 @@ final class ShardCustodyManager {
         }
 
         if let manifest = custodyManifest {
-            do { try self.processInboundManifest(manifest, from: senderIdentifier, vaultManager: vaultManager) }
+            do { try self.processInboundManifest(manifest, from: senderIdentifier) }
             catch {
                 #if DEBUG
                 debugPrint("ShardCustodyManager processInboundManifest failed: \(error)")
@@ -275,17 +275,14 @@ final class ShardCustodyManager {
 
     /// Process trustee's `custodyManifest` — the IDs of all shards they currently hold.
     ///
-    /// Confirm in-flight shards whose IDs appear in the manifest (direct vault update
-    /// if unlocked, queued via PendingShardStatusUpdate if locked). Insert a
-    /// PotentiallyLostShard row for each newly confirmed shard so future absence
-    /// can be detected at vault unlock.
+    /// For each queued piece the manifest lists: insert a `PotentiallyLostShard` watch
+    /// row (present) and drop the queued row. Then set `isAbsent` on this contact's watch
+    /// rows — true when absent from this manifest, false when present.
     ///
-    /// Update the isAbsent flag on all existing PotentiallyLostShard rows for this
-    /// contact — true when absent from this manifest, false when present. VaultManager
-    /// processes per-entry rows at the next vault unlock; backup-key rows persist and are
-    /// read by their own depth's `reconcileBackupPieces`, which also confirms those pieces
-    /// (`updateShardStatus` no longer reaches backup-key records, `bugs.md` Bug 141).
-    func processInboundManifest(_ manifest: [UUID], from senderIdentifier: String, vaultManager: VaultManager) throws {
+    /// Statuses aren't touched here: this runs at whatever depth is current, with the
+    /// vault maybe locked, and a piece belongs to one depth's record. Each depth reads the
+    /// watch rows in its own `reconcileBackupPieces` (`bugs.md` Bug 141).
+    func processInboundManifest(_ manifest: [UUID], from senderIdentifier: String) throws {
         let manifestSet = Set(manifest)
 
         guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return }
@@ -297,15 +294,8 @@ final class ShardCustodyManager {
             return payload.signedAttribute.id
         })
 
-        // Confirm in-flight shards that appear in the manifest.
+        // Delivered: watch the piece from now on, and stop sending it.
         for inFlightId in inFlightIDs where manifestSet.contains(inFlightId) {
-            do {
-                try vaultManager.updateShardStatus(attributeID: inFlightId, to: .confirmed)
-            } catch VaultManager.VaultError.locked {
-                try? self.queueShardStatusUpdate(attributeID: inFlightId, newStatus: .confirmed)
-            } catch {}
-
-            // Record delivery so future absence can be caught at vault unlock.
             let rowID = UUID()
             if let combined = try? self.sealRow(
                 PotentiallyLostShard.Payload(attributeID: inFlightId, contactIdentifier: senderIdentifier, isAbsent: false),
@@ -726,17 +716,6 @@ final class ShardCustodyManager {
             deletedAny = true
         }
         if deletedAny { try self.modelContext.save() }
-    }
-
-    private func queueShardStatusUpdate(attributeID: UUID, newStatus: ShardStatus) throws {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rowID    = UUID()
-        let combined = try self.sealRow(PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus), using: custodyKey, id: rowID)
-        self.modelContext.insert(PendingShardStatusUpdate(id: rowID, encryptedPayload: combined))
-        
-        try self.modelContext.save()
     }
 
     private static func fingerprint(of publicKey: Data) -> Data {

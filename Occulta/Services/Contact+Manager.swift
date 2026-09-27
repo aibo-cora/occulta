@@ -457,17 +457,16 @@ class ContactManager {
     /// and leaves every other member untouched, so it can't destroy decoy content
     /// prepared for a different depth.
     ///
-    /// `vaultManager`/`shardCustodyManager` are optional, nil-safe parameters —
-    /// following the same shape as `encryptGroupBundle`/`activateSecureMode` — so a
-    /// call site without them just skips shard-custody cleanup rather than failing.
-    /// When provided, purges `CustodyShard`/`PendingShardDistribute`/
-    /// `PotentiallyLostShard` for this identifier (see
-    /// `ShardCustodyManager.purgeCustody(for:)`) and marks any of this contact's
-    /// outstanding vault shards lost. Global-trustee status needs no separate purge —
-    /// it lives on the contact's own (now soft-deleted) row.
+    /// `shardCustodyManager` is an optional, nil-safe parameter — following the same
+    /// shape as `encryptGroupBundle`/`activateSecureMode` — so a call site without it
+    /// just skips shard-custody cleanup rather than failing. When provided, purges
+    /// `CustodyShard`/`PendingShardDistribute`/`PotentiallyLostShard` for this
+    /// identifier (see `ShardCustodyManager.purgeCustody(for:)`). A backup-key piece this
+    /// contact held is marked lost by its own depth's next reconcile
+    /// (`ShardCustodyManager.reconcileBackupPieces`). Global-trustee status needs no
+    /// separate purge — it lives on the contact's own (now soft-deleted) row.
     func deleteContact(
         identifier: String,
-        vaultManager: VaultManager? = nil,
         shardCustodyManager: ShardCustodyManager? = nil
     ) throws {
         guard let contact = try self.fetchContact(by: identifier) else {
@@ -515,7 +514,6 @@ class ContactManager {
         self.security.checkpointStore()
 
         try shardCustodyManager?.purgeCustody(for: identifier)
-        vaultManager?.markShardsLost(forContact: identifier)
     }
 
     /// Hard-deletes a single Contact.Profile row from the store.
@@ -1323,7 +1321,8 @@ extension ContactManager {
     /// common `.distribute`.
     static func fillerShardOperation() -> OccultaBundle.ShardOperation {
         let filler = SignedAttribute(
-            label:     "vault-shard",
+            // The same label as a real piece, so the two are the same size.
+            label:     SignedAttribute.backupKeyPieceLabel,
             value:     Data((0..<33).map { _ in UInt8.random(in: .min ... .max) }),
             category:  .shard,
             signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }),

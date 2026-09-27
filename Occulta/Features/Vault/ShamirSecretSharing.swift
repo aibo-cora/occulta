@@ -65,8 +65,6 @@ enum ShamirSecretSharing {
         ///
         /// SSS requires at least two points to define a polynomial. A single share
         /// trivially evaluates to a deterministic value that is NOT the secret.
-        /// Note: `VaultManager.reconstructEntry` enforces the threshold guard before
-        /// calling `reconstruct`, providing a clear early error for the normal path.
         case insufficientShares
         /// A share has the wrong length (expected 33 bytes each) or shares have
         /// inconsistent lengths.

@@ -268,7 +268,7 @@ All three prompts are surfaced in `VaultPostRestoreSheet`, shown automatically o
 the first vault unlock after a successful restore. The sheet persists across app
 restarts (backed by a `UserDefaults` flag) until the user taps **Done**. Tapping
 "Set up backup recovery" from the sheet dismisses it and pushes
-`VaultShardSetup(mode: .backup)` directly onto the vault `NavigationStack`.
+`VaultShardSetup()` directly onto the vault `NavigationStack`.
 
 ---
 
@@ -534,7 +534,7 @@ without attempting decryption.
 | BEK generation + vaultKey wrapping → `encryptedBEK` SwiftData singleton | ✅ |
 | BEK SSS split + shard delivery (reuse existing pipeline) | ✅ |
 | Backup row in vault list (graduated appearance, 3 states) | ✅ |
-| BEK shard setup view (`VaultShardSetup(mode: .backup)`) | ✅ |
+| BEK shard setup view (`VaultShardSetup()`) | ✅ |
 | BEK shard collection via auto-handback on contact key re-exchange | ✅ |
 | Pending restore: `backup-import-cache.occbak` + `ReconstructShard` rows + vault-list progress section | ✅ |
 | BEK reconstruction (Shamir.combine + GCM oracle) + re-wrap under new device vaultKey | ✅ |

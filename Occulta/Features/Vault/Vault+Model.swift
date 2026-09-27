@@ -65,10 +65,10 @@ final class Vault {
 
 // MARK: - PendingShamirSecretRestore
 
-/// One secret currently being restored from Shamir shares — BEK or otherwise (a per-entry PEK's own
-/// `VaultEntry.id` works identically). Keyed by the secret's own identity, not by depth, so this
-/// generalizes past BEK-restore, which the earlier per-depth-array design (§6 item 9.2 as originally
-/// written) could not.
+/// One backup key currently being restored from Shamir shares. Keyed by the secret's own identity
+/// (its `distributionID`), not by depth, which the earlier per-depth-array design (§6 item 9.2 as
+/// originally written) could not do. Per-entry PEK restores used this too until per-entry splitting
+/// was retired (`decisions.md`, "Retire per-entry splitting").
 ///
 /// Privacy model — encryption at rest:
 /// - `id` (plaintext) — random, bound into AAD-like use elsewhere in the codebase; not itself bound
@@ -99,8 +99,8 @@ final class PendingShamirSecretRestore {
 
     var id: UUID = UUID()
 
-    /// Encrypted — the secret's own identity: a BEK `distributionID`, a `VaultEntry.id` for a
-    /// per-entry PEK restore, or any future secret kind. Never a plaintext column — see the class doc.
+    /// Encrypted — the secret's own identity: a backup key's `distributionID`. Never a plaintext
+    /// column — see the class doc.
     var attributeID: Data? = nil
 
     /// Encrypted — live/orphaned sentinel, same convention as `VaultEntry`/`BackupEncryptionKey`.
@@ -623,43 +623,13 @@ struct ShardRecord: Codable {
 
 /// Tracks a Shamir split for one VaultEntry.
 ///
-/// Serialised with JSONEncoder, then AES-GCM sealed with the vault key and
-/// stored in VaultEntry.shardDistributionEncrypted. Never persisted in clear.
+/// Stored in the backup key's payload (`BackupEncryptionKey.Payload`, fixed-width codec),
+/// sealed with the vault key. Never persisted in clear.
 struct ShardDistributionMetadata: Codable {
     /// Minimum shards required to reconstruct (k).
     let threshold: Int
     /// One record per trustee, in shard-index order (index 0 → shard with x=1, etc.).
     var shards: [ShardRecord]
-}
-
-// MARK: - RecoveryHealthSummary
-
-/// Aggregate vault-wide recovery health, computed on unlock and after each
-/// shard status mutation. `nil` when the vault is locked.
-struct RecoveryHealthSummary {
-
-    enum EntryStatus {
-        /// Active shards are below threshold but at least one remains.
-        case degraded
-        /// No active shards remain — recovery is impossible without redistribution.
-        case critical
-    }
-
-    struct AffectedEntry {
-        let entryID:   UUID
-        let label:     String
-        let entryType: VaultEntryType
-        let status:    EntryStatus
-        let active:    Int
-        let threshold: Int
-    }
-
-    /// Entries whose active shard count is below threshold.
-    /// Sorted: critical first, then degraded, both groups alphabetical by label.
-    /// Empty when all distributed entries meet their threshold.
-    let affected: [AffectedEntry]
-
-    var isEmpty: Bool { affected.isEmpty }
 }
 
 // MARK: - VaultField
@@ -673,6 +643,8 @@ enum VaultField: UInt8 {
     case label             = 0x01
     case content           = 0x02
     case entryKey          = 0x03
+    /// `shardDistributionEncrypted`, retired with per-entry splitting (`decisions.md`,
+    /// "Retire per-entry splitting"). Kept so 0x04 is never reused.
     case shardDistribution = 0x04
 }
 
@@ -713,8 +685,9 @@ final class VaultEntry {
     /// Sealed with the vault key; AAD = `entry.aad(for: .entryKey)`.
     var encryptedEntryKey: Data = Data()
 
-    /// Encrypted JSON-encoded ShardDistributionMetadata.
-    /// nil until an SSS split has been performed for this entry.
+    /// Retired with per-entry splitting (`decisions.md`, "Retire per-entry splitting"):
+    /// never written, cleared on every row by `VaultManager.retireEntrySplittingIfNeeded`.
+    /// Leaves the schema next release, once every device has run that clean-up.
     var shardDistributionEncrypted: Data? = nil
 
     /// Encrypted `Int` depth stamp — the depth this entry was created at.
@@ -754,10 +727,6 @@ final class VaultEntry {
     /// `bugs.md`) — `visibleThroughDepth` itself is left untouched (still names the depth
     /// this entry was created at, for the historical record) since exclusion from every
     /// read makes its value moot going forward.
-    ///
-    /// An orphaned entry's `ShardRecord`s stop appearing in `VaultManager.
-    /// shardRecordsForTrustee(_:)` (which reads through `fetchAllEntries()`). Trustees keep
-    /// their copies: implicit revoke (`expectedShards`) was removed (`bugs.md` Bug 141).
     ///
     /// Cap: 50 orphaned rows; when full, the oldest is hard-deleted before a new one is
     /// written — same cap `Contact.Profile.deletionToken` uses.

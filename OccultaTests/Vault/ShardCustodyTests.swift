@@ -8,9 +8,9 @@
 //  Coverage:
 //  - CustodyShard sealed-blob round-trip and AAD binding.
 //  - ReconstructShard sealed-blob round-trip and AAD binding.
-//  - .distribute / .revoke / .respond dispatch.
-//  - Multi-entry reconstruction buffer isolation.
-//  - tryFinalizeReconstruction: threshold gate, lock gate, multi-entry independence.
+//  - .distribute / .replace dispatch.
+//  - Handed-back backup-key pieces banked in the restore buffer; per-entry pieces are not
+//    (per-entry splitting retired, decisions.md "Retire per-entry splitting").
 //
 
 import Testing
@@ -57,12 +57,15 @@ private func makeBob() throws -> (custody: ShardCustodyManager, km: TestKeyManag
     return (custody, bob, container)
 }
 
-/// Build a SignedAttribute as if `signer` (Alice) had signed it.
+/// Build a SignedAttribute as if `signer` (Alice) had signed it — a backup-key piece
+/// unless `label` says otherwise. The value has a real piece's 33 bytes (x-coordinate +
+/// 32-byte share), which the restore buffer's codec requires.
 @MainActor
 private func makeShardAttr(
     signer: TestKeyManager,
     entryID: UUID = UUID(),
-    shardBytes: Data = Data([0x01, 0x02, 0x03, 0x04])
+    shardBytes: Data = Data([UInt8(1)]) + Data.randomBytes(32),
+    label: String = SignedAttribute.backupKeyPieceLabel
 ) throws -> SignedAttribute {
     let attrID    = UUID()
     let createdAt = Date()
@@ -77,7 +80,7 @@ private func makeShardAttr(
     let signature = try signer.signData(payload)
     return SignedAttribute(
         id:        attrID,
-        label:     "vault-shard",
+        label:     label,
         value:     shardBytes,
         category:  .shard,
         signature: signature,
@@ -100,32 +103,6 @@ private func custodyShardCount(in container: ModelContainer) throws -> Int {
 private func reconstructShardCount(vault: VaultManager, entryIDs: [UUID]) throws -> Int {
     try entryIDs.reduce(0) { total, id in
         total + (try vault.collectedShards(forAttributeID: id).count)
-    }
-}
-
-@MainActor
-private func makeProfiles(count: Int) throws -> [Contact.Profile] {
-    let schema = Schema([
-        Contact.Profile.self,
-        Contact.Profile.PhoneNumber.self,
-        Contact.Profile.EmailAddress.self,
-        Contact.Profile.PostalAddress.self,
-        Contact.Profile.URLAddress.self,
-        Contact.Profile.Key.self
-    ])
-    let config    = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: schema, configurations: [config])
-    let ctx       = ModelContext(container)
-
-    return (0..<count).map { i in
-        let p = Contact.Profile(
-            identifier: "contact-\(i)",
-            givenName: "Contact", familyName: "\(i)",
-            middleName: "", nickname: "",
-            organizationName: "", departmentName: "", jobTitle: ""
-        )
-        ctx.insert(p)
-        return p
     }
 }
 
@@ -405,49 +382,39 @@ private func distribute(
     }
 }
 
-// MARK: - .respond and the reconstruction buffer
+// MARK: - Handback and the restore buffer
 
 // Needs a real Secure Enclave: PendingShamirSecretRestore.attributeID/.deletionToken are
 // sealed under the ambient Manager.Key() local key (never the injected key manager) —
 // the same forced split BackupEncryptionKey.depth/.deletionToken already uses, and every
 // test here goes through acceptReturnedShard, which touches that field. No seam reaches
 // it, so unlike this file's other suites this one cannot run on TestKeyManager alone.
-@Suite("Reconstruction buffer — accept / finalise", .enabled(if: secureEnclaveAvailable()))
+@Suite("Restore buffer — handed-back pieces", .enabled(if: secureEnclaveAvailable()))
 @MainActor struct ReconstructionBufferTests {
 
-    @Test("acceptReturnedShard absorbs a shard into a row that decrypts under the restore vault key")
+    @Test("acceptReturnedShard banks a backup-key piece in a row that decrypts under the restore vault key")
     func acceptInsertsRow() throws {
-        let (vault, _, container) = try makeAlice()
-        vault.unlock(context: LAContext())
-        let entry      = try vault.addEntry(label: "seed", content: Data("payload".utf8), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-        let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
+        let (vault, alice, container) = try makeAlice()
+        let distributionID = UUID()
+        let piece = try makeShardAttr(signer: alice, entryID: distributionID)
 
-        // Simulate a .respond bundle delivering one shard back to Alice.
-        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier)
+        try vault.acceptReturnedShard(piece, senderIdentifier: "contact-0")
 
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry.id]) == 1)
+        #expect(try reconstructShardCount(vault: vault, entryIDs: [distributionID]) == 1)
 
-        // Sanity: the row's attributeID decrypts (under the ambient local key) to this
-        // entry's own id, and its shards decode to the one absorbed shard.
+        // The row's attributeID decrypts (under the ambient local key) to the piece's
+        // distribution ID, and its shards decode to the one banked piece.
         let localKey = try #require(try Manager.Key().createHybridLocalEncryptionKey())
         let row = try #require(ModelContext(container).fetch(FetchDescriptor<PendingShamirSecretRestore>()).first)
         let idBytes = try #require(row.attributeID?.decrypt(using: localKey))
-        let expectedBytes = withUnsafeBytes(of: entry.id.uuid) { Data($0) }
-        #expect(idBytes == expectedBytes, "row's attributeID must decrypt to this entry's own id")
-
-        let collected = try vault.collectedShards(forAttributeID: entry.id)
-        #expect(collected.first?.attribute.id == attrs[0].id)
+        #expect(idBytes == withUnsafeBytes(of: distributionID.uuid) { Data($0) })
+        #expect(try vault.collectedShards(forAttributeID: distributionID).first?.attribute.id == piece.id)
     }
 
     @Test("Wrong id in AAD invalidates GCM tag — shards no longer decrypt")
     func aadBindingHolds() throws {
         let (vault, alice, container) = try makeAlice()
-        vault.unlock(context: LAContext())
-        let entry      = try vault.addEntry(label: "seed", content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 2)
-        let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier)
+        try vault.acceptReturnedShard(try makeShardAttr(signer: alice), senderIdentifier: "contact-0")
 
         // Must be Alice's own key manager — deriveRestoreVaultKey() is deterministic per
         // key manager (RecoveryBufferKeyTests above), so a different instance would not
@@ -470,128 +437,29 @@ private func distribute(
         }
     }
 
-    @Test("Below threshold: tryFinalizeReconstruction is a no-op")
-    func belowThresholdNoop() throws {
-        let (vault, _, _) = try makeAlice()
-        vault.unlock(context: LAContext())
-        let entry = try vault.addEntry(label: "seed", content: Data("plaintext".utf8), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-        let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-
-        // Forget the wrap so legacy unwrap can't satisfy reconstruction; only
-        // shards can recover. Then deliver only ONE shard (k=2, below threshold).
-        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier)
-        try vault.tryFinalizeReconstruction(entryID: entry.id)
-
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry.id]) == 1, "buffer row remains since threshold not met")
-    }
-
-    @Test("At threshold: tryFinalizeReconstruction succeeds and clears the buffer")
-    func atThresholdFinalizes() throws {
-        let (vault, _, _) = try makeAlice()
-        vault.unlock(context: LAContext())
-        let entry = try vault.addEntry(label: "seed", content: Data("plaintext".utf8), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-        let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-
-        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier)
-        try vault.acceptReturnedShard(attrs[1], senderIdentifier: recipients[1].identifier)
-        // accept on the last shard auto-triggers finalisation.
-
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry.id]) == 0, "buffer must be empty after finalisation")
-        // Decryption still works — the recovered PEK is re-wrapped under the vault key.
-        #expect(try vault.decryptLabel(for: entry) == "seed")
-    }
-
-    @Test("Multi-entry isolation: shards from one entry do not satisfy another's threshold")
-    func multiEntryIsolation() throws {
-        let (vault, _, _) = try makeAlice()
-        vault.unlock(context: LAContext())
-
-        let entry1 = try vault.addEntry(label: "alpha", content: Data("a".utf8), type: .seedPhrase)
-        let entry2 = try vault.addEntry(label: "beta",  content: Data("b".utf8), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-
-        let attrs1 = try vault.prepareShards(for: entry1.id, threshold: 2, recipients: recipients)
-        let attrs2 = try vault.prepareShards(for: entry2.id, threshold: 2, recipients: recipients)
-
-        // Deliver one shard for each entry — each entry has 1/2.
-        try vault.acceptReturnedShard(attrs1[0], senderIdentifier: recipients[0].identifier)
-        try vault.acceptReturnedShard(attrs2[0], senderIdentifier: recipients[0].identifier)
-
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry1.id, entry2.id]) == 2,
-                "two entries, two distinct buffered shards, neither at threshold")
-
-        // Push entry1 to threshold; entry2 stays at 1/2.
-        try vault.acceptReturnedShard(attrs1[1], senderIdentifier: recipients[1].identifier)
-
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry1.id, entry2.id]) == 1,
-                "entry1 finalised → only entry2's single shard remains")
-    }
-
     @Test("acceptReturnedShard ignores duplicate attrID")
     func duplicateAttrDeduplicated() throws {
-        let (vault, _, _) = try makeAlice()
-        vault.unlock(context: LAContext())
-        let entry = try vault.addEntry(label: "seed", content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 2)
-        let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
+        let (vault, alice, _) = try makeAlice()
+        let distributionID = UUID()
+        let piece = try makeShardAttr(signer: alice, entryID: distributionID)
 
-        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier)
-        try vault.acceptReturnedShard(attrs[0], senderIdentifier: recipients[0].identifier)  // duplicate
+        try vault.acceptReturnedShard(piece, senderIdentifier: "contact-0")
+        try vault.acceptReturnedShard(piece, senderIdentifier: "contact-0")  // duplicate
 
-        // Threshold k=2; only one unique shard buffered → no finalise.
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry.id]) == 1)
+        #expect(try reconstructShardCount(vault: vault, entryIDs: [distributionID]) == 1)
     }
 
-    @Test("tryFinalizeAllReconstructions sweeps all entries that hit threshold")
-    func sweepFinalisesAll() throws {
-        let (vault, _, _) = try makeAlice()
-        vault.unlock(context: LAContext())
+    /// A trustee hands back every piece it holds under the owner's old key, per-entry
+    /// ones included; `restoreBackup` would try each such group against the whole file.
+    @Test("A handed-back per-entry piece is not banked")
+    func perEntryPieceNotBanked() throws {
+        let (vault, alice, container) = try makeAlice()
+        let entryID = UUID()
 
-        let entry1 = try vault.addEntry(label: "alpha", content: Data("a".utf8), type: .seedPhrase)
-        let entry2 = try vault.addEntry(label: "beta",  content: Data("b".utf8), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 2)
+        try vault.acceptReturnedShard(try makeShardAttr(signer: alice, entryID: entryID, label: "vault-shard"),
+                                      senderIdentifier: "contact-0")
 
-        let attrs1 = try vault.prepareShards(for: entry1.id, threshold: 2, recipients: recipients)
-        let attrs2 = try vault.prepareShards(for: entry2.id, threshold: 2, recipients: recipients)
-
-        // Lock so opportunistic finalisation does NOT fire on accept.
-        vault.lock()
-
-        try vault.acceptReturnedShard(attrs1[0], senderIdentifier: recipients[0].identifier)
-        try vault.acceptReturnedShard(attrs1[1], senderIdentifier: recipients[1].identifier)
-        try vault.acceptReturnedShard(attrs2[0], senderIdentifier: recipients[0].identifier)
-        try vault.acceptReturnedShard(attrs2[1], senderIdentifier: recipients[1].identifier)
-
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry1.id, entry2.id]) == 4, "all rows still buffered while locked")
-
-        // Unlock — sweep should drain both entries.
-        vault.unlock(context: LAContext())
-
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry1.id, entry2.id]) == 0,
-                "unlock-time sweep finalises every entry that crossed threshold")
-    }
-
-    @Test("cancelReconstruction drops only rows for the targeted entry")
-    func cancelDropsTargetedRows() throws {
-        let (vault, _, _) = try makeAlice()
-        vault.unlock(context: LAContext())
-
-        let entry1 = try vault.addEntry(label: "alpha", content: Data(), type: .seedPhrase)
-        let entry2 = try vault.addEntry(label: "beta",  content: Data(), type: .seedPhrase)
-        let recipients = try makeProfiles(count: 3)
-
-        let attrs1 = try vault.prepareShards(for: entry1.id, threshold: 3, recipients: recipients)
-        let attrs2 = try vault.prepareShards(for: entry2.id, threshold: 3, recipients: recipients)
-
-        try vault.acceptReturnedShard(attrs1[0], senderIdentifier: recipients[0].identifier)
-        try vault.acceptReturnedShard(attrs2[0], senderIdentifier: recipients[0].identifier)
-        try vault.acceptReturnedShard(attrs2[1], senderIdentifier: recipients[1].identifier)
-
-        try vault.cancelReconstruction(entryID: entry2.id)
-
-        #expect(try reconstructShardCount(vault: vault, entryIDs: [entry1.id, entry2.id]) == 1,
-                "only entry2's rows should be dropped — entry1's single shard survives")
+        #expect(try reconstructShardCount(vault: vault, entryIDs: [entryID]) == 0)
+        #expect(try ModelContext(container).fetch(FetchDescriptor<PendingShamirSecretRestore>()).isEmpty)
     }
 }

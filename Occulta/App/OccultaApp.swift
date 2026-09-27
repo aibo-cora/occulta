@@ -387,13 +387,11 @@ struct RootView: View {
                 }
             }
             // Key-rotation → two-sided response:
-            // Alice's path: mark per-entry shards distributed TO this contact as .lost, and
-            // re-send this depth's backup-key pieces (Bug 141). Other depths notice at their
-            // own unlock, from the trustee's next manifest.
+            // Alice's path: re-send this depth's backup-key pieces (Bug 141). Other depths
+            // notice at their own unlock, from the trustee's next manifest.
             // Bob's path: mismatch-fingerprint shards are returned via .handback on
             // the next outbound bundle (detected at build time, no scheduling needed).
             .onReceive(self.contactManager.contactKeyRotated) { identifier in
-                self.vaultManager.markShardsLost(forContact: identifier)
                 self.reconcileBackupPieces(keyChangedFor: identifier)
             }
             // A depth's backup-key pieces are checked when its vault unlocks (Bug 141).

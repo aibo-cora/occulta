@@ -64,6 +64,11 @@ struct SignedAttribute: Codable, Identifiable {
 
     // MARK: Fields
 
+    /// The label every backup-key piece carries. Nothing but the handback path reads it
+    /// (`VaultManager.acceptReturnedShard`); it isn't signed. Older apps require a label on
+    /// every piece, so it can't be dropped.
+    static let backupKeyPieceLabel = "vault-bek-shard"
+
     let id: UUID
     /// Human-readable label. Plaintext in this struct; the containing layer
     /// encrypts before writing to SwiftData.
