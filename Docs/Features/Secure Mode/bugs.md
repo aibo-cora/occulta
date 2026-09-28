@@ -12531,3 +12531,81 @@ Same as Bug 145: the slot stores a fixed-width tag of the sender's identifier, a
 A restore end to end with real-format sender identifiers completes; a second piece from the same sender replaces
 the first.
 
+
+---
+
+## Bug 148 — A message opened from outside the app shows before the PIN screen on a warm return past the grace period
+
+**Status:** Fixed 2026-09-28, on `v1.11.0/vault-key-layering`; not yet walked through on a device. Reported the
+same day from a device: Secure Mode and PIN on, a `.occ` opened from another app, the message visible before the
+PIN screen came up. Regression of Bug 1 Incident A, through a gap the Bug 84 Part B fix left open.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (message content shown without a PIN, and the inbound pipeline run before one)
+
+### What happens
+
+`AppScreen.phase` keeps its last value, `.unlocked`, for the whole time the app is in the background. The grace
+period is evaluated only in `sceneDidBecomeActive`. On a warm return UIKit calls `sceneWillEnterForeground`,
+then delivers the URL (`onOpenURL`), then `sceneDidBecomeActive`. So `handleOpenURL` runs while the phase still
+reads `.unlocked` from the session that expired, and its gate (`if self.appScreen.phase != .unlocked { queue }`)
+passes. Two outcomes, depending on which runs first on the main actor:
+
+1. **The decryption finishes first.** `openedFileContents` is set, the `.sheet` in the `.unlocked` branch
+   presents, and UIKit adds its container view to the window above the snapshot cover (the cover is a plain
+   window subview installed earlier). `sceneDidBecomeActive` then sets `.pinRequired`, which tears the branch
+   down and dismisses the sheet with its animation. The message is on screen from the sheet appearing until it
+   has finished sliding away. This is the reported case.
+2. **The phase flips first, after the gate has passed.** The decryption keeps going and sets
+   `openedFileContents` while `.pinRequired`. `endSession()` already ran on the `.unlocked → .pinRequired`
+   transition, so nothing clears it, and the sheet presents after the next PIN, whichever it is. That is not a
+   leak of its own: a message nobody has seen yet is equivalent to queued input, and showing it after either
+   PIN looks the same as the designed queued flow (a file opened, a PIN entered, the message shown). It only
+   happens by timing, though, and loses the message in the gap before `endSession()` runs.
+
+In both cases the whole inbound pipeline ran before any PIN: prekey consumption, shard ops, manifest
+reconciliation and their saves, at the expired session's depth (the shape Bug 84 Part A removed for shares).
+
+A `.occbak` takes the same path without the phase check: its prompt can show over the cover, and `endSession()`
+then drops the staged file.
+
+### Why now
+
+The race has existed since `8b95ee5` moved the lock decision into `sceneDidBecomeActive`. It was probably hidden
+by the read before the gate: until `7edef05` (2026-08-01) that was `URLSession.shared.data(from:)`, slow enough
+that `sceneDidBecomeActive` usually won; the memory-mapped read returns in microseconds. Not yet confirmed on a
+device with the old read.
+
+### Resolution
+
+Lock as early as possible, unlock as late as possible.
+
+1. **`AppScreen.lockIfGracePeriodExpired`**, called first in `sceneWillEnterForeground`, sets `.pinRequired`
+   when a PIN is configured, the gate is up, and the time in the background exceeds the grace period, so the
+   phase is right before UIKit can deliver the URL and `handleOpenURL` queues the file as designed. The unlock
+   decision stays in `sceneDidBecomeActive`, which already leaves `.pinRequired` alone.
+2. **A result that finishes after its session ended is dropped.** `endSession()` advances a `sessionEpoch`;
+   `RootView.processInboundFile` captures it before decrypting and, if the session ended (or the phase isn't
+   `.unlocked`) by the time decryption finishes, presents nothing, neither the basket nor an error.
+
+   The gate can't come up *during* decryption: identifying the sender, opening the bundle, burning the prekey,
+   the shard ops and the save run as one synchronous block on the main actor, and the lock is itself a
+   main-thread scene callback. Only the step after, writing decrypted attachments to temp files, can straddle
+   it, and by then the prekey is gone, so the bytes cannot be re-queued. Holding the result and showing it
+   after the next PIN would have been safe too (see outcome 2). **Dropping was chosen by the owner,
+   2026-09-29:** a message is lost only if the user leaves before it finishes decrypting and stays away past
+   the grace period, which is acceptable; the sender can resend.
+
+Not covered by (2): an identity-challenge sheet, set inside `buildOwnedBasket` before its first suspension, so
+it cannot outlive a session change that (1) now prevents from happening first.
+
+### Guard
+
+`AppScreenLockTests` (6 tests, no Enclave needed): past the grace period the phase is `.pinRequired` before
+activation; within it, with no background entry, with no PIN, with the gate lowered, and before `wire`, nothing
+changes. `sceneWillEnterForeground` needs a live `UIScene`, so the call from it is covered by reading, not a test;
+`processInboundFile` lives on a SwiftUI `View` and is untested, like the rest of that type.
+
+Still to do on a device: background for more than 5 minutes, open a `.occ` from Files or Messages; expect the PIN
+screen with no sheet before it, and the message after the PIN.

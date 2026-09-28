@@ -51,7 +51,9 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     /// Set in sceneDidEnterBackground; cleared on every foreground return.
     /// nil means cold launch or brief inactive-only interruption (Face ID,
     /// share sheet) — counted as zero background duration, no re-lock.
-    private var backgroundEntryDate: Date?
+    ///
+    /// Internal rather than private so tests can place it past the grace period.
+    var backgroundEntryDate: Date?
 
     // MARK: - UIWindowSceneDelegate
 
@@ -65,6 +67,7 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     /// On warm returns the cover is already up from sceneWillResignActive;
     /// the guard inside installCover() prevents double-installation.
     func sceneWillEnterForeground(_ scene: UIScene) {
+        self.lockIfGracePeriodExpired()
         guard let ws = scene as? UIWindowScene else { return }
         guard self.secureModeActive else { return }
         self.installCover(for: ws)
@@ -130,6 +133,26 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     }
 
     // MARK: - Evaluation
+
+    /// Locks at the earliest point of a warm return, when the time spent in the background
+    /// exceeds the grace period (`bugs.md` Bug 148). The unlock decision stays in `evaluate`,
+    /// at `sceneDidBecomeActive`: lock as early as possible, unlock as late as possible.
+    ///
+    /// It has to be here. UIKit delivers a URL (`onOpenURL`) between `sceneWillEnterForeground`
+    /// and `sceneDidBecomeActive`, and `phase` otherwise still reads `.unlocked` from the
+    /// expired session then — so `RootView.handleOpenURL` decrypted a file instead of queueing
+    /// it, and its sheet presented over the cover before the PIN screen replaced it.
+    ///
+    /// `backgroundEntryDate` is left for `sceneDidBecomeActive` to clear.
+    func lockIfGracePeriodExpired(now: Date = Date()) {
+        guard let security = self.security,
+              security.requiresPIN, security.pinEnabled,
+              let entered = self.backgroundEntryDate,
+              now.timeIntervalSince(entered) > Self.gracePeriod
+        else { return }
+
+        self.phase = .pinRequired
+    }
 
     private func evaluate(coldLaunch: Bool) {
         guard let security = self.security else { return }

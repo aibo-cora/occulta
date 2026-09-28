@@ -768,3 +768,28 @@ which needs an existing distribution.
 **Consequences:** an owner who sets up the backup at several depths reads it once per depth. Not walked through
 on a device: the simulator can't unlock the vault.
 
+
+---
+
+## Drop an inbound message whose session ended before it was shown
+
+**Status:** Decided and built, 2026-09-29 (`bugs.md` Bug 148).
+
+**Context:** An inbound `.occ` is decrypted in one synchronous block (prekey burned, saved), then its
+attachments are written to temp files behind an `await` before the sheet shows. If the user leaves during that
+write and returns past the grace period, the PIN gate comes up before the message is shown. The prekey is gone,
+so the bytes can't be re-queued for after the PIN.
+
+**Decision:** `RootView.processInboundFile` drops the result, message or error, when the session ended while it
+ran (`sessionEpoch`, advanced by `endSession()`) or the phase isn't `.unlocked`. Nothing is shown, at any depth.
+
+**Why:** the owner accepts losing a message the user didn't wait for. The alternative, holding the decrypted
+result and showing it after either PIN, was also safe: a message nobody has seen is equivalent to queued input,
+and showing it after either PIN looks the same as the designed queued flow. Dropping is simpler and keeps no
+plaintext in memory while the app is locked.
+
+**Consequences:** such a message is lost with no sign to the user; the sender must resend. Deferring the prekey
+burn until display, which would allow a re-queue, was not taken: on the group path it would reverse §2.2's
+burn-on-open.
+
+**Full reasoning:** `bugs.md` Bug 148, Resolution item 2.

@@ -294,6 +294,9 @@ struct RootView: View {
     /// Which tab is showing. Held here, above the unlocked tree keyed by the session, so a
     /// depth change in Settings doesn't drop the user on the first tab; not sensitive.
     @State private var selectedTab: Tabs = .contacts
+    /// Advanced by `endSession()`. Work that outlives a suspension compares it before
+    /// presenting, so a result finishing after the session ended is dropped (Bug 148).
+    @State private var sessionEpoch = 0
     /// A `.occbak` held in memory until the user confirms or cancels. Never written to disk.
     @State private var pendingRestoreFile: Data?
     @State private var showRestoreConfirmation = false
@@ -560,6 +563,7 @@ struct RootView: View {
     }
 
     private func endSession() {
+        self.sessionEpoch           += 1
         self.openedFileContents      = nil
         self.shareResult             = nil
         self.pendingRestoreFile      = nil
@@ -786,9 +790,27 @@ struct RootView: View {
     /// and process identically.
     ///
     /// All error handling lives here so neither call site needs to repeat it.
+    ///
+    /// Nothing is presented, basket or error, if the session ended while the file was being
+    /// decrypted (Bug 148): `endSession()` has already run, so a result set now would
+    /// survive into the next session, after whichever PIN is entered. The result is dropped
+    /// rather than the bytes re-queued: a forward-secret bundle's prekey is spent by now, so a
+    /// second attempt would only fail. Reachable only if the app is backgrounded past the grace
+    /// period mid-decryption; `AppScreen.lockIfGracePeriodExpired` closes the common case. Losing
+    /// the message then is an accepted cost (`Docs/General/decisions.md`).
     private func processInboundFile(_ data: Data) async {
+        let epoch = self.sessionEpoch
+        let result: Result<OwnedBasket?, Error>
         do {
-            if let ownedBasket = try await self.buildOwnedBasket(from: data) {
+            result = .success(try await self.buildOwnedBasket(from: data))
+        } catch {
+            result = .failure(error)
+        }
+
+        guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else { return }
+
+        do {
+            if let ownedBasket = try result.get() {
                 self.openedFileContents = ownedBasket
             }
         } catch ContactManager.Errors.messageHasNoData {
