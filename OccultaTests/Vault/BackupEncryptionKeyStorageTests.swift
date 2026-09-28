@@ -272,7 +272,7 @@ struct BackupKeyOrphaningTests {
         #expect(c.security.currentDepth == 1)
 
         try c.vault.setupBackup(currentDepth: 1)
-        let recipients = (0..<2).map { _ in UUID().uuidString }
+        let recipients = (0..<2).map { _ in realFormatContactIdentifier() }
         let shards = try c.vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: 1)
         let attributeID = shards[0].id
 
@@ -458,7 +458,7 @@ struct BackupKeyLegacyStorageMigrationTests {
         vault.unlock(context: LAContext())
         let vaultKey  = try vault.currentKey()
         let records   = (0..<256).map { _ in
-            ShardRecord(contactIdentifier: UUID().uuidString, attributeID: UUID(), status: .confirmed)
+            ShardRecord(trustee: TrusteeTag(identifier: realFormatContactIdentifier()), attributeID: UUID(), status: .confirmed)
         }
         let payload   = BackupEncryptionKey.Payload(
             bekBytes: Data.randomBytes(32), distributionID: UUID(),
@@ -475,6 +475,36 @@ struct BackupKeyLegacyStorageMigrationTests {
         #expect(after.encryptedPayload == before)
         #expect(after.depth == nil && after.deletionToken == nil)
         #expect((try? vault.currentBackupKey(currentDepth: 0)) == nil)
+    }
+
+    /// Bug 146: v1.10.3's JSON records carry real contact identifiers (encrypted base64), and the
+    /// record codec threw on anything but a UUID, so a distributed key never migrated.
+    @Test("A v1.10.3 key distributed to real contacts migrates, and setupBackup keeps it",
+          .enabled(if: secureEnclaveAvailable()))
+    func distributedLegacyKeyMigrates() throws {
+        struct LegacyRecord: Codable { let contactIdentifier: String; let attributeID: UUID; let status: ShardStatus }
+        struct LegacyMeta: Codable { let threshold: Int; let shards: [LegacyRecord] }
+        struct LegacyPayload: Codable { let bekBytes: Data; let distributionID: UUID; let shardMetadata: LegacyMeta? }
+
+        let container = try makeContainer()
+        let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+        vault.unlock(context: LAContext())
+        let vaultKey  = try vault.currentKey()
+        let trustees  = (0..<2).map { _ in realFormatContactIdentifier() }
+        let legacy    = LegacyPayload(
+            bekBytes: Data.randomBytes(32), distributionID: UUID(),
+            shardMetadata: LegacyMeta(threshold: 2, shards: trustees.map {
+                LegacyRecord(contactIdentifier: $0, attributeID: UUID(), status: .confirmed)
+            })
+        )
+        _ = try self.insertLegacyRow(try JSONEncoder().encode(legacy), vaultKey: vaultKey, in: container)
+
+        try vault.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey, legacyArrayBackend: InMemoryLayerStoreBackend())
+        try vault.setupBackup(currentDepth: 0)   // what opening Backup Recovery runs
+
+        #expect(try vault.currentBackupKey(currentDepth: 0).withUnsafeBytes { Data($0) } == legacy.bekBytes)
+        let records = try #require(try vault.backupShardMetadata(currentDepth: 0)).shards
+        #expect(trustees.allSatisfy { id in records.contains { $0.isHeld(by: id) && $0.status == .confirmed } })
     }
 
     @Test("Both present: array data wins over the legacy row at depth 0, matching the original precedence",

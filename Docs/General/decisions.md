@@ -753,9 +753,10 @@ explained choosing trustees: who can be one, that any k of them with the backup 
 that removing one replaces the key. `VaultSSSEducationSheet` covered similar ground for per-entry splitting and
 was never presented.
 
-**Decision:** `BackupTrusteesEducationSheet` replaces it. "Queue for Distribution" (renamed from "Mark for
-Distribution") shows it when the current depth has no backup-key distribution yet; its button, unlocked by
-scrolling to the end, queues the pieces. Six sections, with the real k and n: what the backup key does, any k of
+**Decision:** `BackupTrusteesEducationSheet` replaces it. The setup screen's button reads "Review" when the
+current depth has no backup-key distribution yet and opens it; the sheet's "Queue for Distribution", unlocked by
+scrolling to the end, queues the pieces. (First built with the screen's button reading "Queue for Distribution"
+and the sheet's "I understand — Queue for Distribution"; changed after device testing, 2026-09-28.) Six sections, with the real k and n: what the backup key does, any k of
 n, pieces rebuild the key and not the vault, who can be a trustee (and that confirmations come with a direct
 message, Bug 143), trust carefully, and changing trustees.
 

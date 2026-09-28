@@ -12402,3 +12402,132 @@ reconcile doesn't re-send while a trustee is lost.
   `deleteContact_announcesTheDeletion`. The failure ordering has no direct test.
 - Full suite: 919 tests, 913 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
 
+---
+
+## Bug 145 — Distributing the backup key fails for every real trustee: the stored record assumes contact identifiers are UUIDs
+
+**Status:** Fixed 2026-09-28 (see "Built" below). Found testing the backup flow on a device:
+"Queue for Distribution" showed no result. Traced in code the same day.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (the backup key can't be distributed at all)
+
+### What happens
+
+`BackupEncryptionKey.Payload`'s fixed-width codec (`Backup.PayloadCodec`, this branch) stores each trustee record's
+`contactIdentifier` as 16 raw UUID bytes; `encodeShard` throws `invalidContactIdentifier` when it isn't a UUID
+string (`Vault+Manager+Backup.swift`, `guard let contactID = UUID(uuidString: shard.contactIdentifier)`).
+
+A real `Contact.Profile.identifier` is not a UUID: since SecurityReview 2026-07-24 finding #11 it is encrypted before
+it is first stored (`ContactManager`, `encryptedIdentifier` in `createContacts` and the new-contact branch), the
+base64 of the ciphertext, far longer than 36 characters.
+
+So `VaultShardSetup.commitDistribution` → `distributeBackup` → `prepareBackupShards` → `persist` →
+`PayloadCodec.encode` throws for any real trustee. Nothing is written or queued; the button stays "Review".
+
+**Why it looked like nothing happened:** `commitDistribution` catches the error into `self.error`, rendered inside
+the scroll view after the trustee list and both notes, below the fold with a few trustees. The bottom bar doesn't
+change.
+
+**Why tests missed it:** every backup-key test passes `UUID().uuidString` as a trustee identifier. `ShardRecord`'s
+doc comment states the wrong premise ("a stable SwiftData UUID").
+
+### Remedy
+
+Built 2026-09-28, with Bugs 146 and 147 (same premise): records store a fixed-width tag derived from the
+identifier instead of the identifier.
+
+### Built, 2026-09-28
+
+- `TrusteeTag` (`Vault+Model.swift`): the first 16 bytes of SHA-256 over `TrusteeTag.domainLabel`
+  (`"occulta-trustee-tag"`) and the stored identifier. Depends on the whole identifier, needs no key, reveals
+  nothing on its own. Decrypting the identifier instead was considered and rejected: the raw value isn't a UUID
+  either (`CNContact` identifiers carry a `:ABPerson` suffix), every comparison would need a decryption on both
+  sides, and it would put raw Contacts identifiers back into the restore buffer, which opens without Face ID
+  (what finding #11 removed).
+- `ShardRecord.contactIdentifier` → `trustee: TrusteeTag`, with `isHeld(by:)`; its JSON decoding still reads
+  v1.10.3's `contactIdentifier` and tags it. `PayloadCodec` format 2 stores the tag in the same 16 bytes; format
+  1 decodes its UUID to that UUID string's tag. `invalidContactIdentifier` is gone.
+- `PendingRestoreShardSlot`/`AttestedShard` carry `sender: TrusteeTag`; `ShardsCodec` format 2 stores the tag
+  plus 20 random bytes in the same 36-byte field. `absorbShard` de-duplicates by tag; `restoreBackup` counts a
+  piece when its sender's tag is among the visible contacts' tags.
+- `ShardCustodyManager` compares by tag and maps tags back to identifiers through the contacts it already has.
+- Setup screen: records matched with `isHeld(by:)`; the selection, when seeded and after a successful queue, is
+  the listed contacts holding an active piece, so the screen reads up to date and "Pieces queued for delivery."
+  shows; first-time seeding keeps only Global Trustees who can receive a piece here; errors show in the bottom
+  bar; a success haptic plays.
+- Tests: `realFormatContactIdentifier()` (base64 of 64 random bytes) replaces UUID strings and short labels in
+  every backup-key and restore suite; codec tests for real-format identifiers, format 1 decoding, the v1.10.3
+  JSON record and `TrusteeTag`; `distributedLegacyKeyMigrates` (Bug 146); `longSendersStayDistinct` (Bug 147).
+- Full suite: 923 tests, 917 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+---
+
+## Bug 146 — Upgrading from v1.10.3 with a distributed backup key: the key never migrates, and opening Backup Recovery can overwrite it
+
+**Status:** Fixed 2026-09-28 by Bug 145's remedy. Filed the same day, found tracing Bug 145.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: Critical (the only copy of a v1.10.3 backup key can be destroyed)
+
+### What happens
+
+`migrateLegacyBackupRowIfNeeded` decodes v1.10.3's JSON payload, whose trustee records hold real contact
+identifiers, and stages it through the same codec (Bug 145). `encode` throws; the migration rolls back and is
+retried at every unlock, never succeeding. Depth 0 then has no live backup-key row:
+
+- the Vault tab and Vault Recovery show the backup as not set up;
+- opening Backup Recovery runs `seedInitialState` → `setupBackup(currentDepth: 0)`, which finds no depth-0 key and
+  generates a new one, sealed into `claimFillerRow`'s first unclaimed row. The legacy row (`depth` and
+  `deletionToken` nil) counts as unclaimed, and as the oldest row it is likely first: the new key overwrites the
+  v1.10.3 key, the only copy. Bug 138's loss, by a different route.
+- if another row is claimed instead, the legacy row survives but is never migrated (the guard sees a depth-0 key
+  and returns), staying behind as a distinguishable nil/nil row.
+
+Either way every `.occbak` exported under v1.10.3 can no longer be opened from this phone's key, and trustees'
+pieces are for the old key.
+
+An owner who never distributed in v1.10.3 has no records and migrates fine.
+
+### Remedy
+
+Fixed by Bug 145's remedy: the legacy JSON records decode into the new record form, so staging succeeds. Devices
+that already ran a build of this branch after upgrading (test devices only; nothing has shipped) may already have
+lost or stranded the key; not repaired.
+
+### Guard
+
+A v1.10.3 legacy row with records holding real-format identifiers migrates on unlock, and `setupBackup` afterwards
+keeps the migrated key.
+
+---
+
+## Bug 147 — A restore never completes on a real device: banked pieces keep only the first 36 bytes of the sender's identifier
+
+**Status:** Fixed 2026-09-28 by Bug 145's remedy. Filed the same day, found tracing Bug 145.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (recovery from a lost phone doesn't work)
+
+### What happens
+
+`PendingShamirSecretRestore.ShardsCodec` writes each banked piece's `senderIdentifier` into 36 bytes
+(`fixedWidthUTF8(senderIdentifier, count: 36)`), assuming a UUID string; a real identifier is longer (Bug 145) and
+is silently cut. `restoreBackup` counts only pieces whose sender is in `visibleContactIdentifiers`, which holds full
+identifiers, so no banked piece ever matches and every restore attempt finds nothing. The per-sender
+de-duplication in `absorbShard` also compares the cut form.
+
+Tests use `"trustee-0"`, `"alice"` and the like, which fit.
+
+### Remedy
+
+Same as Bug 145: the slot stores a fixed-width tag of the sender's identifier, and both comparisons use tags.
+
+### Guard
+
+A restore end to end with real-format sender identifiers completes; a second piece from the same sender replaces
+the first.
+

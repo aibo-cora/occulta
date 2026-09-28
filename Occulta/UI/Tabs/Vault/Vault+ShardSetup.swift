@@ -82,14 +82,6 @@ struct VaultShardSetup: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
 
-                if let err = self.error {
-                    Text(err)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Color.occultaDanger)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                }
-
                 Spacer().frame(height: 8)
             }
             .padding(.top, 8)
@@ -103,6 +95,7 @@ struct VaultShardSetup: View {
             }
         }
         .safeAreaInset(edge: .bottom) { self.ctaBar(meta: meta, canMark: canMark) }
+        .sensoryFeedback(.success, trigger: self.confirmationMessage) { _, new in new != nil }
         .onAppear {
             self.vault.extendSession()
             self.seedInitialState()
@@ -421,6 +414,14 @@ struct VaultShardSetup: View {
         let dirty = self.isDirty
 
         return VStack(spacing: 6) {
+            // Here, next to the button, not in the scroll view where it can sit below the fold.
+            if let err = self.error {
+                Text(err)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.occultaDanger)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
             if let msg = self.confirmationMessage, !dirty {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
@@ -434,7 +435,7 @@ struct VaultShardSetup: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 let hasExisting = meta != nil
-                let title = !hasExisting ? "Queue for Distribution" : (dirty ? "Update Distribution" : "Up to date")
+                let title = !hasExisting ? "Review" : (dirty ? "Update Distribution" : "Up to date")
                 let enabled = canMark && (!hasExisting || dirty)
 
                 DistributionCTAButton(
@@ -499,7 +500,16 @@ struct VaultShardSetup: View {
     // MARK: - Helpers
 
     private func shardRecord(for contactIdentifier: String, in meta: ShardDistributionMetadata?) -> ShardRecord? {
-        meta?.shards.first { $0.contactIdentifier == contactIdentifier }
+        meta?.shards.first { $0.isHeld(by: contactIdentifier) }
+    }
+
+    /// Contacts listed on this screen whose piece is pending or confirmed. Records hold tags
+    /// (`bugs.md` Bug 145), so they're matched against the listed contacts. A trustee hidden
+    /// here or without ML-KEM keys isn't listed and so can't be selected; leaving them out
+    /// replaces the key (Bug 144).
+    private func activeTrusteeIDs(in meta: ShardDistributionMetadata) -> Set<String> {
+        let active = meta.shards.filter { Self.activeStatuses.contains($0.status) }
+        return Set(self.mlkemContacts.map(\.identifier).filter { id in active.contains { $0.isHeld(by: id) } })
     }
 
     private func statusChipStyle(for status: ShardStatus) -> (label: String, bg: Color, fg: Color) {
@@ -539,15 +549,15 @@ struct VaultShardSetup: View {
         try? self.vault.setupBackup(currentDepth: self.security.currentDepth)
 
         if let meta = self.fetchDistributionMeta() {
-            let activeIDs = Set(meta.shards
-                .filter { Self.activeStatuses.contains($0.status) }
-                .map { $0.contactIdentifier })
+            let activeIDs = self.activeTrusteeIDs(in: meta)
             self.selectedIDs       = activeIDs
             self.threshold         = meta.threshold
             self.snapshotIDs       = activeIDs
             self.snapshotThreshold = meta.threshold
         } else if !self.globalTrusteeIDs.isEmpty {
-            self.selectedIDs = self.globalTrusteeIDs
+            // Only the Global Trustees this depth can send a piece to; others would stay
+            // selected without being listed, and the screen would never look up to date.
+            self.selectedIDs = self.globalTrusteeIDs.intersection(self.mlkemContacts.map(\.identifier))
         }
     }
 
@@ -599,11 +609,11 @@ struct VaultShardSetup: View {
                 currentDepth: self.security.currentDepth,
                 vaultManager: self.vault
             )
-            let activeIDs = Set(
-                self.fetchDistributionMeta()?.shards
-                    .filter { Self.activeStatuses.contains($0.status) }
-                    .map { $0.contactIdentifier } ?? []
-            )
+            // The screen now shows exactly what was queued, so it reads as up to date and
+            // the confirmation shows.
+            let activeIDs = self.fetchDistributionMeta().map(self.activeTrusteeIDs(in:)) ?? []
+            self.selectedIDs       = activeIDs
+            self.threshold         = k
             self.snapshotIDs       = activeIDs
             self.snapshotThreshold = k
             self.marking           = false

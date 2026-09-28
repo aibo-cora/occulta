@@ -18,7 +18,7 @@ struct ShardsCodecTests {
 
     private typealias Codec = PendingShamirSecretRestore.ShardsCodec
 
-    private func makeSlot(senderIdentifier: String = UUID().uuidString) throws -> PendingRestoreShardSlot {
+    private func makeSlot(senderIdentifier: String = realFormatContactIdentifier()) throws -> PendingRestoreShardSlot {
         let signer = TestKeyManager()
         let id = UUID()
         let entryID = UUID()
@@ -32,7 +32,7 @@ struct ShardsCodecTests {
             id: id, label: "vault-shard", value: value, category: .shard,
             signature: signature, createdAt: createdAt, entryID: entryID
         )
-        return PendingRestoreShardSlot(signedAttribute: attribute, senderIdentifier: senderIdentifier)
+        return PendingRestoreShardSlot(signedAttribute: attribute, sender: TrusteeTag(identifier: senderIdentifier))
     }
 
     // MARK: Size invariant
@@ -64,7 +64,7 @@ struct ShardsCodecTests {
             #expect(actual.signedAttribute?.id == expected.signedAttribute?.id)
             #expect(actual.signedAttribute?.value == expected.signedAttribute?.value)
             #expect(actual.signedAttribute?.signature == expected.signedAttribute?.signature)
-            #expect(actual.senderIdentifier == expected.senderIdentifier)
+            #expect(actual.sender == expected.sender)
         }
     }
 
@@ -75,13 +75,18 @@ struct ShardsCodecTests {
         #expect(decoded.count == Codec.shardCapacity)
     }
 
-    @Test("A sender identifier at the 36-byte fixed-width boundary round-trips exactly")
-    func roundTripSenderIdentifierAtBoundary() throws {
-        let senderIdentifier = UUID().uuidString   // exactly 36 characters
-        #expect(senderIdentifier.utf8.count == 36)
-        let slot = try self.makeSlot(senderIdentifier: senderIdentifier)
-        let decoded = try #require(Codec.decode(try Codec.encode([slot])))
-        #expect(decoded.first?.senderIdentifier == senderIdentifier)
+    /// Bug 147: version 1 kept the first 36 bytes of the identifier, so two senders sharing
+    /// them were one sender, and none matched a contact.
+    @Test("Senders whose identifiers share their first 36 bytes stay distinct")
+    func longSendersStayDistinct() throws {
+        let shared = String(repeating: "A", count: 36)
+        let first  = try self.makeSlot(senderIdentifier: shared + realFormatContactIdentifier())
+        let second = try self.makeSlot(senderIdentifier: shared + realFormatContactIdentifier())
+
+        let decoded = try #require(Codec.decode(try Codec.encode([first, second])))
+
+        #expect(decoded.map(\.sender) == [first.sender, second.sender])
+        #expect(decoded[0].sender != decoded[1].sender)
     }
 
     // MARK: Failure modes

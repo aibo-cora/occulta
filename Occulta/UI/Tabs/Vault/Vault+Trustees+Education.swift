@@ -3,7 +3,7 @@
 //  Occulta
 //
 //  Shown before a depth's first backup-key distribution, from the Backup Recovery screen's
-//  "Queue for Distribution". The continue button is locked until the reader has scrolled to
+//  "Review" button; its own "Queue for Distribution" queues the pieces. The continue button is locked until the reader has scrolled to
 //  the end — detected via onAppear on a 1-pt anchor view after the content.
 //
 //  Whether to show it comes from existing state (this depth has no distribution yet), never
@@ -144,7 +144,7 @@ struct BackupTrusteesEducationSheet: View {
                 self.dismiss()
                 self.onContinue()
             } label: {
-                Text("I understand — Queue for Distribution")
+                Text("Queue for Distribution")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(self.hasScrolledToBottom ? .white : Color.secondary)
                     .frame(maxWidth: .infinity)

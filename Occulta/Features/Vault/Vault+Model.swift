@@ -167,8 +167,9 @@ final class PendingShamirSecretRestore {
 /// id/value (Bug 124's remedy), a stale credential can't reach this slot at all, and the vouching
 /// step has nothing left to add over a direct current-trustee check.
 struct PendingRestoreShardSlot: Codable {
-    var signedAttribute:  SignedAttribute? = nil
-    var senderIdentifier: String?          = nil
+    var signedAttribute: SignedAttribute? = nil
+    /// Who sent it: a tag of the sender's `Contact.Profile.identifier` (`bugs.md` Bug 147).
+    var sender:          TrusteeTag?      = nil
 }
 
 // MARK: - PendingShamirSecretRestore.ShardsCodec
@@ -194,20 +195,18 @@ extension PendingShamirSecretRestore {
     /// byte 0        signedAttribute presence — 1 = real shard, 0 = filler
     /// byte 1–412    signedAttribute          — 412-byte SignedAttributeCodec;
     ///                                          random bytes when byte 0 is 0
-    /// byte 413–448  senderIdentifier         — 36-byte UTF-8 UUID string;
-    ///                                          random bytes when byte 0 is 0.
-    ///                                          Unlike `PayloadCodec.ShardRecord.
-    ///                                          contactIdentifier` (the closest
-    ///                                          precedent, encoded as 16 raw UUID
-    ///                                          bytes), this stays the 36-byte
-    ///                                          string form already sized in
-    ///                                          `RECOVERY_BUFFER_LAYERING.md` §6
-    ///                                          item 9.3 — open whether to tighten
-    ///                                          this to 16 bytes later.
+    /// byte 413–448  sender                   — version 2: the 16-byte `TrusteeTag`,
+    ///                                          then 20 random bytes; random bytes when
+    ///                                          byte 0 is 0.
     /// ```
+    ///
+    /// Version 1 held the sender's identifier as a 36-byte UTF-8 string, assuming a UUID. Real
+    /// identifiers are longer and were cut (`bugs.md` Bug 147); a version-1 slot decodes to the
+    /// tag of that cut string, which matches no contact. Only builds of this branch wrote
+    /// version 1, so only test devices hold it.
     enum ShardsCodec {
 
-        static let formatVersion: UInt16 = 1
+        static let formatVersion: UInt16 = 2
         static let shardCapacity: Int    = 255
         static let slotSize:      Int    = 1 + SignedAttributeCodec.size + 36
         static let payloadSize:   Int    = 2 + shardCapacity * slotSize
@@ -225,7 +224,7 @@ extension PendingShamirSecretRestore {
         /// by construction.
         static func encode(_ slots: [PendingRestoreShardSlot]) throws -> Data {
             switch Self.formatVersion {
-            case 1:  return try Self.encodeV1(slots)
+            case 2:  return try Self.encodeV2(slots)
             default: preconditionFailure("formatVersion \(Self.formatVersion) has no encoder")
             }
         }
@@ -239,12 +238,13 @@ extension PendingShamirSecretRestore {
             let version = UInt16(data[data.startIndex]) << 8 | UInt16(data[data.startIndex + 1])
 
             switch version {
-            case 1:  return Self.decodeV1(data)
-            default: return nil
+            case 1, 2: return Self.decodeSlots(data, version: version)
+            default:   return nil
             }
         }
 
-        private static func encodeV1(_ slots: [PendingRestoreShardSlot]) throws -> Data {
+        /// Versions 1 and 2 share one layout; only the sender field's meaning differs.
+        private static func encodeV2(_ slots: [PendingRestoreShardSlot]) throws -> Data {
             guard slots.count <= Self.shardCapacity else {
                 throw CodecError.tooManySlots(count: slots.count)
             }
@@ -263,7 +263,7 @@ extension PendingShamirSecretRestore {
             return out
         }
 
-        private static func decodeV1(_ data: Data) -> [PendingRestoreShardSlot]? {
+        private static func decodeSlots(_ data: Data, version: UInt16) -> [PendingRestoreShardSlot]? {
             guard data.count == Self.payloadSize else { return nil }
             let bytes = [UInt8](data)
 
@@ -271,7 +271,7 @@ extension PendingShamirSecretRestore {
             var offset = 2
             for _ in 0..<Self.shardCapacity {
                 let slotBytes = Data(bytes[offset..<(offset + Self.slotSize)])
-                if let slot = Self.decodeSlot(slotBytes) {
+                if let slot = Self.decodeSlot(slotBytes, version: version) {
                     slots.append(slot)
                 }
                 offset += Self.slotSize
@@ -287,31 +287,38 @@ extension PendingShamirSecretRestore {
         /// present or both absent in practice (see its own doc comment), so
         /// requiring both here rather than either doesn't lose any real data.
         private static func encodeSlot(_ slot: PendingRestoreShardSlot) throws -> Data {
-            guard let attribute = slot.signedAttribute, let senderIdentifier = slot.senderIdentifier else {
+            guard let attribute = slot.signedAttribute, let sender = slot.sender else {
                 return Self.emptySlot()
             }
 
             var out = Data(capacity: Self.slotSize)
             out.append(1)
             out.append(try SignedAttributeCodec.encode(attribute))
-            out.append(Self.fixedWidthUTF8(senderIdentifier, count: 36))
+            out.append(sender.bytes)
+            out.append(Data.randomBytes(36 - TrusteeTag.size))
             return out
         }
 
         /// `nil` for a genuinely-unused capacity slot (presence byte 0), a
         /// malformed one, or one whose `SignedAttributeCodec` region fails to
         /// decode — all three mean "no real shard here."
-        private static func decodeSlot(_ data: Data) -> PendingRestoreShardSlot? {
+        private static func decodeSlot(_ data: Data, version: UInt16) -> PendingRestoreShardSlot? {
             let bytes = [UInt8](data)
             guard bytes[0] == 1 else { return nil }
 
             let attributeBytes = Data(bytes[1..<(1 + SignedAttributeCodec.size)])
             guard let attribute = SignedAttributeCodec.decode(attributeBytes) else { return nil }
 
-            let senderBytes = Array(bytes[(1 + SignedAttributeCodec.size)..<Self.slotSize])
-            let senderIdentifier = Self.string(fromFixedWidth: senderBytes)
+            let senderStart = 1 + SignedAttributeCodec.size
+            let sender: TrusteeTag?
+            if version == 1 {
+                sender = TrusteeTag(identifier: Self.string(fromFixedWidth: Array(bytes[senderStart..<Self.slotSize])))
+            } else {
+                sender = TrusteeTag(bytes: Data(bytes[senderStart..<(senderStart + TrusteeTag.size)]))
+            }
+            guard let sender else { return nil }
 
-            return PendingRestoreShardSlot(signedAttribute: attribute, senderIdentifier: senderIdentifier)
+            return PendingRestoreShardSlot(signedAttribute: attribute, sender: sender)
         }
 
         private static func emptySlot() -> Data {
@@ -321,20 +328,14 @@ extension PendingShamirSecretRestore {
             return out
         }
 
-        // MARK: Fixed-width string
+        // MARK: Fixed-width string (version 1 only)
         //
         // Duplicated rather than shared with SignedAttributeCodec's own copy —
         // matching PayloadCodec's and ExportMetaSlotCodec's existing precedent of
         // each codec carrying its own private helpers rather than a shared one.
 
-        private static func fixedWidthUTF8(_ string: String, count: Int) -> Data {
-            var bytes = Array(string.utf8.prefix(count))
-            bytes.append(contentsOf: repeatElement(0, count: count - bytes.count))
-            return Data(bytes)
-        }
-
-        /// Trims at the first zero byte — every real sender identifier is a UUID
-        /// string (never contains one), so this only ever strips genuine padding.
+        /// Reads a version-1 sender field: the identifier's UTF-8, cut at 36 bytes and
+        /// zero-padded. Trims at the first zero byte.
         private static func string(fromFixedWidth bytes: [UInt8]) -> String {
             let trimmed = bytes.prefix { $0 != 0 }
             return String(decoding: trimmed, as: UTF8.self)
@@ -609,16 +610,84 @@ extension ShardStatus {
     }
 }
 
+/// A fixed-width stand-in for a `Contact.Profile.identifier`: the first 16 bytes of SHA-256
+/// over `domainLabel` followed by the identifier's UTF-8.
+///
+/// Stored identifiers are variable-length — encrypted base64 since SecurityReview 2026-07-24
+/// finding #11, or the raw value when that encryption fell back — so the fixed-width codecs
+/// (`Backup.PayloadCodec`'s trustee records, `PendingShamirSecretRestore.ShardsCodec`'s
+/// senders) store this instead (`bugs.md` Bugs 145–147). Compared, never reversed; it
+/// depends on the whole identifier, not on how its encryption lays out the leading bytes.
+struct TrusteeTag: Hashable, Codable {
+    /// Separates this hash from any other SHA-256 of the same identifier the app might take.
+    static let domainLabel = "occulta-trustee-tag"
+    static let size = 16
+
+    let bytes: Data
+
+    init(identifier: String) {
+        var input = Data(Self.domainLabel.utf8)
+        input.append(Data(identifier.utf8))
+        self.bytes = Data(SHA256.hash(data: input).prefix(Self.size))
+    }
+
+    /// `nil` unless `bytes` is exactly `size` long.
+    init?(bytes: Data) {
+        guard bytes.count == Self.size else { return nil }
+        self.bytes = Data(bytes)
+    }
+}
+
 /// One shard's delivery record within a ShardDistributionMetadata.
 struct ShardRecord: Codable {
-    /// `Contact.Profile.identifier` — a stable SwiftData UUID, not derived from the key fingerprint.
-    let contactIdentifier: String
+    /// The trustee: a tag of their `Contact.Profile.identifier`, not the identifier itself,
+    /// which is variable-length ciphertext (`TrusteeTag`, `bugs.md` Bug 145). Match a contact
+    /// with `isHeld(by:)`.
+    let trustee: TrusteeTag
     /// The SignedAttribute.id for this shard — used as `attributeID` in `.replace` ShardOperations
     /// to identify which old shard a new distribution supersedes.
     let attributeID: UUID
     var status: ShardStatus
     /// When the shard was first distributed (bundle handed to the .occ pipeline).
     var distributedAt: Date? = nil
+
+    init(trustee: TrusteeTag, attributeID: UUID, status: ShardStatus, distributedAt: Date? = nil) {
+        self.trustee       = trustee
+        self.attributeID   = attributeID
+        self.status        = status
+        self.distributedAt = distributedAt
+    }
+
+    /// Whether the contact stored as `identifier` holds this piece.
+    func isHeld(by identifier: String) -> Bool {
+        self.trustee == TrusteeTag(identifier: identifier)
+    }
+
+    // JSON is only read for v1.10.3's backup-key payload (`migrateLegacyBackupRowIfNeeded`),
+    // whose records carry `contactIdentifier`; they are tagged on the way in (`bugs.md` Bug 146).
+    private enum CodingKeys: String, CodingKey {
+        case trustee, contactIdentifier, attributeID, status, distributedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let trustee = try c.decodeIfPresent(TrusteeTag.self, forKey: .trustee) {
+            self.trustee = trustee
+        } else {
+            self.trustee = TrusteeTag(identifier: try c.decode(String.self, forKey: .contactIdentifier))
+        }
+        self.attributeID   = try c.decode(UUID.self, forKey: .attributeID)
+        self.status        = try c.decode(ShardStatus.self, forKey: .status)
+        self.distributedAt = try c.decodeIfPresent(Date.self, forKey: .distributedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.trustee, forKey: .trustee)
+        try c.encode(self.attributeID, forKey: .attributeID)
+        try c.encode(self.status, forKey: .status)
+        try c.encodeIfPresent(self.distributedAt, forKey: .distributedAt)
+    }
 }
 
 /// Tracks a Shamir split for one VaultEntry.

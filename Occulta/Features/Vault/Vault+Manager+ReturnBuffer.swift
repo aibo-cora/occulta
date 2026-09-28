@@ -86,13 +86,14 @@ extension VaultManager {
 
         let row = try self.findOrCreateRestoreRow(forAttributeID: attributeID, localKey: localKey)
 
-        var slots = try Self.decodedSlots(from: row, usingKey: restoreKey)
+        var slots  = try Self.decodedSlots(from: row, usingKey: restoreKey)
+        let sender = TrusteeTag(identifier: senderIdentifier)
 
-        if let dupIndex = slots.firstIndex(where: { $0.senderIdentifier == senderIdentifier }) {
+        if let dupIndex = slots.firstIndex(where: { $0.sender == sender }) {
             if slots[dupIndex].signedAttribute?.id == attribute.id { return }   // identical re-delivery
-            slots[dupIndex] = PendingRestoreShardSlot(signedAttribute: attribute, senderIdentifier: senderIdentifier)
+            slots[dupIndex] = PendingRestoreShardSlot(signedAttribute: attribute, sender: sender)
         } else {
-            slots.append(PendingRestoreShardSlot(signedAttribute: attribute, senderIdentifier: senderIdentifier))
+            slots.append(PendingRestoreShardSlot(signedAttribute: attribute, sender: sender))
         }
 
         let encoded = try PendingShamirSecretRestore.ShardsCodec.encode(slots)
@@ -117,8 +118,8 @@ extension VaultManager {
         let slots = try Self.decodedSlots(from: row, usingKey: restoreKey)
 
         return slots.compactMap { slot in
-            guard let attribute = slot.signedAttribute, let sender = slot.senderIdentifier else { return nil }
-            return AttestedShard(attribute: attribute, senderIdentifier: sender)
+            guard let attribute = slot.signedAttribute, let sender = slot.sender else { return nil }
+            return AttestedShard(attribute: attribute, sender: sender)
         }
     }
 

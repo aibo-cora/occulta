@@ -245,11 +245,11 @@ struct AttestedShard: Codable {
     /// identity when unrotated (Branch A) — accepted either way once that check
     /// fails, `bugs.md` Bug 125.
     let attribute: SignedAttribute
-    /// The contact identifier this shard arrived from, as resolved by the
-    /// *receiving* device's own lookup — never sender-asserted. See
-    /// `ShardCustodyManager.handleInbound`'s callers in `OccultaApp.swift`,
-    /// where `senderIdentifier` comes from `contactManager.openGroup(...)`
-    /// resolving the decrypting key against the receiver's own contacts, not
-    /// from anything the bundle's payload claims.
-    let senderIdentifier: String
+    /// Who this shard arrived from, as resolved by the *receiving* device's own lookup —
+    /// never sender-asserted. See `ShardCustodyManager.handleInbound`'s callers in
+    /// `OccultaApp.swift`, where the sender identifier comes from
+    /// `contactManager.openGroup(...)` resolving the decrypting key against the
+    /// receiver's own contacts, not from anything the bundle's payload claims. Held as a
+    /// tag of that identifier (`TrusteeTag`, `bugs.md` Bug 147).
+    let sender: TrusteeTag
 }

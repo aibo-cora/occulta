@@ -101,10 +101,10 @@ private func makeVault() throws -> (VaultManager, ModelContainer) {
 private func setUpConfirmedBEK(for vault: VaultManager, currentDepth: Int) throws -> [SignedAttribute] {
     try vault.setupBackup(currentDepth: currentDepth)
 
-    // Real UUID strings, not "trustee-N" labels — BEKPayloadCodec's fixed-width wire
-    // format stores contactIdentifier as raw UUID bytes (item 3). No Contact.Profile
-    // needed here any more — prepareBackupShards takes identifiers directly.
-    let recipients = (0..<2).map { _ in UUID().uuidString }
+    // Identifiers in the form the app stores (encrypted base64), not UUIDs or labels — the
+    // assumption that they were UUIDs broke every real distribution (bugs.md Bug 145). No
+    // Contact.Profile needed — prepareBackupShards takes identifiers directly.
+    let recipients = (0..<2).map { _ in realFormatContactIdentifier() }
 
     let attributes = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: currentDepth)
     try vault.setBackupShardStatuses(Dictionary(uniqueKeysWithValues: attributes.map { ($0.id, .confirmed) }), currentDepth: currentDepth)
@@ -118,8 +118,9 @@ private func restoreOnFreshVault(_ backup: Data, shards: [SignedAttribute], atDe
     let (fresh, container) = try makeVault()
     var senders = Set<String>()
     for (i, shard) in shards.enumerated() {
-        try fresh.absorbShard(shard, senderIdentifier: "trustee-\(i)")
-        senders.insert("trustee-\(i)")
+        let sender = realFormatContactIdentifier()
+        try fresh.absorbShard(shard, senderIdentifier: sender)
+        senders.insert(sender)
     }
     let imported = try fresh.restoreBackup(from: backup, currentDepth: depth, visibleContactIdentifiers: senders)
     try #require(imported, "the restore itself failed, so nothing below measures the backup's contents")
@@ -373,7 +374,7 @@ struct VaultBackupRoundTripTests {
         let (vault, _, _) = try makeBackupReadyVault()
         _ = try vault.exportBackup(currentDepth: 0)
 
-        _ = try vault.prepareBackupShards(threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], currentDepth: 0)
+        _ = try vault.prepareBackupShards(threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], currentDepth: 0)
 
         vault.refreshBackupStaleness(currentDepth: 0)
         #expect(vault.backupStaleness?.bekRotated != true,
@@ -387,7 +388,7 @@ struct VaultBackupRoundTripTests {
         let earlier = try vault.exportBackup(currentDepth: 0)
 
         _ = try vault.prepareBackupShards(
-            threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], newKey: true, currentDepth: 0
+            threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], newKey: true, currentDepth: 0
         )
 
         vault.refreshBackupStaleness(currentDepth: 0)
@@ -427,7 +428,7 @@ struct VaultBackupRoundTripTests {
 
         // Depth 2 gets its own BEK with shards left pending (not auto-confirmed).
         try vault.setupBackup(currentDepth: 2)
-        let recipients = (0..<2).map { _ in UUID().uuidString }
+        let recipients = (0..<2).map { _ in realFormatContactIdentifier() }
         let depth2Shards = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: 2)
 
         // Named from depth 0: not depth 0's piece, so nothing changes anywhere.

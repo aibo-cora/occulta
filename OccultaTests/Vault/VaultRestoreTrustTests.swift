@@ -84,10 +84,10 @@ private func makeBackupReadyVault(threshold: Int = 2, trustees: Int = 2) throws 
     vault.unlock(context: LAContext())
     try vault.setupBackup(currentDepth: 0)
 
-    // Real UUID strings, not "trustee-N" labels — BEKPayloadCodec's fixed-width wire
-    // format stores contactIdentifier as raw UUID bytes (item 3). No Contact.Profile
-    // needed here any more — prepareBackupShards takes identifiers directly.
-    let recipients = (0..<trustees).map { _ in UUID().uuidString }
+    // Identifiers in the form the app stores (encrypted base64), not UUIDs or labels — the
+    // assumption that they were UUIDs broke every real distribution (bugs.md Bug 145). No
+    // Contact.Profile needed — prepareBackupShards takes identifiers directly.
+    let recipients = (0..<trustees).map { _ in realFormatContactIdentifier() }
 
     let shards = try vault.prepareBackupShards(threshold: threshold, recipients: recipients, currentDepth: 0)
     try vault.setBackupShardStatuses(Dictionary(uniqueKeysWithValues: shards.map { ($0.id, .confirmed) }), currentDepth: 0)
@@ -124,7 +124,7 @@ private func bekBytes(of vault: VaultManager, atDepth depth: Int = 0) throws -> 
 private func bank(_ shards: [SignedAttribute], in vault: VaultManager, senderPrefix: String = "trustee") throws -> Set<String> {
     var senders = Set<String>()
     for (i, shard) in shards.enumerated() {
-        let sender = "\(senderPrefix)-\(i)"
+        let sender = "\(senderPrefix)-\(i)-" + realFormatContactIdentifier()   // longer than 36 bytes, as real ones are
         try vault.absorbShard(shard, senderIdentifier: sender)
         senders.insert(sender)
     }

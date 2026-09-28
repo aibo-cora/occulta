@@ -17,13 +17,13 @@ struct BEKPayloadCodecTests {
     private typealias Codec = VaultManager.Backup.PayloadCodec
 
     private func makeShard(
-        contactID: UUID = UUID(),
+        contactIdentifier: String = realFormatContactIdentifier(),
         attributeID: UUID = UUID(),
         status: ShardStatus = .pending,
         distributedAt: Date? = nil
     ) -> ShardRecord {
         ShardRecord(
-            contactIdentifier: contactID.uuidString,
+            trustee: TrusteeTag(identifier: contactIdentifier),
             attributeID: attributeID,
             status: status,
             distributedAt: distributedAt
@@ -98,7 +98,7 @@ struct BEKPayloadCodecTests {
         #expect(decodedMeta.shards.count == shards.count)
 
         for (expected, actual) in zip(shards, decodedMeta.shards) {
-            #expect(actual.contactIdentifier == expected.contactIdentifier)
+            #expect(actual.trustee == expected.trustee)
             #expect(actual.attributeID == expected.attributeID)
             #expect(actual.status == expected.status)
             #expect(actual.distributedAt == expected.distributedAt)
@@ -136,22 +136,59 @@ struct BEKPayloadCodecTests {
         }
     }
 
-    @Test("Encoding a malformed contactIdentifier throws rather than silently corrupting the record")
-    func invalidContactIdentifierThrows() {
-        let badShard = ShardRecord(
-            contactIdentifier: "not-a-uuid",
-            attributeID: UUID(),
-            status: .pending
-        )
+    /// Bug 145: records held the trustee's identifier as a UUID, and a real identifier (encrypted
+    /// base64) made encoding throw.
+    @Test("A real-format trustee identifier encodes, and decodes as its tag")
+    func realFormatIdentifierRoundTrips() throws {
+        let identifier = realFormatContactIdentifier()
         let payload = BackupEncryptionKey.Payload(
-            bekBytes: Data.randomBytes(32),
-            distributionID: UUID(),
-            shardMetadata: ShardDistributionMetadata(threshold: 1, shards: [badShard])
+            bekBytes: Data.randomBytes(32), distributionID: UUID(),
+            shardMetadata: ShardDistributionMetadata(threshold: 2, shards: [makeShard(contactIdentifier: identifier)])
         )
 
-        #expect(throws: Codec.CodecError.invalidContactIdentifier("not-a-uuid")) {
-            try Codec.encode(payload)
+        let decoded = try #require(Codec.decode(try Codec.encode(payload)))
+
+        let record = try #require(decoded.shardMetadata?.shards.first)
+        #expect(record.isHeld(by: identifier))
+        #expect(!record.isHeld(by: realFormatContactIdentifier()))
+    }
+
+    /// Version 1 held the identifier as raw UUID bytes; only builds of this branch wrote it.
+    @Test("A version-1 payload decodes its UUID trustee field to that identifier's tag")
+    func versionOneDecodesToTag() throws {
+        let uuid = UUID()
+        var bytes = [UInt8](try Codec.encode(BackupEncryptionKey.Payload(
+            bekBytes: Data.randomBytes(32), distributionID: UUID(),
+            shardMetadata: ShardDistributionMetadata(threshold: 2, shards: [makeShard()])
+        )))
+        bytes[0] = 0; bytes[1] = 1                                   // format version 1
+        withUnsafeBytes(of: uuid.uuid) { raw in                      // first record's trustee field
+            for i in 0..<16 { bytes[51 + i] = raw[i] }
         }
+
+        let decoded = try #require(Codec.decode(Data(bytes)))
+
+        #expect(try #require(decoded.shardMetadata?.shards.first).isHeld(by: uuid.uuidString))
+    }
+
+    /// v1.10.3 stored records as JSON with `contactIdentifier`; migration reads them (Bug 146).
+    @Test("A v1.10.3 JSON record decodes, tagging its contactIdentifier")
+    func legacyJSONRecordDecodes() throws {
+        let identifier = realFormatContactIdentifier()
+        let json = #"{"contactIdentifier":"\#(identifier)","attributeID":"\#(UUID().uuidString)","status":"confirmed"}"#
+
+        let record = try JSONDecoder().decode(ShardRecord.self, from: Data(json.utf8))
+
+        #expect(record.isHeld(by: identifier))
+        #expect(record.status == .confirmed)
+    }
+
+    @Test("TrusteeTag is the same for the same identifier and differs across identifiers")
+    func trusteeTagIsDeterministic() {
+        let identifier = realFormatContactIdentifier()
+        #expect(TrusteeTag(identifier: identifier) == TrusteeTag(identifier: identifier))
+        #expect(TrusteeTag(identifier: identifier) != TrusteeTag(identifier: realFormatContactIdentifier()))
+        #expect(TrusteeTag(identifier: identifier).bytes.count == TrusteeTag.size)
     }
 
     @Test("Decoding rejects the wrong length rather than partially decoding")

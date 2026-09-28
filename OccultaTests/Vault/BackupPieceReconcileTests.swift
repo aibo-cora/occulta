@@ -55,7 +55,7 @@ private struct Owner {
     }
 
     func pieceID(of trustee: String, depth: Int = 0) throws -> UUID {
-        try #require(try self.records(depth: depth).first { $0.contactIdentifier == trustee }?.attributeID)
+        try #require(try self.records(depth: depth).first { $0.isHeld(by: trustee) }?.attributeID)
     }
 
     /// The queued operations the next message to `trustee` would carry.
@@ -106,7 +106,7 @@ private struct Owner {
     }
 }
 
-private func trustees(_ n: Int) -> [String] { (0..<n).map { _ in UUID().uuidString } }
+private func trustees(_ n: Int) -> [String] { (0..<n).map { _ in realFormatContactIdentifier() } }
 
 // MARK: - Distribution: new key on removal, and the queue (Bugs 141, 142)
 
@@ -191,7 +191,7 @@ struct BackupDropRuleTests {
         let t = trustees(3)
         try owner.distributeAndConfirm(t)
         owner.reconcile(live: [t[0], t[1]])
-        #expect(try owner.records().first { $0.contactIdentifier == t[2] }?.status == .lost)
+        #expect(try owner.records().first { $0.isHeld(by: t[2]) }?.status == .lost)
         let key = try owner.bek()
 
         try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1]], currentDepth: 0, vaultManager: owner.vault)
@@ -243,7 +243,8 @@ struct BackupReconcileTests {
         try owner.manifest(from: t[0], held: [try owner.pieceID(of: t[0])])
         owner.reconcile(live: Set(t))
 
-        let statuses = Dictionary(uniqueKeysWithValues: try owner.records().map { ($0.contactIdentifier, $0.status) })
+        let records  = try owner.records()
+        let statuses = Dictionary(uniqueKeysWithValues: t.map { id in (id, records.first { $0.isHeld(by: id) }?.status) })
         #expect(statuses[t[0]] == .confirmed)
         #expect(statuses[t[1]] == .pending, "no manifest from this trustee yet")
         #expect(try owner.queued(for: t[0]).isEmpty, "the confirmed piece left the queue")
@@ -305,7 +306,7 @@ struct BackupReconcileTests {
 
         owner.reconcile(live: [t[0]])
 
-        #expect(try owner.records().first { $0.contactIdentifier == t[1] }?.status == .lost)
+        #expect(try owner.records().first { $0.isHeld(by: t[1]) }?.status == .lost)
         #expect(try owner.queued(for: t[0]).isEmpty, "one trustee left is below the threshold of 2")
         owner.vault.refreshBackupErosion(currentDepth: 0)
         #expect(owner.vault.backupErosion?.active == 1)

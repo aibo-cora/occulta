@@ -118,7 +118,7 @@ struct ReconstructShardMigrationTests {
         let collected = try vault.collectedShards(forAttributeID: distributionID)
         #expect(collected.count == 1)
         #expect(collected.first?.attribute.id == attr.id)
-        #expect(collected.first?.senderIdentifier == "trustee-0")
+        #expect(collected.first?.sender == TrusteeTag(identifier: "trustee-0"))
     }
 
     @Test("A PEK population (entryID matching a real VaultEntry) migrates and becomes readable")

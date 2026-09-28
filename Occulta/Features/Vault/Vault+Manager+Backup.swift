@@ -406,9 +406,11 @@ extension VaultManager {
             return false
         }
 
+        // Banked pieces carry a tag of their sender, not the identifier (`bugs.md` Bug 147).
+        let visibleSenders = Set(visibleContactIdentifiers.map(TrusteeTag.init(identifier:)))
         for distributionID in (try? self.bekRestoreDistributionIDs()) ?? [] {
             let shards = ((try? self.collectedShards(forAttributeID: distributionID)) ?? [])
-                .filter { visibleContactIdentifiers.contains($0.senderIdentifier) }
+                .filter { visibleSenders.contains($0.sender) }
             guard !shards.isEmpty else { continue }
 
             guard var verified = try? self.backup.verifiedKey(
@@ -1022,8 +1024,7 @@ extension VaultManager {
         }
 
         /// Seals `payload` into `row.encryptedPayload` under `vaultKey`, AAD-bound to
-        /// `row.id`. Shared by `persist` (find-or-claim, then seal) and
-        /// `updateShardStatus` (already holds the row, no lookup needed).
+        /// `row.id`. Used by `stage` (find-or-claim, then seal).
         private func seal(_ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey, into row: BackupEncryptionKey) throws {
             let plaintext = try PayloadCodec.encode(payload)
             let sealed = try AES.GCM.seal(plaintext, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: row.aad())
@@ -1187,10 +1188,10 @@ extension VaultManager {
             let now    = Date()
             let shards = (0..<n).map { i in
                 ShardRecord(
-                    contactIdentifier: recipients[i],
-                    attributeID:            attributes[i].id,
-                    status:            .pending,
-                    distributedAt:     now
+                    trustee:       TrusteeTag(identifier: recipients[i]),
+                    attributeID:   attributes[i].id,
+                    status:        .pending,
+                    distributedAt: now
                 )
             }
 
@@ -1406,7 +1407,8 @@ extension VaultManager {
         //
         // Per-`ShardRecord`, 42 bytes:
         // ```
-        // byte 0–15   contactIdentifier — raw UUID bytes, not the 36-char string
+        // byte 0–15   trustee           — version 2: the 16-byte `TrusteeTag`
+        //                                 (version 1: the identifier as raw UUID bytes)
         // byte 16–31  attributeID       — raw UUID bytes
         // byte 32     status            — UInt8 tag; 0 = unused capacity slot, never a
         //                                 real `ShardStatus` (those are 1...5)
@@ -1421,7 +1423,7 @@ extension VaultManager {
         enum PayloadCodec {
             /// The version every `encode(_:)` call writes. Bumping this alone is not how
             /// you ship a new format — see the note on `decode(_:)` below.
-            static let formatVersion:   UInt16 = 1
+            static let formatVersion:   UInt16 = 2
             static let shardCapacity:   Int    = 255
             static let shardRecordSize: Int    = 42
             /// Size of the version this codec currently *writes*. A future version is
@@ -1436,8 +1438,6 @@ extension VaultManager {
                 /// silently truncate real trustee records — the one thing this codec
                 /// must never do.
                 case tooManyShards(count: Int)
-                /// `ShardRecord.contactIdentifier` wasn't a valid UUID string.
-                case invalidContactIdentifier(String)
             }
 
             /// Always writes `formatVersion` — dispatches on that constant the same way
@@ -1447,7 +1447,7 @@ extension VaultManager {
             /// a fresh record or a migration re-seal, and both want the newest shape.
             static func encode(_ payload: BackupEncryptionKey.Payload) throws -> Data {
                 switch Self.formatVersion {
-                case 1:  return try Self.encodeV1(payload)
+                case 2:  return try Self.encodeV2(payload)
                 default: preconditionFailure("formatVersion \(Self.formatVersion) has no encoder")
                 }
             }
@@ -1476,12 +1476,17 @@ extension VaultManager {
                 let version = UInt16(data[data.startIndex]) << 8 | UInt16(data[data.startIndex + 1])
 
                 switch version {
-                case 1:  return Self.decodeV1(data)
-                default: return nil
+                case 1, 2: return Self.decodeBody(data, version: version)
+                default:   return nil
                 }
             }
 
-            private static func encodeV1(_ payload: BackupEncryptionKey.Payload) throws -> Data {
+            /// Versions 1 and 2 share one layout. A record's 16-byte trustee field held the
+            /// trustee's identifier as a UUID in version 1 — which real identifiers aren't, so
+            /// encoding threw for every real trustee (`bugs.md` Bug 145) — and holds its
+            /// `TrusteeTag` in version 2. A version-1 record decodes to the tag of that UUID
+            /// string; only builds of this branch wrote version 1.
+            private static func encodeV2(_ payload: BackupEncryptionKey.Payload) throws -> Data {
                 let shards = payload.shardMetadata?.shards ?? []
                 guard shards.count <= Self.shardCapacity else {
                     throw CodecError.tooManyShards(count: shards.count)
@@ -1489,7 +1494,7 @@ extension VaultManager {
 
                 var out = Data(capacity: Self.payloadSizeV1)
 
-                var version = UInt16(1).bigEndian
+                var version = UInt16(2).bigEndian
                 withUnsafeBytes(of: &version) { out.append(contentsOf: $0) }
 
                 out.append(payload.bekBytes)
@@ -1497,7 +1502,7 @@ extension VaultManager {
                 out.append(UInt8(clamping: payload.shardMetadata?.threshold ?? 0))
 
                 for shard in shards {
-                    out.append(try Self.encodeShard(shard))
+                    out.append(Self.encodeShard(shard))
                 }
                 for _ in shards.count..<Self.shardCapacity {
                     out.append(Self.emptyShardSlot())
@@ -1506,7 +1511,7 @@ extension VaultManager {
                 return out
             }
 
-            private static func decodeV1(_ data: Data) -> BackupEncryptionKey.Payload? {
+            private static func decodeBody(_ data: Data, version: UInt16) -> BackupEncryptionKey.Payload? {
                 guard data.count == Self.payloadSizeV1 else { return nil }
                 // `[UInt8](data)` always rebases to 0-based indices regardless of `data`'s
                 // own indices (unlike `data.subdata(in:)`, which is relative to `data`'s
@@ -1528,7 +1533,7 @@ extension VaultManager {
                 var offset = 51
                 for _ in 0..<Self.shardCapacity {
                     let slot = Data(bytes[offset..<(offset + Self.shardRecordSize)])
-                    if let shard = Self.decodeShard(slot) {
+                    if let shard = Self.decodeShard(slot, version: version) {
                         shards.append(shard)
                     }
                     offset += Self.shardRecordSize
@@ -1572,13 +1577,9 @@ extension VaultManager {
                 }
             }
 
-            private static func encodeShard(_ shard: ShardRecord) throws -> Data {
-                guard let contactID = UUID(uuidString: shard.contactIdentifier) else {
-                    throw CodecError.invalidContactIdentifier(shard.contactIdentifier)
-                }
-
+            private static func encodeShard(_ shard: ShardRecord) -> Data {
                 var out = Data(capacity: Self.shardRecordSize)
-                out.append(Self.uuidBytes(contactID))
+                out.append(shard.trustee.bytes)
                 out.append(Self.uuidBytes(shard.attributeID))
                 out.append(Self.tag(for: shard.status))
 
@@ -1597,10 +1598,16 @@ extension VaultManager {
             /// `nil` for a genuinely-unused capacity slot (status tag 0) or a malformed
             /// one — both mean "no shard here," the same "absent" convention
             /// `ExportMetaSlotCodec.decodeSlot` uses.
-            private static func decodeShard(_ slot: Data) -> ShardRecord? {
+            private static func decodeShard(_ slot: Data, version: UInt16) -> ShardRecord? {
                 let bytes = [UInt8](slot)
                 guard let status = Self.status(fromTag: bytes[32]) else { return nil }
-                guard let contactID = Self.uuid(fromBytes: Array(bytes[0..<16])) else { return nil }
+                let trustee: TrusteeTag?
+                if version == 1 {
+                    trustee = Self.uuid(fromBytes: Array(bytes[0..<16])).map { TrusteeTag(identifier: $0.uuidString) }
+                } else {
+                    trustee = TrusteeTag(bytes: Data(bytes[0..<16]))
+                }
+                guard let trustee else { return nil }
                 guard let attributeID = Self.uuid(fromBytes: Array(bytes[16..<32])) else { return nil }
 
                 let hasDistributedAt = bytes[33] == 1
@@ -1608,16 +1615,16 @@ extension VaultManager {
                 let distributedAt = hasDistributedAt ? Date(timeIntervalSince1970: TimeInterval(ts)) : nil
 
                 return ShardRecord(
-                    contactIdentifier: contactID.uuidString,
-                    attributeID:       attributeID,
-                    status:            status,
-                    distributedAt:     distributedAt
+                    trustee:       trustee,
+                    attributeID:   attributeID,
+                    status:        status,
+                    distributedAt: distributedAt
                 )
             }
 
             private static func emptyShardSlot() -> Data {
                 var out = Data(capacity: Self.shardRecordSize)
-                out.append(Data.randomBytes(32))   // contactIdentifier + attributeID region, filler
+                out.append(Data.randomBytes(32))   // trustee + attributeID region, filler
                 out.append(Self.emptyStatusTag)
                 out.append(Data.randomBytes(9))    // distributedAt presence + value region, filler
                 return out

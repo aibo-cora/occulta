@@ -442,7 +442,8 @@ final class ShardCustodyManager {
     }
 
     private static func dropsTrustee(_ records: [ShardRecord], recipients: [String]) -> Bool {
-        records.contains { !recipients.contains($0.contactIdentifier) }
+        let tags = Set(recipients.map(TrusteeTag.init(identifier:)))
+        return records.contains { !tags.contains($0.trustee) }
     }
 
     /// Re-split `currentDepth`'s backup key for `recipients` and queue one piece each:
@@ -466,7 +467,7 @@ final class ShardCustodyManager {
             throw CustodyError.keyDerivationFailed
         }
         let previous    = try vaultManager.backupShardMetadata(currentDepth: currentDepth)?.shards ?? []
-        let previousIDs = Dictionary(previous.map { ($0.contactIdentifier, $0.attributeID) }, uniquingKeysWith: { $1 })
+        let previousIDs = Dictionary(previous.map { ($0.trustee, $0.attributeID) }, uniquingKeysWith: { $1 })
         let newKey      = Self.dropsTrustee(previous, recipients: recipients)
 
         try self.deleteQueuedAndWatchRows(forAttributeIDs: Set(previous.map(\.attributeID)), using: custodyKey)
@@ -478,7 +479,10 @@ final class ShardCustodyManager {
         for (recipient, attribute) in zip(recipients, attributes) {
             let rowID    = UUID()
             let combined = try self.sealRow(
-                PendingShardDistribute.Payload(contactIdentifier: recipient, signedAttribute: attribute, oldAttributeID: previousIDs[recipient]),
+                PendingShardDistribute.Payload(
+                    contactIdentifier: recipient, signedAttribute: attribute,
+                    oldAttributeID: previousIDs[TrusteeTag(identifier: recipient)]
+                ),
                 using: custodyKey, id: rowID
             )
             self.modelContext.insert(PendingShardDistribute(id: rowID, encryptedPayload: combined))
@@ -527,17 +531,21 @@ final class ShardCustodyManager {
             watchAbsent[payload.attributeID] = payload.isAbsent
         }
 
+        // Records hold tags, not identifiers (`bugs.md` Bug 145); map back through the contacts.
+        let liveByTag  = Dictionary(liveContacts.map { (TrusteeTag(identifier: $0), $0) }, uniquingKeysWith: { first, _ in first })
+        let changedTag = changedContact.map(TrusteeTag.init(identifier:))
+
         var statusChanges: [UUID: ShardStatus] = [:]
         var resend = false
         var insertedWatch = false
 
         for record in meta.shards where record.status == .pending || record.status == .confirmed {
             let id = record.attributeID
-            guard liveContacts.contains(record.contactIdentifier) else {
+            guard let identifier = liveByTag[record.trustee] else {
                 statusChanges[id] = .lost
                 continue
             }
-            if record.contactIdentifier == changedContact {
+            if record.trustee == changedTag {
                 resend = true
                 continue
             }
@@ -549,7 +557,7 @@ final class ShardCustodyManager {
             case (.confirmed, nil):
                 let rowID = UUID()
                 if let combined = try? self.sealRow(
-                    PotentiallyLostShard.Payload(attributeID: id, contactIdentifier: record.contactIdentifier, isAbsent: false),
+                    PotentiallyLostShard.Payload(attributeID: id, contactIdentifier: identifier, isAbsent: false),
                     using: custodyKey, id: rowID
                 ) {
                     self.modelContext.insert(PotentiallyLostShard(id: rowID, encryptedPayload: combined))
@@ -565,12 +573,13 @@ final class ShardCustodyManager {
         if insertedWatch { try? self.modelContext.save() }
         try? vaultManager.setBackupShardStatuses(statusChanges, currentDepth: currentDepth)
 
-        guard resend,
-              meta.shards.allSatisfy({ ($0.status == .pending || $0.status == .confirmed) && liveContacts.contains($0.contactIdentifier) })
-        else { return }
+        let recipients = meta.shards.compactMap { record -> String? in
+            guard record.status == .pending || record.status == .confirmed else { return nil }
+            return liveByTag[record.trustee]
+        }
+        guard resend, recipients.count == meta.shards.count else { return }
         try? self.distributeBackup(
-            threshold: meta.threshold, recipients: meta.shards.map(\.contactIdentifier),
-            currentDepth: currentDepth, vaultManager: vaultManager
+            threshold: meta.threshold, recipients: recipients, currentDepth: currentDepth, vaultManager: vaultManager
         )
     }
 

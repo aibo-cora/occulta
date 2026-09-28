@@ -91,10 +91,10 @@ struct BackupTrusteeRotationTests {
         let vault = try makeVaultWithBackup()
 
         let firstRound  = try vault.prepareBackupShards(
-            threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], currentDepth: 0
+            threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], currentDepth: 0
         )
         let secondRound = try vault.prepareBackupShards(
-            threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], currentDepth: 0
+            threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], currentDepth: 0
         )
 
         let firstID  = firstRound.first?.entryID
@@ -129,12 +129,12 @@ struct BackupTrusteeRotationTests {
 
         // Round 1: Bob and Marla.
         _ = try vault.prepareBackupShards(
-            threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], currentDepth: 0
+            threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], currentDepth: 0
         )
 
         // Round 2: Marla is dropped, Carol takes her place.
         let round2 = try vault.prepareBackupShards(
-            threshold: 2, recipients: [UUID().uuidString, UUID().uuidString], currentDepth: 0
+            threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], currentDepth: 0
         )
         try vault.setBackupShardStatuses(Dictionary(uniqueKeysWithValues: round2.map { ($0.id, .confirmed) }), currentDepth: 0)
 
@@ -144,8 +144,9 @@ struct BackupTrusteeRotationTests {
         let restoreTarget = try makeFreshVault()
         var senders = Set<String>()
         for (i, shard) in round2.enumerated() {
-            try restoreTarget.absorbShard(shard, senderIdentifier: "trustee-\(i)")
-            senders.insert("trustee-\(i)")
+            let sender = realFormatContactIdentifier()
+            try restoreTarget.absorbShard(shard, senderIdentifier: sender)
+            senders.insert(sender)
         }
         #expect(try restoreTarget.restoreBackup(from: backupData, currentDepth: 0, visibleContactIdentifiers: senders))
         let reconstructed = try bekBytes(of: restoreTarget)
