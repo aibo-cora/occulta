@@ -34,7 +34,7 @@ struct Settings: View {
                         VaultRecoverySettings()
                     }
                 } header: {
-                    self.sectionHeader("Vault & Recovery", "Shard-based backup recovery for your vault and encryption key.")
+                    self.sectionHeader("Vault & Recovery", "Backup recovery: trusted contacts each hold a piece of your backup key.")
                 }
 
                 if FeatureFlags.isEnabled(.secureMode) {

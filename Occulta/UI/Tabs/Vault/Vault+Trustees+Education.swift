@@ -1,69 +1,84 @@
 //
-//  VaultSSSEducationSheet.swift
+//  Vault+Trustees+Education.swift
 //  Occulta
 //
-//  Mandatory education modal shown before enabling Secret Sharing.
-//  The "Enable" CTA is locked until the user has scrolled to the bottom —
-//  detected via onAppear on a 1-pt anchor view at the end of the content.
+//  Shown before a depth's first backup-key distribution, from the Backup Recovery screen's
+//  "Queue for Distribution". The continue button is locked until the reader has scrolled to
+//  the end — detected via onAppear on a 1-pt anchor view after the content.
 //
-//  Both callbacks are called on the main thread (sheet is @MainActor).
-//  The sheet dismisses itself before invoking either callback.
+//  Whether to show it comes from existing state (this depth has no distribution yet), never
+//  from a stored "seen it" flag, which would be a per-depth trace of the layer having been
+//  set up. It replaces `VaultSSSEducationSheet`, which described per-entry splitting and was
+//  never presented (`decisions.md`, "Retire per-entry splitting").
+//
+//  Both callbacks are called on the main thread; the sheet dismisses itself first.
 //
 
 import SwiftUI
 
-struct VaultSSSEducationSheet: View {
+struct BackupTrusteesEducationSheet: View {
 
-    let onEnable: () -> Void
+    /// Pieces needed to rebuild the key (k).
+    let threshold: Int
+    /// Trustees receiving a piece (n).
+    let trusteeCount: Int
+    let onContinue: () -> Void
     let onCancel: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var hasScrolledToBottom = false
 
+    private static let violet = VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF))
+    private static let amber  = VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66))
+    private static let green  = VaultEntryType.cat(light: (0x1A, 0x6D, 0x4A), dark: (0x6E, 0xC9, 0x7E))
+
     var body: some View {
-        NavigationStack {
+        let k = self.threshold
+        let n = self.trusteeCount
+
+        return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     self.headerBlock
                     self.section(
-                        icon: "key.fill",
-                        color: VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)),
-                        title: "What it does",
-                        body: "Secret Sharing splits a vault entry's encryption key into mathematical shards using Shamir's Secret Sharing over GF(2⁸). Each shard goes to a different trusted contact (trustee). No single shard reveals anything about the key."
+                        icon: "key.fill", color: Self.violet,
+                        title: "What your backup key does",
+                        body: "Your backup file is sealed with a backup key that stays on this phone. Occulta splits that key into pieces, one for each trustee, using Shamir's Secret Sharing. A single piece reveals nothing about the key."
                     )
                     self.section(
-                        icon: "person.2.fill",
-                        color: VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)),
-                        title: "Reconstruction threshold",
-                        body: "You choose a threshold k. Any k of your n trustees — in any combination — can help reconstruct your key. Fewer than k shards reveal zero information, by mathematical guarantee."
+                        icon: "person.2.fill", color: Self.violet,
+                        title: "Any \(k) of \(n)",
+                        body: "After you lose this phone, any \(k) of your \(n) trustees, in any combination, can rebuild the key. Fewer than \(k) learn nothing about it. That's a mathematical guarantee, not a question of how hard it is to compute."
                     )
                     self.section(
-                        icon: "exclamationmark.triangle.fill",
-                        color: VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)),
-                        title: "Keys only — not content",
-                        body: "Shards protect your encryption key, not the entry content. If you lose your device, the content is gone even if you can reconstruct the key. Export a vault backup separately to protect against full device loss."
+                        icon: "archivebox.fill", color: Self.amber,
+                        title: "Pieces rebuild the key, not your vault",
+                        body: "Trustees never hold your entries. To restore, you also need an exported backup file. Export one once \(k) trustees have confirmed, and again after you add entries."
                     )
                     self.section(
-                        icon: "person.badge.key.fill",
-                        color: VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)),
-                        title: "Trustee requirements",
-                        body: "Trustees must have ML-KEM keys — contacts who have exchanged keys with you via the proximity (UWB) flow. Classic-only contacts cannot receive shards."
+                        icon: "person.badge.key.fill", color: Self.amber,
+                        title: "Who can be a trustee",
+                        body: "Only contacts you've exchanged keys with in person, who have post-quantum (ML-KEM) keys. Each piece goes out with your next direct message to them, and they confirm the next time they message you directly. Group messages don't count."
                     )
                     self.section(
-                        icon: "shield.lefthalf.filled",
-                        color: VaultEntryType.cat(light: (0x1A, 0x6D, 0x4A), dark: (0x6E, 0xC9, 0x7E)),
+                        icon: "shield.lefthalf.filled", color: Self.green,
                         title: "Trust carefully",
-                        body: "Any k of your chosen trustees can reconstruct your key. Choose people you trust deeply and independently — if k collude, they can access the entry's encryption key. They cannot access the content without also having your vault backup."
+                        body: "Any \(k) of your trustees who get hold of your backup file can read every entry in it. Choose people who are independent of each other, and keep the file somewhere none of them can reach."
+                    )
+                    self.section(
+                        icon: "arrow.triangle.2.circlepath", color: Self.green,
+                        title: "Changing trustees",
+                        body: "Adding a trustee keeps the key as it is. Removing one replaces the key, so backup files you've already exported stop working and you'll need to export again."
                     )
 
-                    // Scroll anchor — CTA unlocks when this becomes visible.
+                    // Scroll anchor — the continue button unlocks when this becomes visible.
                     Color.clear
                         .frame(height: 1)
                         .onAppear { self.hasScrolledToBottom = true }
                 }
                 .padding(20)
             }
-            .navigationTitle("About Secret Sharing")
+            .navigationTitle("Backup Key Recovery")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -84,9 +99,9 @@ struct VaultSSSEducationSheet: View {
             Text("🔮")
                 .font(.system(size: 36))
             VStack(alignment: .leading, spacing: 4) {
-                Text("Secret Sharing")
+                Text("Before you choose trustees")
                     .font(.system(size: 20, weight: .bold))
-                Text("Information-theoretic key recovery")
+                Text("Read to the end to continue.")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -121,15 +136,15 @@ struct VaultSSSEducationSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - CTA bar
+    // MARK: - Continue bar
 
     private var ctaBar: some View {
         VStack(spacing: 6) {
             Button {
                 self.dismiss()
-                self.onEnable()
+                self.onContinue()
             } label: {
-                Text("Enable Secret Sharing")
+                Text("I understand — Queue for Distribution")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(self.hasScrolledToBottom ? .white : Color.secondary)
                     .frame(maxWidth: .infinity)

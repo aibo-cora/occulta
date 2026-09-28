@@ -94,7 +94,7 @@ struct VaultTab: View {
     private enum Filter: String, CaseIterable {
         case all      = "All"
         case personal = "Personal"
-        case shards   = "Shards"
+        case custody  = "Custody"
     }
 
     var body: some View {
@@ -281,7 +281,7 @@ struct VaultTab: View {
             }
 
             // Attention section — backup-key erosion + stale backup
-            if self.filter != .shards, bekAffected != nil || staleCount > 0 {
+            if self.filter != .custody, bekAffected != nil || staleCount > 0 {
                 Section {
                     // Stale backup rows — one per active staleness reason
                     if let s = stale {
@@ -342,7 +342,7 @@ struct VaultTab: View {
             }
 
             // Personal entries
-            if self.filter != .shards {
+            if self.filter != .custody {
                 Section {
                     if rows.isEmpty {
                         Text("No entries yet. Tap + to add one.")
@@ -386,7 +386,7 @@ struct VaultTab: View {
             }
 
             // Backup recovery row — always visible in personal/all filter
-            if self.filter != .shards {
+            if self.filter != .custody {
                 Section {
                     NavigationLink {
                         VaultShardSetup()
@@ -409,7 +409,7 @@ struct VaultTab: View {
             if self.filter != .personal {
                 Section {
                     if custodianRows.isEmpty {
-                        Text("Shards appear here once you get one from a contact for custody via .occ.")
+                        Text("Pieces of contacts' backup keys that you hold for them appear here.")
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
@@ -427,7 +427,7 @@ struct VaultTab: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(row.ownerName)
                                         .font(.system(size: 16, weight: .medium))
-                                    Text("\(row.count) shard\(row.count == 1 ? "" : "s") in custody")
+                                    Text("\(row.count) piece\(row.count == 1 ? "" : "s") held for them")
                                         .font(.system(size: 10, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                 }
@@ -441,7 +441,7 @@ struct VaultTab: View {
                         Circle()
                             .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
                             .frame(width: 7, height: 7)
-                        Text("Custodian Shards")
+                        Text("Held for Others")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .tracking(1.6)
                     }

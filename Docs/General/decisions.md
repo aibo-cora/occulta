@@ -742,3 +742,28 @@ tests deleted or moved onto the backup key. Full suite: 913 tests, 907 passed, 0
 `KeychainMigrationSETests` baseline). Not walked through on a device: the Vault tab, entry detail and
 Vault Recovery screens without their shard rows.
 
+---
+
+## Explain trustees before a depth's first backup-key distribution
+
+**Status:** Decided and built, 2026-09-28.
+
+**Context:** the backup flow explained exporting (`BackupExportEducationView`) and restoring, but nothing
+explained choosing trustees: who can be one, that any k of them with the backup file can read everything, and
+that removing one replaces the key. `VaultSSSEducationSheet` covered similar ground for per-entry splitting and
+was never presented.
+
+**Decision:** `BackupTrusteesEducationSheet` replaces it. "Queue for Distribution" (renamed from "Mark for
+Distribution") shows it when the current depth has no backup-key distribution yet; its button, unlocked by
+scrolling to the end, queues the pieces. Six sections, with the real k and n: what the backup key does, any k of
+n, pieces rebuild the key and not the vault, who can be a trustee (and that confirmations come with a direct
+message, Bug 143), trust carefully, and changing trustees.
+
+**Why:** whether to show it is derived from existing state (no distribution at this depth), not a stored "seen
+it" flag, which would be a per-depth trace that a layer had been set up. It reappears after a restore, which
+starts without a distribution, and looks the same at every depth. It never meets the "Remove trustee?" alert,
+which needs an existing distribution.
+
+**Consequences:** an owner who sets up the backup at several depths reads it once per depth. Not walked through
+on a device: the simulator can't unlock the vault.
+

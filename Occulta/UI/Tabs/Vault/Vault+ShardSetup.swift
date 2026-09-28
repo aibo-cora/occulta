@@ -29,6 +29,9 @@ struct VaultShardSetup: View {
     /// The selection drops a current trustee, so updating replaces the backup key; asked
     /// before `commitDistribution` runs (`bugs.md` Bug 141).
     @State private var confirmingKeyReplacement = false
+    /// This depth has no distribution yet, so "Queue for Distribution" shows the trustee
+    /// education sheet first. Decided from existing state, never a stored flag.
+    @State private var showingEducation = false
 
     /// Shards in these two states count toward active recovery coverage.
     private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
@@ -55,7 +58,7 @@ struct VaultShardSetup: View {
         let contacts   = self.mlkemContacts
         let trusteeIDs = self.globalTrusteeIDs
         let selected   = contacts.filter { self.selectedIDs.contains($0.identifier) }
-        let k          = max(2, min(self.threshold, max(2, selected.count)))
+        let k          = Self.effectiveThreshold(self.threshold, recipients: selected.count)
         let canMark    = selected.count >= 2
 
         return ScrollView {
@@ -117,7 +120,16 @@ struct VaultShardSetup: View {
             self.threshold         = 2
             self.snapshotThreshold = 2
             self.confirmingKeyReplacement = false
+            self.showingEducation  = false
             self.dismiss()
+        }
+        .sheet(isPresented: self.$showingEducation) {
+            BackupTrusteesEducationSheet(
+                threshold:    Self.effectiveThreshold(self.threshold, recipients: self.recipientIDs.count),
+                trusteeCount: self.recipientIDs.count,
+                onContinue:   { self.commitDistribution() },
+                onCancel:     {}
+            )
         }
         .alert("Remove trustee?", isPresented: self.$confirmingKeyReplacement) {
             Button("Remove and Replace Key", role: .destructive) { self.commitDistribution() }
@@ -364,7 +376,7 @@ struct VaultShardSetup: View {
                 Text("Information-theoretic security")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)))
-                Text("Fewer than \(k) shards reveal zero information. Perfect secrecy over GF(2⁸) — not computational hardness.")
+                Text("Fewer than \(k) pieces reveal nothing about the key. Perfect secrecy over GF(2⁸) — not computational hardness.")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)).opacity(0.85))
                     .lineSpacing(2)
@@ -422,7 +434,7 @@ struct VaultShardSetup: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 let hasExisting = meta != nil
-                let title = !hasExisting ? "Mark for Distribution" : (dirty ? "Update Distribution" : "Up to date")
+                let title = !hasExisting ? "Queue for Distribution" : (dirty ? "Update Distribution" : "Up to date")
                 let enabled = canMark && (!hasExisting || dirty)
 
                 DistributionCTAButton(
@@ -543,6 +555,11 @@ struct VaultShardSetup: View {
 
     private func markForDistribution() {
         self.vault.extendSession()
+        // A depth's first distribution explains trustees before anything is queued.
+        if self.fetchDistributionMeta() == nil {
+            self.showingEducation = true
+            return
+        }
         // The real recipients, not `selectedIDs`: a trustee hidden at this depth or without
         // ML-KEM material stays selected but can't be sent a piece (Bug 144).
         if self.shardCustodyManager?.distributionDropsTrustee(
@@ -552,6 +569,11 @@ struct VaultShardSetup: View {
             return
         }
         self.commitDistribution()
+    }
+
+    /// The threshold a distribution uses: at least 2, at most the number of recipients.
+    private static func effectiveThreshold(_ threshold: Int, recipients: Int) -> Int {
+        max(2, min(threshold, max(2, recipients)))
     }
 
     /// Who a distribution would actually go to: selected contacts that can be sent a piece
@@ -566,7 +588,7 @@ struct VaultShardSetup: View {
         self.error = nil
 
         let recipients = self.recipientIDs
-        let k          = max(2, min(self.threshold, max(2, recipients.count)))
+        let k          = Self.effectiveThreshold(self.threshold, recipients: recipients.count)
 
         do {
             guard let custody = self.shardCustodyManager else { throw ShardCustodyManager.CustodyError.keyDerivationFailed }
@@ -585,7 +607,7 @@ struct VaultShardSetup: View {
             self.snapshotIDs       = activeIDs
             self.snapshotThreshold = k
             self.marking           = false
-            self.confirmationMessage = "Shards queued for delivery."
+            self.confirmationMessage = "Pieces queued for delivery."
         } catch VaultManager.VaultError.locked {
             self.error   = "Vault locked — unlock and try again."
             self.marking = false
@@ -627,7 +649,7 @@ private struct DistributionCTAButton: View {
             .disabled(!self.enabled || self.isMarking)
 
             if self.canMark {
-                Text("Shards will be delivered automatically with your next message.")
+                Text("Each trustee's piece goes out with your next message to them.")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Color.secondary.opacity(0.6))
                     .multilineTextAlignment(.center)

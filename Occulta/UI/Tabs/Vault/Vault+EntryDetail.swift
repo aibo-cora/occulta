@@ -232,7 +232,7 @@ struct VaultEntryDetail: View {
 
     // MARK: - Action strip (text-only buttons per spec)
 
-    private enum ActionButtonStyle { case standard, primary, danger }
+    private enum ActionButtonStyle { case standard, danger }
 
     private func actionButton(_ label: String, style: ActionButtonStyle) -> some View {
         Text(label.uppercased())
@@ -241,9 +241,7 @@ struct VaultEntryDetail: View {
             .frame(maxWidth: .infinity)
             .frame(height: 44)
             .foregroundStyle(style == .danger ? Color.occultaDanger : Color.primary)
-            .background(style == .primary
-                ? Color(.tertiarySystemGroupedBackground)
-                : Color(.secondarySystemGroupedBackground))
+            .background(Color(.secondarySystemGroupedBackground))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(
                 RoundedRectangle(cornerRadius: 12)

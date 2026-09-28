@@ -99,7 +99,7 @@ struct VaultGlobalTrustees: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(self.selected.isEmpty ? "No trustees selected" : "\(self.selected.count) \(self.selected.count == 1 ? "trustee" : "trustees")")
                     .font(.system(size: 16, weight: .semibold))
-                Text(self.selected.isEmpty ? "Select one or more trustees below" : "Will be suggested for new vault entries")
+                Text(self.selected.isEmpty ? "Select one or more trustees below" : "Will be suggested for your backup key")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -210,7 +210,7 @@ struct VaultGlobalTrustees: View {
             Image(systemName: "info.circle")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-            Text("These trustees will be suggested when you set up shards for a new vault entry. Threshold (k of n) is configured per entry. You can always override the selection.")
+            Text("These trustees are suggested the first time you choose who holds pieces of your backup key. You can always change the selection.")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineSpacing(2)

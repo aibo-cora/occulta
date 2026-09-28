@@ -543,10 +543,11 @@ without attempting decryption.
 | Export: `UIDocumentPickerViewController` via `BackupPickerPresenter` + `.occbak` UTI | ✅ |
 | Export: section-footer trigger below Backup Recovery row | ✅ |
 | Export educational sheet (mandatory, no persistent dismiss) | ✅ |
+| Trustee education sheet before a depth's first distribution (`BackupTrusteesEducationSheet`, scroll to unlock, no stored flag) | ✅ 2026-09-28 |
 | Export disabled until k BEK shards are `.confirmed` | ✅ |
 | Import: AES-GCM open + fresh PEK regeneration + SwiftData insert | ✅ |
 | BEK erosion warning in Attention section (`VaultBEKAttentionRow`) | ✅ |
-| Post-restore prompts (`VaultPostRestoreSheet`): contacts + BEK redistribution + entry shards | ✅ |
+| Post-restore prompts (`VaultPostRestoreSheet`): contacts + BEK redistribution (entry-shard row removed with per-entry splitting, 2026-09-28) | ✅ |
 | Stale-backup tracking: 3 signals, sealed metadata, rows in Attention section | ✅ |
 | BEK rotation (`rotateBEK()`) | ✅ |
 | Recovery dashboard (count-based; per-trustee status infeasible — see Recovery dashboard section) | ✅ |

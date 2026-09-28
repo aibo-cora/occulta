@@ -67,13 +67,6 @@ struct VaultPostRestoreSheet: View {
                         )
                     }
                     .tint(.primary)
-
-                    self.infoRow(
-                        icon: "key.fill",
-                        iconColor: .secondary,
-                        title: "Redistribute entry shards",
-                        subtitle: "Any flagged entries in your vault list need new recovery pieces. Tap each one to reshare."
-                    )
                 } header: {
                     Text("Next Steps")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))

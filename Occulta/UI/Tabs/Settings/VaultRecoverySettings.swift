@@ -101,7 +101,7 @@ struct VaultRecoverySettings: View {
         } header: {
             Text("Vault Backup")
         } footer: {
-            Text("Shards protect your encryption keys — not your content. A vault backup is required to recover entry content after device loss.")
+            Text("Trustees' pieces rebuild your backup key, not your entries. Keep an exported backup file too: it holds the entries, and the key opens it.")
         }
     }
 
