@@ -394,6 +394,10 @@ struct RootView: View {
             .onReceive(self.contactManager.contactKeyRotated) { identifier in
                 self.reconcileBackupPieces(keyChangedFor: identifier)
             }
+            // A deleted trustee's piece shows as lost at once (Bug 144).
+            .onReceive(self.contactManager.contactDeleted) { _ in
+                self.reconcileBackupPieces()
+            }
             // A depth's backup-key pieces are checked when its vault unlocks (Bug 141).
             .onChange(of: self.vaultManager.isUnlocked) { _, isUnlocked in
                 if isUnlocked { self.reconcileBackupPieces() }
@@ -987,7 +991,8 @@ struct RootView: View {
                             senderIdentifier: ownerID,
                             vaultManager:     self.vaultManager
                         )
-                        self.reconcileBackupPieces()
+                        // Only a manifest can change a piece's status.
+                        if (recipManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
                     }
 
                     // Shard-only bundle (empty message) — ops handled above, no basket.
@@ -1033,7 +1038,8 @@ struct RootView: View {
                             senderIdentifier: ownerID,
                             vaultManager:     self.vaultManager
                         )
-                        self.reconcileBackupPieces()
+                        // Only a manifest can change a piece's status.
+                        if sealed.custodyManifest != nil { self.reconcileBackupPieces() }
                     }
 
                     decodedBundleVersion = bundle.version

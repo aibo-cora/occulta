@@ -80,7 +80,7 @@ struct VaultRecoverySettings: View {
         case .waitingForConfirmations(let confirmed, let threshold):
             statusRow(dot: Self.amber,
                       label: "Awaiting confirmations",
-                      sub: "\(confirmed) of \(threshold) required trustees confirmed")
+                      sub: "\(confirmed) of \(threshold) confirmed · trustees confirm with their next direct message to you")
         case .ready:
             statusRow(dot: .occultaVerified,
                       label: "Ready",

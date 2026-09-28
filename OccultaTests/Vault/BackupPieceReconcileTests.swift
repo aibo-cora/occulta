@@ -87,7 +87,7 @@ private struct Owner {
 
     /// Distributes to `trustees` and has each confirm through a manifest and a reconcile.
     func distributeAndConfirm(_ trustees: [String], threshold: Int = 2) throws {
-        try self.custody.distributeBackup(threshold: threshold, recipients: trustees, newKey: false, currentDepth: 0, vaultManager: self.vault)
+        try self.custody.distributeBackup(threshold: threshold, recipients: trustees, currentDepth: 0, vaultManager: self.vault)
         for trustee in trustees {
             try self.manifest(from: trustee, held: [try self.pieceID(of: trustee)])
         }
@@ -119,13 +119,13 @@ struct BackupDistributionTests {
         let owner = try Owner()
         let t = trustees(4)
 
-        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1]], newKey: false, currentDepth: 0, vaultManager: owner.vault)
+        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1]], currentDepth: 0, vaultManager: owner.vault)
         let original = try owner.bek()
 
-        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1], t[2]], newKey: false, currentDepth: 0, vaultManager: owner.vault)
+        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1], t[2]], currentDepth: 0, vaultManager: owner.vault)
         #expect(try owner.bek() == original, "adding a trustee keeps the key")
 
-        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1], t[3]], newKey: true, currentDepth: 0, vaultManager: owner.vault)
+        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1], t[3]], currentDepth: 0, vaultManager: owner.vault)
         #expect(try owner.bek() != original, "dropping a trustee splits a new key")
     }
 
@@ -136,10 +136,10 @@ struct BackupDistributionTests {
         let t = trustees(4)
         let (a, b, c, d) = (t[0], t[1], t[2], t[3])
 
-        try owner.custody.distributeBackup(threshold: 2, recipients: [a, b, c], newKey: false, currentDepth: 0, vaultManager: owner.vault)
+        try owner.custody.distributeBackup(threshold: 2, recipients: [a, b, c], currentDepth: 0, vaultManager: owner.vault)
         let roundOne = try [a, b, c].map { try owner.pieceID(of: $0) }
 
-        try owner.custody.distributeBackup(threshold: 2, recipients: [a, b, d], newKey: true, currentDepth: 0, vaultManager: owner.vault)
+        try owner.custody.distributeBackup(threshold: 2, recipients: [a, b, d], currentDepth: 0, vaultManager: owner.vault)
 
         #expect(try owner.queued(for: c).isEmpty, "a trustee removed before delivery receives nothing")
         for kept in [a, b] {
@@ -161,9 +161,70 @@ struct BackupDistributionTests {
         let oldIDs = try [t[0], t[1]].map { try owner.pieceID(of: $0) }
         #expect(Set(try owner.watch().keys) == Set(oldIDs))
 
-        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[2]], newKey: true, currentDepth: 0, vaultManager: owner.vault)
+        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[2]], currentDepth: 0, vaultManager: owner.vault)
 
         #expect(try owner.watch().isEmpty)
+    }
+}
+
+// MARK: - What counts as dropping a trustee (Bug 144)
+
+@Suite("Backup-key distribution — any left-out trustee means a new key")
+@MainActor
+struct BackupDropRuleTests {
+
+    @Test("Leaving out a trustee whose piece is still pending splits a new key", .enabled(if: secureEnclaveAvailable()))
+    func droppingPendingRotates() throws {
+        let owner = try Owner()
+        let t = trustees(3)
+        try owner.custody.distributeBackup(threshold: 2, recipients: t, currentDepth: 0, vaultManager: owner.vault)
+        let key = try owner.bek()
+
+        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1]], currentDepth: 0, vaultManager: owner.vault)
+
+        #expect(try owner.bek() != key, "the piece may already be on the trustee's phone")
+    }
+
+    @Test("Leaving out a deleted (lost) trustee splits a new key", .enabled(if: secureEnclaveAvailable()))
+    func droppingLostRotates() throws {
+        let owner = try Owner()
+        let t = trustees(3)
+        try owner.distributeAndConfirm(t)
+        owner.reconcile(live: [t[0], t[1]])
+        #expect(try owner.records().first { $0.contactIdentifier == t[2] }?.status == .lost)
+        let key = try owner.bek()
+
+        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1]], currentDepth: 0, vaultManager: owner.vault)
+
+        #expect(try owner.bek() != key, "a deleted contact still holds their piece")
+    }
+
+    @Test("Changing only the threshold keeps the key", .enabled(if: secureEnclaveAvailable()))
+    func thresholdOnlyKeepsKey() throws {
+        let owner = try Owner()
+        let t = trustees(3)
+        try owner.custody.distributeBackup(threshold: 2, recipients: t, currentDepth: 0, vaultManager: owner.vault)
+        let key = try owner.bek()
+
+        try owner.custody.distributeBackup(threshold: 3, recipients: t, currentDepth: 0, vaultManager: owner.vault)
+
+        #expect(try owner.bek() == key)
+    }
+
+    /// What the setup screen asks before warning; it passes the real recipients, so a
+    /// trustee hidden at the depth counts as left out.
+    @Test("distributionDropsTrustee is true exactly when someone in the record is left out", .enabled(if: secureEnclaveAvailable()))
+    func dropsTrusteeCheck() throws {
+        let owner = try Owner()
+        let t = trustees(4)
+        try owner.custody.distributeBackup(threshold: 2, recipients: [t[0], t[1], t[2]], currentDepth: 0, vaultManager: owner.vault)
+
+        func drops(_ r: [String]) -> Bool {
+            owner.custody.distributionDropsTrustee(recipients: r, currentDepth: 0, vaultManager: owner.vault)
+        }
+        #expect(drops([t[0], t[1]]))
+        #expect(!drops([t[0], t[1], t[2]]))
+        #expect(!drops([t[0], t[1], t[2], t[3]]))
     }
 }
 
@@ -177,7 +238,7 @@ struct BackupReconcileTests {
     func manifestConfirms() throws {
         let owner = try Owner()
         let t = trustees(2)
-        try owner.custody.distributeBackup(threshold: 2, recipients: t, newKey: false, currentDepth: 0, vaultManager: owner.vault)
+        try owner.custody.distributeBackup(threshold: 2, recipients: t, currentDepth: 0, vaultManager: owner.vault)
 
         try owner.manifest(from: t[0], held: [try owner.pieceID(of: t[0])])
         owner.reconcile(live: Set(t))
@@ -248,6 +309,23 @@ struct BackupReconcileTests {
         #expect(try owner.queued(for: t[0]).isEmpty, "one trustee left is below the threshold of 2")
         owner.vault.refreshBackupErosion(currentDepth: 0)
         #expect(owner.vault.backupErosion?.active == 1)
+    }
+
+    /// A re-send leaving the deleted trustee out would have to split a new key, breaking
+    /// exported backups without the owner's say (Bug 144).
+    @Test("Nothing is re-sent while a trustee is lost", .enabled(if: secureEnclaveAvailable()))
+    func noResendWhileLost() throws {
+        let owner = try Owner()
+        let t = trustees(3)
+        try owner.distributeAndConfirm(t)
+        let key = try owner.bek()
+        owner.reconcile(live: [t[0], t[1]])   // t[2] deleted
+
+        try owner.manifest(from: t[0], held: [])
+        owner.reconcile(live: [t[0], t[1]])
+
+        #expect(try owner.queued(for: t[0]).isEmpty)
+        #expect(try owner.bek() == key)
     }
 
     @Test("A pending piece that was never queued is re-sent", .enabled(if: secureEnclaveAvailable()))

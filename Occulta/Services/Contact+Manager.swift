@@ -52,6 +52,9 @@ class ContactManager {
     /// key whose P-256 fingerprint differs from the previously active key.
     /// Subscribers (e.g. ShardCustodyManager) use this to schedule auto-returns.
     var contactKeyRotated: PassthroughSubject<String, Never> = .init()
+    /// A contact was deleted. `RootView` reconciles the current depth's backup-key pieces, so a
+    /// deleted trustee's piece shows as lost at once (`bugs.md` Bug 144).
+    var contactDeleted: PassthroughSubject<String, Never> = .init()
 
     @ObservationIgnored
     let security: Manager.Security
@@ -462,8 +465,9 @@ class ContactManager {
     /// just skips shard-custody cleanup rather than failing. When provided, purges
     /// `CustodyShard`/`PendingShardDistribute`/`PotentiallyLostShard` for this
     /// identifier (see `ShardCustodyManager.purgeCustody(for:)`). A backup-key piece this
-    /// contact held is marked lost by its own depth's next reconcile
-    /// (`ShardCustodyManager.reconcileBackupPieces`). Global-trustee status needs no
+    /// contact held is marked lost by reconcile (`ShardCustodyManager.reconcileBackupPieces`):
+    /// at once at the current depth, through `contactDeleted`, and at other depths at their
+    /// own next unlock. Global-trustee status needs no
     /// separate purge — it lives on the contact's own (now soft-deleted) row.
     func deleteContact(
         identifier: String,
@@ -514,6 +518,7 @@ class ContactManager {
         self.security.checkpointStore()
 
         try shardCustodyManager?.purgeCustody(for: identifier)
+        self.contactDeleted.send(identifier)
     }
 
     /// Hard-deletes a single Contact.Profile row from the store.

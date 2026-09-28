@@ -12048,7 +12048,7 @@ allowed is a separate question.
 
 ## Bug 141 — Messaging a trustee with the vault unlocked makes them delete their backup-key piece: `expectedShards` never lists backup-key pieces
 
-**Status:** Fixed 2026-09-27, not committed (see "Built" below); filed and reproduced 2026-09-26,
+**Status:** Fixed 2026-09-27 (`ba57be1`, see "Built" below); filed and reproduced 2026-09-26,
 remedy decided the same day. Found while inventorying per-entry shard splitting for retirement.
 **Shipped:** `v1.10.3` builds the list the same way.
 
@@ -12245,7 +12245,7 @@ processes it; the backup-key piece is still there. Plus: a piece missing from a 
 
 ## Bug 142 — Redistributing leaves the superseded split's pieces queued: a removed trustee still gets one, and kept trustees get old and new together
 
-**Status:** Fixed 2026-09-27 with Bug 141 (step 5), not committed; remedy decided 2026-09-26. Found while verifying how backup-key pieces reach trustees after a trustee-list change, for Bug 141's
+**Status:** Fixed 2026-09-27 with Bug 141 (step 5, `ba57be1`); remedy decided 2026-09-26. Found while verifying how backup-key pieces reach trustees after a trustee-list change, for Bug 141's
 decision; reproduced with a throwaway test.
 
 **Target:** `v1.11.0`.
@@ -12301,3 +12301,104 @@ already confirmed by C is outside this fix (Bug 141).
 
 **Decided 2026-09-26:** Bug 141 chose option 4, so dropping C also generates a new backup key; a piece C
 already holds then opens nothing exported afterwards.
+
+---
+
+## Bug 143 — A trustee who only messages the owner in groups never confirms their backup-key piece, so export stays blocked
+
+**Status:** Accepted limitation, decided 2026-09-28 (option B below); the wording is built.
+Found by the branch code review of 2026-09-28, as a consequence of Bug 141's fix.
+
+**Target:** `v1.11.0` (the wording change only).
+
+### Severity: Low (export delayed, nothing exposed)
+
+### What happens
+
+Bug 141's fix sends `shardMetadataAttempted = false` to every group recipient: a `v1.10.3` member reads `true`
+with no expected-shards list as "delete every piece you hold from me". The same flag gates the custody
+manifest, so a trustee's group messages carry no manifest; only 1:1 messages and the share flow do. A piece
+is confirmed only when a manifest lists it (`reconcileBackupPieces`), so:
+
+- a trustee who writes to the owner only in groups never confirms, however many group messages they send;
+- the queued piece rides along in every group message the owner sends them (pieces still go out in groups);
+- `backupSetupState` stays `waitingForConfirmations`, and `exportBackup` refuses below the threshold.
+
+It ends as soon as the trustee sends the owner a 1:1 message.
+
+### Options considered
+
+- **A. Group manifests again for members on this version:** a capability case derived from `appVersion`,
+  `shardMetadataAttempted = true` and a real manifest only for members at or above it, manifest padding
+  restored across the membership. About 30 lines. Not chosen.
+- **B. Accept it, and say so where the owner waits:** the "awaiting confirmations" status says that
+  confirmations arrive with a trustee's next direct message. **Chosen, 2026-09-28.**
+
+### Guard
+
+None beyond the wording; `shardMetadataAttempted == false` for group recipients is pinned by
+`GroupEncryptFallbackTests`.
+
+---
+
+## Bug 144 — A trustee left out of a redistribution without being deselected keeps a valid backup-key piece: hidden, ineligible and deleted trustees don't trigger a new key
+
+**Status:** Fixed 2026-09-28 (see "Built" below). Filed the same day, found by the branch code
+review of 2026-09-28 (findings 1 and 2).
+
+**Target:** `v1.11.0`. Undoes part of Bug 141's guarantee.
+
+### Severity: Medium (a removed trustee keeps a working piece)
+
+### What happens
+
+Bug 141 made a distribution that drops a trustee split a new key. What counts as "dropped" misses three cases:
+
+- **Hidden or no longer ML-KEM-capable.** `VaultShardSetup.commitDistribution` splits to
+  `mlkemContacts ∩ selectedIDs`, but `droppedBackupTrustees()` compares the record with `selectedIDs`.
+  `seedInitialState` puts every current trustee in `selectedIDs`, including one now hidden at this depth or
+  without quantum material, who isn't listed on screen. Changing only the threshold re-splits without them,
+  with no prompt and no new key.
+- **Deleted.** A deleted trustee's piece is marked `.lost`, and `droppedBackupTrustees()` counts only
+  `.pending`/`.confirmed` records, so leaving them out never rotates.
+- **Automatic re-send.** When another piece goes missing, `reconcileBackupPieces` re-splits the **same** key for
+  the live trustees, leaving the deleted one out.
+
+In each case the left-out trustee still holds a piece of the current key, which rebuilds it with k−1 others of
+the same split, against every backup exported afterwards. Deleting a contact is the owner dropping them.
+
+### Remedy (built 2026-09-28)
+
+One rule, owned by `ShardCustodyManager`: a distribution splits a new key whenever anyone in the depth's
+current record, of any status, is missing from the real recipient list
+(`distributionDropsTrustee(recipients:currentDepth:vaultManager:)`). `distributeBackup` applies it itself and
+stops taking `newKey`; the setup screen asks it, with the real recipients, whether to prompt; reconcile skips
+the automatic re-send while any trustee is lost, leaving the erosion warning for the owner, since a re-send
+would have to rotate and rotating silently breaks exported backups.
+
+### Guard
+
+Dropping a pending, confirmed or lost trustee rotates; adding one or changing only the threshold keeps the key;
+reconcile doesn't re-send while a trustee is lost.
+
+### Built, 2026-09-28
+
+- `ShardCustodyManager.distributionDropsTrustee(recipients:currentDepth:vaultManager:)` is the rule;
+  `distributeBackup(threshold:recipients:currentDepth:vaultManager:)` applies it and no longer takes `newKey`.
+- `VaultShardSetup` asks it with `recipientIDs` (selected ∩ `mlkemContacts`), the list it distributes to;
+  `droppedBackupTrustees()` is gone.
+- `reconcileBackupPieces` re-sends only when every trustee in the record is active and still a contact, and then
+  to the whole record.
+- Same pass, from the same review:
+  - `distributeBackup` deletes the previous split's rows first, then persists, then queues in one save, so a
+    failure leaves pending pieces with nothing queued, which reconcile re-sends (finding 4);
+  - `RootView` reconciles after an inbound bundle only when it carried a manifest (finding 5);
+  - `ContactManager.contactDeleted`, observed by `RootView`, reconciles on deletion so a deleted trustee's
+    piece shows as lost at once (finding 6);
+  - `Backup.distributeShards`, dead and bypassing the queue and the rule, is deleted (finding 7);
+  - Bug 143's wording: Vault Recovery's waiting row and the setup screen's export note say trustees confirm
+    with their next direct message.
+- Tests: `BackupDropRuleTests` (pending, lost, threshold-only, the rule itself), `noResendWhileLost`,
+  `deleteContact_announcesTheDeletion`. The failure ordering has no direct test.
+- Full suite: 919 tests, 913 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+

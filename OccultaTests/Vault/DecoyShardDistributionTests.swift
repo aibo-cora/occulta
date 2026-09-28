@@ -98,7 +98,7 @@ struct DecoyShardDistributionTests {
         vault.unlock(context: LAContext())
         try vault.setupBackup(currentDepth: security.currentDepth)
         try custody.distributeBackup(
-            threshold: 2, recipients: [trustee1.identifier, trustee2.identifier], newKey: false,
+            threshold: 2, recipients: [trustee1.identifier, trustee2.identifier],
             currentDepth: security.currentDepth, vaultManager: vault
         )
 

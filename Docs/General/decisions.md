@@ -681,6 +681,17 @@ which reads other depths' backup keys. v2.0.0 derives each depth's keys from its
 
 **Full reasoning:** `bugs.md` Bug 141, "Decision" and "Found while designing the fix".
 
+**Addendum, 2026-09-28: group-only trustees confirm late (`bugs.md` Bug 143), accepted.** Group bundles carry
+no manifest, so a trustee who only writes in groups never confirms and export stays blocked until they send a
+direct message. Re-enabling group manifests for members on this version (a capability case) was rejected; the
+waiting status says instead that confirmations arrive with a trustee's next direct message.
+
+**Addendum, 2026-09-28: "removing a trustee" means leaving anyone out, whatever their status (`bugs.md`
+Bug 144).** A trustee hidden at the depth, no longer ML-KEM-capable, or deleted (lost) was left out without a
+new key. The rule now lives in `ShardCustodyManager.distributionDropsTrustee`, compared against the real
+recipients, and the automatic re-send never leaves anyone out: while a trustee is lost it waits for the owner,
+since a re-send without them would rotate the key and break exported backups unasked.
+
 ---
 
 ## Retire per-entry splitting

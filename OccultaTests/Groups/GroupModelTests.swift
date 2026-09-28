@@ -11,6 +11,7 @@
 
 import Testing
 import Foundation
+import Combine
 import SwiftData
 import CryptoKit
 @testable import Occulta
@@ -1057,6 +1058,30 @@ struct GroupStructuralTests {
 
         #expect(!cm.isGlobalTrustee(target), "a deleted contact's trustee designation must become unreachable")
         #expect(cm.isGlobalTrustee(other), "an unrelated contact's designation must survive")
+    }
+
+    /// RootView reconciles the current depth's backup-key pieces on this, so a deleted
+    /// trustee's piece shows as lost at once (bugs.md Bug 144).
+    @Test(.enabled(if: secureEnclaveAvailable()))
+    func deleteContact_announcesTheDeletion() throws {
+        let schema = Schema([
+            Group.self,
+            Contact.Profile.self, Contact.Profile.PhoneNumber.self, Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self, Contact.Profile.Key.self,
+        ])
+        let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let cm        = ContactManager(modelContainer: container, security: security)
+        let target    = UUID().uuidString
+        try self.insertPlainProfile(identifier: target, in: cm)
+
+        var announced: [String] = []
+        let subscription = cm.contactDeleted.sink { announced.append($0) }
+        defer { subscription.cancel() }
+
+        try cm.deleteContact(identifier: target)
+
+        #expect(announced == [target])
     }
 }
 

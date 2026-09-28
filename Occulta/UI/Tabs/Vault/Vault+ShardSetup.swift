@@ -382,7 +382,7 @@ struct VaultShardSetup: View {
         let amberBg = VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00))
 
         let title = "Export gate"
-        let body  = "Export becomes available once \(k) trustees confirm receipt. A trustee who hasn't confirmed cannot return their piece during recovery."
+        let body  = "Export becomes available once \(k) trustees confirm receipt. A trustee confirms with their next direct message to you; group messages don't count. A trustee who hasn't confirmed cannot return their piece during recovery."
 
         return HStack(alignment: .top, spacing: 8) {
             Text("⚠️")
@@ -543,18 +543,21 @@ struct VaultShardSetup: View {
 
     private func markForDistribution() {
         self.vault.extendSession()
-        if !self.droppedBackupTrustees().isEmpty {
+        // The real recipients, not `selectedIDs`: a trustee hidden at this depth or without
+        // ML-KEM material stays selected but can't be sent a piece (Bug 144).
+        if self.shardCustodyManager?.distributionDropsTrustee(
+            recipients: self.recipientIDs, currentDepth: self.security.currentDepth, vaultManager: self.vault
+        ) == true {
             self.confirmingKeyReplacement = true
             return
         }
         self.commitDistribution()
     }
 
-    /// Current backup-key trustees the selection leaves out.
-    private func droppedBackupTrustees() -> [String] {
-        (self.fetchDistributionMeta()?.shards ?? [])
-            .filter { Self.activeStatuses.contains($0.status) && !self.selectedIDs.contains($0.contactIdentifier) }
-            .map(\.contactIdentifier)
+    /// Who a distribution would actually go to: selected contacts that can be sent a piece
+    /// from this depth.
+    private var recipientIDs: [String] {
+        self.mlkemContacts.filter { self.selectedIDs.contains($0.identifier) }.map(\.identifier)
     }
 
     private func commitDistribution() {
@@ -562,18 +565,15 @@ struct VaultShardSetup: View {
         self.marking = true
         self.error = nil
 
-        let contacts = self.mlkemContacts
-        let selected = contacts.filter { self.selectedIDs.contains($0.identifier) }
-        let k        = max(2, min(self.threshold, max(2, selected.count)))
+        let recipients = self.recipientIDs
+        let k          = max(2, min(self.threshold, max(2, recipients.count)))
 
         do {
             guard let custody = self.shardCustodyManager else { throw ShardCustodyManager.CustodyError.keyDerivationFailed }
-            // Dropping anyone splits a new key: a removed trustee's piece otherwise
-            // still rebuilds the key with k−1 others from the old split (Bug 141).
+            // Splits a new key if this leaves anyone out (Bugs 141, 144).
             try custody.distributeBackup(
                 threshold:    k,
-                recipients:   selected.map(\.identifier),
-                newKey:       !self.droppedBackupTrustees().isEmpty,
+                recipients:   recipients,
                 currentDepth: self.security.currentDepth,
                 vaultManager: self.vault
             )

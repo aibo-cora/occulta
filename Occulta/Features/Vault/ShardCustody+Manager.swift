@@ -430,34 +430,60 @@ final class ShardCustodyManager {
 
     // MARK: - Backup-key distribution (owner, one depth)
 
+    /// Whether distributing to `recipients` leaves out anyone in `currentDepth`'s current
+    /// backup-key record, whatever their piece's status. A left-out trustee may still hold a
+    /// piece of the current key, so the split must use a new key (`bugs.md` Bugs 141, 144).
+    ///
+    /// The one place that decides it: `distributeBackup` applies it, and the setup screen
+    /// asks it whether to warn before a distribution replaces the key.
+    func distributionDropsTrustee(recipients: [String], currentDepth: Int, vaultManager: VaultManager) -> Bool {
+        let current = (try? vaultManager.backupShardMetadata(currentDepth: currentDepth))?.shards ?? []
+        return Self.dropsTrustee(current, recipients: recipients)
+    }
+
+    private static func dropsTrustee(_ records: [ShardRecord], recipients: [String]) -> Bool {
+        records.contains { !recipients.contains($0.contactIdentifier) }
+    }
+
     /// Re-split `currentDepth`'s backup key for `recipients` and queue one piece each:
     /// `.replace` for a trustee who held one, `.distribute` otherwise.
     ///
-    /// `newKey` splits a freshly generated key instead — required when the distribution
-    /// drops a trustee (`bugs.md` Bug 141): only a new secret stops the removed trustee's
-    /// piece from working with k−1 others of the old split.
+    /// Splits a freshly generated key instead when the distribution leaves out anyone in the
+    /// current record (`distributionDropsTrustee`): only a new secret stops a left-out
+    /// trustee's piece from working with k−1 others of the old split (`bugs.md` Bugs 141, 144).
     ///
-    /// The previous split's queued and watch rows are deleted first (`bugs.md` Bug 142),
-    /// found by the piece IDs in this depth's own distribution record, so a trustee
-    /// removed before delivery never receives theirs and a kept trustee never gets the
-    /// stale piece alongside its replacement. Reads and writes only this depth's row.
-    func distributeBackup(
-        threshold: Int, recipients: [String], newKey: Bool, currentDepth: Int, vaultManager: VaultManager
-    ) throws {
+    /// In this order, so a failure at any step heals at the next reconcile:
+    /// 1. the previous split's queued and watch rows are deleted and saved (`bugs.md` Bug 142),
+    ///    found by the piece IDs in this depth's own record — a removed trustee never receives
+    ///    a stale piece, even if a later step fails;
+    /// 2. the new split is persisted;
+    /// 3. its pieces are queued in one save.
+    ///
+    /// A failure after step 1 leaves pending pieces with nothing queued, which
+    /// `reconcileBackupPieces` re-sends. Reads and writes only this depth's row.
+    func distributeBackup(threshold: Int, recipients: [String], currentDepth: Int, vaultManager: VaultManager) throws {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-        let previous = try vaultManager.backupShardMetadata(currentDepth: currentDepth)?.shards ?? []
+        let previous    = try vaultManager.backupShardMetadata(currentDepth: currentDepth)?.shards ?? []
         let previousIDs = Dictionary(previous.map { ($0.contactIdentifier, $0.attributeID) }, uniquingKeysWith: { $1 })
+        let newKey      = Self.dropsTrustee(previous, recipients: recipients)
+
+        try self.deleteQueuedAndWatchRows(forAttributeIDs: Set(previous.map(\.attributeID)), using: custodyKey)
 
         let attributes = try vaultManager.prepareBackupShards(
             threshold: threshold, recipients: recipients, newKey: newKey, currentDepth: currentDepth
         )
 
-        try self.deleteQueuedAndWatchRows(forAttributeIDs: Set(previous.map(\.attributeID)), using: custodyKey)
         for (recipient, attribute) in zip(recipients, attributes) {
-            try self.queueDistribute(attribute: attribute, for: recipient, replacing: previousIDs[recipient])
+            let rowID    = UUID()
+            let combined = try self.sealRow(
+                PendingShardDistribute.Payload(contactIdentifier: recipient, signedAttribute: attribute, oldAttributeID: previousIDs[recipient]),
+                using: custodyKey, id: rowID
+            )
+            self.modelContext.insert(PendingShardDistribute(id: rowID, encryptedPayload: combined))
         }
+        try self.modelContext.save()
     }
 
     /// Bring `currentDepth`'s backup-key piece statuses up to date with what trustees have
@@ -473,10 +499,12 @@ final class ShardCustodyManager {
     /// - pending with neither a queued row nor a watch row (an interrupted
     ///   distribution) → re-send.
     ///
-    /// A re-send re-splits the **same** key for the remaining trustees at the same
-    /// threshold (`distributeBackup`, `newKey: false`); the owner keeps no split
-    /// coefficients, so one trustee's piece can't be re-created alone. Skipped when fewer
-    /// trustees remain than the threshold — the erosion warning shows instead.
+    /// A re-send re-splits the **same** key for the same trustees at the same threshold
+    /// (`distributeBackup`); the owner keeps no split coefficients, so one trustee's piece
+    /// can't be re-created alone. Skipped while any trustee in the record is lost or no
+    /// longer a contact: leaving them out would have to split a new key, which breaks every
+    /// exported backup, so that is the owner's call from the setup screen (`bugs.md` Bug 144).
+    /// The erosion warning shows meanwhile.
     ///
     /// Reads and writes only this depth's backup-key row (`bugs.md` Bug 141). Watch and
     /// queued rows are depth-blind; this matches them by the piece IDs this depth's own
@@ -537,13 +565,12 @@ final class ShardCustodyManager {
         if insertedWatch { try? self.modelContext.save() }
         try? vaultManager.setBackupShardStatuses(statusChanges, currentDepth: currentDepth)
 
-        guard resend else { return }
-        let recipients = meta.shards
-            .filter { ($0.status == .pending || $0.status == .confirmed) && liveContacts.contains($0.contactIdentifier) }
-            .map(\.contactIdentifier)
-        guard recipients.count >= meta.threshold else { return }
+        guard resend,
+              meta.shards.allSatisfy({ ($0.status == .pending || $0.status == .confirmed) && liveContacts.contains($0.contactIdentifier) })
+        else { return }
         try? self.distributeBackup(
-            threshold: meta.threshold, recipients: recipients, newKey: false, currentDepth: currentDepth, vaultManager: vaultManager
+            threshold: meta.threshold, recipients: meta.shards.map(\.contactIdentifier),
+            currentDepth: currentDepth, vaultManager: vaultManager
         )
     }
 

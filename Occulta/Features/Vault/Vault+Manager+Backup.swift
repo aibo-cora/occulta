@@ -962,9 +962,9 @@ extension VaultManager {
     /// above (`backupSetupState`, `setupBackup`, `backupShardMetadata`,
     /// `prepareBackupShards`, `currentBackupKey`) is the surface UI
     /// code and tests use; each one derives `vaultKey` via `self.currentKey()`, already
-    /// has `self.modelContext`, and calls through. `rotate` and `distributeShards` have
-    /// no caller yet and get no wrapper — add one only once something actually calls
-    /// them.
+    /// has `self.modelContext`, and calls through. `rotate` has no caller yet (`bugs.md`
+    /// Bug 121) and gets no wrapper — add one only once something actually calls it.
+    /// Distribution goes through `ShardCustodyManager.distributeBackup`.
     final class Backup {
 
         private let keyManager: any KeyManagerProtocol
@@ -1206,47 +1206,6 @@ extension VaultManager {
             )
 
             return attributes
-        }
-
-        /// Prepare backup-key shards and encrypt each as a `.occ` bundle ready for sharing.
-        ///
-        /// Parallel to `distributeShards` for per-entry PEKs.
-        /// Returns one `(contactIdentifier, occData)` tuple per recipient.
-        ///
-        /// Takes contact identifiers, not `[Contact.Profile]` — see `prepareShards`'s own
-        /// doc comment for why.
-        func distributeShards(
-            vaultKey:       SymmetricKey,
-            threshold:      Int,
-            recipients:     [String],
-            contactManager: ContactManager,
-            currentDepth:   Int,
-            modelContext:   ModelContext
-        ) throws -> [(contactIdentifier: String, occData: Data)] {
-            // Capture existing attrIDs before re-split: existing trustees get .replace,
-            // new trustees get .distribute.
-            let oldAttrIDs: [String: UUID]
-            if let decoded = try? self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext),
-               let meta    = decoded.payload.shardMetadata {
-                oldAttrIDs = Dictionary(uniqueKeysWithValues: meta.shards.map { ($0.contactIdentifier, $0.attributeID) })
-            } else {
-                oldAttrIDs = [:]
-            }
-
-            let attributes = try self.prepareShards(
-                vaultKey: vaultKey, threshold: threshold, recipients: recipients, currentDepth: currentDepth, modelContext: modelContext
-            )
-
-            return try zip(recipients, attributes).map { contactIdentifier, attribute in
-                let oldID = oldAttrIDs[contactIdentifier]
-                let op    = OccultaBundle.ShardOperation(
-                    kind:        oldID != nil ? .replace : .distribute,
-                    attribute:   attribute,
-                    attributeID: oldID
-                )
-                let occ = try contactManager.encryptBundle(for: contactIdentifier, shardOperations: [op])
-                return (contactIdentifier, occ)
-            }
         }
 
         // MARK: - Reconstruction
