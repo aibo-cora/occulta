@@ -11930,7 +11930,9 @@ separate problem; the launch rule above only has to avoid making it permanent.
 
 `LegacyRotationArtefactTests` (`OccultaTests/SecureMode/`): creates the two SE keys and the keychain item
 under the names written out as v1.10.3 used them, calls `deleteLegacyRotationArtefacts()`, and asserts all
-three are gone (Enclave-gated); and with nothing there, deletion still reports success. It tests the
+three are gone; and with nothing there, deletion still reports success. Both are Enclave-gated: without one,
+deleting an SE-token key reports neither success nor not-found (the second was ungated until CI on PR #76
+failed it, 2026-09-29). It tests the
 helper rather than `deleteAllKeys()`, which would delete the canonical keys other tests in the process
 use. If the launch clean-up is built: a test per state (post-commit leftovers deleted; staged-only
 leftovers deleted; canonical missing with `.superseded` present, left untouched).
@@ -12606,7 +12608,9 @@ it cannot outlive a session change that (1) now prevents from happening first.
 
 ### Guard
 
-`AppScreenLockTests` (6 tests, no Enclave needed): past the grace period the phase is `.pinRequired` before
+`AppScreenLockTests` (6 tests; the 4 that configure a PIN are Enclave-gated, since `configurePIN` seals
+`AppLayerConfig` fields with the ambient local key — found when CI on PR #76 failed them, 2026-09-29): past
+the grace period the phase is `.pinRequired` before
 activation; within it, with no background entry, with no PIN, with the gate lowered, and before `wire`, nothing
 changes. `sceneWillEnterForeground` needs a live `UIScene`, so the call from it is covered by reading, not a test;
 `processInboundFile` lives on a SwiftUI `View` and is untested, like the rest of that type.
