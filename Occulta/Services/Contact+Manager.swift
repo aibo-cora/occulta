@@ -1034,7 +1034,8 @@ extension ContactManager {
         // Message mode: pop prekey (→ .forwardSecret or .longTermFallback);
         //               attach pending batch if one exists.
         // Shard mode (group path): pop prekey — FS preferred for shards;
-        //               shard ops dropped silently if no prekey available.
+        //               shard ops dropped silently if no prekey available;
+        //               attach pending batch too (Bug 152).
         // Shard mode (old path, <1.9.0): skip prekey — keep longTermFallback.
         var contactPrekey: Prekey? = nil
         var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
@@ -1063,9 +1064,11 @@ extension ContactManager {
             if let blob = try contact.popOldestPrekeyData() {
                 contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
             }
-            if !isCarryingShard {
-                outboundBatch = try contact.loadPendingBatch()
-            }
+            // Attached whether or not a piece rides along: a queued piece goes with every
+            // message until the trustee confirms it, and the trustee can only confirm in a
+            // forward-secret reply, which needs this batch once our prekeys run out
+            // (`bugs.md` Bug 152).
+            outboundBatch = try contact.loadPendingBatch()
         }
 
         // ── 4. Build and seal payload ─────────────────────────────────────

@@ -330,3 +330,98 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(sealed.custodyManifest == nil, "custodyManifest must be dropped on a fallback bundle")
     }
 }
+
+// MARK: - 3. Prekey batch rides with a piece (Bug 152)
+//
+// A queued piece goes with every direct message until the trustee confirms it, and the
+// trustee confirms only in a forward-secret reply. `encryptBundle` used to leave the
+// pending prekey batch off any message carrying a piece, so once the trustee had used up
+// our prekeys they never got more: every reply fell back, dropped its manifest, and the
+// piece stayed queued forever.
+
+/// A pending outbound batch of `count` prekeys, stored on `profile` as `encryptBundle` finds it.
+@MainActor
+private func storePendingBatch(count: Int, on profile: Contact.Profile) throws -> OccultaBundle.SealedPayload.PrekeySyncBatch {
+    try profile.configureForwardSecrecy()
+    let prekeys = try (0..<count).map { _ in
+        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: try TestKeyManager().retrieveIdentity())
+    }
+    let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeys)
+    try profile.store(batch: batch)
+    return batch
+}
+
+/// A 1.9.0+ contact whose key material is `publicKey`, with the synthetic ML-KEM material,
+/// so a bundle carrying a piece can be sealed to it and opened on the long-term path.
+@MainActor
+private func insertContact(
+    identifier: String, publicKey: Data, in contactManager: ContactManager
+) throws -> Contact.Profile {
+    let realCrypto = Manager.Crypto()
+    guard let encryptedKey = try realCrypto.encrypt(data: publicKey),
+          let encryptedQuantum = try realCrypto.encrypt(data: try JSONEncoder().encode(syntheticQuantumMaterial()))
+    else { throw TestSetupError.seUnavailable }
+    let profile = Contact.Profile(
+        identifier: identifier, givenName: "", familyName: "", middleName: "",
+        nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+    )
+    profile.contactPublicKeys = [Contact.Profile.Key(
+        material: encryptedKey, owner: Data(), date: Data(), quantumKeyMaterialEncrypted: encryptedQuantum
+    )]
+    if let byte = OccultaBundle.Version.groupCapable.wireByte {
+        profile.maxBundleVersion = try realCrypto.encrypt(data: Data([byte]))
+    }
+    try contactManager.insertProfile(profile)
+    return profile
+}
+
+@Suite("encryptBundle — the pending prekey batch rides with a piece (Bug 152)")
+@MainActor struct PieceCarriesPrekeyBatchTests {
+
+    @Test("A message carrying a piece also carries the pending batch", .enabled(if: secureEnclaveAvailable()))
+    func pieceCarriesBatch() throws {
+        let cm = try makeContactManager()
+        let recipientKM = TestKeyManager()
+        let trustee = try insertContact(identifier: "trustee", publicKey: try recipientKM.retrieveIdentity(), in: cm)
+        let batch   = try storePendingBatch(count: 15, on: trustee)
+
+        let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
+        let encoded = try cm.encryptBundle(basket: Basket(files: []), for: "trustee", shardOperations: [op])
+
+        // No prekey from the trustee, so this opens on the long-term path, which the fixture can derive.
+        let bundle = try OccultaBundle.decoded(from: encoded)
+        let (recipientPayload, _, _) = try Manager.Crypto(keyManager: recipientKM).findAndOpenRecipientSlot(
+            in: bundle, blind: try #require(bundle.group).blind,
+            senderContactID: "self", senderPublicKey: try Manager.Key().retrieveIdentity(),
+            quantumMaterial: syntheticQuantumMaterial(), prekeyManager: Manager.PrekeyManager()
+        )
+
+        let delivered = try #require(recipientPayload.prekeyBatch)
+        #expect(delivered.prekeys == batch.prekeys)
+        #expect(delivered.generatedAt == batch.generatedAt)
+    }
+
+    @Test("The trustee's device stores the batch that came with the piece", .enabled(if: secureEnclaveAvailable()))
+    func trusteeStoresBatch() throws {
+        // Both ends are this device's own identity: the owner seals to it, and a second
+        // store, holding the owner as a contact under the same key, opens it.
+        let selfPub = try Manager.Key().retrieveIdentity()
+
+        let ownerSide = try makeContactManager()
+        let trustee   = try insertContact(identifier: "trustee", publicKey: selfPub, in: ownerSide)
+        let batch     = try storePendingBatch(count: 15, on: trustee)
+
+        let trusteeSide = try makeContactManager()
+        let owner       = try insertContact(identifier: "owner", publicKey: selfPub, in: trusteeSide)
+        try owner.configureForwardSecrecy()
+        #expect(owner.availableInboundPrekeyCount == 0, "precondition: the trustee has used up the owner's prekeys")
+
+        let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
+        let encoded = try ownerSide.encryptBundle(basket: Basket(files: []), for: "trustee", shardOperations: [op])
+
+        _ = try trusteeSide.openGroup(bundle: try OccultaBundle.decoded(from: encoded), ownerID: "owner")
+
+        #expect(owner.availableInboundPrekeyCount == batch.prekeys.count,
+                "the trustee can now reply forward-secret, so its manifest is no longer dropped")
+    }
+}

@@ -12736,3 +12736,51 @@ the trustee count and threshold there.
 `BackupSetupStateTests` (`BackupPieceReconcileTests.swift`): three trustees, threshold two, counts 0 and 1 confirmed
 of 3, then `.ready` at 2; a lost piece drops the total to 2.
 
+## Bug 152 — A trustee who has used up the owner's prekeys never confirms a backup-key piece
+
+**Status:** Fixed 2026-09-29. Found testing the backup flow on a device with a trustee on v1.10.3: the Backup
+Recovery row stayed at "0 of 3 trustees confirmed" through several exchanges, and the trustee's messages showed
+standard encryption.
+
+**Target:** `v1.11.0`. The rule dates from `5aabc01` (2026-05-06), so v1.10.3 has it too; it is not a v1.10.3
+compatibility problem, and a trustee on v1.11.0 hits it the same way.
+
+### Severity: High (backup-key distribution can stall permanently; export never becomes available)
+
+### What happens
+
+1. `ContactManager.encryptBundle` attached the pending prekey batch only when the bundle carried no piece
+   (`if !isCarryingShard`), a rule from when a piece travelled in its own shard-only bundle and ordinary messages
+   carried the batch.
+2. A queued piece now rides every direct message to its trustee until a manifest confirms it, so none of those
+   messages carries the batch.
+3. Each trustee reply uses one of the owner's prekeys (15 per batch). Once they run out, replies use the long-term
+   fallback. The owner's device answers a fallback by storing a fresh pending batch, which step 1 keeps from
+   leaving.
+4. On the fallback path the trustee's manifest is dropped with the other shard content (forward secrecy is required
+   for it, in v1.10.3 and v1.11.0), so the piece is never confirmed and stays queued — back to step 2.
+
+The owner's direction still works (the trustee's replies keep delivering their batches), so the owner's app shows
+forward secrecy on while the trustee's shows standard encryption.
+
+### Fix
+
+`encryptBundle` attaches the pending batch whenever it pops a prekey, with or without a piece. Contacts below 1.9.0
+are unchanged: `needsPrekey` is false when a piece is carried, so that path never loads a batch. A batch holds
+public prekeys only, and ordinary messages already vary in whether they carry one, so a piece-carrying message
+doesn't stand out.
+
+v1.10.3 trustees need no update: their `openGroup` stores a recipient's batch whatever else the bundle carries
+(`storeInboundBatch`). No migration: the stalled owner already holds the pending batch, so the next message
+delivers it, the trustee's next reply is forward-secret and carries the manifest, and the piece confirms at the
+owner's next reconcile.
+
+### Guard
+
+`PieceCarriesPrekeyBatchTests` (`ShardFallbackGatingTests.swift`, Enclave-gated): a bundle carrying a piece
+carries the pending batch in the recipient's slot; and end to end, a trustee store holding none of the owner's
+prekeys has the full batch after opening a piece-carrying bundle. Both fail with the old rule restored.
+
+Still to do on a device: the stalled owner sends one more message; the trustee's next reply should show forward
+secrecy and the piece should confirm.
+
