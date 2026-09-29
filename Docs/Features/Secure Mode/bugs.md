@@ -10990,13 +10990,13 @@ after the change — see the commit this note lands with for the pass/fail/skip 
 
 ## Bug 126 — `pendingRestoreActive`/`pendingRestoreShardCount` are hand-synced at five separate sites instead of queried from the data that already answers them
 
-**Status:** Open, filed 2026-09-22. Found while designing the fix for `storePendingRestore` not
+**Status:** **Closed — moot, 2026-09-23.** Bug 99's remedy removed `pendingRestoreActive`,
+`pendingRestoreShardCount` and `refreshPendingRestoreState` along with the held file. See the note at the end
+of this entry. Filed 2026-09-22, **Open** until then. Found while designing the fix for `storePendingRestore` not
 immediately re-attempting reconstruction against already-collected shards (`decisions.md`'s "Don't
 auto-arm shard collection on first vault-tab visit," the gap it surfaced). No code changed — this
 entry documents the finding so the simplification is tracked, not lost, while that other fix proceeds
-first. **Closed, moot, 2026-09-23:** Bug 99's remedy removed `pendingRestoreActive`,
-`pendingRestoreShardCount` and `refreshPendingRestoreState` along with the held file. See the note at the end
-of this entry.
+first.
 
 **Target:** unset — a design/maintainability finding, not tied to a release.
 

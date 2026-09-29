@@ -469,7 +469,8 @@ reconstruction is attempted after every shard arrival; success means done.
 
 ### Implementation status
 
-Implemented as the "Recovery in Progress" section in `Vault+Tab.swift`. Spinner
+**Removed 2026-09-23; see "Changed, 2026-09-23" below.** Until then, it was implemented
+as the "Recovery in Progress" section in `Vault+Tab.swift`. Spinner
 header, static subtitle, footer guidance. Section disappears when
 `pendingRestoreActive` transitions to `false` after successful `attemptBEKRestore`.
 
