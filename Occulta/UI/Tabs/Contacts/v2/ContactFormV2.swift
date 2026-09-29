@@ -22,7 +22,6 @@ extension Contact {
         @Environment(\.dismiss)              private var dismiss
         @Environment(ContactManager.self)    private var contactManager
         @Environment(Manager.Security.self)  private var security
-        @Environment(VaultManager.self)          private var vaultManager
         @Environment(ShardCustodyManager.self)   private var shardCustodyManager
 
         let mode: Mode
@@ -146,7 +145,6 @@ extension Contact {
                     Button("Delete", role: .destructive) {
                         try? self.contactManager.deleteContact(
                             identifier: identifier,
-                            vaultManager: self.vaultManager,
                             shardCustodyManager: self.shardCustodyManager
                         )
                         

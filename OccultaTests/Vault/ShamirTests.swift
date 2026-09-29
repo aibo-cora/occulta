@@ -74,6 +74,33 @@ struct GFArithmeticTests {
         #expect(ShamirSecretSharing.gfInv(0x03) == 0xF6)
     }
 
+    /// The branch-free `gfMul` (Bug 131) against the branching form it replaced, on every
+    /// input pair.
+    @Test("gfMul matches the branching Russian peasant form on all 65,536 input pairs")
+    func mulMatchesBranchingForm() {
+        func branching(_ a: UInt8, _ b: UInt8) -> UInt8 {
+            var p: UInt8 = 0
+            var a = a
+            var b = b
+            for _ in 0..<8 {
+                if b & 1 != 0 { p ^= a }
+                let carry = a & 0x80 != 0
+                a <<= 1
+                if carry { a ^= 0x1B }
+                b >>= 1
+            }
+            return p
+        }
+
+        var mismatches = 0
+        for a in UInt8.min...UInt8.max {
+            for b in UInt8.min...UInt8.max where ShamirSecretSharing.gfMul(a, b) != branching(a, b) {
+                mismatches += 1
+            }
+        }
+        #expect(mismatches == 0)
+    }
+
     @Test("a * gfInv(a) == 1 for all non-zero a in [1, 255]")
     func mulByInverseIsOne() {
         for a in UInt8(1)...UInt8(255) {
@@ -112,6 +139,35 @@ struct SSSVectorTests {
 
         #expect(secret[0] == 0x01, "Lagrange interpolation must recover the secret byte")
         #expect(secret.dropFirst().allSatisfy { $0 == 0 }, "remaining bytes must be zero")
+    }
+
+    /// `reconstruct` computes the Lagrange weights once for all 32 bytes (Bug 95). Pinned
+    /// against the per-byte formula it replaced, on arbitrary points rather than a split's,
+    /// since a restore's subset search also feeds it groups containing bad pieces.
+    @Test("Reconstruct matches per-byte Lagrange interpolation on arbitrary points")
+    func matchesPerByteLagrange() throws {
+        func perByte(_ shares: [[UInt8]]) -> Data {
+            let xs = shares.map { $0[0] }
+            return Data((0..<32).map { byte in
+                var secret: UInt8 = 0
+                for i in xs.indices {
+                    var num = shares[i][byte + 1]
+                    var den: UInt8 = 1
+                    for j in xs.indices where j != i {
+                        num = ShamirSecretSharing.gfMul(num, xs[j])
+                        den = ShamirSecretSharing.gfMul(den, xs[i] ^ xs[j])
+                    }
+                    secret ^= ShamirSecretSharing.gfMul(num, ShamirSecretSharing.gfInv(den))
+                }
+                return secret
+            })
+        }
+
+        for count in [2, 3, 7, 20, 255] {
+            let xs = Array(UInt8(1)...UInt8(255)).shuffled().prefix(count)
+            let shares = xs.map { x in [x] + (0..<32).map { _ in UInt8.random(in: 0...255) } }
+            #expect(try ShamirSecretSharing.reconstruct(shares: shares) == perByte(shares), "failed for \(count) shares")
+        }
     }
 }
 

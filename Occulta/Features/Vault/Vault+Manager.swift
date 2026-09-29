@@ -36,6 +36,15 @@ final class VaultManager {
 
     let keyManager: any KeyManagerProtocol
 
+    /// The device's Backup Encryption Key: setup, access, shard distribution,
+    /// reconstruction, rotation. See `VaultManager.Backup`'s own doc comment
+    /// (`Vault+Manager+Backup.swift`).
+    ///
+    /// Holds no reference back to `self` — `Backup` takes only `keyManager` and
+    /// `backend` as plain injected values, so this is an ordinary `let` assigned
+    /// inline like `keyManager` below, not a circular construction.
+    let backup: Backup
+
     // MARK: - Auth context
 
     /// Evaluated LAContext from the most recent unlock(context:) call.
@@ -49,25 +58,24 @@ final class VaultManager {
 
     // MARK: - Recovery health
 
-    /// Aggregate shard coverage across all distributed entries.
-    /// `nil` when the vault is locked. Updated automatically on unlock and
-    /// after every shard status mutation.
-    var recoveryHealth: RecoveryHealthSummary? = nil
-
-    /// BEK erosion state: non-nil when a BEK distribution exists and
+    /// Backup key shard erosion state: non-nil when a distribution exists and
     /// active (pending + confirmed) shards fall below threshold.
-    /// `nil` when the vault is locked, no BEK is distributed, or coverage is met.
-    var bekErosion: (active: Int, threshold: Int)? = nil
+    /// `nil` when the vault is locked, no distribution exists, or coverage is met.
+    ///
+    /// Stays flat on `VaultManager`, not moved into `Backup` — `VaultManager` is
+    /// `@Observable`, `Backup` is a plain class, so a property read through
+    /// `vault.backup.erosion` would never trigger a SwiftUI view update. UI-facing
+    /// observed state stays here alongside `backupStaleness`;
+    /// `Backup` holds the operations, `VaultManager` holds what the UI watches.
+    var backupErosion: (active: Int, threshold: Int)? = nil
 
-    // MARK: - Pending restore
+    // MARK: - Restore
 
-    /// `true` while a `.occbak` file is stored locally awaiting BEK shard collection.
-    /// Seeded from the filesystem on every unlock so it survives app restarts.
-    var pendingRestoreActive: Bool = false
-
-    /// Number of BEK restore shards collected so far. Updated on each shard arrival
-    /// and on vault unlock. Drives the progress counter in the vault list.
-    var pendingRestoreShardCount: Int = 0
+    /// Set when `restoreBackup` imports entries; the vault tab shows the post-restore
+    /// prompt while it's `true`. In memory only and reset by `lock()`: changing depth
+    /// means entering the PIN again, which the vault locks before, so an import in one
+    /// layer can never prompt in another's session (`RECOVERY_BUFFER_LAYERING.md` §9.4).
+    var postRestorePromptPending = false
 
     // MARK: - Backup staleness
 
@@ -83,6 +91,11 @@ final class VaultManager {
 
     @ObservationIgnored
     private var inactivityTimer: Timer?
+
+    /// When the inactivity lock is due; nil while locked. Internal for unit tests, which can't
+    /// time the lock itself reliably: in a full run other tests hold the main thread for longer
+    /// than any sensible timeout.
+    var inactivityDeadline: Date? { self.inactivityTimer?.fireDate }
 
     @ObservationIgnored
     private var cancellables = Set<AnyCancellable>()
@@ -105,6 +118,10 @@ final class VaultManager {
         /// `ShardDistributionMetadata` could not be JSON-decoded after a successful
         /// `AES.GCM.open` — the plaintext is structurally invalid.
         case metadataCorrupted
+        /// `requireVault()` found no `Vault` row. Should be unreachable —
+        /// `ensureVaultExists()` runs unconditionally at `init`, before this is ever
+        /// called.
+        case vaultNotFound
     }
 
     // MARK: - Init
@@ -117,7 +134,21 @@ final class VaultManager {
         self.modelExecutor     = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer    = modelContainer
         self.keyManager        = keyManager
+        self.backup            = Backup(keyManager: keyManager)
         self.inactivityTimeout = inactivityTimeout
+
+        // Top up the BackupEncryptionKey table to its 32-row filler baseline — no key
+        // material needed (filler is plain random bytes, never sealed), so this can run
+        // unconditionally at construction, before Secure Mode is ever configured. See
+        // `ensureBackupKeyFillerRows()`'s own doc comment for why 32 is a starting
+        // baseline, not a cap.
+        self.ensureBackupKeyFillerRows()
+
+        // Ensure the singleton Vault row exists — no key material needed (Vault has no
+        // encrypted fields of its own), so this can run unconditionally too. See
+        // `ensureVaultExists()`'s own doc comment for why this doesn't need the same
+        // filler-baseline treatment as the row above.
+        self.ensureVaultExists()
 
         // ── Lock triggers (conditions 1–3) ───────────────────────────────────
         // Condition 1: app goes to background
@@ -135,24 +166,43 @@ final class VaultManager {
                 .sink { [weak self] _ in self?.lock() }
                 .store(in: &self.cancellables)
         }
-
-        // ── Auto-recompute on any ModelContext save ───────────────────────────
-        // We don't discriminate which ModelContext caused the notification —
-        // saves from other managers (ContactManager, ExchangeManager) may also
-        // fire it while the vault is unlocked, but extra recomputes are harmless
-        // since recomputeRecoveryHealth() exits cheaply when no shard data exists.
-        // The guard on isUnlocked is for correctness: currentKey() would throw
-        // when locked, and recoveryHealth/bekErosion are already nil from lock().
-        NotificationCenter.default.publisher(for: ModelContext.didSave)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self, self.isUnlocked else { return }
-                self.recomputeRecoveryHealth()
-            }
-            .store(in: &self.cancellables)
     }
 
     // MARK: - Unlock / lock
+
+    /// Runs `action` with the vault unlocked, asking for Face ID first if it's locked, the same
+    /// prompt the Vault tab uses. Cancelling or failing the prompt does nothing.
+    ///
+    /// For actions started from a screen that stays up when the vault locks: the two restore
+    /// paths (`VaultRestoreView`'s picker, Open in Occulta's `restoreConfirmedFile`) and the
+    /// export confirmation (`BackupExportEducationView`). The prompt depends only on the lock
+    /// state, never on depth.
+    func whenUnlocked(_ action: @escaping () -> Void) {
+        guard !self.isUnlocked else { return action() }
+
+        let context = LAContext()
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock your Vault") { success, _ in
+            DispatchQueue.main.async {
+                guard success else { return }
+                self.unlock(context: context)
+                action()
+            }
+        }
+    }
+
+    /// Pushes the inactivity lock back by `inactivityTimeout`, if the vault is unlocked.
+    ///
+    /// Apart from `unlock`, the only thing that extends the session. It is called by the vault
+    /// screens for the person's deliberate actions: opening a vault screen, revealing, copying,
+    /// typing, saving, deleting, distributing, exporting, restoring (`decisions.md`, "Vault
+    /// activity is the person's deliberate actions, not key use"). Using the vault key never
+    /// extends it, so saves, incoming and outgoing messages and redraws don't keep the vault
+    /// open (`bugs.md` Bug 136). Does nothing while locked: it can't unlock, or start a timer
+    /// on a locked vault.
+    func extendSession() {
+        guard self.isUnlocked else { return }
+        self.resetInactivityTimer()
+    }
 
     /// Store a pre-evaluated LAContext for the vault session.
     ///
@@ -160,31 +210,32 @@ final class VaultManager {
     /// LAContext.evaluatePolicy before calling unlock. VaultManager stores only
     /// the context reference — no key material is held.
     ///
-    /// `currentDepth` has no default — a forgotten argument must be a compile error,
-    /// not a silent leak of restore state into whichever depth happened to call this
-    /// (Bug 93). Required specifically because `attemptBEKRestore` must never run as
-    /// though it's at depth 0 by accident. `refreshPendingRestoreState` no longer takes
-    /// a depth at all: its published state is deliberately uniform across layers, and
-    /// deferral in `attemptBEKRestore` is what keeps that safe.
-    func unlock(context: LAContext, currentDepth: Int) {
+    /// Takes no depth: nothing done on unlock depends on which layer is showing.
+    func unlock(context: LAContext) {
         self.authContext = context
         self.resetInactivityTimer()
-        // Drain reconstruction buffer entries that crossed threshold while locked.
-        self.tryFinalizeAllReconstructions()
-        // Replay shard status updates that arrived while locked, then check for losses.
-        self.drainPendingShardStatusUpdates()
-        self.drainPotentiallyLostShards()
-        self.recomputeRecoveryHealth()
-        // backupStaleness is refreshed by the views that display it (Vault+Tab,
-        // VaultRecoverySettings), not here. currentDepth is available in this scope
-        // now (added for Bug 93, below) — that's no longer why staleness stays external.
-        // It's left where it already is, tested and working, rather than consolidated
-        // here without a reason tied to this fix (see refreshBackupStaleness's own
-        // doc comment for why it must never be computed from the wrong depth).
-        // Sync pending-restore state from filesystem and attempt reconstruction
-        // if enough shards have arrived since the last unlock.
-        self.refreshPendingRestoreState()
-        self.attemptBEKRestore(currentDepth: currentDepth)
+        // Migrate real content out of the old 32-slot array and/or the original
+        // single-row legacy BackupEncryptionKey, into the current per-depth row
+        // model, if either still needs it. Idempotent — see
+        // migrateLegacyBackupStorageIfNeeded's own doc comment. try? is deliberate:
+        // a migration decode failure becomes "stays un-migrated, retried next
+        // unlock" rather than a throwing unlock() across every caller.
+        if let vaultKey = try? self.currentKey() {
+            try? self.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey)
+        }
+        // Migrate any leftover ReconstructShard rows into PendingShamirSecretRestore,
+        // if any still exist. Idempotent — see migrateReconstructShardsIfNeeded's own
+        // doc comment. Needs only the restore vault key, not the vault key, so this
+        // runs unconditionally rather than nested in the block above.
+        try? self.migrateReconstructShardsIfNeeded()
+        self.deleteLegacyRestoreState()
+        self.retireEntrySplittingIfNeeded()
+        // backupStaleness and backupErosion are both refreshed by the views that
+        // display them (Vault+Tab, VaultRecoverySettings), not here: they're depth-scoped
+        // and this scope has no depth. The views' onChange(of: isUnlocked) fires right
+        // after this call sets authContext (see refreshBackupStaleness's and
+        // refreshBackupErosion's own doc comments for why they must never be computed
+        // from the wrong depth).
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.
@@ -196,8 +247,9 @@ final class VaultManager {
         self.inactivityTimer = nil
         self.authContext?.invalidate()
         self.authContext     = nil
-        self.recoveryHealth  = nil
-        self.bekErosion      = nil
+        self.backupErosion   = nil
+        self.backupStaleness = nil
+        self.postRestorePromptPending = false
     }
 
     // MARK: - Create
@@ -223,6 +275,9 @@ final class VaultManager {
         // Stamp depth ceiling — always encrypted, never nil.
         // Depth 0 entries get encrypt(0): real-layer items hidden from all duress views.
         entry.visibleThroughDepth = try DepthCodec.encode(currentDepth).encrypt()
+        // Always-populated orphan flag (Bug 110) — see its own doc comment for why this
+        // isn't left nil until orphaned.
+        entry.deletionToken = try VaultEntry.liveToken.encrypt()
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)
@@ -266,16 +321,36 @@ final class VaultManager {
 
     // MARK: - Read
 
-    /// Return all vault entries sorted by creation date (oldest first).
+    /// Return all non-orphaned vault entries sorted by creation date (oldest first).
     ///
-    /// All fields on the returned entries are ciphertext — no decryption occurs here.
+    /// Every other field on the returned entries is ciphertext, untouched — decryption
+    /// happens here only for `deletionToken`, to tell orphaned rows apart from live ones.
+    /// That field is deliberately always populated (Bug 110: nil/non-nil would itself be
+    /// a free, zero-decryption signal), which means it can no longer be pushed down as a
+    /// SQL predicate the way `deletionToken == nil` used to be — SQLite cannot decrypt
+    /// AES-GCM as part of a `WHERE` clause. This fetches every row unconditionally and
+    /// filters in Swift, deriving the local-DB key once and reusing it across every row
+    /// rather than paying a Secure Enclave round trip per entry.
+    ///
+    /// This is the single central read every other consumer (shard custody, backup
+    /// export, the return buffer, the UI list) goes through, so filtering here is what
+    /// makes an orphaned entry genuinely inert everywhere at once, not just hidden from
+    /// the list.
     func fetchAllEntries() throws -> [VaultEntry] {
         let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
-        return try self.modelContext.fetch(descriptor)
+        let all = try self.modelContext.fetch(descriptor)
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        return all.filter { !$0.isOrphaned(usingKey: key) }
     }
 
+    /// Hard-deletes every VaultEntry row, including orphaned ones — deliberately not
+    /// `fetchAllEntries()`, which now excludes orphaned rows (Bug 110). Only ever called
+    /// from `deleteAllData()` (panic wipe), which must erase everything, the same way
+    /// `ContactManager.deleteAllContacts()` hard-deletes soft-deleted contacts too.
     func deleteAllEntries() throws {
-        let entries = try fetchAllEntries()
+        let entries = try self.modelContext.fetch(FetchDescriptor<VaultEntry>())
         for entry in entries { modelContext.delete(entry) }
         try modelContext.save()
     }
@@ -285,11 +360,24 @@ final class VaultManager {
         try deleteAll(CustodyShard.self)
         try deleteAll(PendingShardDistribute.self)
         try deleteAll(PendingShardStatusUpdate.self)
+        try deleteAll(PendingShamirSecretRestore.self)
+        try deleteAll(Vault.self)
+        // Retired but kept for migration (ReconstructShard+Model.swift) — a panic wipe
+        // must still clear any leftover legacy rows, not just the current model.
         try deleteAll(ReconstructShard.self)
         try deleteAll(GlobalShardConfig.self)
         try deleteAll(PotentiallyLostShard.self)
         try deleteAll(AppLayerConfig.self)
         try deleteAllEntries()
+        // Files outlive row deletion and key deletion alike (bugs.md Bug 128).
+        self.deleteLegacyRestoreState()
+        self.deleteBackupExportMetadata()
+        // Back to a fresh install's shape without waiting for a relaunch, which Erase all data
+        // doesn't do: `init` is otherwise the only place these run. Without the Vault row,
+        // `absorbShard` throws `vaultNotFound`; without the filler baseline, a backup set up
+        // before the next launch sits in a table whose row count reveals it.
+        self.ensureBackupKeyFillerRows()
+        self.ensureVaultExists()
     }
 
     private func deleteAll<T: PersistentModel>(_ type: T.Type) throws {
@@ -308,12 +396,37 @@ final class VaultManager {
 
     /// Decrypt the sealed label payload (type + label string) for one entry.
     ///
-    /// Internal visibility so `Vault+Manager+Shards.swift` can call it from
-    /// `recomputeRecoveryHealth` without double-decrypting.
-    ///
     /// ⚠️ The returned payload is plaintext. Do not persist or log it.
     func decryptLabelPayload(for entry: VaultEntry) throws -> SealedLabelPayload {
-        let vaultKey  = try self.currentKey()
+        try self.labelPayload(for: entry, vaultKey: try self.currentKey())
+    }
+
+    /// One row of the Vault tab's entry list.
+    struct EntryListRow: Identifiable, Equatable {
+        let id:        UUID
+        let label:     String
+        let type:      VaultEntryType
+        let createdAt: Date
+    }
+
+    /// The Vault tab's rows for `entries`, deriving the vault key once for all of them. The tab
+    /// builds these once per data change instead of decrypting every row on every redraw, which
+    /// derived the key once or more per row each time. An entry whose label won't decrypt shows
+    /// as "–", a note, as the row view did. Empty while locked.
+    func entryListRows(for entries: [VaultEntry]) -> [EntryListRow] {
+        guard let vaultKey = try? self.currentKey() else { return [] }
+        return entries.map { entry in
+            let payload = try? self.labelPayload(for: entry, vaultKey: vaultKey)
+            return EntryListRow(
+                id:        entry.id,
+                label:     payload?.label ?? "–",
+                type:      payload?.type  ?? .note,
+                createdAt: entry.createdAt
+            )
+        }
+    }
+
+    private func labelPayload(for entry: VaultEntry, vaultKey: SymmetricKey) throws -> SealedLabelPayload {
         let pek       = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
         let plaintext = try self.openField(entry.encryptedLabel, key: pek, aad: entry.aad(for: .label))
         do {
@@ -346,30 +459,23 @@ final class VaultManager {
 
     // MARK: - Delete
 
-    /// Delete a vault entry and return its shard distribution metadata, if any.
-    ///
-    /// The metadata is read before deletion so the caller can queue `.revoke`
-    /// operations for each trustee. Returns `nil` when the entry had no
-    /// distributed shards (no action needed from `ShardCustodyManager`).
-    @discardableResult
-    func deleteEntry(id: UUID) throws -> ShardDistributionMetadata? {
+    /// Delete a vault entry.
+    func deleteEntry(id: UUID) throws {
         guard let entry = try self.fetchEntry(by: id) else { throw VaultError.entryNotFound }
-
-        let metadata = try? self.shardDistributionMetadata(for: id)
 
         self.modelContext.delete(entry)
         try self.modelContext.save()
-
-        return metadata
     }
 
     // MARK: - Key access
 
     /// Derive the vault key on the fly using the cached LAContext.
     ///
-    /// Resets the inactivity timer on success. On any derivation failure —
-    /// covering invalidated context, biometric set change, device restart —
-    /// calls lock() and throws .locked. This is lock condition 5.
+    /// Only derives the key: it doesn't extend the session. Much of what uses the key is the
+    /// app working on its own (the save hook, incoming and outgoing messages, redraws), and
+    /// that must not keep the vault unlocked (`bugs.md` Bug 136); the session is extended by
+    /// `extendSession()`. On any derivation failure — covering invalidated context, biometric
+    /// set change, device restart — calls lock() and throws .locked. This is lock condition 5.
     ///
     /// Internal (not private) so Vault+Manager+Shards.swift can access it.
     func currentKey() throws -> SymmetricKey {
@@ -381,8 +487,7 @@ final class VaultManager {
                 
                 throw VaultError.keyDerivationFailed
             }
-            self.resetInactivityTimer()
-            
+
             return key
         } catch let error as VaultError {
             throw error

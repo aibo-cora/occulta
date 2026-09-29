@@ -139,6 +139,12 @@ All fields are optional. Absent fields are omitted (not null). Receivers treat u
 }
 ```
 
+**Removed 2026-09-27 (`bugs.md` Bug 141).** `expectedShards` is no longer written or read. Builds from that date
+ignore it in bundles from older senders (keyed decoding drops unknown keys), and older
+receivers read its absence as `nil`. In a group `RecipientPayload`, `expectedShards`/
+`expectedShardsCount` are gone too and `shardMetadataAttempted` is always `false`, because an
+older receiver reads `true` with no list as "delete every piece you hold from me".
+
 `appVersion` is the sender's current app version string (e.g. `"1.9.0"`). Receivers use this to update the contact's stored `maxBundleVersion`. See §6.
 
 ### 4.3 Basket

@@ -3,6 +3,16 @@
 Reference for every observable state transition in the manifest-based shard protocol.  
 Actors: **Alice** = shard owner, **Bob** = trustee.
 
+> **Removed 2026-09-27 (`bugs.md` Bug 141).** Implicit revoke and the `expectedShards` field are gone:
+> Bob never deletes a piece because Alice's list omits it, and Alice sends no list. Every
+> case below that depends on `expectedShards` is historical. A removed trustee's backup-key
+> piece is revoked by splitting a new backup key; a piece a trustee reports missing is re-sent
+> automatically by the depth that owns it (`ShardCustodyManager.reconcileBackupPieces`).
+> Group bundles carry no manifest.
+>
+> **Per-entry splitting was retired 2026-09-27** (`Docs/General/decisions.md`, "Retire per-entry splitting"): every piece
+> Alice distributes is a backup-key piece, and handed-back per-entry pieces are not banked.
+
 ---
 
 ## Wire fields (per outbound `SealedPayload`)

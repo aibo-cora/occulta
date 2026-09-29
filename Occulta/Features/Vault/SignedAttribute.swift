@@ -64,6 +64,11 @@ struct SignedAttribute: Codable, Identifiable {
 
     // MARK: Fields
 
+    /// The label every backup-key piece carries. Nothing but the handback path reads it
+    /// (`VaultManager.acceptReturnedShard`); it isn't signed. Older apps require a label on
+    /// every piece, so it can't be dropped.
+    static let backupKeyPieceLabel = "vault-bek-shard"
+
     let id: UUID
     /// Human-readable label. Plaintext in this struct; the containing layer
     /// encrypts before writing to SwiftData.
@@ -210,9 +215,14 @@ struct SignedAttribute: Codable, Identifiable {
 
 // MARK: - AttestedShard
 
-/// A `.shard` attribute together with who delivered it and, when the sender's
-/// identity has rotated since original distribution, the trustee's attestation
-/// vouching for it.
+/// A `.shard` attribute together with who delivered it.
+///
+/// Named for a mechanism this type no longer carries — it used to also hold a
+/// trustee's attestation for the rotated-identity path; `bugs.md` Bug 125 removed
+/// that field entirely, since it never verified content authenticity, only
+/// sender identity, which the bundle's own transport already establishes.
+/// Kept the name rather than renaming it as part of that change — a purely
+/// cosmetic follow-up, not done here.
 ///
 /// Threading `senderIdentifier` through storage is the load-bearing piece of
 /// Bug 94 remedy 2: reconstruction counts *distinct senders*, not distinct
@@ -232,17 +242,14 @@ struct SignedAttribute: Codable, Identifiable {
 /// See `Docs/Features/Secure Mode/bugs.md`, Bug 94.
 struct AttestedShard: Codable {
     /// The owner-signed shard. Verifies directly against the owner's current
-    /// identity (Branch A, unrotated case) or is accompanied by `attestation`
-    /// (Branch B, rotated case).
+    /// identity when unrotated (Branch A) — accepted either way once that check
+    /// fails, `bugs.md` Bug 125.
     let attribute: SignedAttribute
-    /// Present only on the rotated-identity path: the trustee's own signature,
-    /// category `.attestation`, over `SHA256(attribute.signingPayload())`.
-    let attestation: SignedAttribute?
-    /// The contact identifier this shard arrived from, as resolved by the
-    /// *receiving* device's own lookup — never sender-asserted. See
-    /// `ShardCustodyManager.handleInbound`'s callers in `OccultaApp.swift`,
-    /// where `senderIdentifier` comes from `contactManager.openGroup(...)`
-    /// resolving the decrypting key against the receiver's own contacts, not
-    /// from anything the bundle's payload claims.
-    let senderIdentifier: String
+    /// Who this shard arrived from, as resolved by the *receiving* device's own lookup —
+    /// never sender-asserted. See `ShardCustodyManager.handleInbound`'s callers in
+    /// `OccultaApp.swift`, where the sender identifier comes from
+    /// `contactManager.openGroup(...)` resolving the decrypting key against the
+    /// receiver's own contacts, not from anything the bundle's payload claims. Held as a
+    /// tag of that identifier (`TrusteeTag`, `bugs.md` Bug 147).
+    let sender: TrusteeTag
 }

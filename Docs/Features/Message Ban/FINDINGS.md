@@ -159,6 +159,39 @@ pads membership to 32 byte-identical filler slots specifically so counts cannot 
 it rests on a negative grep. It only bites if requirement 1 is ever violated and the ban is addressed
 selectively, but it should be settled before implementation.
 
+## Reception and threat-model gaps, flagged 2026-09-02
+
+Raised while assessing how this feature would land against the project's security/privacy posture.
+Not objections to the mechanism — gaps in what the write-up above covers.
+
+**1. Requirement 3 is deception aimed at a contact, not an examiner.** Every other concealment in
+this codebase targets a hostile examiner searching the device; this is the first one where the
+concealment target is a trusted contact, who receives a directive dressed as an ordinary message and
+is never told what it actually did. If that mechanism surfaces publicly — teardown, court exhibit,
+researcher writeup — "the app silently changes what your contact's app will let them send you,
+engineered to look like an ordinary message" reads badly against a product whose pitch is that
+nothing happens without physical, informed consent.
+
+**2. Accepted limitation 4 undersells the coercer-in-control case.** It rates the harm "low... the
+message is innocuous." The harm isn't the message content — it's that the feature hands a coercer
+holding the unlocked device a low-cost, socially-plausible way to cut the victim off from contacts
+who might notice something's wrong, with a ready-made cover story ("I asked them not to message
+me"). That's the isolation pattern from coercive control generally, and it's a materially different
+threat actor than the rest of the duress cluster is modeled against — sustained physical access to
+both the phone and the person, not a one-time search. Warrants the same standard already applied to
+the neighboring Stealth Vault Recovery Ritual proposal: "needs real threat-modeling with people who'd
+use it under duress, not just internal design review."
+
+**3. App Store review risk — not addressed anywhere above.** A message whose content causes a second
+installation of the app to change its behavior (decline to encrypt) with no local user action is the
+shape of "remote behavior change invisible to the reviewer" that draws platform scrutiny, even with
+no server and no executable code involved. Needs a policy read before implementation.
+
+**4. Process gap.** This is coercion-adjacent language and mechanism from first principles.
+`Docs/Audit/OPEN_LIMITATIONS.md` Section E already queues duress/coercer vocabulary and overclaiming
+for one counsel pass rather than piecemeal review — this feature should go through that pass, not
+ship on an independent review cycle.
+
 ## Objections raised and withdrawn
 
 Four arguments against this feature were made at length on 2026-08-28 and do not survive: that the

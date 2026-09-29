@@ -11,6 +11,7 @@
 
 import Testing
 import Foundation
+import Combine
 import SwiftData
 import CryptoKit
 @testable import Occulta
@@ -1022,42 +1023,28 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 0) == [bystander])
     }
 
-    // Confirms the wiring, and the item 3 consolidation's design decision: deleting
-    // a contact needs no separate global-trustee purge step at all —
-    // ShardCustodyManager.purgeCustody(for:) no longer touches trustee state (see
-    // the shard-custody bug doc, item 3). globalTrusteeDepth lives on the contact's
-    // own row, which deleteContact soft-deletes, and every trustee read already
-    // excludes soft-deleted rows.
-    @Test func deleteContact_makesGlobalTrusteeDesignationUnreachable() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
-
+    /// RootView reconciles the current depth's backup-key pieces on this, so a deleted
+    /// trustee's piece shows as lost at once (bugs.md Bug 144).
+    @Test(.enabled(if: secureEnclaveAvailable()))
+    func deleteContact_announcesTheDeletion() throws {
         let schema = Schema([
             Group.self,
             Contact.Profile.self, Contact.Profile.PhoneNumber.self, Contact.Profile.EmailAddress.self,
             Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self, Contact.Profile.Key.self,
-            VaultEntry.self, CustodyShard.self, ReconstructShard.self,
-            PendingShardDistribute.self, PendingShardStatusUpdate.self, PotentiallyLostShard.self,
-            GlobalShardConfig.self
         ])
         let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let km        = TestKeyManager()
-        let security  = try Manager.Security(modelContainer: container, keyManager: km)
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm        = ContactManager(modelContainer: container, security: security)
-        let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
-        let vault     = VaultManager(modelContainer: container, keyManager: km)
-
-        let target = UUID().uuidString
-        let other  = UUID().uuidString
+        let target    = UUID().uuidString
         try self.insertPlainProfile(identifier: target, in: cm)
-        try self.insertPlainProfile(identifier: other, in: cm)
-        try cm.saveGlobalTrusteeDepth(selectedIDs: [target, other])
-        #expect(cm.isGlobalTrustee(target))
-        #expect(cm.isGlobalTrustee(other))
 
-        try cm.deleteContact(identifier: target, vaultManager: vault, shardCustodyManager: custody)
+        var announced: [String] = []
+        let subscription = cm.contactDeleted.sink { announced.append($0) }
+        defer { subscription.cancel() }
 
-        #expect(!cm.isGlobalTrustee(target), "a deleted contact's trustee designation must become unreachable")
-        #expect(cm.isGlobalTrustee(other), "an unrelated contact's designation must survive")
+        try cm.deleteContact(identifier: target)
+
+        #expect(announced == [target])
     }
 }
 

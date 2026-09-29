@@ -41,7 +41,7 @@ Everything in the plaintext envelope is **authenticated** by the AES-GCM tag —
 | `prekeyBatch` | Sender is out of prekeys and needs new ones from the recipient |
 | `shardOperations` | A vault shard is being distributed, replaced, or returned |
 | `custodyManifest` | A list of shard IDs the recipient should confirm |
-| `expectedShards` | A list of shard IDs the sender expects back |
+| `expectedShards` | Removed 2026-09-27 (`bugs.md` Bug 141); ignored when an older build sends it |
 | `identityChallenge` | An identity verification request |
 
 All of these travel inside the same AES-GCM operation — one key, one tag, one atomic decryption.

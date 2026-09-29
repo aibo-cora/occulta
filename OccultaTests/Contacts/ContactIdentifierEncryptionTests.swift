@@ -36,12 +36,9 @@ private func makeContainer() throws -> ModelContainer {
 @MainActor
 private func makeContactManager() throws -> ContactManager {
     let container  = try makeContainer()
-    let backend    = InMemoryLayerStoreBackend()
-    let layerStore = Manager.LayerStore(backend: backend)
     let security   = Manager.Security(
         modelContainer: container,
-        keyManager:     TestKeyManager(),
-        layerStore:     layerStore
+        keyManager:     TestKeyManager()
     )
     return ContactManager(modelContainer: container, security: security)
 }

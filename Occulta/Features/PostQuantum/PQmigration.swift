@@ -123,28 +123,41 @@ struct DatabaseMigration {
         try modelContext.save()
     }
 
-    /// One-time backfill for contacts predating the `globalTrusteeDepth` field —
-    /// every pre-existing contact starts nil after the lightweight schema migration
-    /// adds the column. Nil is not a valid steady state for this field (same invariant
-    /// as `visibleThroughDepth`); backfills to encrypted -1 (not a trustee).
+    /// Resets every live contact's `globalTrusteeDepth` to a sealed, fixed-width -1, the value
+    /// every row holds once Global Trustees are retired (`decisions.md`, "Backup recovery
+    /// lives only in the Vault tab; Global Trustees retired").
     ///
-    /// Idempotent: the predicate only matches remaining nil rows.
+    /// A trustee's stamp was the depth they were marked at, sealed under the local key, which
+    /// opens without Face ID: a contact marked at depth 2 told anyone running code as the app
+    /// that a depth 2 exists (`bugs.md` Bug 149). Also covers what the old backfill did: a
+    /// nil stamp (a contact predating the field) becomes -1.
     ///
-    /// Excludes soft-deleted rows (Bug 97) — see `migrateSafeContactVisibilityBackfill`'s
-    /// doc comment for why.
+    /// Rewrites only a stamp that is nil or decrypts to anything but a fixed-width -1. A row
+    /// already there is left byte-identical, so an ordinary launch rewrites nothing. A stamp
+    /// that doesn't decrypt is left alone too, as `migrateDepthFieldsToFixedWidth` does: a
+    /// readable -1 among a row's unreadable fields is the mixed-readability row Bug 97 rejected.
+    /// The local key is derived once for the pass. Soft-deleted rows are
+    /// `migrateScrubDeletedDepthStamps`'s (Bug 97). Runs on every launch and touches no depth.
     ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
-    static func migrateGlobalTrusteeDepthBackfill(modelContext: ModelContext) throws {
-        let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.globalTrusteeDepth == nil && $0.deletionToken == nil }
+    static func migrateRetireGlobalTrustees(modelContext: ModelContext) throws {
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
         )
-        let contacts = try modelContext.fetch(descriptor)
-        guard !contacts.isEmpty else { return }
+        guard !contacts.isEmpty,
+              let key = try Manager.Key().createHybridLocalEncryptionKey()
+        else { return }
 
+        var didChange = false
         for contact in contacts {
-            contact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
+            if let stamp = contact.globalTrusteeDepth {
+                guard let plain = stamp.decrypt(using: key) else { continue }
+                if stamp.count == DepthCodec.sealedSize, DepthCodec.decode(plain) == -1 { continue }
+            }
+            contact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt(using: key)
+            didChange = true
         }
-        try modelContext.save()
+        if didChange { try modelContext.save() }
     }
 
     /// One-time backfill for contacts predating the `originDepth` field — every
@@ -295,12 +308,10 @@ struct DatabaseMigration {
         return .converted(sealed)
     }
 
-    /// One-time consolidation onto a single trustee mechanism: reads any existing
-    /// `GlobalShardConfig.trusteeIDs` (the old depth-0-only global trustee list) and
-    /// stamps `globalTrusteeDepth = encrypt(0)` on each of those contacts, then wipes
-    /// the `GlobalShardConfig` rows. `globalTrusteeDepth` is now the sole mechanism for
-    /// global-trustee status at every depth, including depth 0 — see the shard-custody
-    /// bug doc, item 3.
+    /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
+    /// list. It used to stamp `globalTrusteeDepth = encrypt(0)` on those contacts first (the
+    /// shard-custody bug doc, item 3); with Global Trustees retired it stamps nothing, which
+    /// would otherwise re-mark them at every launch that still finds a row (`bugs.md` Bug 149).
     ///
     /// `GlobalShardConfig` stays declared in the schema for this release only, rather
     /// than being removed outright — dropping a whole `@Model` type relies entirely on
@@ -312,21 +323,10 @@ struct DatabaseMigration {
     /// Idempotent: once the rows are deleted, the guard below makes every subsequent
     /// run a no-op.
     ///
-    /// - Parameters:
-    ///   - modelContext: The SwiftData context to fetch and save contacts and config rows.
-    ///   - shardCustodyManager: Used only to decrypt the existing `GlobalShardConfig`
-    ///     payload — the shard-custody key is separate from the local DB key.
-    static func migrateGlobalShardConfigToPerContact(modelContext: ModelContext, shardCustodyManager: ShardCustodyManager) throws {
+    /// - Parameter modelContext: The SwiftData context to fetch and delete config rows.
+    static func migrateDeleteGlobalShardConfig(modelContext: ModelContext) throws {
         let rows = try modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
         guard !rows.isEmpty else { return }
-
-        if let payload = try shardCustodyManager.globalShardConfig() {
-            let trusteeIDs = Set(payload.trusteeIDs)
-            let contacts = try modelContext.fetch(FetchDescriptor<Contact.Profile>())
-            for contact in contacts where trusteeIDs.contains(contact.identifier) {
-                contact.globalTrusteeDepth = try DepthCodec.encode(0).encrypt()
-            }
-        }
 
         for row in rows { modelContext.delete(row) }
         try modelContext.save()
@@ -482,6 +482,38 @@ struct DatabaseMigration {
         }
 
         if didChange { try modelContext.save() }
+    }
+
+    /// Gives every `VaultEntry` with no `deletionToken` a live one (`bugs.md` Bug 133).
+    ///
+    /// The field was added after v1.10.3 (Bug 110). `addEntry` writes it for every new entry,
+    /// but entries created by v1.10.3 or earlier have none, and `VaultEntry.isOrphaned` reads
+    /// a missing token as orphaned. So on upgrade every one of them vanished from the vault
+    /// list, from backup export and from shard custody, and counted toward the orphan cap
+    /// whose oldest rows `orphanVaultEntries` hard-deletes.
+    ///
+    /// Live is the correct value, not a guess: every path that orphans an entry writes a
+    /// sealed token, so nil can only mean the row predates the field. A token that doesn't
+    /// decrypt is left alone and still reads as orphaned.
+    ///
+    /// Every pre-field row is rewritten in the same pass, so the change says nothing about
+    /// any one entry. Idempotent: after the first run no row has a nil token.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save vault entries.
+    static func migrateVaultEntryDeletionTokens(modelContext: ModelContext) throws {
+        let legacy = try modelContext.fetch(
+            FetchDescriptor<VaultEntry>(predicate: #Predicate { $0.deletionToken == nil })
+        )
+        guard !legacy.isEmpty else { return }
+
+        for entry in legacy {
+            // Sealed per row, so each gets its own nonce, as `addEntry` does.
+            guard let token = try VaultEntry.liveToken.encrypt() else {
+                throw MigrationError.hybridKeyUnavailable
+            }
+            entry.deletionToken = token
+        }
+        try modelContext.save()
     }
 
     /// The replacement for one depth stamp, or nil to leave the field byte-identical.

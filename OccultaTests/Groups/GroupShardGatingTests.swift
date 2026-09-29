@@ -110,7 +110,7 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
     // the same size.
     let value     = Data((0..<33).map { _ in UInt8.random(in: .min ... .max) })
     // Non-nil for the same reason the value is 33 bytes: production `.shard` attributes always
-    // bind an entryID (`prepareBEKShards` uses the distributionID, per-entry splits use the
+    // bind an entryID (`backup.prepareShards` uses the distributionID, per-entry splits use the
     // entry's id), and the filler is sized against that. A nil here made the fixture ~50 bytes
     // smaller than anything real, which is a fixture bug that shows up as a padding failure.
     let entryID   = UUID()
@@ -290,14 +290,12 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
 
 // MARK: - Filler must match a real op field for field
 
-/// The test above sends a `.distribute` op, and that is exactly why it did not catch Bug 94
-/// remedy 2's padding gap: `attestation` is only ever set on `.handback`. Tier padding
-/// equalises the op *count* per recipient and nothing equalises their encoded size, so every
-/// optional member a real op can carry has to be filled rather than omitted — an omitted
-/// `attestation` is ~260 bytes, and `Recipient.wrappedPayload.count` is cleartext in the
-/// bundle. This compares the shapes directly, so a field added to one and not the other fails
-/// here rather than surviving to a release.
-@Suite("Shard op padding — filler matches a real attested handback")
+/// The test above sends a `.distribute` op; this one covers `.handback` too, so a field
+/// added to one op kind and not matched in filler fails here rather than surviving to a
+/// release. Used to also compare against an `attestation` field — `bugs.md` Bug 125 removed
+/// that from the wire format entirely, so there is nothing left on `.handback` that
+/// `.distribute` doesn't already carry, and this suite shrinks accordingly.
+@Suite("Shard op padding — filler matches a real handback")
 struct ShardOperationPaddingTests {
 
     /// Signature and shard bytes are random, matching a real ECDSA signature and a real
@@ -307,39 +305,27 @@ struct ShardOperationPaddingTests {
     /// while `ContactManager.fillerShardOperation()`'s genuinely random bytes do sometimes
     /// escape — a one-sided bias inflating the delta below, not the two-sided noise its
     /// bound was sized for.
-    private func realAttestedHandback() -> OccultaBundle.ShardOperation {
-        let entryID = UUID()
+    private func realHandback() -> OccultaBundle.ShardOperation {
         let attribute = SignedAttribute(
             label: "vault-shard", value: Data((0..<33).map { _ in UInt8.random(in: .min ... .max) }),
-            category: .shard, signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }), entryID: entryID
+            category: .shard, signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }), entryID: UUID()
         )
-        let attestation = SignedAttribute(
-            label: "shard-attestation", value: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }),
-            category: .attestation, signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }), entryID: entryID
-        )
-        return OccultaBundle.ShardOperation(
-            kind: .handback, attribute: attribute, attestation: attestation
-        )
+        return OccultaBundle.ShardOperation(kind: .handback, attribute: attribute)
     }
 
     /// Sampled rather than measured once, and deliberately so. Spread comes from two
     /// sources, both bounded and neither scaling with content: `kind`'s spelling
     /// ("unsupported" against "handback", 3 bytes) and `JSONEncoder` escaping `/` as `\/`
-    /// in the base64 rendering of each op's two random byte blobs (signature + shard
-    /// value) — roughly 1 in 64 base64 characters, symmetric now that both sides use
-    /// random bytes. Measured empirically at 2000 simulated 200-sample runs: worst
-    /// observed delta was 18. The bound below leaves better than 2x headroom over that
-    /// while staying two orders of magnitude below the ~50-byte (missing entryID) and
-    /// ~260-byte (missing attestation) tells this test exists to catch — see
-    /// `fillerCarriesEveryOptionalMember` below.
-    @Test("A filler op encodes to the same size as a real attested handback")
-    func fillerMatchesAttestedHandback() throws {
+    /// in the base64 rendering of each op's random byte blobs — roughly 1 in 64 base64
+    /// characters, symmetric now that both sides use random bytes.
+    @Test("A filler op encodes to the same size as a real handback")
+    func fillerMatchesHandback() throws {
         let encoder = JSONEncoder()
         var worst = 0
         var worstPair = (real: 0, filler: 0)
 
         for _ in 0..<200 {
-            let real   = try encoder.encode(self.realAttestedHandback()).count
+            let real   = try encoder.encode(self.realHandback()).count
             let filler = try encoder.encode(ContactManager.fillerShardOperation()).count
             if abs(real - filler) > worst {
                 worst = abs(real - filler)
@@ -348,7 +334,7 @@ struct ShardOperationPaddingTests {
         }
 
         #expect(worst <= 32, """
-            A filler op must not be distinguishable from a real attested handback by size \
+            A filler op must not be distinguishable from a real handback by size \
             (worst of 200: real \(worstPair.real), filler \(worstPair.filler), delta \(worst)). \
             Recipient.wrappedPayload lengths are cleartext in the bundle, so a gap here names \
             the recipient who is genuinely mid-recovery.
@@ -356,17 +342,12 @@ struct ShardOperationPaddingTests {
     }
 
     /// The specific omission, pinned so it cannot come back by someone "tidying" a nil default.
-    @Test("Filler carries both an attestation and an entryID")
+    @Test("Filler carries an entryID")
     func fillerCarriesEveryOptionalMember() {
         let filler = ContactManager.fillerShardOperation()
 
-        #expect(filler.attestation != nil,
-                "a nil attestation is a ~260-byte tell against a real attested handback")
         #expect(filler.attribute?.entryID != nil,
                 "real .shard attributes always carry an entryID; nil here is a ~50-byte tell")
-        #expect(filler.attestation?.category == .attestation)
-        #expect(filler.attestation?.entryID == filler.attribute?.entryID,
-                "a real attestation's entryID matches its attribute's — filler must too")
     }
 }
 
