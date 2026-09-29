@@ -93,8 +93,9 @@ struct LegacyRotationArtefactTests {
     }
 
     /// Most devices never had a rotation interrupted, so absent items must not make the wipe
-    /// report failure.
-    @Test("With no leftovers, deletion still reports success")
+    /// report failure. Gated: without an Enclave, deleting an SE-token key reports neither
+    /// success nor not-found.
+    @Test("With no leftovers, deletion still reports success", .enabled(if: secureEnclaveAvailable()))
     func noLeftoversIsSuccess() {
         _ = Manager.Key().deleteLegacyRotationArtefacts()
 

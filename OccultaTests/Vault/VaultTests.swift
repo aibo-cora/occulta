@@ -356,7 +356,9 @@ private func makeContainer() throws -> ModelContainer {
         }
     }
 
-    @Test("fetchAllEntries returns inserted entries")
+    /// `fetchAllEntries` filters orphans with the ambient local key (Bug 110), so this and the
+    /// next test need a Secure Enclave.
+    @Test("fetchAllEntries returns inserted entries", .enabled(if: secureEnclaveAvailable()))
     func fetchAll() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
@@ -368,7 +370,7 @@ private func makeContainer() throws -> ModelContainer {
         #expect(entries.count == 2)
     }
 
-    @Test("deleteEntry removes the entry")
+    @Test("deleteEntry removes the entry", .enabled(if: secureEnclaveAvailable()))
     func deleteEntry() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())

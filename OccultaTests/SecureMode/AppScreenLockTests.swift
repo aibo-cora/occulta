@@ -7,13 +7,18 @@
 //  `sceneWillEnterForeground` itself needs a live `UIScene`, so these drive
 //  `lockIfGracePeriodExpired`, the whole of what it does to `phase`.
 //
-//  Uses `TestKeyManager` throughout; no Secure Enclave needed.
+//  Uses `TestKeyManager`, but `configurePIN` also seals `AppLayerConfig` fields with the ambient
+//  local key (`Data.encrypt()`), so the tests that configure a PIN need a Secure Enclave.
 //
 
 import Testing
 import Foundation
 import SwiftData
 @testable import Occulta
+
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
 
 @MainActor
 private func makeSecurity() throws -> Manager.Security {
@@ -40,7 +45,7 @@ struct AppScreenLockTests {
     /// 5-minute grace period, as `AppScreen.gracePeriod`.
     private static let grace: TimeInterval = 5 * 60
 
-    @Test("Past the grace period, the phase is .pinRequired before the scene becomes active")
+    @Test("Past the grace period, the phase is .pinRequired before the scene becomes active", .enabled(if: secureEnclaveAvailable()))
     @MainActor
     func locksPastGracePeriod() throws {
         let security = try makeSecurity()
@@ -55,7 +60,7 @@ struct AppScreenLockTests {
         #expect(screen.phase == .pinRequired)
     }
 
-    @Test("Within the grace period nothing changes; the unlock decision is left to activation")
+    @Test("Within the grace period nothing changes; the unlock decision is left to activation", .enabled(if: secureEnclaveAvailable()))
     @MainActor
     func staysUnlockedWithinGracePeriod() throws {
         let security = try makeSecurity()
@@ -69,7 +74,7 @@ struct AppScreenLockTests {
         #expect(screen.phase == .unlocked)
     }
 
-    @Test("No background entry recorded (an inactive-only interruption) never locks")
+    @Test("No background entry recorded (an inactive-only interruption) never locks", .enabled(if: secureEnclaveAvailable()))
     @MainActor
     func noBackgroundEntryNeverLocks() throws {
         let security = try makeSecurity()
@@ -97,7 +102,7 @@ struct AppScreenLockTests {
         #expect(screen.phase == .unlocked)
     }
 
-    @Test("With the PIN gate lowered, a long background never locks")
+    @Test("With the PIN gate lowered, a long background never locks", .enabled(if: secureEnclaveAvailable()))
     @MainActor
     func loweredGateNeverLocks() throws {
         let security = try makeSecurity()
