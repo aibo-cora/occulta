@@ -1073,7 +1073,7 @@ extension VaultManager {
 
         enum SetupState: Equatable {
             case notSetup
-            case waitingForConfirmations(confirmed: Int, threshold: Int)
+            case waitingForConfirmations(confirmed: Int, total: Int, threshold: Int)
             case ready
         }
 
@@ -1082,9 +1082,11 @@ extension VaultManager {
         func setupState(vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext) -> SetupState {
             guard let meta = try? self.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) else { return .notSetup }
             let confirmed = meta.shards.filter { $0.status == .confirmed }.count
+            // Trustees who still hold or will receive a piece; a lost one can't confirm.
+            let total     = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
             return confirmed >= meta.threshold
                 ? .ready
-                : .waitingForConfirmations(confirmed: confirmed, threshold: meta.threshold)
+                : .waitingForConfirmations(confirmed: confirmed, total: total, threshold: meta.threshold)
         }
 
         /// `currentDepth`'s backup key shard distribution metadata, or `nil` if that

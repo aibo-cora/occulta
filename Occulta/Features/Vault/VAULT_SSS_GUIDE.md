@@ -807,7 +807,7 @@ her original SE key.
 ```
 enum BEKSetupState: Equatable {
     case notSetup                                          // no BEK in SwiftData
-    case waitingForConfirmations(confirmed: Int, threshold: Int)  // BEK exists, below threshold
+    case waitingForConfirmations(confirmed: Int, total: Int, threshold: Int)  // BEK exists, below threshold
     case ready                                             // confirmed ≥ threshold
 }
 ```
@@ -818,13 +818,15 @@ State derivation:
 bekSetupState:
   → try bekShardMetadata()          // decrypt BackupEncryptionKey row
   → nil                  → .notSetup
-  → meta.confirmed < k   → .waitingForConfirmations(confirmed, threshold)
+  → meta.confirmed < k   → .waitingForConfirmations(confirmed, total, threshold)
   → meta.confirmed ≥ k   → .ready
 ```
 
 `confirmed` counts only `.confirmed` shards (not `.pending`). A BEK shard is
 confirmed when the trustee's `custodyManifest` includes it — the same manifest
-mechanism used for PEK shards.
+mechanism used for PEK shards. `total` counts `.pending` and `.confirmed` shards:
+the trustees who can still confirm. The Vault tab shows "1 of 3 trustees
+confirmed · 2 needed" (`bugs.md` Bug 151).
 
 **Why `.notSetup` is critical:** an unset BEK means any exported backup file is
 undecryptable without Alice's original SE key. If that device is lost, the

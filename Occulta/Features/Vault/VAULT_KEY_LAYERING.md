@@ -1554,6 +1554,7 @@ Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical 
 | 146 | Upgrading from v1.10.3 with a distributed backup key: migration fails at every unlock (Bug 145), and opening Backup Recovery generates a new key that can overwrite the unmigrated one | fixed 2026-09-28 by Bug 145's remedy; test devices that already ran this branch are not repaired (`bugs.md` Bug 146) |
 | 149 | A contact marked as a Global Trustee carries the depth it was marked at, sealed under the local key and readable without Face ID | fixed 2026-09-29 — Global Trustees retired; every live stamp reset to `-1` (`bugs.md` Bug 149) |
 | 150 | Backup Recovery opened on a locked vault from Settings: queueing failed with "Vault locked", and a locked vault read as "no distribution" | fixed 2026-09-29 — Settings path removed; the screen shows a locked state (`bugs.md` Bug 150) |
+| 151 | The Backup Recovery row read "0 of 2 trustees confirmed" for three trustees, threshold two | fixed 2026-09-29 — the row shows confirmed of total and the threshold needed (`bugs.md` Bug 151) |
 
 **Vault entries' own bugs, added 2026-09-10/11 — this document is S8's home even though S8 shipped
 outside this container's original array design (see the header, §7, item 11):**

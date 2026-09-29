@@ -385,3 +385,33 @@ struct BackupReconcileTests {
         #expect(try owner.queued(for: t[0]).isEmpty)
     }
 }
+
+// MARK: - Setup state: the Vault tab's Backup Recovery row
+
+@Suite("Backup-key setup state — confirmed of total, and the threshold")
+@MainActor
+struct BackupSetupStateTests {
+
+    @Test("Three trustees, threshold two: counts all three, needs two", .enabled(if: secureEnclaveAvailable()))
+    func countsEveryTrustee() throws {
+        let owner = try Owner()
+        let t = trustees(3)
+        _ = try owner.vault.prepareBackupShards(threshold: 2, recipients: t, currentDepth: 0)
+        #expect(owner.vault.backupSetupState(currentDepth: 0) == .waitingForConfirmations(confirmed: 0, total: 3, threshold: 2))
+
+        try owner.vault.setBackupShardStatuses([try owner.pieceID(of: t[0]): .confirmed], currentDepth: 0)
+        #expect(owner.vault.backupSetupState(currentDepth: 0) == .waitingForConfirmations(confirmed: 1, total: 3, threshold: 2))
+
+        try owner.vault.setBackupShardStatuses([try owner.pieceID(of: t[1]): .confirmed], currentDepth: 0)
+        #expect(owner.vault.backupSetupState(currentDepth: 0) == .ready)
+    }
+
+    @Test("A lost piece leaves the total", .enabled(if: secureEnclaveAvailable()))
+    func lostPieceLeavesTotal() throws {
+        let owner = try Owner()
+        let t = trustees(3)
+        _ = try owner.vault.prepareBackupShards(threshold: 2, recipients: t, currentDepth: 0)
+        try owner.vault.setBackupShardStatuses([try owner.pieceID(of: t[2]): .lost], currentDepth: 0)
+        #expect(owner.vault.backupSetupState(currentDepth: 0) == .waitingForConfirmations(confirmed: 0, total: 2, threshold: 2))
+    }
+}

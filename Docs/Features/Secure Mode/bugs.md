@@ -12703,3 +12703,32 @@ The button's decision is `VaultShardSetup.nextStep`, which checks the lock befor
 the recipients (`DistributionStepTests`, added in the review follow-up of 2026-09-29). The rest is view code: a device
 check (open the screen, lock the phone or wait out the timeout with the education sheet open, unlock again).
 
+## Bug 151 — The Backup Recovery row reads "0 of 2 trustees confirmed" for three trustees with a threshold of two
+
+**Status:** Fixed 2026-09-29. Found testing the backup flow on a device.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (misleading wording; no data or security effect)
+
+### What happens
+
+`Backup.setupState` returned `.waitingForConfirmations(confirmed:threshold:)`, and the Vault tab's `VaultBackupRow`
+rendered it as "`confirmed` of `threshold` trustees confirmed". The denominator is the number of confirmations export
+needs, not the number of trustees, so a split among three trustees with a threshold of two read as if two trustees
+had been chosen.
+
+### Fix
+
+`waitingForConfirmations` carries `total` as well: the pieces still `.pending` or `.confirmed`, the same set the setup
+screen treats as active. A lost piece can't confirm, so it leaves the total. The row reads
+"`confirmed` of `total` trustees confirmed · `threshold` needed", for example "0 of 3 trustees confirmed · 2 needed".
+
+No leak: the row shows only while the vault is unlocked, at the current depth, and the setup screen already shows
+the trustee count and threshold there.
+
+### Guard
+
+`BackupSetupStateTests` (`BackupPieceReconcileTests.swift`): three trustees, threshold two, counts 0 and 1 confirmed
+of 3, then `.ready` at 2; a lost piece drops the total to 2.
+

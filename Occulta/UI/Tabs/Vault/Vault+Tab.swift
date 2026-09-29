@@ -569,8 +569,8 @@ private struct VaultBackupRow: View {
         switch state {
         case .notSetup:
             return "Set up to enable export"
-        case .waitingForConfirmations(let confirmed, let threshold):
-            return "\(confirmed) of \(threshold) trustees confirmed"
+        case .waitingForConfirmations(let confirmed, let total, let threshold):
+            return "\(confirmed) of \(total) trustees confirmed · \(threshold) needed"
         case .ready:
             return "Ready to export"
         }
