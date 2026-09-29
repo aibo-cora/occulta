@@ -11557,7 +11557,7 @@ fail-closed reading of nil.
 device. Found checking which pushed vault screens react to a lock, after the restore screen's picker
 case (`decisions.md`, "Restore discoverability", 2026-09-25 note).
 
-**Changed 2026-09-29 (Bug 149):** the screen no longer navigates back on lock. It clears everything
+**Changed 2026-09-29 (Bug 150):** the screen no longer navigates back on lock. It clears everything
 seeded from the vault and shows a locked state with Unlock Vault in place; navigating back could be
 ignored while the education sheet was up, and the screen could also be opened already locked.
 
@@ -12616,7 +12616,10 @@ screen with no sheet before it, and the message after the PIN.
 
 ---
 
-## Bug 148 — A contact marked as a Global Trustee carries the depth it was marked at, readable without Face ID
+## Bug 149 — A contact marked as a Global Trustee carries the depth it was marked at, readable without Face ID
+
+**Renumbered 2026-09-29:** filed as Bug 148 by mistake, colliding with the warm-return lock entry above
+(`d88ba22`); commit `1e8d949`'s message cites the old number.
 
 **Status:** Fixed 2026-09-29 by retiring Global Trustees (`decisions.md`, "Backup recovery
 lives only in the Vault tab; Global Trustees retired"). Found while costing that retirement.
@@ -12652,9 +12655,17 @@ deleted without re-marking anyone.
 
 Full suite after the change: 919 tests, 913 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
 
+**Review follow-up, 2026-09-29:** the retire pass first rewrote every live stamp as if readable, so a stamp that
+doesn't decrypt would have become a readable -1 among unreadable fields (Bug 97's pattern). It now leaves an
+undecryptable stamp alone, as the fixed-width pass does, and derives the local key once for the pass instead of
+once per contact. Guard: `leavesUndecryptableStampAlone`. Full suite: 924 tests, 918 passed, 0 failed, 6 skipped.
+
 ---
 
-## Bug 149 — Backup Recovery opens on a locked vault from Settings; queueing fails with "Vault locked", and a locked vault reads as "no distribution"
+## Bug 150 — Backup Recovery opens on a locked vault from Settings; queueing fails with "Vault locked", and a locked vault reads as "no distribution"
+
+**Renumbered 2026-09-29:** filed as Bug 149, shifted when the Global Trustees entry moved to 149; commit
+`1e8d949`'s message cites the old number.
 
 **Status:** Fixed 2026-09-29. Found testing the backup flow on a device.
 
@@ -12688,6 +12699,7 @@ the sheet at once could be ignored.
 
 ### Guard
 
-View code, not unit-tested: a device check (open the screen, lock the phone or wait out the timeout with the
-education sheet open, unlock again).
+The button's decision is `VaultShardSetup.nextStep`, which checks the lock before reading the distribution or
+the recipients (`DistributionStepTests`, added in the review follow-up of 2026-09-29). The rest is view code: a device
+check (open the screen, lock the phone or wait out the timeout with the education sheet open, unlock again).
 

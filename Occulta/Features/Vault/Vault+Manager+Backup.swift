@@ -1603,6 +1603,10 @@ extension VaultManager {
                 guard let status = Self.status(fromTag: bytes[32]) else { return nil }
                 let trustee: TrusteeTag?
                 if version == 1 {
+                    // Format 1 could only encode an identifier that parsed as a UUID, and the app
+                    // only ever creates those with `UUID().uuidString`, which is uppercase, as
+                    // `uuidString` is here. (Imported identifiers carry a `:ABPerson` suffix and
+                    // stored ones are encrypted base64, so neither reached format 1.)
                     trustee = Self.uuid(fromBytes: Array(bytes[0..<16])).map { TrusteeTag(identifier: $0.uuidString) }
                 } else {
                     trustee = TrusteeTag(bytes: Data(bytes[0..<16]))

@@ -4,7 +4,7 @@
 //
 //  Global Trustees are retired (`decisions.md`, "Backup recovery lives only in the Vault tab;
 //  Global Trustees retired"). A trustee's `globalTrusteeDepth` held the depth they were marked
-//  at, readable without Face ID (`bugs.md` Bug 148), so `migrateRetireGlobalTrustees` resets
+//  at, readable without Face ID (`bugs.md` Bug 149), so `migrateRetireGlobalTrustees` resets
 //  every live contact's stamp to a sealed, fixed-width -1, and `migrateDeleteGlobalShardConfig`
 //  deletes the old depth-0 list without stamping anything.
 //
@@ -100,6 +100,18 @@ struct GlobalTrusteeRetirementTests {
 
         #expect(try stamp(of: benign, in: container) == before)
         #expect(try stamp(of: marked, in: container) == afterFirst, "an ordinary launch rewrites nothing")
+    }
+
+    /// A readable -1 among a row's unreadable fields is the mixed-readability row Bug 97 rejected.
+    @Test("A stamp that doesn't decrypt is left byte-identical")
+    func leavesUndecryptableStampAlone() throws {
+        let container = try makeContainer()
+        let unreadable = Data.randomBytes(DepthCodec.sealedSize)
+        let id = try insertContact(stamp: unreadable, in: container)
+
+        try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: ModelContext(container))
+
+        #expect(try stamp(of: id, in: container) == unreadable)
     }
 
     /// Soft-deleted rows are `migrateScrubDeletedDepthStamps`'s (Bug 97).

@@ -129,24 +129,33 @@ struct DatabaseMigration {
     ///
     /// A trustee's stamp was the depth they were marked at, sealed under the local key, which
     /// opens without Face ID: a contact marked at depth 2 told anyone running code as the app
-    /// that a depth 2 exists (`bugs.md` Bug 148). Also covers what the old backfill did: a
+    /// that a depth 2 exists (`bugs.md` Bug 149). Also covers what the old backfill did: a
     /// nil stamp (a contact predating the field) becomes -1.
     ///
-    /// A row already holding a fixed-width -1 is left byte-identical (`scrubbedStamp`), so an
-    /// ordinary launch rewrites nothing; runs on every launch and touches no depth.
-    /// Soft-deleted rows are `migrateScrubDeletedDepthStamps`'s (Bug 97).
+    /// Rewrites only a stamp that is nil or decrypts to anything but a fixed-width -1. A row
+    /// already there is left byte-identical, so an ordinary launch rewrites nothing. A stamp
+    /// that doesn't decrypt is left alone too, as `migrateDepthFieldsToFixedWidth` does: a
+    /// readable -1 among a row's unreadable fields is the mixed-readability row Bug 97 rejected.
+    /// The local key is derived once for the pass. Soft-deleted rows are
+    /// `migrateScrubDeletedDepthStamps`'s (Bug 97). Runs on every launch and touches no depth.
     ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateRetireGlobalTrustees(modelContext: ModelContext) throws {
         let contacts = try modelContext.fetch(
             FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
         )
+        guard !contacts.isEmpty,
+              let key = try Manager.Key().createHybridLocalEncryptionKey()
+        else { return }
+
         var didChange = false
         for contact in contacts {
-            if let scrubbed = try Self.scrubbedStamp(contact.globalTrusteeDepth, benign: -1, rowIsReadable: true) {
-                contact.globalTrusteeDepth = scrubbed
-                didChange = true
+            if let stamp = contact.globalTrusteeDepth {
+                guard let plain = stamp.decrypt(using: key) else { continue }
+                if stamp.count == DepthCodec.sealedSize, DepthCodec.decode(plain) == -1 { continue }
             }
+            contact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt(using: key)
+            didChange = true
         }
         if didChange { try modelContext.save() }
     }
@@ -302,7 +311,7 @@ struct DatabaseMigration {
     /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
     /// list. It used to stamp `globalTrusteeDepth = encrypt(0)` on those contacts first (the
     /// shard-custody bug doc, item 3); with Global Trustees retired it stamps nothing, which
-    /// would otherwise re-mark them at every launch that still finds a row (`bugs.md` Bug 148).
+    /// would otherwise re-mark them at every launch that still finds a row (`bugs.md` Bug 149).
     ///
     /// `GlobalShardConfig` stays declared in the schema for this release only, rather
     /// than being removed outright — dropping a whole `@Model` type relies entirely on

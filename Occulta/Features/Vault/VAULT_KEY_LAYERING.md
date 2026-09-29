@@ -1552,8 +1552,8 @@ Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical 
 | 144 | A trustee left out of a redistribution without being deselected — hidden at the depth, no longer ML-KEM-capable, or deleted — keeps a valid backup-key piece: no new key is split | fixed 2026-09-28 — one "drops a trustee" rule in `ShardCustodyManager`, any status, real recipients; reconcile doesn't re-send while a trustee is lost (`bugs.md` Bug 144) |
 | 145 | Distributing the backup key fails for every real trustee: the record codec stores the contact identifier as a UUID, and real identifiers are encrypted base64 | fixed 2026-09-28 — records store a 16-byte `TrusteeTag` of the identifier (`bugs.md` Bug 145) |
 | 146 | Upgrading from v1.10.3 with a distributed backup key: migration fails at every unlock (Bug 145), and opening Backup Recovery generates a new key that can overwrite the unmigrated one | fixed 2026-09-28 by Bug 145's remedy; test devices that already ran this branch are not repaired (`bugs.md` Bug 146) |
-| 148 | A contact marked as a Global Trustee carries the depth it was marked at, sealed under the local key and readable without Face ID | fixed 2026-09-29 — Global Trustees retired; every live stamp reset to `-1` (`bugs.md` Bug 148) |
-| 149 | Backup Recovery opened on a locked vault from Settings: queueing failed with "Vault locked", and a locked vault read as "no distribution" | fixed 2026-09-29 — Settings path removed; the screen shows a locked state (`bugs.md` Bug 149) |
+| 149 | A contact marked as a Global Trustee carries the depth it was marked at, sealed under the local key and readable without Face ID | fixed 2026-09-29 — Global Trustees retired; every live stamp reset to `-1` (`bugs.md` Bug 149) |
+| 150 | Backup Recovery opened on a locked vault from Settings: queueing failed with "Vault locked", and a locked vault read as "no distribution" | fixed 2026-09-29 — Settings path removed; the screen shows a locked state (`bugs.md` Bug 150) |
 
 **Vault entries' own bugs, added 2026-09-10/11 — this document is S8's home even though S8 shipped
 outside this container's original array design (see the header, §7, item 11):**

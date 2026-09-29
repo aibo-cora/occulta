@@ -91,7 +91,7 @@ extension Contact {
         /// Vault tab; Global Trustees retired"). Always an encrypted -1: written at creation
         /// and deletion, and every live row reset to it by
         /// `DatabaseMigration.migrateRetireGlobalTrustees`, because a trustee's value was the
-        /// depth it was marked at, readable without Face ID (`bugs.md` Bug 148). Nothing reads
+        /// depth it was marked at, readable without Face ID (`bugs.md` Bug 149). Nothing reads
         /// it; it leaves the schema next release.
         var globalTrusteeDepth: Data? = nil
 

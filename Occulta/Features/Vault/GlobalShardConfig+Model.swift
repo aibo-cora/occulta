@@ -5,7 +5,7 @@
 //  ORPHANED as of item 3's consolidation (see the shard-custody bug doc), and Global
 //  Trustees are now retired entirely (`decisions.md`). No app code reads or writes this
 //  model; `DatabaseMigration.migrateDeleteGlobalShardConfig` deletes any remaining row
-//  without stamping anything (`bugs.md` Bug 148). Kept declared in the schema for one release only, to avoid betting on
+//  without stamping anything (`bugs.md` Bug 149). Kept declared in the schema for one release only, to avoid betting on
 //  SwiftData's untested automatic entity-removal migration with real user data —
 //  slated for outright removal once that migration has had time to run in the wild.
 //

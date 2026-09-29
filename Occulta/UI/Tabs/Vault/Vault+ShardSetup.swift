@@ -46,7 +46,7 @@ struct VaultShardSetup: View {
 
     var body: some View {
         // Only while unlocked: everything here is sealed with the vault key, and a locked vault
-        // would otherwise read as "no distribution yet" (`bugs.md` Bug 149).
+        // would otherwise read as "no distribution yet" (`bugs.md` Bug 150).
         SwiftUI.Group {
             if self.vault.isUnlocked {
                 self.unlockedContent
@@ -74,7 +74,7 @@ struct VaultShardSetup: View {
             // Locked while this screen is visible: drop everything seeded from the vault-sealed
             // distribution and show the locked state in place. Face ID is needed to continue.
             // Staying, rather than dismissing, also works while the education sheet is up,
-            // where a dismiss could be ignored (`bugs.md` Bug 149; replaces Bug 134's navigate-back).
+            // where a dismiss could be ignored (`bugs.md` Bug 150; replaces Bug 134's navigate-back).
             self.selectedIDs              = []
             self.snapshotIDs              = []
             self.threshold                = 2
@@ -86,9 +86,11 @@ struct VaultShardSetup: View {
             self.showingEducation         = false
         }
         .sheet(isPresented: self.$showingEducation) {
+            // One contact pass for both numbers: `recipientIDs` fetches and decrypts every contact.
+            let recipientCount = self.recipientIDs.count
             BackupTrusteesEducationSheet(
-                threshold:    Self.effectiveThreshold(self.threshold, recipients: self.recipientIDs.count),
-                trusteeCount: self.recipientIDs.count,
+                threshold:    Self.effectiveThreshold(self.threshold, recipients: recipientCount),
+                trusteeCount: recipientCount,
                 onContinue:   { self.commitDistribution() },
                 onCancel:     {}
             )
@@ -596,20 +598,44 @@ struct VaultShardSetup: View {
 
     private func markForDistribution() {
         self.vault.extendSession()
-        // A depth's first distribution explains trustees before anything is queued.
-        if self.fetchDistributionMeta() == nil {
-            self.showingEducation = true
-            return
+        let step = Self.nextStep(
+            isUnlocked:      self.vault.isUnlocked,
+            hasDistribution: self.fetchDistributionMeta() != nil,
+            // The real recipients, not `selectedIDs`: a trustee hidden at this depth or without
+            // ML-KEM material stays selected but can't be sent a piece (Bug 144).
+            dropsTrustee:    self.shardCustodyManager?.distributionDropsTrustee(
+                recipients: self.recipientIDs, currentDepth: self.security.currentDepth, vaultManager: self.vault
+            ) == true
+        )
+        switch step {
+        case .unlock:         self.vault.whenUnlocked {}
+        case .explain:        self.showingEducation = true
+        case .confirmRemoval: self.confirmingKeyReplacement = true
+        case .queue:          self.commitDistribution()
         }
-        // The real recipients, not `selectedIDs`: a trustee hidden at this depth or without
-        // ML-KEM material stays selected but can't be sent a piece (Bug 144).
-        if self.shardCustodyManager?.distributionDropsTrustee(
-            recipients: self.recipientIDs, currentDepth: self.security.currentDepth, vaultManager: self.vault
-        ) == true {
-            self.confirmingKeyReplacement = true
-            return
-        }
-        self.commitDistribution()
+    }
+
+    /// What the button does next.
+    enum DistributionStep: Equatable {
+        /// The vault is locked: unlock first, and decide nothing else.
+        case unlock
+        /// This depth has no distribution yet: show the education sheet first.
+        case explain
+        /// The distribution leaves someone out, which replaces the key: confirm first.
+        case confirmRemoval
+        /// Queue the pieces.
+        case queue
+    }
+
+    /// Decides the button's next step. Locked is checked first, and the other two inputs are
+    /// only read after it: a locked vault reads as "no distribution" and would otherwise open
+    /// the education sheet over an existing distribution (`bugs.md` Bug 150).
+    static func nextStep(
+        isUnlocked: Bool, hasDistribution: @autoclosure () -> Bool, dropsTrustee: @autoclosure () -> Bool
+    ) -> DistributionStep {
+        guard isUnlocked else { return .unlock }
+        guard hasDistribution() else { return .explain }
+        return dropsTrustee() ? .confirmRemoval : .queue
     }
 
     /// The threshold a distribution uses: at least 2, at most the number of recipients.

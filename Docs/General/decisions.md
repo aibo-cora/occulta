@@ -798,12 +798,12 @@ burn-on-open.
 
 ## Backup recovery lives only in the Vault tab; Global Trustees retired
 
-**Status:** Decided and built 2026-09-29 (`bugs.md` Bugs 148, 149).
+**Status:** Decided and built 2026-09-29 (`bugs.md` Bugs 149, 150).
 
 **Context:** Settings › Vault Recovery duplicated the Vault tab (the backup key's status, staleness, erosion and a
-link to the same setup screen) and was the one path to that screen with the vault locked (Bug 149). It also held
+link to the same setup screen) and was the one path to that screen with the vault locked (Bug 150). It also held
 Global Trustees, a suggestion list whose stored value named the depth a trustee was marked at, readable without
-Face ID (Bug 148). A mockup of the change was reviewed first (the "Vault Backup Consolidation" canvas).
+Face ID (Bug 149). A mockup of the change was reviewed first (the "Vault Backup Consolidation" canvas).
 
 **Decision:**
 - Settings loses its Vault & Recovery section; `VaultRecoverySettings` is deleted. The Vault tab's Backup Recovery
