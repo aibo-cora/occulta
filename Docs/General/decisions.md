@@ -793,3 +793,33 @@ burn until display, which would allow a re-queue, was not taken: on the group pa
 burn-on-open.
 
 **Full reasoning:** `bugs.md` Bug 148, Resolution item 2.
+
+---
+
+## Backup recovery lives only in the Vault tab; Global Trustees retired
+
+**Status:** Decided and built 2026-09-29 (`bugs.md` Bugs 148, 149).
+
+**Context:** Settings › Vault Recovery duplicated the Vault tab (the backup key's status, staleness, erosion and a
+link to the same setup screen) and was the one path to that screen with the vault locked (Bug 149). It also held
+Global Trustees, a suggestion list whose stored value named the depth a trustee was marked at, readable without
+Face ID (Bug 148). A mockup of the change was reviewed first (the "Vault Backup Consolidation" canvas).
+
+**Decision:**
+- Settings loses its Vault & Recovery section; `VaultRecoverySettings` is deleted. The Vault tab's Backup Recovery
+  row gains Bug 143's hint as a second line while confirmations are outstanding ("Confirms arrive
+  with direct messages", shortened after device testing showed the first wording clipped).
+- Global Trustees are removed: the screen, the helpers, the pre-selection and the GLOBAL badge. A first
+  distribution starts with nothing selected, at every depth.
+- Every live contact's `globalTrusteeDepth` is reset to a sealed `-1` at launch; the old `GlobalShardConfig` rows
+  are deleted without stamping. The field, with `shardDistributionEncrypted` and `PendingShardStatusUpdate`,
+  leaves the schema next release.
+- The Backup Recovery screen shows a locked state with Unlock Vault instead of navigating back on lock (replacing
+  Bug 134's behaviour); nothing is seeded or decided while locked.
+
+**Why:** one place for backup recovery, reachable only while unlocked; no stored per-contact value that names a
+depth; a locked screen that can't be mistaken for an empty one.
+
+**Consequences:** no pre-selected trustees; a duress layer has no separate suggestion list either. Not unit-tested:
+the locked state and the Vault tab hint are view code, on the device-check list.
+

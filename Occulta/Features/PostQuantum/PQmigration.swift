@@ -123,28 +123,32 @@ struct DatabaseMigration {
         try modelContext.save()
     }
 
-    /// One-time backfill for contacts predating the `globalTrusteeDepth` field —
-    /// every pre-existing contact starts nil after the lightweight schema migration
-    /// adds the column. Nil is not a valid steady state for this field (same invariant
-    /// as `visibleThroughDepth`); backfills to encrypted -1 (not a trustee).
+    /// Resets every live contact's `globalTrusteeDepth` to a sealed, fixed-width -1, the value
+    /// every row holds once Global Trustees are retired (`decisions.md`, "Backup recovery
+    /// lives only in the Vault tab; Global Trustees retired").
     ///
-    /// Idempotent: the predicate only matches remaining nil rows.
+    /// A trustee's stamp was the depth they were marked at, sealed under the local key, which
+    /// opens without Face ID: a contact marked at depth 2 told anyone running code as the app
+    /// that a depth 2 exists (`bugs.md` Bug 148). Also covers what the old backfill did: a
+    /// nil stamp (a contact predating the field) becomes -1.
     ///
-    /// Excludes soft-deleted rows (Bug 97) — see `migrateSafeContactVisibilityBackfill`'s
-    /// doc comment for why.
+    /// A row already holding a fixed-width -1 is left byte-identical (`scrubbedStamp`), so an
+    /// ordinary launch rewrites nothing; runs on every launch and touches no depth.
+    /// Soft-deleted rows are `migrateScrubDeletedDepthStamps`'s (Bug 97).
     ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
-    static func migrateGlobalTrusteeDepthBackfill(modelContext: ModelContext) throws {
-        let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.globalTrusteeDepth == nil && $0.deletionToken == nil }
+    static func migrateRetireGlobalTrustees(modelContext: ModelContext) throws {
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
         )
-        let contacts = try modelContext.fetch(descriptor)
-        guard !contacts.isEmpty else { return }
-
+        var didChange = false
         for contact in contacts {
-            contact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
+            if let scrubbed = try Self.scrubbedStamp(contact.globalTrusteeDepth, benign: -1, rowIsReadable: true) {
+                contact.globalTrusteeDepth = scrubbed
+                didChange = true
+            }
         }
-        try modelContext.save()
+        if didChange { try modelContext.save() }
     }
 
     /// One-time backfill for contacts predating the `originDepth` field — every
@@ -295,12 +299,10 @@ struct DatabaseMigration {
         return .converted(sealed)
     }
 
-    /// One-time consolidation onto a single trustee mechanism: reads any existing
-    /// `GlobalShardConfig.trusteeIDs` (the old depth-0-only global trustee list) and
-    /// stamps `globalTrusteeDepth = encrypt(0)` on each of those contacts, then wipes
-    /// the `GlobalShardConfig` rows. `globalTrusteeDepth` is now the sole mechanism for
-    /// global-trustee status at every depth, including depth 0 — see the shard-custody
-    /// bug doc, item 3.
+    /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
+    /// list. It used to stamp `globalTrusteeDepth = encrypt(0)` on those contacts first (the
+    /// shard-custody bug doc, item 3); with Global Trustees retired it stamps nothing, which
+    /// would otherwise re-mark them at every launch that still finds a row (`bugs.md` Bug 148).
     ///
     /// `GlobalShardConfig` stays declared in the schema for this release only, rather
     /// than being removed outright — dropping a whole `@Model` type relies entirely on
@@ -312,21 +314,10 @@ struct DatabaseMigration {
     /// Idempotent: once the rows are deleted, the guard below makes every subsequent
     /// run a no-op.
     ///
-    /// - Parameters:
-    ///   - modelContext: The SwiftData context to fetch and save contacts and config rows.
-    ///   - shardCustodyManager: Used only to decrypt the existing `GlobalShardConfig`
-    ///     payload — the shard-custody key is separate from the local DB key.
-    static func migrateGlobalShardConfigToPerContact(modelContext: ModelContext, shardCustodyManager: ShardCustodyManager) throws {
+    /// - Parameter modelContext: The SwiftData context to fetch and delete config rows.
+    static func migrateDeleteGlobalShardConfig(modelContext: ModelContext) throws {
         let rows = try modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
         guard !rows.isEmpty else { return }
-
-        if let payload = try shardCustodyManager.globalShardConfig() {
-            let trusteeIDs = Set(payload.trusteeIDs)
-            let contacts = try modelContext.fetch(FetchDescriptor<Contact.Profile>())
-            for contact in contacts where trusteeIDs.contains(contact.identifier) {
-                contact.globalTrusteeDepth = try DepthCodec.encode(0).encrypt()
-            }
-        }
 
         for row in rows { modelContext.delete(row) }
         try modelContext.save()

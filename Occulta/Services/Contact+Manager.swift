@@ -195,8 +195,8 @@ class ContactManager {
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
             newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
-            // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
-            // until explicitly marked one via VaultGlobalTrustees.
+            // globalTrusteeDepth is always an encrypted -1: Global Trustees are retired,
+            // and every row keeps the same benign stamp until the field leaves the schema.
             newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
@@ -383,8 +383,8 @@ class ContactManager {
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
             newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
-            // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
-            // until explicitly marked one via VaultGlobalTrustees.
+            // globalTrusteeDepth is always an encrypted -1: Global Trustees are retired,
+            // and every row keeps the same benign stamp until the field leaves the schema.
             newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),

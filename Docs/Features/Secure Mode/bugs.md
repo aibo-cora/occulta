@@ -11557,6 +11557,10 @@ fail-closed reading of nil.
 device. Found checking which pushed vault screens react to a lock, after the restore screen's picker
 case (`decisions.md`, "Restore discoverability", 2026-09-25 note).
 
+**Changed 2026-09-29 (Bug 149):** the screen no longer navigates back on lock. It clears everything
+seeded from the vault and shows a locked state with Unlock Vault in place; navigating back could be
+ignored while the education sheet was up, and the screen could also be opened already locked.
+
 **Target:** `v1.11.0`.
 
 ### Severity: Low (vault-key data visible after lock; a silent failure)
@@ -12609,3 +12613,81 @@ changes. `sceneWillEnterForeground` needs a live `UIScene`, so the call from it 
 
 Still to do on a device: background for more than 5 minutes, open a `.occ` from Files or Messages; expect the PIN
 screen with no sheet before it, and the message after the PIN.
+
+---
+
+## Bug 148 — A contact marked as a Global Trustee carries the depth it was marked at, readable without Face ID
+
+**Status:** Fixed 2026-09-29 by retiring Global Trustees (`decisions.md`, "Backup recovery
+lives only in the Vault tab; Global Trustees retired"). Found while costing that retirement.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (a duress depth's existence readable without coercion)
+
+### What happens
+
+`Contact.Profile.globalTrusteeDepth` held `-1` for "not a trustee", or the depth a contact was marked a Global
+Trustee at (`saveGlobalTrusteeDepth` stamped the current depth). It is sealed under the local key, which opens
+without Face ID, so anyone running code as the app could read a contact marked at depth 2 and learn that a
+depth 2 exists, and who its trustees are. `migrateGlobalShardConfigToPerContact` also stamped `0` on contacts
+from the old depth-0 list.
+
+### Fix
+
+- The feature is gone: `VaultGlobalTrustees`, `saveGlobalTrusteeDepth`, `isGlobalTrustee`,
+  `globalTrusteeIdentifiers`, and the setup screen's pre-selection and GLOBAL badge.
+- `DatabaseMigration.migrateRetireGlobalTrustees` (replacing the nil backfill, every launch) resets every live
+  contact's stamp to a sealed, fixed-width `-1` through `scrubbedStamp`; a row already there is left
+  byte-identical. Soft-deleted rows were already scrubbed to `-1` (`migrateScrubDeletedDepthStamps`).
+- `migrateDeleteGlobalShardConfig` (was `migrateGlobalShardConfigToPerContact`) only deletes old rows.
+- The field keeps being written as `-1` at creation and deletion so every row stays alike, and leaves the schema
+  next release with `shardDistributionEncrypted` and `PendingShardStatusUpdate`.
+
+### Guard
+
+`GlobalTrusteeRetirementTests`: stamps of 0, 2, legacy JSON and nil all read a sealed `-1`; a `-1` row is left
+byte-identical and a second run rewrites nothing; soft-deleted rows are left to their own scrub; the old list is
+deleted without re-marking anyone.
+
+Full suite after the change: 919 tests, 913 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+---
+
+## Bug 149 — Backup Recovery opens on a locked vault from Settings; queueing fails with "Vault locked", and a locked vault reads as "no distribution"
+
+**Status:** Fixed 2026-09-29. Found testing the backup flow on a device.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (the backup can't be set up from that path; an existing distribution looks absent)
+
+### What happens
+
+Settings › Vault Recovery's "Backup Key Trustees" link wasn't gated on the vault being unlocked, unlike the Vault
+tab, which shows its lock screen. On a locked vault the setup screen:
+
+- skipped `setupBackup` silently (`try?`);
+- listed trustees anyway (contacts need no vault key);
+- read `fetchDistributionMeta()`'s `nil` (a `try?` over a locked vault) as "no distribution yet", so the button
+  read "Review" and the education sheet opened even when a distribution existed;
+- failed at "Queue for Distribution": `currentKey()` threw `VaultError.locked`, shown as "Vault locked — unlock and
+  try again" with nothing to unlock with;
+- never closed itself: Bug 134's handler reacts to the vault *becoming* locked.
+
+A lock while the education sheet was open could also leave the screen in place, since dismissing the screen and
+the sheet at once could be ignored.
+
+### Fix
+
+- The Settings path is gone (`VaultRecoverySettings` deleted); the setup screen is reached only from the unlocked
+  Vault tab.
+- The screen shows its content only while the vault is unlocked, otherwise a locked state with Unlock Vault
+  (`vault.whenUnlocked`). Seeding, the Review/education decision and queueing run only while unlocked; a lock
+  clears the seeded state and closes the sheet and alert, in place (Bug 134's navigate-back is replaced).
+
+### Guard
+
+View code, not unit-tested: a device check (open the screen, lock the phone or wait out the timeout with the
+education sheet open, unlock again).
+

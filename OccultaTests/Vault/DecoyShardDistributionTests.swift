@@ -85,14 +85,10 @@ struct DecoyShardDistributionTests {
         security.applyVerifyState(for: .duress)
         #expect(security.currentDepth == 1)
 
-        // Two decoy trustees, marked as global trustees at exactly this depth (item 3) —
-        // not real, pre-existing relationships, just what a coerced setup would produce.
-        // UUID identifiers: the backup key's fixed-width codec stores them as raw UUIDs.
-        let trustee1 = try insertPlainProfile(identifier: UUID().uuidString, in: contacts)
-        let trustee2 = try insertPlainProfile(identifier: UUID().uuidString, in: contacts)
-        try contacts.saveGlobalTrusteeDepth(selectedIDs: [trustee1.identifier, trustee2.identifier])
-        #expect(contacts.isGlobalTrustee(trustee1.identifier))
-        #expect(contacts.isGlobalTrustee(trustee2.identifier))
+        // Two decoy trustees — not real, pre-existing relationships, just what a coerced
+        // setup would produce. Identifiers in the form the app stores (bugs.md Bug 145).
+        let trustee1 = try insertPlainProfile(identifier: realFormatContactIdentifier(), in: contacts)
+        let trustee2 = try insertPlainProfile(identifier: realFormatContactIdentifier(), in: contacts)
 
         // The chain Vault+ShardSetup.swift runs on save, at this depth.
         vault.unlock(context: LAContext())

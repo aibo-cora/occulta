@@ -102,6 +102,10 @@ The BEK trustee picker is pre-populated from the user's Global Trustees with a
 GLOBAL badge on each pre-populated entry. The user can add or remove trustees
 before confirming distribution.
 
+> **Changed 2026-09-29** (`Docs/General/decisions.md`, "Backup recovery lives only in the Vault tab; Global Trustees retired"): Global Trustees are retired. A first
+> distribution starts with nothing selected and no badge; the setup screen is reached only from
+> the Vault tab and shows a locked state when the vault is locked.
+
 ```
 shards = ShamirSecretSharing.split(secret: BEK, threshold: k, shares: n)
 ```
@@ -375,8 +379,8 @@ presentation complexity. Back button dismisses.
 
 Reuses the existing per-entry shard setup view components:
 
-- **Trustee picker** — same contact list with Global Trustee filter and GLOBAL
-  badge. Pre-populated from Global Trustees.
+- **Trustee picker** — same contact list. (Global Trustee pre-selection and the GLOBAL
+  badge were removed 2026-09-29.)
 - **Threshold stepper** — identical to per-entry setup.
 - **Per-trustee delivery status** — same confirmed / pending indicators.
 

@@ -36,15 +36,6 @@ struct VaultShardSetup: View {
     /// Shards in these two states count toward active recovery coverage.
     private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
 
-    /// Live set of contact IDs in the user's global trustee config, at the current
-    /// depth. Reads `Contact.Profile.globalTrusteeDepth` exact-matches — the single
-    /// mechanism at every depth, including depth 0 (see the shard-custody bug doc,
-    /// item 3). A duress-created entry's suggestions can never leak trustees
-    /// designated at a different depth.
-    private var globalTrusteeIDs: Set<String> {
-        self.contactManager.globalTrusteeIdentifiers()
-    }
-
     private var mlkemContacts: [Contact.Profile] {
         self.contactManager.mlkemEligibleContacts()
     }
@@ -54,37 +45,14 @@ struct VaultShardSetup: View {
     }
 
     var body: some View {
-        let meta       = self.fetchDistributionMeta()
-        let contacts   = self.mlkemContacts
-        let trusteeIDs = self.globalTrusteeIDs
-        let selected   = contacts.filter { self.selectedIDs.contains($0.identifier) }
-        let k          = Self.effectiveThreshold(self.threshold, recipients: selected.count)
-        let canMark    = selected.count >= 2
-
-        return ScrollView {
-            VStack(spacing: 0) {
-                self.summaryCard(selected: selected, k: k)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-
-                self.trusteesHeader(contacts: contacts)
-                    .padding(.bottom, 6)
-
-                self.trusteesCard(contacts: contacts, meta: meta, trusteeIDs: trusteeIDs)
-                    .padding(.horizontal, 16)
-
-                Spacer().frame(height: 10)
-
-                self.infoNote(k: k)
-                    .padding(.horizontal, 16)
-
-                self.contextNote(k: k)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 6)
-
-                Spacer().frame(height: 8)
+        // Only while unlocked: everything here is sealed with the vault key, and a locked vault
+        // would otherwise read as "no distribution yet" (`bugs.md` Bug 149).
+        SwiftUI.Group {
+            if self.vault.isUnlocked {
+                self.unlockedContent
+            } else {
+                self.lockedState
             }
-            .padding(.top, 8)
         }
         .navigationTitle("Backup Recovery")
         .navigationBarTitleDisplayMode(.large)
@@ -94,27 +62,28 @@ struct VaultShardSetup: View {
                     .tint(.occultaAccent)
             }
         }
-        .safeAreaInset(edge: .bottom) { self.ctaBar(meta: meta, canMark: canMark) }
-        .sensoryFeedback(.success, trigger: self.confirmationMessage) { _, new in new != nil }
         .onAppear {
             self.vault.extendSession()
-            self.seedInitialState()
+            if self.vault.isUnlocked { self.seedInitialState() }
         }
-        // Ticking a trustee and changing the threshold are vault activity (Bug 136).
-        .onChange(of: self.selectedIDs) { self.vault.extendSession() }
-        .onChange(of: self.threshold) { self.vault.extendSession() }
         .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
-            guard !isUnlocked else { return }
-            // Vault locked while this screen is visible — clear the trustee selection and
-            // threshold seeded from the vault-sealed distribution metadata, and navigate back
-            // so Face ID is required to re-enter, as VaultEntryDetail does.
-            self.selectedIDs       = []
-            self.snapshotIDs       = []
-            self.threshold         = 2
-            self.snapshotThreshold = 2
+            guard !isUnlocked else {
+                self.seedInitialState()
+                return
+            }
+            // Locked while this screen is visible: drop everything seeded from the vault-sealed
+            // distribution and show the locked state in place. Face ID is needed to continue.
+            // Staying, rather than dismissing, also works while the education sheet is up,
+            // where a dismiss could be ignored (`bugs.md` Bug 149; replaces Bug 134's navigate-back).
+            self.selectedIDs              = []
+            self.snapshotIDs              = []
+            self.threshold                = 2
+            self.snapshotThreshold        = 2
+            self.confirmationMessage      = nil
+            self.error                    = nil
+            self.marking                  = false
             self.confirmingKeyReplacement = false
-            self.showingEducation  = false
-            self.dismiss()
+            self.showingEducation         = false
         }
         .sheet(isPresented: self.$showingEducation) {
             BackupTrusteesEducationSheet(
@@ -130,6 +99,80 @@ struct VaultShardSetup: View {
         } message: {
             Text("Removing a trustee replaces your backup key. Backup files you've already exported will no longer restore — export a new backup afterwards.")
         }
+    }
+
+    private var unlockedContent: some View {
+        let meta       = self.fetchDistributionMeta()
+        let contacts   = self.mlkemContacts
+        let selected   = contacts.filter { self.selectedIDs.contains($0.identifier) }
+        let k          = Self.effectiveThreshold(self.threshold, recipients: selected.count)
+        let canMark    = selected.count >= 2
+
+        return ScrollView {
+            VStack(spacing: 0) {
+                self.summaryCard(selected: selected, k: k)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+
+                self.trusteesHeader(contacts: contacts)
+                    .padding(.bottom, 6)
+
+                self.trusteesCard(contacts: contacts, meta: meta)
+                    .padding(.horizontal, 16)
+
+                Spacer().frame(height: 10)
+
+                self.infoNote(k: k)
+                    .padding(.horizontal, 16)
+
+                self.contextNote(k: k)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+
+                Spacer().frame(height: 8)
+            }
+            .padding(.top, 8)
+        }
+        .safeAreaInset(edge: .bottom) { self.ctaBar(meta: meta, canMark: canMark) }
+        .sensoryFeedback(.success, trigger: self.confirmationMessage) { _, new in new != nil }
+        // Ticking a trustee and changing the threshold are vault activity (Bug 136).
+        .onChange(of: self.selectedIDs) { self.vault.extendSession() }
+        .onChange(of: self.threshold) { self.vault.extendSession() }
+    }
+
+    // MARK: - Locked state
+
+    private var lockedState: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text("Vault Locked")
+                .font(.system(size: 18, weight: .semibold))
+            Text("Your trustees and backup key are sealed with your vault key. Unlock to choose trustees and see their pieces.")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                self.vault.whenUnlocked {}
+            } label: {
+                Label("Unlock Vault", systemImage: "faceid")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.occultaAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+        }
+        .padding(24)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
     }
 
     // MARK: - Summary card
@@ -256,7 +299,7 @@ struct VaultShardSetup: View {
         .padding(.horizontal, 20)
     }
 
-    private func trusteesCard(contacts: [Contact.Profile], meta: ShardDistributionMetadata?, trusteeIDs: Set<String>) -> some View {
+    private func trusteesCard(contacts: [Contact.Profile], meta: ShardDistributionMetadata?) -> some View {
         VStack(spacing: 0) {
             if contacts.isEmpty {
                 Text("No ML-KEM contacts yet. Exchange keys with a contact first.")
@@ -266,7 +309,7 @@ struct VaultShardSetup: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ForEach(Array(contacts.enumerated()), id: \.element.identifier) { idx, contact in
-                    self.trusteeRow(contact, meta: meta, trusteeIDs: trusteeIDs)
+                    self.trusteeRow(contact, meta: meta)
                     if idx < contacts.count - 1 {
                         Divider().padding(.leading, 62)
                     }
@@ -277,7 +320,7 @@ struct VaultShardSetup: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func trusteeRow(_ contact: Contact.Profile, meta: ShardDistributionMetadata?, trusteeIDs: Set<String>) -> some View {
+    private func trusteeRow(_ contact: Contact.Profile, meta: ShardDistributionMetadata?) -> some View {
         let given  = contact.givenName.decrypt()
         let family = contact.familyName.decrypt()
         let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
@@ -312,15 +355,6 @@ struct VaultShardSetup: View {
                             .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
                             .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
                             .clipShape(RoundedRectangle(cornerRadius: 3))
-                        if trusteeIDs.contains(contact.identifier) {
-                            Text("GLOBAL")
-                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.secondary.opacity(0.12))
-                                .foregroundStyle(Color.secondary)
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                        }
                         if let record = record {
                             let style = self.statusChipStyle(for: record.status)
                             Text(style.label)
@@ -539,12 +573,13 @@ struct VaultShardSetup: View {
 
     // MARK: - Initial state seeding
 
-    /// Populate working state on first appear.
+    /// Populate working state on appear, and again whenever the vault unlocks. Only called
+    /// while unlocked.
     ///
     /// - Existing distribution: seed selectedIDs and threshold from the persisted
     ///   ShardDistributionMetadata, using only active (.pending/.confirmed) shards.
-    /// - No distribution yet: seed selectedIDs from the global trustee config
-    ///   if set; threshold stays at its default of 2.
+    /// - No distribution yet: nothing is selected; threshold stays at its default of 2.
+    ///   (Global Trustees pre-selected here until they were retired, `decisions.md`.)
     private func seedInitialState() {
         try? self.vault.setupBackup(currentDepth: self.security.currentDepth)
 
@@ -554,10 +589,6 @@ struct VaultShardSetup: View {
             self.threshold         = meta.threshold
             self.snapshotIDs       = activeIDs
             self.snapshotThreshold = meta.threshold
-        } else if !self.globalTrusteeIDs.isEmpty {
-            // Only the Global Trustees this depth can send a piece to; others would stay
-            // selected without being listed, and the screen would never look up to date.
-            self.selectedIDs = self.globalTrusteeIDs.intersection(self.mlkemContacts.map(\.identifier))
         }
     }
 

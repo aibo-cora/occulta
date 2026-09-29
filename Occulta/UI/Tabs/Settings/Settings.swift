@@ -29,14 +29,6 @@ struct Settings: View {
                     self.sectionHeader("Contacts", "How your contact list looks and behaves.")
                 }
 
-                Section {
-                    NavigationLink("Vault Recovery") {
-                        VaultRecoverySettings()
-                    }
-                } header: {
-                    self.sectionHeader("Vault & Recovery", "Backup recovery: trusted contacts each hold a piece of your backup key.")
-                }
-
                 if FeatureFlags.isEnabled(.secureMode) {
                     Section {
                         NavigationLink("Security") {

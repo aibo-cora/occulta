@@ -61,51 +61,9 @@ extension ContactManager {
         return contact.isVisible(atDepth: self.security.currentDepth)
     }
 
-    /// Returns true if the contact is marked a global trustee at the current depth
-    /// (`globalTrusteeDepth == currentDepth`, exact match — not a ceiling, unlike
-    /// visibleThroughDepth). A trustee designation made at one depth is never surfaced
-    /// at any other depth.
-    func isGlobalTrustee(_ identifier: String) -> Bool {
-        let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
-        )
-        guard let contact = try? self.modelContext.fetch(descriptor).first,
-              let data    = contact.globalTrusteeDepth,
-              let plain   = data.decrypt(),
-              let value   = DepthCodec.decode(plain)
-        else { return false }
-        return value == self.security.currentDepth
-    }
-
-    /// Identifiers of every contact marked a global trustee at the current depth.
-    /// Restricted to displayable contacts, matching the filter every other
-    /// trustee-facing list already applies (Gap 2 items 1-2).
-    ///
-    /// Derives the local-DB key once and reuses it across every contact, instead of
-    /// once per contact per field — the dominant cost here is the Keychain/Secure
-    /// Enclave round trip inside key derivation, not the AES operation itself, and the
-    /// derived key is identical on every call until the local-DB key is rotated.
-    func globalTrusteeIdentifiers() -> Set<String> {
-        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
-        return self.globalTrusteeIdentifiers(usingKey: key)
-    }
-
-    /// Same as `globalTrusteeIdentifiers()` but decrypts with an already-derived key
-    /// instead of deriving one internally. For callers already holding a key for the
-    /// same pass (e.g. a screen that also needs `mlkemEligibleContacts(usingKey:)`).
-    func globalTrusteeIdentifiers(usingKey key: SymmetricKey) -> Set<String> {
-        let depth = self.security.currentDepth
-        let contacts = (try? self.fetchAllContacts()) ?? []
-        return Set(contacts.compactMap { contact in
-            (contact.isVisible(atDepth: depth, usingKey: key)
-                && contact.isGlobalTrustee(atDepth: depth, usingKey: key))
-                ? contact.identifier : nil
-        })
-    }
-
     /// Contacts with a verified ML-KEM key, visible at the current depth. Derives the
-    /// local-DB key once and reuses it across every contact — same reasoning as
-    /// `globalTrusteeIdentifiers()`.
+    /// local-DB key once and reuses it across every contact: the dominant cost is the
+    /// Keychain/Secure Enclave round trip inside key derivation, not the AES operation.
     func mlkemEligibleContacts() -> [Contact.Profile] {
         guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
         return self.mlkemEligibleContacts(usingKey: key)
@@ -113,7 +71,7 @@ extension ContactManager {
 
     /// Same as `mlkemEligibleContacts()` but decrypts with an already-derived key
     /// instead of deriving one internally. For callers already holding a key for the
-    /// same pass (e.g. a screen that also needs `globalTrusteeIdentifiers(usingKey:)`).
+    /// same pass.
     func mlkemEligibleContacts(usingKey key: SymmetricKey) -> [Contact.Profile] {
         let depth = self.security.currentDepth
         let contacts = (try? self.fetchAllContacts()) ?? []
@@ -182,22 +140,6 @@ extension ContactManager {
         // group purge's own save, not before, so it's actually covered.
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: isSensitive ? [identifier] : [])
         self.security.checkpointStore()
-    }
-
-    /// Marks `selectedIDs` as global trustees at the current depth; every other
-    /// displayable contact is stamped -1 (not a trustee at this depth). Exact-match,
-    /// current-depth only — the single mechanism at every depth, including depth 0
-    /// (`GlobalShardConfig` is orphaned as of item 3's consolidation, see the
-    /// shard-custody bug doc).
-    func saveGlobalTrusteeDepth(selectedIDs: Set<String>) throws {
-        let contacts = try self.fetchAllContacts()
-        let depth    = self.security.currentDepth
-        for contact in contacts {
-            guard contact.isVisible(atDepth: depth) else { continue }
-            let value = selectedIDs.contains(contact.identifier) ? depth : -1
-            contact.globalTrusteeDepth = try DepthCodec.encode(value).encrypt()
-        }
-        try self.modelContext.save()
     }
 
     /// Cleans up group duress membership after a classification change.

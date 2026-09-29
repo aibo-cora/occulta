@@ -4,9 +4,8 @@
 //
 //  Coverage for Contact.Profile.originDepth: floor-semantics visibility for
 //  duress-origin contacts, sensitivity classification being a deliberate no-op for
-//  them, creation-time stamping, and the backfill migration. Mirrors
-//  GlobalTrusteeDepthTests.swift's structure. Encrypted round-trips require the
-//  Secure Enclave and guard on secureEnclaveAvailable(), same pattern.
+//  them, creation-time stamping, and the backfill migration. Encrypted round-trips
+//  require the Secure Enclave and guard on secureEnclaveAvailable().
 //
 
 import Testing

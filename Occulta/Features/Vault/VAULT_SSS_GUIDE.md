@@ -911,7 +911,7 @@ possible from it.
 | Aggregate PEK health indicator (vault tab attention section) | ✅ Done |
 | BEKSetupState health signal (bekSetupState)                  | ✅ Done |
 | Backup staleness report (backupStaleness / BackupStalenessReport) | ✅ Done |
-| Vault health dashboard (VaultRecoverySettings — BEK + PEK + backup) | ✅ Done |
+| Vault health dashboard (VaultRecoverySettings — BEK + PEK + backup) | Removed 2026-09-29; the Vault tab covers it (`Docs/General/decisions.md`, "Backup recovery lives only in the Vault tab; Global Trustees retired") |
 | ownerContactIdentifier in CustodyShard.Payload | ✅ Done |
 | [ShardOperation]? on SealedPayload (multi-shard bundles) | ✅ Done |
 | .returnAcknowledged ShardOperation kind | ✅ Done |

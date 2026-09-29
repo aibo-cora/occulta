@@ -603,6 +603,15 @@ private struct VaultBackupRow: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(accentColor)
                     .lineLimit(1)
+                // Group bundles carry no manifest, so confirmations only arrive with a direct
+                // message (`bugs.md` Bug 143).
+                if case .waitingForConfirmations = self.state {
+                    Text("Confirms arrive with direct messages")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer()

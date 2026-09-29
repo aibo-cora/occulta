@@ -618,6 +618,7 @@ extension ShardStatus {
 /// (`Backup.PayloadCodec`'s trustee records, `PendingShamirSecretRestore.ShardsCodec`'s
 /// senders) store this instead (`bugs.md` Bugs 145–147). Compared, never reversed; it
 /// depends on the whole identifier, not on how its encryption lays out the leading bytes.
+nonisolated
 struct TrusteeTag: Hashable, Codable {
     /// Separates this hash from any other SHA-256 of the same identifier the app might take.
     static let domainLabel = "occulta-trustee-tag"

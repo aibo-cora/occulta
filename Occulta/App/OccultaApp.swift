@@ -145,10 +145,10 @@ struct OccultaApp: App {
         }
 
         do {
-            try DatabaseMigration.migrateGlobalTrusteeDepthBackfill(modelContext: context)
+            try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: context)
         } catch {
             #if DEBUG
-            debugPrint("globalTrusteeDepth backfill error: \(error)")
+            debugPrint("Global Trustees retirement error: \(error)")
             #endif
         }
 
@@ -192,12 +192,10 @@ struct OccultaApp: App {
         }
 
         do {
-            try DatabaseMigration.migrateGlobalShardConfigToPerContact(
-                modelContext: context, shardCustodyManager: self.shardCustodyManager
-            )
+            try DatabaseMigration.migrateDeleteGlobalShardConfig(modelContext: context)
         } catch {
             #if DEBUG
-            debugPrint("GlobalShardConfig consolidation error: \(error)")
+            debugPrint("GlobalShardConfig deletion error: \(error)")
             #endif
         }
     }

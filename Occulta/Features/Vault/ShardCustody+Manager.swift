@@ -602,37 +602,12 @@ final class ShardCustodyManager {
         if deletedAny { try self.modelContext.save() }
     }
 
-    // MARK: - Global shard config (read-only — orphaned as of item 3's consolidation)
-
-    /// Read-only, and only for `DatabaseMigration.migrateGlobalShardConfigToPerContact`
-    /// — the one-time migration onto `Contact.Profile.globalTrusteeDepth`, the single
-    /// trustee mechanism at every depth. No app code writes `GlobalShardConfig` anymore;
-    /// once that migration has run for a given store, this always returns nil.
-    func globalShardConfig() throws -> GlobalShardConfig.Payload? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rows = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
-        for row in rows {
-            if let payload = try? self.openRow(row.encryptedPayload, as: GlobalShardConfig.Payload.self, using: custodyKey, id: row.id) {
-                return payload
-            }
-        }
-        return nil
-    }
-
     // MARK: - Contact deletion cleanup
 
     /// Removes every trace of a deleted contact from shard-custody state: any
     /// `CustodyShard` this device holds on their behalf, any `PendingShardDistribute`
     /// still owed to them, and any `PotentiallyLostShard` watch row for them. Called
     /// from `ContactManager.deleteContact`.
-    ///
-    /// Global-trustee status (`Contact.Profile.globalTrusteeDepth`) needs no purge step
-    /// here — it lives on the contact's own row, which is soft-deleted (not hard-
-    /// deleted) by `deleteContact`, and every read of `globalTrusteeDepth` already
-    /// excludes rows with a non-nil `deletionToken`. The designation becomes
-    /// unreachable the moment the contact is deleted, with nothing separate to purge.
     ///
     /// Unconditional, not depth-gated: unlike `Group`'s duress-depth membership,
     /// nothing here holds separate per-depth decoy content. A deleted contact is
