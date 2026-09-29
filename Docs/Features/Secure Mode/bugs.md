@@ -124,6 +124,9 @@ Three changes applied together:
 
 ## Bug 7 — Hard-delete inside staged key rollback scope causes irrecoverable data loss
 
+**Stale, 2026-09-11:** `commitStagedLocalDBKey`/`rollbackStagedLocalDBKey` — the staged-key rollback
+pattern this bug is about — no longer exist, deleted whole by Removal Stages 0-4, 2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: High
@@ -139,6 +142,9 @@ Moved the `hardDeleteContact` loop to after `commitStagedLocalDBKey()` (Step 10,
 
 ## Bug 8 — Vault PEKs unnecessarily stored in the blob
 
+**Stale, 2026-09-11:** `BlobPayload`/`VaultPEKRecord` no longer exist — deleted whole by Removal
+Stages 0-4, 2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Medium
@@ -152,6 +158,8 @@ Removed `VaultPEKRecord` struct and the `vaultPEKs` field from `BlobPayload`. Re
 ---
 
 ## Bug 9 — `findBlob` returns an arbitrary file when multiple `.occbak` files exist
+
+**Stale, 2026-09-11:** `findBlob` no longer exists — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -167,6 +175,9 @@ The sort step was omitted when the resource key was added. `FileManager.contents
 ---
 
 ## Bug 10 — `reEncryptKeyRecords` after INSERT in deactivation
+
+**Stale, 2026-09-11:** `reEncryptKeyRecords` no longer exists, and deactivation no longer does any
+key-record re-encryption at all — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Invalid — proposed fix causes data loss)
 
@@ -184,6 +195,9 @@ No code change. The call is correct and must stay.
 
 ## Bug 11 — `maintainNoOpBlob` destroys the real blob after 24 hours, breaking deactivation
 
+**Stale, 2026-09-11:** `maintainNoOpBlob` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Critical
@@ -198,6 +212,9 @@ In `OccultaApp.init()`, read `AppLayerConfig` from the already-initialized `Mode
 ---
 
 ## Bug 12 — `visibleThroughDepth` watermark survives deactivation
+
+**Stale, 2026-09-11:** The Steps 4/5/6 this bug describes no longer exist — `deactivateSecureMode`
+no longer touches `visibleThroughDepth` at all, per Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -221,6 +238,9 @@ The `depthData` / `visibleEncrypted` intermediates are now entirely unused and w
 
 ## Bug 13 — Hard-delete of sensitive contacts conflicts with normal-mode visibility
 
+**Stale, 2026-09-11:** `forensic-trace-avoidance.md` §S5, cited here as the accepted trade-off, is
+itself marked Retired (2026-09-10) — the blob/rotation model this decision weighed against is gone.
+
 **Status:** Closed (design decision — hard-delete removed)
 
 ### Severity: High
@@ -237,6 +257,9 @@ The hard-delete loop was removed from `activateSecureMode`. Sensitive contacts r
 ---
 
 ## Bug 14 — `commitStagedLocalDBKey` uses invalid `SecItemUpdate` search attributes, causing permanent data loss on deactivation failure
+
+**Stale, 2026-09-11:** `commitStagedLocalDBKey` no longer exists — deleted whole by Removal Stages
+0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -267,6 +290,10 @@ Two fixes applied together:
 ---
 
 ## Bug 15 — Contact classification uses hardcoded depth 1, breaks under multi-depth Secure Mode
+
+**Stale, 2026-09-11:** `activateSecureMode`'s Step 4 (classification into DB vs. blob) no longer
+exists — activation/deactivation no longer classify or move contacts at all, per Removal Stages 0-4,
+2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -422,6 +449,9 @@ The button's disabled state was not wired to `isActivating`. The overlay (`Activ
 
 ## Bug 23 — Sensitive contacts lose their sensitivity flag after deactivation; must be re-marked on every activation cycle
 
+**Stale, 2026-09-11:** `ContactBlobRecord` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Medium
@@ -471,6 +501,9 @@ This fix is complete for Phase 1 (two layers). For Phase 2 multi-layer, two furt
 ---
 
 ## Bug 26 — Pre-existing vault entries visible in duress mode after activation
+
+**Stale, 2026-09-11:** `activateSecureMode`'s Step 8 (the blob-sealing step this bug is about) no
+longer exists — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -524,6 +557,9 @@ Additionally, `deactivateSecureMode` Step 6 already sets `entry.visibleThroughDe
 
 ## Bug 27 — Silent skip in Step 8 when `old.decrypt()` fails; entry hidden by stale ciphertext
 
+**Stale, 2026-09-11:** Same Step 8 as Bug 26 — no longer exists, deleted by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Medium
@@ -571,6 +607,9 @@ Working as expected.
 ---
 
 ## Bug 30 — Quantum key material destroyed for sensitive contacts after Secure Mode deactivation
+
+**Stale, 2026-09-11:** `hasUnreadableKeys` and the deactivation Step 5b blob-rebuild this fix's
+second half targets no longer exist — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -800,6 +839,9 @@ Write-new-first, delete-old-after: capture the old file URL before the write, wr
 
 ## Bug 39 — `maintainLayerStore()` blocks the main thread on launch
 
+**Stale, 2026-09-11:** `Manager.LayerStore` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Low
@@ -962,6 +1004,9 @@ The migration in `Manager.Security.init()` populates `sealedNormalVerifiers[0]` 
 
 ## Bug 43 — LayerStore `rewrite()` in `deactivateSecureMode` runs synchronously on calling thread; `LayerStore.Error` codes were unstable
 
+**Stale, 2026-09-11:** `Manager.LayerStore` and its `Error` type no longer exist — deleted whole by
+Removal Stages 0-4, 2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Low
@@ -987,6 +1032,9 @@ The activation error handler's `debugPrint` was also updated from `error.localiz
 ---
 
 ## Bug 44 — `payloadTooLarge` when sensitive contact has a photo; images included in blob unnecessarily
+
+**Stale, 2026-09-11:** `LayerContact` and the blob payload machinery no longer exist — deleted whole
+by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -1365,6 +1413,11 @@ At depth N (adversary, `coercerBaseDepth = 0`): `N ≠ 0` and `N ≠ 0` — bloc
 ---
 
 ## Bug 54 — `vaultManager.isUnlocked` always false in `.inactive` handler; share index unfiltered and screenshot overlay inactive
+
+**Stale, 2026-09-11:** Incident A's `ShareIndex.sqlite`/`shareIndexAllowedIDs`/`syncShareIndex()`
+mechanism was removed 2026-08-16 (Bug 84, recipient picker moved into the app). Its sibling bugs (6,
+65-69) already carry a "retired by the removal of the share index" note; this one never got it.
+Incident B (the screenshot overlay/`handleInactive`) is unaffected and still accurate.
 
 **Status:** Closed (Fixed)
 
@@ -1875,6 +1928,15 @@ At depth N+1 (Bug 47 coercer after `reEnablePIN`): `coercerBaseDepth = N+1` — 
 
 ## Bug 62 — `pinCollision` "Activation Failed" alert is a forensic tell; enables coercer PIN oracle at duress depth
 
+**See also Bug 119, 2026-09-11:** Gap 2 (no rate-limit design survives a compliant-victim relock
+cycle), the residual-risk section (accidental master-PIN collision), and Gap 3's own trigger
+mechanism (the `masterPINCollision` signal a wipe would respond to) are all closed as a side effect if
+`PASSPHRASE_LAYER_KEYS.md`'s passphrase-derived layer keys ship with genuinely high-entropy,
+non-editable phrases — worth deciding alongside that proposal rather than solving these twice. Gap
+3's own *deeper* structural problem (what happens once the real secret is known to be in a coercer's
+hands) is not touched by any of this — see Gap 3's 2026-09-11 note below for why that part is
+orthogonal to secret format.
+
 **Status:** **Open — root scenario fixed, escalation gaps remain.** Re-examined 2026-08-26: the
 bug's actual root — a single, accidental `pinCollision` during ordinary setup, revealing that
 something is already configured to a coercer who was led to believe otherwise — is fully closed by
@@ -2072,6 +2134,27 @@ Sensitive contacts are not hard-deleted from the DB (Bug 13 resolution — they 
 
 There is no currently available path that both protects the data on `masterPINCollision` and preserves the real user's access to it. This option remains open pending a design resolution for the hard-delete conflict.
 
+**Re-examined 2026-09-11, against `PASSPHRASE_LAYER_KEYS.md`/Bug 119 — the pathway that *creates*
+`masterPINCollision` goes away; the deeper structural problem does not.** The whole reason this
+signal exists is that today's routing works by scanning a small array of stored verifiers — checking
+a new PIN candidate against `sealedNormalVerifiers`/`sealedDuressVerifiers` at setup is what turns
+"accidental collision" into a detectable event at all, and that only matters because a 6-digit PIN's
+1-in-10⁶ accidental-collision odds are worth guarding against. Under `PASSPHRASE_LAYER_KEYS.md`'s
+design, authentication is canary-decrypt-success per depth, not array comparison, and each depth
+carries its own SE key — two independently-Diceware-generated 7-word phrases colliding is a ~1-in-2⁹⁰
+event, not worth a setup-time check at all. No check, no `masterPINCollision`, no oracle to build a
+wipe response around. Same mechanism that closes the root scenario and Gap 2.
+
+**But strip away the collision-detection framing and what's actually left in this gap's own "Deeper
+structural problem" section is untouched by any of that.** It was never really a guessing-difficulty
+question: *if the app ever determines it's looking at the real depth-0 secret, entered by someone who
+might be coerced, what should it do?* A higher-entropy secret makes it harder to *stumble onto*; it
+does nothing to help the app tell voluntary entry from compelled entry once the real owner has been
+directed to type their actual real passphrase and the app faithfully, correctly routes them to depth
+0 — which is exactly what it's designed to do. The hard-delete-vs-Bug-13 dead end this section
+describes is identical whether the secret is 6 digits or 7 words; it was never a guessing problem
+underneath. See Bug 119 for the full accounting.
+
 ---
 
 ### Residual risk — accidental master PIN discovery
@@ -2091,6 +2174,9 @@ The coercer does not know this happened. They entered what they believed was the
 ---
 
 ## Bug 63 — Stale blob metadata after full deactivation; `clearBlobSlot(at: 0)` does not cover higher-depth activations
+
+**Stale, 2026-09-11:** `clearBlobSlot` and the blob metadata arrays it describes no longer exist —
+deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -2359,6 +2445,10 @@ contactManager.syncShareIndex()
 
 ## Bug 70 — Lockout counter reset to zero via iTunes/Finder backup restore
 
+**Stale, 2026-09-11:** Fix 2's `AppLayerConfig.reencrypt(from:to:)` no longer exists — deleted along
+with all rotation, Removal Stages 0-4, 2026-09-10. Moot for a stronger reason than the entry states:
+there is no rotation left to carry lockout fields through.
+
 **Status:** **Fixed, re-examined and closed 2026-08-26.** Fix 2 (carry lockout fields through
 rotation) is implemented and was independently unnecessary; see "Reconciled 2026-08-15" at the
 bottom of this entry. **Fix 1 (backup exclusion) was already implemented** —
@@ -2450,6 +2540,10 @@ test confirming it; see *Resolution* above for the 2026-08-26 close.
 
 ## Bug 71 — Layer store file modification timestamp correlates with activation events
 
+**Stale, 2026-09-11:** `LayerStore`/`.occbak` for Secure Mode no longer exist — the file-timestamp
+correlation this bug describes has no current subject. Deleted whole by Removal Stages 0-4,
+2026-09-10; re-examine if a similar mechanism is ever rebuilt.
+
 **Status:** Open — **mitigation 2 (cadence jitter) implemented 2026-08-15**; mitigation 1
 (opportunistic writes) still open. See "Implementation status" at the bottom.
 
@@ -2503,6 +2597,9 @@ traffic.
 ---
 
 ## Bug 72 — `randomSlot(excluding:)` has negligible modular bias
+
+**Stale, 2026-09-11:** Cites `SecureMode+LayerStore.swift`, which no longer exists — deleted whole by
+Removal Stages 0-4, 2026-09-10.
 
 **Status:** Open
 
@@ -2680,6 +2777,10 @@ launch-time performance/stability risk to close immediately.
 ---
 
 ## Bug 75 — `Group` rows are never re-keyed during Secure Mode key rotation; all groups become permanently unreadable after activation
+
+**Stale, 2026-09-11:** `Group.reencrypt(from:to:)` and the rotation call sites this bug's fix touched
+no longer exist — deleted whole by Removal Stages 0-4, 2026-09-10. (Its repair path,
+`ContactManager.purgeUnreadableGroups`, survives for unrelated reasons.)
 
 **Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed.
 
@@ -2897,6 +2998,9 @@ device: `Group` calls `Manager.Key()` directly rather than through an injectable
 ---
 
 ## Bug 76 — `AppLayerConfig` fields are never re-keyed during rotation; Bug 46's blob-slot exclusion silently stops protecting the real layer
+
+**Stale, 2026-09-11:** `AppLayerConfig.reencrypt` and `blobMetadataKey` no longer exist — deleted
+whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed. Split out of Bug 75's audit item.
 
@@ -3182,6 +3286,10 @@ does not stop the stranding. `SecureModeActivationTests.swift` covers single act
 
 ## Bug 77 — `maxBundleVersion` and `deletionToken` missing from `reencryptAllFields`
 
+**Stale, 2026-09-11:** `reencryptAllFields` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10. This bug's root cause (a field stranded by rotation) can no longer occur since there is
+no rotation.
+
 **Status:** Fixed on `release/v1.10.2` (commit d356eb8), pushed.
 
 **Target:** v1.10.2
@@ -3311,6 +3419,10 @@ safe.
 
 ## Bug 78 — Rotation commits and deletes the superseded key even when the re-encryption passes were skipped
 
+**Stale, 2026-09-11:** `commitStagedLocalDBKey`, `deleteSupersededLocalDBArtefacts`, and the Step 8
+re-encryption pass this bug's fix touched no longer exist — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 75/76 fixes on the same branch.
 
 Both sites now `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`. Regression
@@ -3386,6 +3498,9 @@ a restatement. `TestKeyManager.simulatesHybridKeyUnavailable` supplies the nil.
 ---
 
 ## Bug 79 — Blob-metadata migration checkpoints conditionally, against the stated differential-signal rule
+
+**Stale, 2026-09-11:** `migrateBlobMetadataKeyIfNeeded` no longer exists — deleted whole by Removal
+Stages 0-4, 2026-09-10.
 
 **Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 76 fix on the same branch.
 
@@ -4400,6 +4515,11 @@ regardless of visibility — a check no existing test makes, and the one that wo
 
 ## Bug 86 — `AppLayerConfig`'s padded arrays name the occupied depths by element length, with no key
 
+**Stale, 2026-09-11:** The fields and apparatus this fix built (`sealedBlobSlots`,
+`layerSequenceNumbers`, `LayerArrayCodec`, `writeBlobSlot`, `readBlobSlot`) no longer exist in
+production — deleted whole by Removal Stages 0-4, 2026-09-10. They survive only in the now-orphaned
+`OccultaTests/SecureMode/LayerArrayUniformityTests.swift`.
+
 **Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while checking whether Bug 85's codec could be
 reused for the other depth-shaped fields.
 
@@ -4828,6 +4948,9 @@ Phase 2, with the migration, in rising order of what they protect:
 ---
 
 ## Bug 87 — A stranded `visibleThroughDepth` is un-hidden by rotation, in both directions
+
+**Stale, 2026-09-11:** This fix's own mechanism (`reencryptPreserving`, used inside
+activation/deactivation) no longer exists — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while writing Bug 85's migration guards. Found by
 asking what a normalisation pass must do with a row it cannot decrypt, then discovering the shipped
@@ -5555,6 +5678,10 @@ path that commits it.
 
 ## Bug 91 — Three rules govern what `Contact.Draft` may carry, and none is written down or enforced
 
+**Stale, 2026-09-11:** Rule 1's entire premise (`LayerContact`, `restoreContact`) no longer exists —
+deleted whole by Removal Stages 0-4, 2026-09-10. Deactivation no longer restores contacts from a blob
+at all. Only rule 3 (`Contact.Draft` as a wire-format leak) still has real footing.
+
 **Status:** **Open.** Noticed 2026-08-19 while weighing whether `Contact.Draft` could serve as the
 carrier type for Bug 90's atomicity refactor. **Substantially rewritten 2026-08-20** — the first
 version framed this as "`Draft` should mirror `Contact.Profile` and does not", which is wrong, and
@@ -5649,9 +5776,14 @@ which is the part of that refactor where a mistake would hide.
 
 ---
 
-## Bug 92 — A backup file is readable from any layer, because the BEK is not layered
+## Bug 92 — An exported backup file opens for anyone holding its backup key: the opt-in export passphrase isn't built
 
-**Status:** **Open — re-examined 2026-08-26, scenario narrower than originally filed.** Separated out
+*Originally filed as "A backup file is readable from any layer, because the BEK is not layered".
+Re-scoped 2026-09-24; see "Split, 2026-09-24" below.*
+
+**Status:** **Open, re-scoped 2026-09-24 to the exported-file half.** The on-device half (the stored
+backup key opens under the one vault key, so extracting it reads every depth's backup key) is
+subsumed into Bug 119. Earlier: **Open — re-examined 2026-08-26, scenario narrower than originally filed.** Separated out
 of Bug 88's design discussion, 2026-08-20, on noticing that fixing the export leak does not stop a
 coerced session reading a backup file it *finds*. **That specific in-app scenario no longer reaches**
 — see *Re-examined* below, added after Bugs 93 and 94 (both filed and fixed after this one) turned
@@ -5662,7 +5794,12 @@ accordingly.
 **Target:** unset. Independent of Bug 88 — that one needs no format change and should not wait for
 this.
 
-### Severity: Medium (security) — re-rated 2026-08-26 from High, see *Re-examined* below
+### Severity: Low (security) — re-rated 2026-09-24 from Medium; Medium since 2026-08-26, High before that
+
+**2026-09-24:** what remains needs the file *and* the backup key obtained elsewhere: from k trustees
+colluding, or by extracting it from the device, which is Bug 119's case. The in-app route is closed
+(see "Split, 2026-09-24"), and k colluding trustees can already recover the owner's vault by design.
+The export passphrase adds a factor on top of that trust model, which is why it is still worth building.
 
 **Original reasoning, preserved:** Bug 88 needs someone to tap Export. This needs a backup file to
 exist and be reachable — on the device, in Files, in iCloud. Weaker, but ordinary: backups are made
@@ -5814,7 +5951,15 @@ neither subsumes the other.
 | Harm | A backup *file* decrypts at any layer | In-app operations at a duress depth act on the *real* key |
 | Attacker | Holds raw BEK bytes, obtained outside the app | Uses the app normally, in a duress session |
 | Fix | Derive the file key from BEK ‖ slow-KDF(PIN) | Give each layer its own BEK |
-| Blocker | No slow KDF exists in the codebase | Storage-format change, staged |
+| Blocker | No slow KDF exists in the codebase | ~~Storage-format change, staged~~ — **built, 2026-09-11** |
+
+**Stale, 2026-09-11: the right column's blocker shipped.** Per-depth BEK storage landed
+(`VAULT_KEY_LAYERING.md` §8 item 14) — Bug 102 is now closed, reclassified as subsumed into Bug 99;
+see that entry's own reclassification note for the accounting. Everything else in this reconciliation
+still holds unchanged: per-depth storage still does nothing for *this* bug, because `encryptedPayload`
+stays sealed under the plain vault key (not depth-derived) regardless of which table holds the row —
+someone holding raw extracted key material still gets every depth's payload. This bug's own remedy
+(PIN-combined file key) is still blocked on the same missing slow KDF, unaffected by any of this.
 
 **Per-depth BEKs do not fix this bug**, and the reason is already stated above under *Why the obvious
 keys do not work*. Bug 102's slots would all be sealed under the vault key, which is not
@@ -5839,6 +5984,41 @@ jailbreak, forensic extraction or a memory dump — the three things the re-rati
 **Re-rate deliberately after Bug 105 is settled**, rather than leaving Medium standing on reasoning
 that predates it.
 
+### Split, 2026-09-24
+
+Re-examined against the current code, as the "Bug 105 may have restored the in-app route" note above
+asked once Bug 105 settled (it closed 2026-09-10).
+
+**The in-app route is closed.** Only two places touch a backup file's contents: `exportBackup`, which
+seals it, and `restoreBackup`, which opens it only with a key rebuilt from returned shards and checked
+against the file's GCM tag (`verifiedKey`). No code opens a file with a stored backup key. Every depth
+has its own backup key (`VAULT_KEY_LAYERING.md` §7 stages 1-2), so a duress layer's export and shard
+distribution act on its own key (Bug 105). A restore refuses at a depth that already has a backup key,
+and counts only shards from contacts visible at the current depth (§9.4). The one way in is the owner's
+real trustees left visible in the duress layer, having handed back their shards: that is the residual
+Bug 99 and §9.4 already accept, not a separate one.
+
+**The on-device half is Bug 119.** Per-depth backup keys are sealed under the one vault key, which is
+not derived per depth, so extracting it yields every depth's backup key and opens any real `.occbak`.
+The same attacker reads every depth's entries straight from the database anyway. The fix is Bug 119's,
+`PASSPHRASE_LAYER_KEYS.md`, which already names the backup key's cross-depth scan among the things it
+must handle. Subsumed there; see Bug 119's note of the same date.
+
+**The exported-file half stays here.** `VAULT_KEY_LAYERING.md` §8 item 4 (decided 2026-09-06, not built)
+replaced this entry's PIN-combined file key with an **opt-in, 6-word passphrase per export**: EFF
+wordlist via `Manager.PassphraseGenerator`, about 77.5 bits, generated fresh for each export and shown
+once. It isn't the app PIN, so changing the PIN never orphans a file, and at that entropy plain HKDF is
+enough, so the missing slow KDF (see "The number this turns on") no longer blocks anything. Its scope,
+as decided: it protects a file obtained without the owner's cooperation (from `Documents/Inbox`, Bug 101;
+a device backup; or k trustees colluding), and nothing against a coercer holding the owner. Layer keys
+don't cover this: they protect the stored key on the device, not the file against someone holding the
+key from elsewhere.
+
+**Superseded in this entry:** the PIN-combined derivation, the "Two costs" section (both costs belonged
+to the PIN design; recovery from shards alone stays the default, since the passphrase is opt-in), and
+that Bug 105 severity caveat. The file-format section still applies: the passphrase salt and a scheme
+version have to sit in the plaintext envelope.
+
 ### Guard
 
 `VaultBackupRoundTripTests` already pins that a backup carries no plaintext label or content, and
@@ -5852,9 +6032,18 @@ holding the storage. A test written against the app's own API cannot tell those 
 assert on raw key material rather than on a decrypt call.
 
 
+
+**2026-09-24:** the cross-layer criterion above now belongs to Bug 119. For this entry's re-scoped half
+the acceptance criterion is: a file exported with a passphrase does not open from the backup key alone
+(shards or stored key), and does open with the key plus the passphrase; a file exported without one
+still restores from shards alone.
 ---
 
 ## Bug 93 — Vault recovery is depth-blind: a coerced session sees the pending restore, and the restore runs into whatever layer it is standing in
+
+**Stale, 2026-09-11:** The Guard section cites `attemptBEKRestore`/`fetchDecodedBEK` — renamed to
+`attemptBackupRestore`/`fetchDecoded` by this session's BEK storage refactor
+(`VAULT_KEY_LAYERING.md` §8 item 14).
 
 **Status:** **Fixed 2026-08-25, all four harms.** Filed 2026-08-22 while checking, for Bug 88's fix
 plan, whether `pendingRestoreActive` is depth-aware. It was not, and neither was anything else in the
@@ -6142,6 +6331,16 @@ surfaces bundled under "what does duress show," and only one of them was fixable
   should come back if that lands. Recorded here so this reads as "correct for the current design"
   rather than as a settled conclusion about what the user is allowed to be told.
 
+  **Redirect, not correction, 2026-09-12: Bug 102 no longer exists to point at, but the dependency
+  itself is still live and still unmet.** `VAULT_KEY_LAYERING.md` §8 item 14 already gave the BEK
+  its per-layer storage this paragraph was waiting for — checked directly, `storePendingRestore`
+  (`Vault+Manager+Backup.swift:434`) still hard-codes its `alreadyHasBEK` check to depth 0 regardless
+  of which depth is actually arming, so "depth 0 had to vary its reply... duress could not" remains
+  true today for the *reply* even though the *storage* it's about is no longer device-wide. What
+  this paragraph is actually waiting for is `RECOVERY_BUFFER_LAYERING.md`'s own Stage 4 (arming
+  state made genuinely per-depth) — tracked forward under Bug 99, not Bug 102, per that bug's own
+  2026-09-11 reclassification.
+
 - **The ongoing progress banner** — was the persistent, updating shard count in the vault tab.
   Originally judged un-unifiable: showing it in duress was harm 1 outright (direct disclosure that a
   recovery is inbound), and fabricating a plausible, consistently-timed counter that tracks nothing
@@ -6155,6 +6354,16 @@ surfaces bundled under "what does duress show," and only one of them was fixable
   reconstruction is not. Dropping it leaves "Recovery in progress…", which claims no progress, so it
   cannot contradict itself across repeated unlocks and reads the same as a real recovery still
   waiting on trustees it has not met.
+
+  **"Depth-independent" is now imprecise, corrected 2026-09-12 — the fix's conclusion is unaffected.**
+  `RECOVERY_BUFFER_LAYERING.md` §2.1's Stage 3 gate now drops an inbound shard op (`.handback`
+  included) when its sender isn't visible at the current depth, before `storeRestoreShard` ever runs
+  — collection is no longer *unconditionally* depth-independent. This narrows, doesn't reopen, the
+  concern above: a real depth-0 trustee typically isn't visible at a duress depth, so their handback
+  now gets dropped and retried rather than silently banked during a duress session — the exact
+  cross-depth accumulation this paragraph worried about. The static "Recovery in progress…" text
+  remains the right choice regardless (a duress-depth-visible sender, per Bug 99's attack, still
+  accumulates freely), just no longer the *only* thing standing between duress and a climbing count.
 
   Neither horn of the original objection applies to the static form: it is real state rather than a
   fabrication, so there is no timing to get wrong, and it is identical in both layers, so there is
@@ -6233,6 +6442,11 @@ and it should be re-read once the flag becomes depth-aware.
 ---
 
 ## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
+
+**Stale, 2026-09-11:** Cites `reconstructBEK`/`attemptBEKRestore`/`persistBEKPayload`/
+`fetchDecodedBEK`/`setupBEK()`/`distributeBEKShards`/`prepareBEKShards` throughout — all renamed by
+this session's BEK storage refactor. The `Vault+Manager+Backup.swift:721` citation for
+`attemptBEKRestore` now points at unrelated legacy-array-migration code.
 
 **Status:** **All three remedies in as of 2026-08-26.** Remedy 1 fixed 2026-08-24; remedy 2 (trustee
 attestation) built and tested 2026-08-26; **remedy 3 (explicit confirmation) built 2026-08-26**, when
@@ -6749,6 +6963,14 @@ check: open a `.occbak` at depth 0 and again at a duress depth, confirm the prom
 both — text, buttons, order — and that declining leaves nothing armed at either. Same standing
 limitation as Bug 93 harm 4's acknowledgment.
 
+**Addendum, 2026-09-14 — Bug 124 finds remedy 2's actual protection narrower than assumed here.**
+Branch B (attestation) never verifies the underlying share value is genuine, only that a currently-
+recognized identity vouches for it. Bug 124 traces the revoked-trustee half of that; Bug 125
+(2026-09-19) goes further and finds attestation's own signature redundant with transport-level sender
+authentication regardless of revocation status — `handleHandback` already knows who sent this, one
+layer up, before it ever looks at `op.attestation`. See Bug 125 for the current, complete word on
+whether Branch B (as a mechanism, not just its size) is needed at all.
+
 ---
 
 ## Bug 94a — Remedy 2's attestation field is not padded, so slot size names the trustee who is mid-recovery
@@ -6829,6 +7051,13 @@ each op carries two, which is the same jitter that made the neighbouring test fa
 before its bound was widened. A second test pins the specific omissions (`attestation` non-nil,
 `attribute.entryID` non-nil, matching entryIDs) so they cannot return via a tidied nil default.
 
+**Moot as of 2026-09-19 — `bugs.md` Bug 125 removed `attestation` from the wire format entirely.**
+This entry's fix (pad the field so its presence/absence can't be a tell) was correct for as long as
+the field existed; once there's no `attestation` field on `ShardOperation` at all, there is nothing
+left to pad unevenly. `ShardOperationPaddingTests` was updated accordingly — it now compares a filler
+op against a plain `.handback`, with no attestation on either side. Left as historical record of a
+real bug, not rewritten to pretend the field it was about never existed.
+
 `fillerShardOperation` is no longer `private`, solely so the first test can reach it. The general
 lesson is in its doc comment: **every optional member a real op can carry has to be filled here**,
 because tier padding equalises count and nothing equalises size.
@@ -6837,7 +7066,12 @@ because tier padding equalises count and nothing equalises size.
 
 ## Bug 95 — One poisoned shard permanently blocks legitimate vault recovery
 
-**Status:** **Open.** Filed 2026-08-22 alongside Bug 94, from the same read. **Re-verified
+**Stale, 2026-09-11:** Cites `reconstructBEK` as the live call site — renamed to `Backup.reconstruct`
+by this session's BEK storage refactor.
+
+**Status:** **Fixed 2026-09-23**, on `v1.11.0/vault-key-layering`: `verifiedKey` searches subsets of
+the shards against the backup file's GCM tag (see "Fix, as built" below). Of the three remedies below,
+only the second was buildable by then. Filed 2026-08-22 alongside Bug 94, from the same read. **Re-verified
 2026-08-26** against Bug 93's depth-gating: `attemptBEKRestore` now guards `currentDepth == 0` before
 the grouping/reconstruction loop this bug lives in (`Vault+Manager+Backup.swift:723`) — not a fix,
 just confirmation that the vulnerable code only ever runs at the one depth recovery was always meant
@@ -6856,7 +7090,7 @@ bug is about: `ShamirSecretSharing.reconstruct` still does no subset search, so 
 properly-authenticated share mixed with k−1 genuine ones still poisons the whole group, and there is
 still no UI path to discard a wedged restore. Same defect, narrower population, unchanged remedy.
 
-**Target:** unset.
+**Target:** `v1.11.0`.
 
 ### Severity: High (availability)
 
@@ -6922,20 +7156,101 @@ indistinguishable from a genuine one **once signature verification has been skip
   `pending-restore.occbak` or `pending-restore-shards.dat` from the UI, so any wedged restore is
   permanent regardless of cause. This is worth doing on its own.
 
+### Where it stood by 2026-09-23
+
+§9.4 (`RECOVERY_BUFFER_LAYERING.md`) removed the held file, so nothing stayed stuck on disk any more.
+The poisoned share did, though: it sits in its sender's `PendingShamirSecretRestore` slot, and every
+attempt combined every visible shard, so every attempt failed. Only that sender sending a good share
+would clear it, and a hostile trustee won't.
+
+How it arrives: after the owner re-pairs in person on a new phone, each trustee's next message carries a
+`.handback`. A trustee running a modified app sends a 33-byte share with the real `distributionID`
+(it's on the share they hold), any x that isn't 0 or another sender's, random values, and any
+signature. `handleHandback` accepts it on trust (Branch A always fails once the owner's key has
+rotated), and `absorbShard` banks it. The stock app can't produce one by accident: a damaged custody row
+fails to decrypt and isn't sent, and a share from an older round carries a different `distributionID`.
+
+Remedies 1 and 3 no longer applied:
+- **Remedy 1, signature verification, can't work on the path that matters.** The key that signed the
+  shares was on the lost phone, which is why `restoreBackup` passes `ownerIdentity: nil`. Bug 125
+  removed Branch B, and nothing can replace it.
+- **Remedy 3, a discard-restore UI, would now cause harm.** There's no pending restore left to
+  discard, only banked shard rows, which are depth-blind. A discard in a duress layer would let a
+  coercer delete the real restore's shards, and the control itself is a surface to spot.
+
+The one way out before the fix was blind: deleting the hostile trustee's contact drops their share from
+`visibleContactIdentifiers`, but nothing tells the owner which contact to delete.
+
+### Fix, as built (2026-09-23)
+
+- **Subset search** (`VaultManager.Backup.verifiedKey`). It tries every shard first. If that fails, it
+  retries with shards left out, fewest first, and stops at the first candidate that opens the file.
+  Extra honest shards never change the result, so the first subset that works is the full set minus the
+  bad ones, and the GCM tag is an exact check for it. The threshold is unknown on the restoring device,
+  so the search runs down to pairs; a subset below k just yields a wrong key. Every wrong candidate is
+  zeroed. A hostile trustee can now do no more than withhold their share.
+- **Cap: 1,024 tries per distribution** (`maxReconstructionAttempts`). One bad share needs at most n + 1
+  tries, and n ≤ 255, so the cap never binds for one hostile trustee. It binds only for several at once:
+  two bad shares among up to 44, and three among up to 18, always fit.
+- **`ShamirSecretSharing.reconstruct` computes the Lagrange weights once per call** instead of once per
+  byte. They depend only on the x-coordinates, so the output is identical. Before this, a 20-share
+  reconstruction took about 0.64 ms in an optimized build, and 0.44 s with 255 shares, which put the
+  search at up to about 2 minutes in that extreme.
+- **The successful candidate's decrypted backup is zeroed.** The old check threw it away without zeroing
+  it, a gap left over from Bug 96 item 3.
+
+Not chosen: accepting it as a limitation, trustees cross-vouching for each other's shares, a Merkle root
+in the `.occbak`, and Berlekamp–Welch decoding. `decisions.md`, "Recover past poisoned shares by subset
+search against the GCM tag", records why.
+
+**Measured** on the iPhone 17 Pro simulator on an Apple Silicon Mac, optimized build, before the Lagrange
+change (a device will be somewhat slower):
+
+| Backup | 10 honest | 10 honest + 1 bad | 16 honest + 4 bad (cap reached, fails) |
+|---|---|---|---|
+| 10 entries, 4 KB file | 61 ms | 57 ms | 592 ms |
+| 200 entries of 5 KB, 1.4 MB file | 842 ms | 823 ms | 870 ms |
+
+One bad share adds almost nothing, and for a large backup most of a successful restore's time is
+inserting entries. The Lagrange change then cut `PoisonedShardTests.capBoundsTheSearch` from 114 s to
+3 s in the unoptimized test build. The optimized build wasn't re-measured.
+
+Timing: the search runs only on shards from contacts visible at the current depth, so the same inputs
+take the same time at every depth. The field arithmetic's own data-dependent timing is Bug 131.
+
 ### Guard
 
-No test touches the recovery path at all (see Bug 93). Acceptance criterion: a group containing one
-forged share must still recover from the genuine ones, or must be discardable.
+`PoisonedShardTests` (`VaultRestoreTrustTests.swift`), all through `restoreBackup` on a fresh device:
+- one poisoned share with a fresh x among enough honest ones restores the owner's key and entries;
+- a poisoned share reusing an honest share's x restores (the full set fails on a duplicate coordinate,
+  not the tag);
+- two poisoned shares restore;
+- too few honest shares plus a poisoned one restores nothing and writes nothing;
+- the cap from both sides, whatever order shares arrive in: three poisoned among 18 restores (at most
+  988 tries), four among 20 fails (at least 1,352).
+
+`SSSVectorTests.matchesPerByteLagrange` (`ShamirTests.swift`) pins `reconstruct` against the per-byte
+formula it replaced, on arbitrary points for 2 to 255 shares.
+
+A wrong-length share needs no test here: `SignedAttributeCodec.encode` refuses any value that isn't 33
+bytes, so one can never be banked.
 
 ---
 
 ## Bug 96 — Restore-path robustness: two traps on decoded content, unbounded growth, and vault plaintext left unzeroed
 
+**Stale, 2026-09-11:** Items 3-4 cite `setupBEK`/`rotateBEK`/`prepareBEKShards`/`reconstructBEK`/
+`bekSetupState`/`bekShardMetadata` — all renamed by this session's BEK storage refactor. Item 4's
+file-naming note (`pending-restore.occbak`/`pending-restore-shards.dat`) also describes a problem
+already fixed elsewhere (Bug 93 harm 3, renamed to `backup-import-cache*`) without ever
+cross-referencing back here.
+
 **Status:** **Partially fixed 2026-08-24.** Filed 2026-08-22 alongside Bugs 94 and 95. Grouped
 because all four are robustness rather than access-control defects, and none is worth its own
 entry. **Item 1 (the two traps) is fixed** — `importBackup` now range-checks `entryType` and
 `createdAt` before either reaches the conversion that used to crash the process. **Items 2
-(unbounded shard file) and 3 (unzeroed export plaintext) remain open.**
+(unbounded shard file) and 3 (unzeroed export plaintext) remain open.** Item 3 fixed 2026-09-23, see
+below.
 
 **Item 2 has a structural fix rather than a cap, 2026-08-27.** The shard *file* no longer exists —
 Bug 100 remedy 2 made restore shards `ReconstructShard` rows — so item 2 is now unbounded *rows*
@@ -6949,6 +7264,23 @@ flip to a real assertion on its own when a bound appears.
 **One caution carried from that design work.** A cap plus a *shared* buffer would be a cross-layer
 denial channel — junk shards evicting real ones. Bug 102's per-depth arrangement is what makes a cap
 safe, which is another reason not to add one to the shared buffer first.
+
+**Doubly stale, corrected 2026-09-12 — the thing this item is waiting for no longer exists in the
+shape it was waiting for.** Bug 102 was reclassified Closed, subsumed into Bug 99, 2026-09-11 — its
+own fixed-slot design is preserved there for the record but was never built. Its successor,
+`RECOVERY_BUFFER_LAYERING.md` §6 item 9 (proposed the same day, 2026-09-11), does **not** provide the
+free hard cap this item is counting on: item 9 is rows with an eager-*filler* baseline, explicitly
+"uncapped beyond" that baseline, mirroring `BackupEncryptionKey`'s own deliberately-uncapped design
+— it closes the *row-count-as-forensic-signal* problem, a different axis from the
+*resource-exhaustion-via-unbounded-growth* problem this item is actually about. Item 9's own text
+lists filler-baseline sizing as still open and doesn't mention a cap anywhere. **So: waiting is no
+longer the right call — there is nothing left upstream that closes this "for free."** Whoever builds
+item 9 needs to separately decide a real cap for the shard buffer specifically (item 9's "One
+caution" above about caps-plus-shared-buffers being a denial channel still applies and still needs
+its own per-depth-safety argument, independent of whichever container shape wins). The guard test's
+actual name is `restoreShardFileIsBounded` (`VaultRestoreTrustTests.swift:587`) — a naming leftover
+from the file era, not `restoreShardBufferIsBounded` as cited above — confirmed still present, still
+an active `withKnownIssue`, not yet flipped.
 
 **Target:** unset.
 
@@ -7023,6 +7355,17 @@ same order of urgency as the trap fixes were, and should not be prioritized as i
 `storePendingRestore` accepting a file of unbounded size is unaffected by any of the above and
 remains open — a separate concern from the shard-count question.
 
+**Decided permanently unbounded, 2026-09-13 — `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3, `bugs.md` Bug
+122.** Generalizing this population past BEK (`PendingShamirSecretRestore`, keyed by the secret's own
+identity rather than by depth) made a cap unsafe to add at all: capping live rows without restoring
+per-depth isolation turned into a counting oracle letting a coercer learn whether a genuine restore is
+active anywhere on the device, without any key (Bug 122). A depth-scoped cap would have closed that, but
+was rejected — not for a security reason, but because it needs its own UX for what happens at the boundary,
+judged not worth building for a concern this item's own 2026-08-24 reconsideration already downgraded to
+"nice to have." So: no cap, ever, on this population — cost is now materially higher than when this item
+was last sized (~112 KB per unbounded row under the new model, not a few hundred bytes), but still an
+accepted trade against the alternative, not an oversight.
+
 ### 3 — The entire vault plaintext is left in freed heap on export
 
 The file header states the discipline (`Vault+Manager+Backup.swift:8-9`):
@@ -7037,6 +7380,28 @@ blob in the vault, decrypted — and then `JSONEncoder().encode(backup)`. **Neit
 Guarding the key while leaving what the key protects is the wrong way round. `JSONEncoder`'s internal
 buffers cannot be reached, which limits how complete any fix can be, but the two named buffers can
 be — and the discipline as written promises more than it delivers.
+
+**Fixed, 2026-09-23, on both export and restore.** The restore side had the same defect in mirror
+image (`decodedBackup`'s decrypted JSON and decoded entries), so both are covered:
+- `VaultBackupEntry.label`/`.content` and `VaultBackup.entries` are now `var`, so they can be zeroed in
+  place. `VaultManager.zeroPlaintext(_:)` zeroes every label and content.
+- `exportBackup` zeroes its entries and its JSON by `defer`. The `VaultBackup` is built inside the
+  encode call, so no second reference outlives it.
+- `decodedBackup` zeroes the decrypted JSON on return, and the decoded entries if a check fails.
+  `restoreBackup` zeroes them when the attempt ends, successful or not. The per-entry checks moved out
+  of a loop over the entries, because the loop's own reference to the array would have made the
+  zeroing hit a copy.
+
+In-place zeroing only works while each buffer has one owner; a second reference makes Swift copy on
+write and zero the copy. `BackupPlaintextZeroingTests` pins that property (it checks the buffers'
+addresses are unchanged), and it fails if a second reference is introduced. **Not covered, and can't
+be:** `JSONEncoder`/`JSONDecoder` internals, labels while they pass through Swift `String`s
+(`decryptLabelPayload` returns one), and CryptoKit's own buffers.
+
+**Follow-up, 2026-09-26 (branch code review):** per-entry key reconstruction had the same gap.
+`reconstructEntry` (`Vault+Manager+Reconstruction.swift`) opened the entry's content to check the GCM tag
+and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` does. Not
+covered by a test, like the other zeroing points: a leftover copy in freed memory isn't observable from one.
 
 ### 4 — Minor, recorded so they are not rediscovered
 
@@ -7124,10 +7489,39 @@ deleted row with a nil depth field ahead of the backfill pass — the gap has no
 
 ## Bug 98 — The field-coverage tripwire is two different strengths, and the class of bug it exists to catch has no coverage at all
 
-**Status:** **Open.** Filed 2026-08-22, confirming a note carried since the Bug 76/77 tripwire work
-rather than acting on it unverified.
+**Status:** **Closed — moot, 2026-09-11.** Filed 2026-08-22, **Open** until now, confirming a note
+carried since the Bug 76/77 tripwire work rather than acting on it unverified.
 
 **Target:** unset.
+
+### Reclassified 2026-09-11 — the machinery this entry's tripwire protected no longer exists
+
+**Everything below describes `EncryptedFieldCoverageTests.swift`'s `groupPropertiesReviewed`,
+`messageDraftPropertiesReviewed`, and the `probes`/`unprobedFields` table form built for
+`Contact.Profile`/`AppLayerConfig` — a tripwire against a stored property silently escaping the
+Secure Mode key-rotation machinery.** That whole machinery — `reencryptAllFields`, `Group.reencrypt`,
+`AppLayerConfig.reencrypt`, `Message.Draft.reKeyOrPurgeAll`, `RotationRegistry`, and the staged-key
+protocol — was deleted outright by "Removal Stage 3: delete the rotation machinery" (`2b00f09`,
+2026-09-10), the day before this bug was last touched and never reconciled since. Confirmed directly:
+`EncryptedFieldCoverageTests.swift`'s own header now states exactly this — *"That machinery... was
+removed along with key rotation itself (Removal Stage 3, `plan.md`)"* — and the file itself was
+trimmed to one surviving, unrelated test (`readabilitySeparatesStrandedFromAbsent`, about
+`maxBundleVersion`'s stranded-vs-never-seen read, not rotation coverage). Grepped the whole repo for
+`RotationRegistry`/`groupPropertiesReviewed`/`storedPropertyNames`/`tripwireGuidance`: zero matches
+anywhere, source or tests.
+
+There is no longer a rotation-classification tripwire to be "two different strengths" of, and nothing
+for `Group`, `Message.Draft`, or `VaultEntry` to be ported into — the remedy below is not a
+description of unfinished work, it's a description of a system that stopped existing. Closed rather
+than left open describing a mechanism the codebase no longer has, matching the "Closed — moot"
+disposition already used for Bugs 106-109, the other casualties of the same Removal sequence.
+
+**Same root cause as Bug 102's own reclassification** (2026-09-11, same day) — a bug filed against a
+subsystem that a later Removal stage deleted, never revisited after. `VAULT_KEY_LAYERING.md` §7/§8
+separately cited "`RotationRegistryTests` passes as-is"/"forces an explicit rotation classification"
+as Stage 1 verification evidence (2026-09-08, one day before the deletion) — corrected alongside this.
+
+### Original entry, preserved below for the reasoning trail
 
 ### Severity: Low (process gap — nothing is exploitable, a future addition could ship unreviewed)
 
@@ -7197,7 +7591,40 @@ filed as a bug.
 
 ## Bug 99 — A coercer who supplies his own trustees can test whether the phone is in duress, because a restore completes in one layer and not the other
 
-**Status:** **Open.** Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
+**See also [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md), cross-referenced
+2026-09-11 — this bug isn't blocked on an unsolved design question, only on unbuilt implementation
+of one that already exists.** That document's §2 (sender-visibility gate on inbound shard
+attribution), §4 (Stage 4: per-depth arming/restore state), and §6 item 5 (that state's actual
+sizing — *"Arming/state: small — timestamp, state enum. Generously, ~64 bytes"*) is the full design
+this entry's own Requirements section below gestures at without landing on. Its own §7 bugs table
+already tracks this entry: *"open — subsumed here except the pending-file tag."* Confirmed directly
+against code, not just the document's own "design, not built" label: `identifyOwner`
+(`Contact+Manager.swift:1550`) still resolves senders via unfiltered `fetchAllContacts()`, and
+`storePendingRestore` (`Vault+Manager+Backup.swift:434`) still has no depth parameter at all — every
+piece this design depends on remains genuinely unbuilt.
+
+**Addendum, 2026-09-21 — a real, narrow interim widening, accepted deliberately, not silently.**
+Replacing `ReconstructShard` with `PendingShamirSecretRestore` (the plan at
+`Vault+Manager+ReturnBuffer.swift`, RECOVERY_BUFFER_LAYERING.md §9.3) moves BEK-restore shard
+collection from depth-partitioned to depth-blind *before* this bug's own fix (binding completion to
+the depth a restore was attempted at) lands — the two were originally meant to ship together, but the
+storage swap alone is worth doing now, and building the depth-blind shape twice (once temporarily
+scoped, once final) to avoid the gap costs more than the gap is worth. Today's `ReconstructShard`-based
+collection is depth-partitioned: a shard delivered while depth 2 is showing is invisible to a depth-0
+restore attempt. Depth-blind collection removes that. Traced with `attemptBackupRestore`'s
+`currentDepth == 0` completion guard still unconditionally in place (unchanged until this bug's own
+fix lands): the widening is narrow, not the core attack this entry describes — a shard collected at
+duress depth 2 becoming usable at depth 0 requires the same attacker to *also* later get access to
+depth 0, **and** depth 0 to have no real BEK configured yet (`alreadyHasBEK`, Bug 94 remedy 1, already
+blocks it otherwise). Closes the moment this bug's own remedy ships, not before. Tracked here so it
+isn't lost between the two changes landing separately.
+
+**Status:** **Fixed, 2026-09-23, with an accepted residual.** `RECOVERY_BUFFER_LAYERING.md` §9.4 is built: a restore
+completes at the depth its file is opened at, counting only shards from contacts visible there. The
+residual (trustees left visible in a duress layer still count there) is described in the 2026-09-23
+addendum below. Full suite: 881 tests, 875 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
 asking what an attacker who owns the trustee set can do, rather than what one who does not can.
 
 **Target:** `release/v1.10.3`.
@@ -7222,9 +7649,30 @@ The victim is coerced, gives the duress PIN, and no restore is pending. The coer
    alike. `storeRestoreShard` banks them, because shard collection is depth-independent by design.
 5. **Wait.**
 
+**"Depth-independent by design" is now imprecise, corrected 2026-09-12 — the attack itself is
+unaffected.** `RECOVERY_BUFFER_LAYERING.md` §2.1's Stage 3 gate (built after this bug was filed)
+drops an inbound shard op when its sender isn't visible at the current depth. Checked directly
+against this attack: step 1 pairs the attacker's own two phones with the victim's device *at the
+coerced depth itself*, so those contacts are visible at exactly the depth step 4's handback later
+arrives at — Stage 3's gate is satisfied by construction, not bypassed by an oversight. The attack
+proceeds exactly as described; only the phrase "depth-independent by design" overstates it now,
+since collection is conditionally depth-independent (on sender visibility), not unconditionally.
+
 At depth 0 `attemptBEKRestore` fires on the next unlock, reconstructs his BEK, imports his entries,
-and clears the banner. Above depth 0 nothing happens, ever. He establishes the baseline once on his
-own phone and then reads the victim's answer off it.
+and clears the banner. Above depth 0 nothing happens, ever.
+
+**The signal he reads does not depend on comparing two devices — he has certainty, not inference.**
+He authored the whole distribution himself: he chose `k`, split his own genuine BEK across exactly
+`k` of his own phones, and confirmed both handbacks were accepted. Whether reconstruction *can*
+succeed is therefore not something he is estimating — he supplied precisely what his own scheme
+requires, and everything downstream of that is deterministic (Shamir combine, then a GCM tag check
+against his own file). So when nothing happens, there is exactly one explanation available to him,
+not a most-likely one among several: the depth he is looking at is not depth 0. Running the same
+sequence once on his own, undeceived phone first (the "baseline" this entry originally leaned on)
+only confirms the *mechanism* works end to end before he relies on it — pairing, handback, the
+unlock-triggered retry — it is not what makes the result on the victim's phone legible. Once he
+trusts the mechanism, silence in the face of a self-authored, self-sufficient share set is already a
+direct readout, not a comparison he has to draw.
 
 ### Why the standing reasoning does not cover this
 
@@ -7287,6 +7735,19 @@ whichever layer completes, so a later export at depth 0 is readable by him. Unch
 remedy, and already confined by Bug 94 remedy 1 to devices that have no BEK yet, which is also the
 only case where his restore can proceed at all.
 
+**Stale as of 2026-09-08, corrected 2026-09-11 — never updated when it happened.** This paragraph
+describes a device-wide, unlayered BEK. That stopped being true at Stage 2 (2026-09-08, `VAULT_KEY_LAYERING.md`
+§7), which routed the BEK array itself by depth, and is even less true now: BEK storage moved off
+the array onto per-depth `BackupEncryptionKey` rows (§8 item 14, 2026-09-11). Installing a BEK at
+duress depth N now only ever touches depth N's own row — depth 0's key, trustees, and `shardMetadata`
+are structurally untouched, confirmed directly by `BackupKeyOrphaningTests.shallowerBackupKeySurvivesCascade`.
+**What is still true, unchanged:** `attemptBackupRestore` (renamed from `attemptBEKRestore`) still
+hard-guards `currentDepth == 0` before completing (`Vault+Manager+Backup.swift:482`) — restore
+completion itself remains pinned to depth 0, not routed per-depth. So this entry's actual oracle (arm
+in duress, wait, nothing ever completes there) is unaffected by either storage change; only the
+"his key becomes *the device's* key" framing above is what's gone stale — see Bug 102's own
+correction note for the fuller accounting, since that bug's entire scope turned on the same premise.
+
 ### Requirements
 
 **The arming depth has to be persisted, and sealed.** It must go through `DepthCodec` under the
@@ -7308,10 +7769,121 @@ independently of the file it describes, and a stale one silently mis-gates the n
 has one lifecycle and cannot drift from itself. **Build Bug 100 remedy 2 first** — this remedy is
 smaller and safer on the other side of it.
 
+**Corrected 2026-09-11 — Bug 100 remedy 2 already shipped and already corrected this paragraph's own
+"simply a field on that model" framing; this entry never incorporated that correction, and neither
+entry actually lands on an answer.** Bug 100's own remedy-2 write-up says plainly: *"the arming depth
+is **not** simply a field on that model, as first assumed: at arming time no shard rows exist yet...
+See Bug 99's build plan for where it actually has to live"* — pointing back here, where nothing was
+ever added. The real answer already exists, in `RECOVERY_BUFFER_LAYERING.md` §6 item 5, cited at the
+top of this entry: the arming depth needs no dedicated field at all. Once the whole container is
+genuinely one-slot-per-depth (that document's Stage 4), arming state (*"timestamp, state enum"*) is
+just one more small field living in *that depth's own slot* — the depth is implicit in which slot
+holds it, sealed the same AAD-bound-to-slot-index way everything else in this design is, not tagged
+onto a row that may not exist yet at arming time. Bug 100 remedy 2 (rows, not a file) is still a
+correct and necessary prerequisite — just not, on its own, where the arming depth ends up living.
+
 **The deferral guard changes shape rather than disappearing.**
 `pendingRestoreNeverCompletesAboveDepthZero` becomes "does not complete at a depth other than the one
 it was armed at". Something still has to stop a duress session finishing a depth-0-armed restore —
 that is the assertion that protects the genuine backup.
+
+**Superseded outright, 2026-09-23 — not "in part by Bug 102" (which no longer exists, see Bug 100's
+own 2026-09-12 redirect), but by the reordering `RECOVERY_BUFFER_LAYERING.md` §9.3 already settled and
+this entry's own 2026-09-21 addendum already names.** Everything in this "Requirements" section — the
+sealed arming-depth field, where it lives, the sidecar-vs-row debate — was solving for a design with
+two depth-sensitive moments: arm, then complete later, needing something to remember which depth arming
+happened at so completion could look it up. §9.3 removed the first moment entirely. Shards are collected
+depth-blind, unconditionally, before any `.occbak` file exists (`PendingShamirSecretRestore`, shipped
+Stage 4, 2026-09-21) — there is no "arming" event left to timestamp. The only depth-sensitive moment
+remaining is the file being opened — provided the file is used only at that moment and never held
+(next paragraph). Full design: `RECOVERY_BUFFER_LAYERING.md` §9.4.
+
+**The `.occbak` is never held: opening it is the only completion attempt.** Today `storePendingRestore`
+writes the file to the sandbox and waits for a later `attemptBackupRestore` (the next unlock or shard
+arrival) to try it. Once completion is allowed at any depth, a held file breaks two ways. It completes at
+whatever depth the *next* attempt happens at, not the depth it was opened at, so a coercer's file opened
+in duress lands in depth 0 at the owner's next real unlock (this entry's own "deferral delivers it into
+the real layer"). And one depth's held file blocks every other depth's restore through `alreadyProcessed`.
+Per-depth pending files would fix both only by re-creating arming state (which depth owns which file),
+the thing §9.3 removed. A fallback of "attempt first, persist the file only if that fails", proposed
+earlier the same day, has the same two problems and was dropped. The settled shape: attempt reconstruction
+against the in-memory bytes at the depth the file is opened at; success imports there; failure stores
+nothing, and the user opens the file again once more shares have arrived. The attempt iterates over banked
+shard sets (one `PendingShamirSecretRestore` row per `distributionID`) against the one file in hand, and
+the GCM tag picks the match. It never iterates over files.
+
+The code change that follows is still small, but larger than deleting one guard:
+- delete `attemptBackupRestore`'s `guard currentDepth == 0 else { return }`
+  ([Vault+Manager+Backup.swift:496](Occulta/Features/Vault/Vault+Manager+Backup.swift:496));
+- thread a real `currentDepth` through `Backup.reconstruct`, which hardcodes depth 0 twice (its
+  `bekAlreadyPresent` check and its `persist` call), and through `storePendingRestore` and its caller,
+  `OccultaApp.armPendingRestore()`;
+- remove `pendingRestoreURL`, `pendingRestoreActive`, `pendingRestoreShardCount`,
+  `refreshPendingRestoreState`, the "Recovery in progress" section, and the unlock and shard-arrival
+  triggers of `attemptBackupRestore`, since there is no held file left for them to act on.
+
+Bug 126 becomes moot with that state. Bug 100 remedy 3 and the `.occbak` half of remedy 1 become moot
+outright: the file never touches the sandbox. No new field, no `DepthCodec`-sealed arming depth, no
+sidecar-vs-row question.
+
+**Requirement: import succeeds at any depth, the same way.** A depth-privileged success or failure is
+itself a forensic trace. Once `Backup.reconstruct` takes the real depth, the core path satisfies this;
+`importBackup` already stamps entries with its caller's depth. One existing piece violates it: on
+success, `attemptBackupRestore` sets a device-wide `UserDefaults` flag,
+`vault.postRestoreActionNeeded` ([Vault+Manager+Backup.swift:541](Occulta/Features/Vault/Vault+Manager+Backup.swift:541)),
+which `Vault+Tab` reads through `@AppStorage` to open the post-restore sheet on *any* unlock at *any*
+depth. That was harmless while completion was pinned to depth 0. Once an import can happen in duress,
+the owner's next depth-0 unlock would show "set up your backup", announcing a restore that happened in
+another layer. Under the settled shape the prompt belongs at file-open, at the importing depth, with no
+persisted global flag.
+
+**Open hole: "nothing to bind together" was too strong.** This entry's Remedy opens with the warning:
+"Not 'complete in either layer' — that has a hole." A genuine depth-0 backup completing at a duress depth
+imports the real vault into the layer the coercer is reading. The stateless file-open doesn't cause this,
+but it doesn't close it either; depth-blind collection plus completion at any depth re-opens it:
+1. During a genuine recovery, the real trustees' shards are banked depth-blind.
+2. A coercer holding the phone at a duress depth opens the real `.occbak`, for example from the phone's
+   own Files app, which isn't depth-scoped.
+3. If that depth has no backup key of its own, reconstruction succeeds and the real depth-0 entries are
+   imported into his layer.
+
+It is bounded: it needs a genuine recovery in progress with its shards banked and not yet consumed, and
+success consumes them (`orphanShards`), so it works once. Once is enough to disclose the real vault.
+`VAULT_KEY_LAYERING.md` §8 item 9's "nothing left to protect by blocking it" assumed per-depth shard
+buffers, which §9.3 later abandoned. The regression rule "deferral must not be silently dropped"
+(`RECOVERY_BUFFER_LAYERING.md`, *Regressions*) is why this had to be decided before the guard comes
+out, not after.
+
+**Decided, 2026-09-23: filter by trustee visibility at completion.** A restore at depth d uses only banked
+shards whose sender (`senderIdentifier`, already stored in each slot) is a contact visible at d at the
+moment of the attempt. No new stored state. The coercer's own trustees, paired in his layer, get
+`originDepth` = d and are visible there, so his file still completes and Bug 99 stays closed. They are
+not visible at depth 0 (`depth >= origin` fails), so his shards can't complete anything in the real
+layer either. Considered and not chosen:
+- Accepting the window, because the real vault goes to exactly the coercer who meets the preconditions
+  (one who took the old phone knows a recovery is coming).
+- Binding each shard to the depth current when it arrived, which needed a `ShardsCodec` v2 and a
+  migration.
+
+**What this leaves open, stated so it isn't mistaken for a full close:** a contact with no
+`visibleThroughDepth` is visible at every depth (`Contact+Model.swift`, `isVisible(atDepth:)`). Unless
+the owner hid their trustees from the duress layer, the real trustees pass the filter there, and the
+hole is open exactly as described above. The protection holds only for trustees the owner has hidden,
+and nothing currently prompts the owner to hide them. The arrival-depth binding would have closed the
+default case too; it stays available if this proves insufficient.
+
+**Guard, once built:**
+- A full share set banked first, then the file opened at a duress depth: entries land there (this
+  entry's "quarantine, not deferral" property), and nothing is ever written to the sandbox.
+- The same at depth 0.
+- Too few shares: the attempt fails, no pending state exists afterward, and opening the same file again
+  once enough shares have arrived completes.
+- The post-restore prompt appears only at the importing depth.
+- Shards from trustees hidden at the duress depth don't count there: the owner's real file, opened in
+  duress against a full set of their shards, doesn't complete.
+- The coercer's own trustees, paired at his depth, can't complete a restore at depth 0.
+- A test pinning the residual, so it can't pass unnoticed: trustees left visible at the duress depth
+  *do* count there.
 
 ### Superseded in part by Bug 102's wider framing
 
@@ -7345,6 +7917,10 @@ binding rather than by anything about the UI.
 
 ## Bug 100 — The pending-restore files are a keyless progress counter and a vault-size estimate, and they leave the device in backups
 
+**Status, 2026-09-23: remedy 3 moot; remedy 1's pending-`.occbak` half moot.** `RECOVERY_BUFFER_LAYERING.md`
+§9.4 is built: the `.occbak` is never written to the sandbox, so there is no file to pad or exclude.
+Remedy 1 still applies to `backup-export-meta.dat`. Earlier status, unchanged below.
+
 **Status:** **Remedies 1 and 2 fixed 2026-08-27; remedy 3 open.** Remedy 2 shipped as part of this
 branch — BEK restore shards are `ReconstructShard` rows and the shard file is gone, so the progress
 counter it leaked is gone with it. Remedy 1 shipped too — both remaining Application Support files
@@ -7355,6 +7931,31 @@ if Bug 102 slots the backup contents. See also Bug 102: rows remove the length c
 fixed slots supersede them. Filed 2026-08-27, while enumerating what a restore leaves on disk. Not found by
 reading the restore code — found by asking what an examiner sees, after the *same* number had just
 been removed from the UI for being too revealing.
+
+**Redirect, 2026-09-12: Bug 102 no longer exists, and its successor isn't "fixed slots."**
+`RECOVERY_BUFFER_LAYERING.md` §6 item 9 (2026-09-11) proposes replacing `backup-import-cache.occbak`
+with a per-depth *row* holding a padded `encryptedSnapshot` field, not a fixed-slot array. The
+conclusion above still holds — the standalone file disappears either way, so remedy 3 (padding a
+file that no longer exists) stays moot — just via item 9, not "Bug 102"/fixed slots.
+
+**Superseding update, 2026-09-21: item 9 itself moved past "a row holding the file's contents" —
+remedy 3 is still open today, not yet moot.** §9.3 (2026-09-13) dropped `encryptedSnapshot` entirely
+rather than moving it into a row: the settled design collects shards first, depth-blind, and only
+opens the `.occbak` file at the very end, synchronously, once a matching set already exists —
+`RECOVERY_BUFFER_LAYERING.md`'s own Stage 3 ("start shard return"). Stages 4-5 of that build (the
+storage-mechanism swap, `PendingShamirSecretRestore` replacing `ReconstructShard`) shipped
+2026-09-21; Stage 3 — the reordering that actually removes the file's held-window and would make
+remedy 3 genuinely moot — has not. Until it does, `storePendingRestore` still writes the file
+immediately on open and holds it for the full waiting window exactly as this entry originally
+described. Do not mark remedy 3 moot before Stage 3 ships.
+
+**Update, 2026-09-23: once built, the reordering removes the file entirely, not just shortens how long
+it's held.** Bug 99's 2026-09-23 addendum settles that the `.occbak` is never written to the sandbox:
+opening it is a one-shot reconstruction attempt against the in-memory bytes, and a failed attempt stores
+nothing. So when that ships, remedy 3 (pad the file) and the pending-`.occbak` half of remedy 1 (exclude
+it from backup) both become moot outright. `backup-export-meta.dat`'s exclusion is unaffected, and so
+is Bug 101, since the `Documents/Inbox` copy is made by the OS, not by this code. Still not built: the
+same "do not mark moot early" rule applies.
 
 **Target:** unset. Independent of Bug 99, though both concern the same two files.
 
@@ -7461,7 +8062,10 @@ This is the half worth fixing first. It is one line per file and needs no format
    Bug 99 depends on this. Note the arming depth is *not* simply a field on that model, as first
    assumed: at arming time no shard rows exist yet, and a depth written onto a shard row as it
    arrives is the arrival depth, not the arming depth. See Bug 99's build plan for where it actually
-   has to live.
+   has to live. **Corrected 2026-09-11: Bug 99's own entry never actually landed on that answer —
+   it's `RECOVERY_BUFFER_LAYERING.md` §6 item 5, cited at the top of that entry.** Arming state
+   ends up as a small field (*"timestamp, state enum"*) in that depth's own shared-pool slot, once
+   Stage 4 there is built — not tagged onto a `ReconstructShard` row at all.
 
    **Required under Bug 102's per-layer design too, not just this one.** Restore shards belong in
    rows whether or not recovery is layered — and under layering they need no depth field at all,
@@ -7487,12 +8091,102 @@ file over and was not carried across.
 
 ## Bug 101 — Every file opened through "Open in Occulta" is likely still sitting in `Documents/Inbox`, unsealed and backed up
 
-**Status:** **Open, one fact unverified — see Confirm first.** Filed 2026-08-27, found while scoping
+**Status:** **Fixed 2026-09-25, on `v1.11.0/vault-key-layering`, and verified in the simulator the same
+day.** New copies are deleted after the read (step 1 below), and every Inbox, with copies left by
+earlier versions, is cleared when the app goes to the background (step 3). Share-sheet and AirDrop
+deliveries on a device are still unchecked.
+~~Open, one fact unverified — see Confirm first.~~ Filed 2026-08-27, found while scoping
 Bug 100's backup exclusion. Not found by reading the restore code: found by asking which copy of an
 opened file the exclusion would actually cover, and discovering there is one more copy than the code
 accounts for.
 
-**Target:** unset until the device check below settles the severity.
+**Target:** `v1.11.0`.
+
+### Fix, 2026-09-25 — delete the copy after reading, wherever iOS put it
+
+**The location was probably wrong.** A device upgraded from v1.10.3 had no `Documents/Inbox` at all.
+Occulta is a scene-based SwiftUI app, and for those iOS usually copies an opened file into
+`tmp/<bundle-id>-Inbox/`, not `Documents/Inbox/`. That is unconfirmed: the device had not
+necessarily opened a file through "Open in Occulta". If it holds, the harm is far smaller: `tmp/` is
+not backed up, and `clearTemporaryDirectory()` empties it on launch. The fix below does not depend on
+which location is right.
+
+**Built:**
+1. `handleOpenURL` (`OccultaApp.swift`) deletes the opened file after reading it whenever
+   `FileManager.isInsideAppContainer` places it inside the app's container, the same `defer` that
+   already deleted the share extension's App Group handoff. That covers both Inbox locations. A
+   file outside the container is the user's original, opened in place from Files, and is never
+   touched. Deleting after the read is safe for a staged `.occbak`: the bytes are memory-mapped,
+   and unlinking a mapped file leaves the mapping valid.
+2. `clearTemporaryDirectory()` now skips `*-Inbox` folders (`clearContents(of:)`). On a cold launch
+   iOS has put the incoming copy there before the app starts, and the detached sweep raced
+   `handleOpenURL` for it, so a file that launched the app could be deleted unread.
+
+3. **Added the same day, after the simulator run below:** `FileManager.clearInboxes()`, called from
+   `RootView`'s `scenePhase` handler on `.background`, deletes `Documents/Inbox/` and every
+   `tmp/*-Inbox/`, folders included. By then every delivered file has been read, since iOS brings the
+   app to the foreground to hand one over and `handleOpenURL` reads it at once, so this can't race an
+   incoming file the way a launch sweep does. It removes what step 1 can't reach: copies left by
+   versions before the fix, and one stranded by a crash between delivery and read. Removing the folder
+   leaves no sign a file was ever opened into the app; iOS recreates it for the next delivery.
+
+**Not built: remedy 1 (`LSSupportsOpeningDocumentsInPlace`)** — changes the opening contract, and a
+share-sheet delivery is copied regardless, so step 1 is needed either way. **Not built: a launch sweep
+of `Documents/Inbox`.** If iOS does deliver there, the sweep races the incoming file exactly like the
+`tmp/` one did; and no such folder was found on the one upgraded device checked. *(Superseded the same
+day: iOS 26 does deliver there, and copies from earlier versions need removing. Step 3 does it at
+backgrounding instead, which has no race.)*
+
+**Residual:** ~~a crash between delivery and the read leaves that one copy in `tmp/…-Inbox`, now
+skipped by the launch sweep, until iOS purges `tmp/`. Not backed up.~~ *Closed by step 3: that copy
+goes at the next backgrounding.* Remaining: a copy delivered and never followed by a backgrounding (the
+app is killed while in the foreground) waits for the next one.
+
+**Tests:** `OpenInPlaceCopyTests` — the inside/outside predicate (both Inbox locations, the container
+root, a `<home>X` sibling, `..` escape, a symlink pointing out), the sweep keeping `*-Inbox`, and
+`clearInboxes` removing both Inbox folders with their copies and nothing else, and doing nothing when
+there are none.
+`handleOpenURL` itself is on `OccultaApp` and can't be constructed in a test.
+
+**Device check still wanted:** open a `.occbak` from Files and from a share sheet, cold and warm
+launch; each must open, and a downloaded container must show no copy left afterwards.
+
+### Verified in the simulator, 2026-09-25
+
+iPhone 17 Pro simulator, iOS 26.2, Debug build of `46868e5`. Each `.occbak` was a dummy (`OCBK` plus
+random bytes) opened with `xcrun simctl openurl`, which hands the file to the app the way "Open in"
+does; the app container was watched every 20 ms. A control build, identical except that the `defer`
+deleted only share-extension handoffs, was run the same way.
+
+| | Fixed build | Control build |
+|---|---|---|
+| Where iOS put the copy | `Documents/Inbox/`, cold and warm | `Documents/Inbox/`, cold and warm |
+| Copy after a cold launch | deleted after the read; the "Restore from this backup?" prompt showed | left in place |
+| Copy after a warm launch | deleted within 20 ms | left in place |
+| The original outside the container | untouched | untouched |
+
+What this settles and what it changes:
+- **The location guess above was wrong, at least here:** the copy goes to `Documents/Inbox/`, which is
+  in device backups, not `tmp/<bundle-id>-Inbox/`. So the harm is the one this entry was filed for, and
+  **the premise is confirmed:** without the fix every copy stays.
+- **The fix works for new files,** on both launch paths, and reads before deleting.
+- **Copies left by earlier versions are never removed.** The control build's two copies survived the
+  fixed build's launches and opens. Every user of v1.10.3 or earlier who opened a file this way still
+  has those copies, in backups. The "no launch sweep" decision above rested on the `tmp/` location and
+  on one device that had no `Documents/Inbox`.
+- **A date-based launch sweep can't fix that safely:** iOS keeps the original's creation and
+  modification dates on the copy (a file dated 2020 arrived dated 2020), so "delete anything old" would
+  delete a just-delivered old file unread.
+- **An empty `Documents/Inbox` folder remains** after the fix deletes a copy. Its existence and
+  modification date say a file was once opened into the app, and when.
+
+**Step 3, verified the same way:** with the control build's two copies still in `Documents/Inbox/`, the
+fixed build launched and sent to the background (by opening Settings) removed both copies and the
+folder. A new file opened afterwards: iOS recreated `Inbox`, the app read the file and showed the
+prompt, the copy was deleted, and the next backgrounding removed the folder again.
+
+Not covered: share-sheet ("Copy to Occulta") and AirDrop deliveries, and a real device. Both still
+want the device check above.
 
 ### Severity: High if confirmed (contents, not metadata)
 
@@ -7556,10 +8250,48 @@ backs up by default. Same investigation, unrelated remedies.
 
 ## Bug 102 — The BEK has no layer concept, so a restore completing in duress hands the coercer the device's real backup key
 
-**Status:** **Open.** Filed 2026-08-27. Found by asking whether Bug 99's arming-depth remedy also
-contains the *key* a restore installs, not just the entries it imports. It does not.
+**Status:** **Closed — subsumed into Bug 99, 2026-09-11.** Filed 2026-08-27, **Open** until now. Found
+originally by asking whether Bug 99's arming-depth remedy also contains the *key* a restore installs,
+not just the entries it imports — it did not, at the time.
 
 **Target:** unset. Larger than the entries it sits beside — see Remedy.
+
+### Reclassified 2026-09-11 — the premise this entire entry rests on no longer holds
+
+**Everything below this note describes a device-wide, unlayered `BackupEncryptionKey` — "exactly two
+fields, `id` and `encryptedPayload`... no depth stamp," fetched via `.first` with no predicate. That
+was accurate when filed and stayed accurate through Stage 1. It stopped being true at Stage 2
+(2026-09-08, `VAULT_KEY_LAYERING.md` §7), which routed the then-shipping BEK array by depth, and is
+further from true now that BEK storage moved off the array onto per-depth `BackupEncryptionKey` rows
+(§8 item 14, 2026-09-11).** Left below unedited as the reasoning trail — the design work in *Remedy*
+is what this refactor actually built, in a rows-shaped form rather than the array this entry proposed,
+so it's the accurate record of why, not a stale description to correct line by line.
+
+**What this closes, concretely.** The three consequences section below ("his key becomes the device's
+key," "real trustees are stranded," "the vault lists his phones as trustees") described a *device-wide*
+row — install anywhere, own everywhere. That's now structurally impossible: installing a BEK at duress
+depth N only ever touches depth N's own row via `Backup.persist`/`claimFillerRow`, confirmed directly
+by `BackupKeyOrphaningTests.shallowerBackupKeySurvivesCascade` (a shallower, still-live depth's BEK is
+byte-for-byte untouched by an unrelated deeper deactivation) — the identical property this entry's
+*Remedy* section asked for, under "What it subsumes." Row/file-count leaking layer count (the entry's
+own "What it does not remove" caveat) is likewise addressed the way item 14 settled it: a 32-row
+eager-filler baseline, not the fixed 32-slot array this entry pictured, but the same row-count-hiding
+property up to that baseline.
+
+**What is genuinely still open, and where it now lives: Bug 99, not here.** `attemptBackupRestore`
+(renamed from `attemptBEKRestore`) still hard-guards `currentDepth == 0` before completing
+(`Vault+Manager+Backup.swift:482`, confirmed directly) — restore *completion* remains pinned to depth
+0, unchanged by either storage refactor, blocked on `RECOVERY_BUFFER_LAYERING.md`'s own not-yet-built
+per-depth restore state (`VAULT_KEY_LAYERING.md` §8 item 9). That's exactly Bug 99's oracle — arm in
+duress, wait, nothing ever completes there — not a separate harm anymore. Before this refactor, Bug
+102 was the wider bug (it installs the *wrong* key device-wide) and Bug 99 the narrower one it
+partially subsumed (it never installs at all, which at least isn't wrong). Now that installing is
+correctly per-depth by construction, there is only the narrower harm left, and Bug 99 already tracks
+it in full — including the exact remedy (complete at the arming depth) that closes it. Nothing is lost
+by folding this entry into that one; there is no remaining piece of this bug that Bug 99 doesn't
+already cover.
+
+### Original entry, preserved below for the reasoning trail
 
 ### Severity: High
 
@@ -8005,11 +8737,20 @@ render, and is out of scope here — but any future UI reading `verifiedAt` inhe
 
 ## Bug 105 — A duress layer can distribute shares of the real BEK, through ordinary UI
 
-**Status:** **Open.** Filed 2026-08-28, found while scoping `BEK_LAYERING_REFACTOR.md` — by asking
-whether shard *distribution* is depth-gated, having already established that restore is not.
+**Stale, 2026-09-11:** The Guard section cites `BEKArrayTests`, deleted outright by this session's
+BEK storage refactor — the slot-isolation property it proved is presumably now covered by
+`BackupEncryptionKeyStorageTests.swift`, but the citation itself is a dead end.
 
-**Target:** `release/v1.10.3`. Reachable on shipped code with no attacker-supplied file, no shard
-delivery, and no restore.
+**Status:** **Closed (Fixed), verified 2026-09-10.** Filed 2026-08-28, found while scoping
+`BEK_LAYERING_REFACTOR.md` — by asking whether shard *distribution* is depth-gated, having already
+established that restore is not. Fixed by `VAULT_KEY_LAYERING.md` §7 Stages 1-2 (built 2026-09-08,
+per that document's own status — not previously reflected here, verified directly against shipped
+code rather than taken on the doc's word). Distribution only — restore/reconstruction completing
+per-depth is a separate, still-open concern, `VAULT_KEY_LAYERING.md` item 9, blocked on
+`RECOVERY_BUFFER_LAYERING.md`'s own Stage 4. Not to be conflated with this closure.
+
+**Target:** Fixed. (Originally `release/v1.10.3` — that release shipped without this fix, per
+`VAULT_KEY_LAYERING.md` §9's own correction; landed instead on `v1.11.0/vault-key-layering`.)
 
 ### Severity: High
 
@@ -8064,7 +8805,55 @@ opens every slot. Bug 92's insight — the PIN is the only input in this subsyst
 does not hold — is the available answer. Adopting it here, or accepting convention and documenting
 that plainly, is an open decision for this refactor rather than something to inherit silently. It
 carries Bug 92's hard dependency with it: no slow KDF exists in the codebase, and a PIN-derived key
-without one is a design that looks layered and is not.
+without one is a design that looks layered and is not. (This decision itself is `VAULT_KEY_LAYERING.md`
+item 7: settled as accepted code-discipline separation, not the PIN-derived per-slot key — see that
+item and the *Fix* note below for why.)
+
+### Fix
+
+`VAULT_KEY_LAYERING.md` §7 Stages 1-2: the single device-wide `BackupEncryptionKey` row became a
+32-slot array, one slot per depth, each slot holding an independently-generated key. Verified directly
+against shipped code, not assumed from the design doc:
+
+- **`Backup.setup(vaultKey:currentDepth:)`** (`Vault+Manager+Backup.swift:888`) generates a fresh
+  `SecRandomCopyBytes` 256-bit key and persists it to `currentDepth`'s own slot — no derivation from,
+  or connection to, any other depth's key. A duress-depth setup cannot produce the real depth-0 key by
+  construction, not by convention.
+- **The full call chain genuinely routes by depth**, checked hop by hop:
+  `prepareBackupShards(currentDepth:)` → `Backup.prepareShards(currentDepth:)` →
+  `fetchDecoded(currentDepth:)` → `LayerStore.read(slotIndex: currentDepth, ...)`. `currentDepth` is
+  the slot index, not a decorative parameter.
+- **`Vault+ShardSetup.swift`** — the file this entry's own "What happens" section named as having zero
+  references to `currentDepth` — now passes `currentDepth: self.security.currentDepth` into
+  `backupShardMetadata`, `setupBackup`, and the shard-preparation call.
+- **Both named harms are closed as a structural consequence, not patched individually.** Harm 1 (a
+  coercer holds shares of the real BEK): impossible, since a duress-depth distribution splits that
+  depth's own independently-random key. Harm 2 (the owner's trustee list replaced): `shardMetadata`
+  lives inside each slot's own payload now, so a duress-depth distribution can only overwrite *that
+  depth's own* metadata — depth 0's is a separate record, never touched.
+- **The item 7 accepted-tradeoff decision, cross-referenced above:** slots are not additionally
+  cryptographically isolated by a PIN-derived per-slot key (the direction "Bug 92 does supply
+  something this design needs," above, gestures at) — that was designed (`slotKey(depth)`,
+  fold-the-PIN-into-`info`), then found to conflict with a *different* property this design also wants
+  (hiding which depth was last active across snapshot diffs, by full-array reseal on every write) and
+  deliberately dropped in favor of the snapshot protection. A coercer holding the vault key can still
+  decrypt every depth's slot content directly — that risk is accepted as code-discipline separation,
+  the same posture this codebase's contact storage used to document before its own mechanism was
+  removed (Removal Stage 2, `plan.md`) — not a residual version of *this* bug, a different, named,
+  still-accepted tradeoff.
+
+### Guard
+
+No dedicated regression test asserts the literal `depth0Key.bytes != depth2Key.bytes` — worth naming
+as a real, if narrow, gap rather than glossing over it. What's covered: `BEKArrayTests`
+("writing to one slot preserves a previously-written different slot's content" et al.) proves
+storage-level slot isolation; `VaultBackupRoundTripTests.shardConfirmationAppliesToOwningDepthOnly`
+sets up independent BEKs and `shardMetadata` at depths 0 and 2 and proves they're tracked as fully
+separate records, never cross-contaminating. Combined with `Backup.setup`'s fresh-CSPRNG-per-call
+construction (verified above, not test-covered directly), this is strong but not airtight evidence —
+a direct "two depths' keys are provably different values" test would close the remaining gap and is
+worth adding if this area is touched again.
+
 
 ### Relationship to the entries around it
 
@@ -8102,3 +8891,3844 @@ because it *is* the same flow, not a suppressed one.
 
 No test covers distribution at a non-zero depth. `Vault+ShardSetup.swift` has no depth-aware tests at
 all, which is consistent with the code having no depth awareness to test.
+
+## Bug 106 — The contact `LayerStore` has no cryptographic cross-depth isolation, the same gap Bug 92 names for the BEK
+
+**Status:** **Closed — moot, 2026-09-10.** `Manager.LayerStore` and the entire blob mechanism this
+entry is about were deleted whole (Removal Stage 2, `plan.md`) — Secure Mode no longer seals
+sensitive contacts into any blob, so there is no `layerKey`, no shared-key cross-depth exposure, and
+no slot to bind an AAD to. The severity question this entry left open (a confident High/Low rating
+for the shared-key gap) is now moot rather than answered; nothing is asking it any more. Left below
+verbatim as a historical record — including the *Partial fix* (`LayerStore.SlotAAD`), which was
+deleted along with the rest of `SecureMode+LayerStore.swift`.
+
+**Original status (superseded):** **Open for the headline issue (shared key, accepted tradeoff, not
+being fixed); the separable AAD/slot-binding half is fixed, 2026-09-09 — see *Partial fix* below.**
+Filed 2026-09-07, found while working through
+`VAULT_KEY_LAYERING.md` item 7 (a duress-depth-detection risk in the new BEK slot array) and asking
+why the *existing* contact `LayerStore` can safely reseal all 32 slots with fresh nonces on every
+write without hitting the same problem. The answer — it has no per-depth key isolation to begin with
+— is a real, previously unnamed consequence of an intentional design choice, not a newly introduced
+defect. No reachability trace has been done yet; this entry records the structural fact, following
+Bug 92's own precedent of separating "this is real" from "here is exactly what a coercer can do about
+it today."
+
+**Target:** unset. No fix proposed or decided. `VAULT_KEY_LAYERING.md` item 7 considers the analogous
+trade-off for the BEK array and is itself open — this entry is supporting context for that decision,
+not a request to resolve this one first. **A second reason to eventually fix this, found 2026-09-09:**
+item 13 there proposes unifying `Manager.LayerStore`'s crypto/logic layer with `BEKArray`'s (both
+already share the identical raw-I/O shape) — but only after this bug is fixed, since unifying first
+would either dilute `BEKArray`'s AAD protection to match this store's absence of any, or require the
+AAD fix to happen unreviewed, folded inside an unrelated refactor. Still no commitment to fix this on
+any timeline — item 13 is itself unconfirmed — but it's now two independent reasons pointing at the
+same missing AAD, not one.
+
+### Severity: not yet rated — see *Why this isn't a confident "High" or "Low"* below
+
+### What happens
+
+`LayerStore.md`'s own "Cryptography" section documents `layerKey = HKDF-SHA256(IKM: seKey, info:
+"layer-store-key")` — no depth or PIN input — and states plainly that "all 32 slots use the same
+`layerKey`," calling this out as the property that *enables* full-array regeneration (the store can
+trial-decrypt every slot and tell real payloads from padding by which ones authenticate). Confirmed
+directly against `Key+Manager.swift:889-913`'s `deriveSecureModeKey()`: no `depth` or `pin` parameter
+anywhere in the derivation. Every session, at every depth, computes the identical key.
+
+So there is no cryptographic barrier that prevents a session at depth 2 from opening or resealing
+depth 0's contact slot — the exact shape of gap Bug 92 names for the BEK (*"the vault key... opens
+every slot... code discipline rather than cryptography"*), except here it was never framed as a gap at
+all — `LayerStore.md` presents the shared key as a feature, because it is one, for the property it
+was built to enable. The consequence just never got named as a corresponding cost until asked.
+
+### Why this isn't a confident "High" or "Low"
+
+**Not established: any concrete in-app path.** Unlike Bug 105 (traced to a specific, ordinary-UI-
+reachable function with zero special access needed), no equivalent trace has been done here for
+`LayerStore.pop()`/`push()`'s actual call sites — whether the app's own code ever calls either with an
+explicit depth other than `currentDepth` is unconfirmed, not ruled out. `pop()`'s `slotIndexMismatch`
+check happens *after* decryption, on the plaintext, matching Bug 92's own "code discipline, not
+cryptography" framing — but code discipline having no known counterexample today is different from
+having been verified to have none.
+
+**Not established: what an offline/extracted-key scenario actually requires.** `layerKey` derives from
+an SE-backed key gated `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (`Key+Manager.swift:936-941`) —
+device-unlock state, not a per-use biometric prompt. Whether that access-control tier is meaningfully
+weaker than the vault key's biometric gate, for this specific class of attacker, hasn't been assessed
+here — Bug 92 went through exactly this kind of re-examination (rated High, then re-rated Medium once
+the actual reachable path was traced) before its severity was trusted; this entry hasn't done that
+work yet.
+
+### Relationship to the entries around it
+
+- **Bug 92** is the same underlying issue — a device-wide key with no depth input, protection resting
+  on the app's own code discipline — for the BEK instead of contacts. Its "Re-examined" section is the
+  template for how this entry's severity should eventually be settled: trace actual reachable call
+  sites before rating, not from the structural fact alone.
+- **`VAULT_KEY_LAYERING.md` item 7** is where this was found. That item is weighing whether the new BEK
+  slot array should get item 4's cryptographic depth isolation (at the cost of the write-pattern leak
+  item 7 describes) or accept the same posture `LayerStore` already has, live, in shipped code. This
+  entry is what makes "accept the same posture" a documented, precedented choice rather than an
+  unexamined one.
+
+### Partial fix, 2026-09-09 — closes a narrower, separable gap this entry's own text raised but never
+cleanly split out from the headline issue. **The headline issue — the shared `layerKey` itself, no
+depth input, the same accepted tradeoff `VAULT_KEY_LAYERING.md` item 7 settled for the BEK array — is
+unfixed and, per that precedent, not going to be fixed.** Full-array reseal needs one shared key to
+resurface 31 slots it didn't write; that's still true here exactly as it is for BEK.
+
+What this section already flagged, without naming it as its own gap: *"`pop()`'s `slotIndexMismatch`
+check happens after decryption, on the plaintext... code discipline, not cryptography."* That's a
+second, separable property from the shared key — whether a slot's ciphertext is bound to its own
+position in the file at all, checked at the AEAD-authentication layer rather than by a caller
+remembering to compare a decoded field afterward. `BEKArray` already has this, via `BEKSlotAAD`, kept
+even after item 7 superseded the *other* half of item 4 (the live-slot key) — the two properties were
+already separable there. `LayerStore` had neither.
+
+**Fixed:** `LayerStore.SlotAAD` (nested in `SecureMode+LayerStore.swift`, private — same shape as
+`BEKSlotAAD`, own domain string) binds every slot to its position. A slot opened without it falls back
+to the pre-fix (no-AAD) scheme, so existing files keep reading; every slot gets re-sealed under the new
+scheme on the very next `push()`/`pop()`, which already reseal all 32 slots unconditionally — no
+separate migration pass needed. `LayerStoreSlotAADFixTests.swift` proves: a legacy slot still opens via
+the fallback; popping a legacy file upgrades even the untouched filler slots, not just the popped one;
+and a slot's ciphertext relocated to a different position (the actual attack this AAD stops) is now
+discarded as fresh filler by the preserve path instead of being silently carried forward with the
+wrong identity, which is what happened before — checked directly, not assumed, since the first version
+of that test asserted the wrong resulting error type. **This closes the plaintext-only, "code
+discipline, not cryptography" half named above; the shared-key half is the part Bug 92/item 7 already
+decided is not being closed.**
+
+### Guard
+
+`LayerStoreSlotAADFixTests.swift` (2026-09-09) covers the AAD/migration fix above — legacy fallback,
+migration-on-write, and slot relocation. **Still none for the headline issue**: no test asserts that a
+session at one depth cannot open another depth's contact slot with the shared key, or documents that
+no such test exists because the property isn't claimed — the same absence Bug 105's own Guard section
+notes for BEK distribution, and the same accepted-tradeoff shape item 7 already documents there.
+
+## Bug 107 — `Manager.LayerStore.push()`/`pop()` silently replace an unreadable slot with fresh
+random filler, indistinguishable from a slot that was always empty
+
+**Status:** **Closed — moot, 2026-09-10.** `Manager.LayerStore.push()`/`pop()` and the whole blob
+mechanism were deleted (Removal Stage 2, `plan.md`) — there is no slot, no filler, and no
+unreadable-slot-replacement path left to silently lose anything. The severity question this entry
+left open (how often a slot actually becomes unreadable in practice) is moot rather than answered.
+Left below verbatim as a historical record.
+
+**Original status (superseded):** **Open, severity not fully assessed — mechanism confirmed,
+likelihood not yet traced.**
+Filed 2026-09-08, found while designing the new BEK slot array's own write algorithm and comparing it
+against `Manager.LayerStore`'s existing pattern as precedent. A near-identical bug was caught and fixed
+in the BEK design before any of that code was written (`VAULT_KEY_LAYERING.md` §8 item 8, third
+finding) — checking the precedent it was modeled on afterward found the same conflation already live.
+
+**Target:** unset. No fix proposed or decided.
+
+### Severity: impact is high if triggered (silent, irreversible loss of real sensitive contact data);
+likelihood — how often a slot actually becomes unreadable in practice — has not been traced. Rating
+deliberately withheld rather than guessed, matching Bug 92's own precedent of re-examining reachability
+before trusting a severity number.
+
+### What happens
+
+`decryptedPlaintexts(using:)` (`SecureMode+LayerStore.swift:333-345`), used by `push()` to preserve
+every slot other than the one being newly written:
+
+```swift
+guard let box   = try? AES.GCM.SealedBox(combined: cipher),
+      let plain = try? AES.GCM.open(box, using: key)
+else { return nil }
+```
+
+Every slot in this store — real or filler — is sealed under the exact same `layerKey`
+(`deriveKey(from:)`, no depth input, no per-slot AAD). Filler is genuinely-sealed random plaintext,
+not a structurally-distinguishable "empty" marker — there is no separate decode-validity step the way
+`BEKPayloadCodec` (the new design) has. That means `AES.GCM.open` succeeding is **not** conditional on
+whether a slot holds real content; it should succeed for every slot this store has ever written,
+period. A `nil` here can only mean the ciphertext failed to authenticate under the one key that opens
+everything — disk corruption, a partial write, or a bug. It cannot mean "this slot was always empty."
+
+`push()` doesn't draw that distinction. `nil` from `decryptedPlaintexts` and "this slot is genuinely
+unused" are treated identically — `SecureMode+LayerStore.swift:187-192`:
+
+```swift
+} else if let plain = existing[i], let combined = try? AES.GCM.seal(plain, using: key).combined {
+    file.append(combined)
+} else {
+    file.append(try self.sealRandom(using: key))   // ← real-but-unreadable and never-written land here alike
+}
+```
+
+`pop()` has the identical shape inline (`:224-233`) rather than going through `decryptedPlaintexts`,
+same conflation, same consequence.
+
+### The harm
+
+A slot that held a real, sensitive contact and became transiently unreadable — the concrete path being
+a crash mid-write, since `AppGroupLayerStoreBackend.write()` (`SecureMode+LayerStoreBackend.swift:37-53`)
+does not use `.atomic`, only `.completeFileProtection` (a Data Protection class, not a write-atomicity
+guarantee) — gets silently overwritten with fresh random garbage on the very next `push()` or `pop()`.
+No error, no signal, nothing recoverable. `push()`/`pop()` run on every Secure Mode activation and
+deactivation, not a rare code path, and every one of the 32 slots is subject to this on every call, not
+just the one actively being read or written.
+
+### Relationship to `OPEN_LIMITATIONS.md` C1
+
+C1 ("Decryption failure is not representable") names this exact failure shape — *"wrong-key ciphertext
+... indistinguishable from an empty field ... the direct reason Bugs 75, 76, 77, 78 and 80 were silent
+permanent data loss"* — but C1's own count is specifically `String.decrypt()`/`Data.decrypt()`'s `try?`
+pattern across 88 call sites. `push()`/`pop()` call `AES.GCM.SealedBox`/`AES.GCM.open` directly, not
+those functions — this is a separate, previously uncounted instance of the same underlying problem, not
+one of the already-tracked 88.
+
+### Proposed fix, 2026-09-08 — designed and reviewed against actual call sites, not yet applied
+
+Simpler than first expected: `LayerStore` doesn't need BEK's two-way "open fails vs. decode fails"
+split at all, since every slot here — real or padding — is sealed under the same key with no separate
+structural-validity check. There is no legitimate case where `open` fails; it should succeed for every
+slot this store has ever written, full stop. The fix is just: stop treating an open failure as if it
+were one.
+
+`decryptedPlaintexts(using:)` changes from returning `[Data?]` (silent `nil` per slot) to
+`throws -> [Data]?` — `nil` only for "no existing file to preserve from" (a real, different, non-error
+case), and a thrown `Error.decryptionFailed` for any individual slot that fails to open once the file
+is confirmed present at the correct size:
+
+```swift
+private func decryptedPlaintexts(using key: SymmetricKey) throws -> [Data]? {
+    guard let fileData = try? self.backend.read(),
+          fileData.count == Self.slotCount * Self.slotCiphertextSize
+    else { return nil }
+    return try (0..<Self.slotCount).map { i in
+        let offset = i * Self.slotCiphertextSize
+        let cipher = fileData[offset..<(offset + Self.slotCiphertextSize)]
+        guard let box = try? AES.GCM.SealedBox(combined: cipher),
+              let plain = try? AES.GCM.open(box, using: key)
+        else { throw Error.decryptionFailed }
+        return plain
+    }
+}
+```
+
+`push()` propagates the throw and its per-slot loop drops the silent-filler fallback for a real
+failure; `pop()` gets the identical treatment inline. Neither writes anything until the whole loop
+succeeds, so a thrown error mid-loop leaves the on-disk file completely untouched — not a partial
+write.
+
+**Checked against real call sites before proposing this, not just made to compile:**
+- `Manager+Security.swift:643` (activation, `push`) — already `try`, propagates normally.
+- `Manager+Security.swift:884` (deactivation, `pop`) — already `do/catch` with an existing, sensible
+  fallback ("blob corrupted... sensitive contacts unrecoverable, safe contacts intact"). Strictly
+  better than today: a corrupt *other* slot currently gets silently destroyed with zero signal; with
+  the fix, `pop()` throws into a path that already degrades gracefully instead of losing data quietly.
+
+**Found while checking call sites — a real complication, not resolved:** `Manager+Security.swift:1720`,
+`pushDummyBlobSlot`, writes a decoy `push()` right before throwing a PIN-collision error, specifically
+so a collision produces the *same filesystem footprint as a real activation* — same anti-oracle family
+as Bug 99. It calls `push()` with `try?`, deliberately swallowing errors, because the write's own
+success has never mattered to that caller. But the fix changes what a swallowed failure now *means*: if
+some unrelated slot happens to be corrupted exactly when a PIN collision fires, the fixed `push()`
+throws before writing anything at all — the decoy write silently doesn't happen, and a collision would
+leave a different, no-write footprint versus a real activation, which always writes. Today's bug
+accidentally avoids this (it always writes *something*, even when it shouldn't). Not resolved: likely
+needs a decoy-path variant of `push` that skips other-slot integrity checking entirely, since it never
+needed to preserve anything real — genuinely separate design work, not a default to pick silently.
+
+### Not yet done
+
+No reachability trace of how often the underlying corruption actually fires in practice (matching the
+discipline Bug 92 was held to before its severity was trusted). Fix designed and reviewed, not applied.
+The `pushDummyBlobSlot` interaction above needs its own resolution before the fix ships.
+
+### Guard
+
+None yet. No test exercises a corrupted or unreadable slot during `push()`/`pop()` and asserts the real
+content survives rather than being silently replaced.
+
+## Bug 108 — Design B has no mechanism to persist a mid-session edit, once the DB row it would edit is
+a dead shell
+
+**Status:** **Closed — moot, 2026-09-10.** Design B (the four-named-steps content-shelling design
+this entry is about) was never built and is not going to be: the whole blob/classification/rotation
+machinery it would have extended — `Manager.LayerStore`, `inMemorySensitiveContacts`,
+`resyncSensitiveContactsBlob()`, `ContactManager.restoreContact`/`hasUnreadableKeys` (the narrower
+item-1/3 pair that *did* ship, 2026-09-10, and is described below) — was deleted in full (Removal
+Stages 0-4, `plan.md`). Secure Mode now does UI-only depth filtering; there is no DB shell, no blob
+snapshot, and so no mid-session-edit gap to have. `forensic-trace-avoidance.md §S5`'s Design
+A/Design B discussion is updated separately to reflect the same decision. Left below verbatim as a
+historical record of why the four-step design was rejected even before this removal, which is
+itself part of why the removal happened.
+
+**Original status (superseded):** **Not a live bug — Design A ships today for contact *content* (text
+fields), and is unaffected; the four-named-steps Design B this bug is about (full text-field
+shelling, `inMemorySensitiveContacts`, merged view) is still deferred, not built.** Filed 2026-09-09
+as a design
+gap, found before Design B is built rather than after, while checking whether `VAULT_KEY_LAYERING.md`'s
+S8 could safely reuse Design B's four named steps as-is for vault entries. It couldn't, because the four
+steps have this hole regardless of which content they're applied to. **The missing fifth step's
+mechanism is built, same day — see *Not yet done* below — but not wired to anything, since the steps
+that would populate `inMemorySensitiveContacts` (1, 3, 4) don't exist yet. Its co-requisite (a validated
+non-destructive read for step 2) is built and tested too.**
+
+**2026-09-10 — a narrower, related pair shipped: `plan.md`'s "What Design B requires" items 1 and 3
+(key records only, not the four-named-steps content-shelling this bug is about).** Activation now
+skips re-encrypting a sensitive contact's key records (left under the old key, genuinely unreadable
+once deleted); deactivation's `restoreContact` rebuilds them from the blob. This closes the worse,
+immediate-term risk this bug's own discovery flagged — item 1 without a rebuild would have caused
+silent, permanent key-material loss on literally the first activation, before this bug's own
+mid-session-edit gap ever mattered. That gap itself is **not fixed** by this change — a key rotation
+received for a sensitive contact while the session is unlocked is still discarded, because the rebuild
+only knows about the activation-time blob snapshot — now pinned as an explicit regression test
+(`restoreContact_discardsMidSessionKeyRotation`, `SensitiveContactKeyRecordTests`,
+`SecureModeActivationTests.swift`) so it stays visible rather than being fixed silently or
+reappearing as a surprise later. Text-field shelling and the rest of Design B remain untouched.
+
+**Target:** unset. Blocks Design B (`forensic-trace-avoidance.md` S5) and, downstream, S8
+(`VAULT_KEY_LAYERING.md` item 12) — neither should be built against the four steps as currently
+specified.
+
+### Severity: would be High (silent, permanent loss of the user's own data) if Design B shipped with
+only the four described steps; not yet triggerable, since nothing runs this path today
+
+### What happens
+
+Design B's four named steps (`forensic-trace-avoidance.md` S5, `plan.md`'s "Design B considered and
+deferred"): (1) sensitive contacts' DB rows become unreadable shells at activation — fields
+re-encrypted under the deleted old key; (2) `inMemorySensitiveContacts` loaded from the blob into
+memory on normal unlock; (3) that array wiped on lock; (4) DB + in-memory merged for the contact list
+view. None of the four says what happens to an edit made to a sensitive contact *between* steps 2 and
+3 — while the session is unlocked and the in-memory array is the only thing holding it.
+
+Checked directly against the actual code, not assumed: `Manager.LayerStore.push()` — the only function
+that writes real content into the blob — has exactly two call sites in the whole codebase. Activation's
+one-time snapshot (`Manager+Security.swift:643`), and `pushDummyBlobSlot`, an empty decoy write fired
+on PIN collision (`Manager+Security.swift:1709-1720`) so a collision produces the same filesystem
+footprint as a real activation. Neither fires in response to an edit. `rewrite()` (called at
+deactivation and force-recovery) doesn't preserve content either — `writeNoOpFile()` overwrites all 32
+slots with fresh random junk, a wipe, not a reseal of real content.
+
+### The harm
+
+Harmless under Design A, shipped today: the DB row stays the live, authoritative, editable copy for
+the whole session, and the blob is just a periodic snapshot taken once per activation — its staleness
+relative to later DB edits doesn't matter, because deactivation restores from the blob only to recover
+what activation *hid*, not to recover edits made while active.
+
+Once Design B ships, the DB row cannot hold anything readable from the moment of activation onward, so
+an edit made mid-session exists only in the wiped-on-lock, killed-on-termination in-memory array. If
+the app backgrounds ordinarily — not a deliberate, explicit lock action — or is killed by the OS or the
+user before any (currently nonexistent) blob-resync step runs, the edit is lost permanently: no error,
+no signal, no recovery path. The same silent, permanent-loss shape Bug 107 documents for corruption,
+except triggered by ordinary use rather than corruption.
+
+### Relationship to S8 (`VAULT_KEY_LAYERING.md`)
+
+S8's release-owner decision (`VAULT_KEY_LAYERING.md`, "Vault entries and contacts (S5/S8)") has vault
+entries reuse Design B's lifecycle "once built once on the cheaper case" — the same four steps, applied
+to vault entries instead of contacts. Copying them as specified would copy this exact gap, and vault
+entries are edited far more often than sensitive contacts (add/edit/delete vs. an occasional
+classification change), so the exposure window is proportionally worse wherever it lands second.
+Tracked as item 12 there.
+
+### Not yet done
+
+**Fifth step designed 2026-09-09 — `plan.md`'s "What Design B requires" list, item 5.** Reuses `push()`
+itself: any mutation to `inMemorySensitiveContacts` resyncs the blob synchronously, before the caller
+can treat the edit as saved, using the depth's already-on-record `slotIndex` and `sequenceNumber`
+(`AppLayerConfig.readBlobSlot`/`readSequenceNumber`) rather than regenerating either. Checking that
+directly against `pop()`'s validation caught a real trap: a fresh random sequence number per edit — the
+naive version of "just push again" — would make the first edit-triggered resync silently break every
+later `pop()` at deactivation with `sequenceNumberMismatch`, losing every edited contact. Same
+full-array-reseal cost `Manager.LayerStore` already pays for classification changes today, not a new
+category — contact edits are occasional, not the "constantly" frequency `VAULT_KEY_LAYERING.md` item 11
+weighed for vault entries. Surfaced a co-requisite gap in step 2, not this bug's own scope: the only
+non-destructive read, `readPayload(key:slotIndex:)`, was commented "for diagnostics and tests" only,
+and — checked directly, not just its comment — ran neither of `pop()`'s integrity checks, so promoting
+it as-is would have silently accepted a stale blob. **That co-requisite is now fixed** (2026-09-09):
+`readPayload` takes a required `expectedSequenceNumber` and runs both `pop()` checks non-destructively;
+`LayerStoreReadPayloadTests.swift` covers the round trip and both rejection paths.
+
+**The step 5 mechanism itself is built, same day — `resyncSensitiveContactsBlob()` and
+`inMemorySensitiveContacts`, `Manager+Security.swift`.** Added `SecurityError.blobMetadataMissing`
+for the "no slot/sequence number on record" branches — the original design reused
+`invalidStateTransition`, flagged as a poor fit (a state-machine error for a missing-metadata
+condition) and fixed before writing this in. **Not wired to anything, and not independently
+meaningfully testable yet:** `inMemorySensitiveContacts` is `private(set)` with no writer, since steps
+1, 3, and 4 (which would shell the DB, load the array on unlock, and populate it from edits) don't
+exist. Blocks Design B and, by extension, S8 (item 12) from being safely built as currently specified —
+steps 1, 3, and 4 are what's left.
+
+### Guard
+
+None. Design B is not built, so nothing exercises this path yet — this entry exists so the fifth step
+gets designed deliberately when Design B is implemented, rather than discovered as data loss after it
+ships.
+
+## Bug 109 — Skipping a sensitive contact's key-record re-encryption leaves an authentication-failure
+tell, not silence
+
+**Status:** **Closed — moot, 2026-09-10, same day it was filed.** This entry's own discovery — that
+Design B's item 1 (activation skipping `reencryptKeyRecords` for a sensitive contact) trades a
+content leak for a proof-of-concealment leak — became part of the argument for removing the
+skip-and-rebuild mechanism (item 1/3) entirely rather than fixing it with the proposed remedy below.
+Activation no longer touches `Contact.Profile`/`Contact.Profile.Key` fields at all (Removal Stages
+0-4, `plan.md`) — no key-record skip, no Step 8, no `reencryptKeyRecords`, so no field that
+authenticates differently from its neighbors. The proposed remedy (resealing as filler under the
+current key) was never built; it's moot along with the mechanism it would have patched. Left below
+verbatim as a historical record — including the severity analysis, which was part of the reasoning
+that led to this removal in the first place.
+
+**Original status (superseded):** Open. Live in shipped code (`Manager+Security.swift` Step 8,
+commit `3b7baa9`, 2026-09-10) — `plan.md`'s Design B item 1. Found the same day, while defending that
+change against a direct question about what an AFU-capable adversary — one who can derive the
+current canonical key, which needs no biometric (see this feature's own key-derivation discussion) —
+would actually observe, not discovered independently.
+
+**Target:** unset.
+
+### Severity: would be High under actual coercion — proves concealment occurred, which can be worse
+than exposing the content it was meant to hide
+
+### What happens
+
+Item 1 has activation's Step 8 skip `reencryptKeyRecords` for a sensitive contact's `contactPublicKeys`,
+deliberately, so those bytes stay sealed under the canonical key Step 11 deletes moments later. Text
+fields (`reencryptAllFields`) are untouched by this skip and continue to be re-encrypted normally, same
+as every other contact.
+
+The result: a sensitive contact's row, examined under the *current* canonical key, decrypts almost
+entirely — name, phone, notes, everything `reencryptAllFields` touches — except
+`contactPublicKeys[*].material`/`owner`/`acquiredAt`/`quantumKeyMaterialEncrypted`, which fail
+`AES.GCM.open` with `.authenticationFailure`, every time, for as long as that layer exists.
+
+### The harm
+
+Not a quiet gap — a loud, structural one. A forensic examiner does not need to suspect this specific
+mechanism: attempting to decrypt every field of every row and noting where authentication fails is
+routine practice, not a targeted attack. A row where the overwhelming majority of fields open cleanly
+and one specific field category consistently, reproducibly does not is unambiguous evidence of
+deliberate content removal — not corruption (corruption is rare and inconsistent across rows; this is
+systematic, isolated to exactly the fields item 1 targets, and correlates with `visibleThroughDepth`
+once combined with app-logic knowledge that's not even required to notice the pattern).
+
+Compare to Design A's own accepted gap (`forensic-trace-avoidance.md` S5): Design A exposes a sensitive
+contact's *content* to anyone holding the canonical key, but every field decrypts uniformly — nothing
+about ciphertext shape reveals that concealment was attempted. Item 1, as shipped, trades a content
+leak for a *proof-of-concealment* leak. Under coercion, "they can demonstrate I deliberately hid
+something from them" invites exactly the follow-up pressure — what, from whom, why — that a deniability
+mechanism exists to avoid. That can be a worse position than uniform exposure, not a strictly better
+one, depending on what the coercer does with "I know you hid something" versus simply reading it.
+
+### Proposed remedy — not built
+
+Mirror `Manager.LayerStore`'s own established pattern for unused slots (`sealRandom`): a slot holding no
+real content is never left unsealed or under a mismatched key — it's resealed with fresh random
+plaintext under the *current* key, so it opens cleanly and only fails on content inspection, never on
+authentication. Applied here:
+
+- Activation's Step 8, for a sensitive contact's key records, would reseal `material`/`owner`/
+  `acquiredAt`/`quantumKeyMaterialEncrypted` with random bytes under the **staged** (new,
+  about-to-be-canonical) key, instead of leaving the old ciphertext untouched. Decrypts fine under the
+  current key; decodes to nothing meaningful — no `AES.GCM.open` failure anywhere in the row.
+- `ContactManager.restoreContact` would no longer need `hasUnreadableKeys` (a decrypt-and-check
+  heuristic) at all — it is only ever called for contacts that came out of the blob, i.e. were
+  classified sensitive during that same activation, so it can unconditionally rebuild
+  `contactPublicKeys` from `record.draft.contactPublicKeys` on every call instead of conditionally.
+- Cost: trades away "genuinely destroyed, not just hidden" for that field specifically — the content
+  becomes real-key-recoverable if an adversary already captured the *old* key before its deletion (a
+  different, prior-compromise scenario this design never protected against any differently — an
+  AFU-capable adversary who compromises the device *before* a rotation gets everything live at that
+  moment regardless). What it buys back is removing the authentication-failure tell: the field becomes
+  indistinguishable, by shape, from any other key record, the same way `LayerStore`'s filler slots are
+  indistinguishable from real ones without the key.
+
+### Guard
+
+None yet. `SensitiveContactKeyRecordTests` (`SecureModeActivationTests.swift`) asserts the key material
+is left *unchanged* by activation — proving item 1 works exactly as specified, which is also exactly
+the shape of this bug. A test for the remedy above would assert the opposite: after activation, a
+sensitive contact's key-record material decrypts successfully under the current canonical key (no
+`.authenticationFailure`) but decodes to something other than the original plaintext.
+
+---
+
+## Bug 110 — A vault entry's duress-depth stamp is never reset, so it can resurface in a later, unrelated duress session at the same depth number
+
+**See `decisions.md`** (`Docs/General/`) for the short version of the orphan-in-place decision this
+bug's fix establishes — later extended to `BackupEncryptionKey` (Bug 118) and considered, declined,
+for `Contact.Profile` (Bug 112).
+
+**Regression, 2026-09-24:** the fix shipped no migration for entries created before `deletionToken`
+existed, so upgrading from v1.10.3 hid all of them. See Bug 133.
+
+**Status:** Closed (Fixed), 2026-09-10. Filed the same day, found while updating
+`forensic-trace-avoidance.md`'s S7 to describe the current (post-removal) behavior — not a
+pre-existing entry being revisited, a fresh regression from Removal Stage 1. Fixed the same day, after
+a design discussion — see *Fix* below.
+
+**Target:** Fixed.
+
+### Severity: Low — stale-state confusion, not a confidentiality leak
+
+**What this is not:** content leaking to a more-trusted viewer than it was meant for. `VaultEntry`'s
+exact-match depth design (`Vault+Model.swift:267`'s own doc comment, citing
+`Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`) exists
+specifically to stop a duress-created entry leaking *upward* into a less-restricted view — including
+the real depth-0 vault. That protection is untouched by this bug. Everything below is about a
+*different* direction: reappearing in a later view at the *same* restriction level, not a safer one.
+
+### What happens
+
+`VaultEntry.visibleThroughDepth` is stamped once, at creation, with whatever `currentDepth` is at
+that moment (`Vault+Manager.swift:253`, `Vault+Manager+Backup.swift:280`) and compared by exact match
+(`value == depth`, `Vault+Model.swift:267`). Nothing else ever writes it — confirmed by grep, exactly
+two writers, both creation-time.
+
+Duress depth *numbers* are reused across unrelated sessions: `deactivateSecureMode` always returns to
+depth 0 or 1, and a fresh `activateSecureMode` → duress-PIN verification always walks back up through
+1, 2, 3... the same way every time (`Manager+Security.swift`). Depth 1 is not tied to *which* duress
+PIN produced it — it is simply "the first duress layer," and any new, unrelated duress PIN configured
+after a full deactivate/reactivate cycle becomes depth 1 again.
+
+Before Removal Stage 1, this was covered by two things working together: activation's old Step 8
+re-stamped every vault entry on each activation, and deactivation's old Step 6 unconditionally reset
+every entry's stamp to nil. Between them, a stale depth-N stamp from a past session could never
+survive into a new one. Stage 1 removed both, per the Stage 0 design decision that activation/
+deactivation touch no application data at all — and nothing replaced the reset. Concretely: create a
+vault entry during duress session A (reaches depth 1) → deactivate → later configure an unrelated
+duress session B (also reaches depth 1) → the entry from session A is visible again in session B,
+because `entry.visibleThroughDepth == 1 == currentDepth` for both, with no way to tell the sessions
+apart.
+
+### Why this is Low, not High
+
+Anything stamped at a duress depth was, by construction, already shown to whoever reached that depth
+— it is not real-vault content. A stale duress-session entry resurfacing in a later duress session
+exposes it to someone at the *same* restriction level it was already exposed to, not a safer or more-
+trusted one. The worst case is confusing, unexpected old content appearing in a new coercion episode —
+not the real user's protected data crossing into a view it was never meant to reach. `originDepth` on
+`Contact.Profile` looks superficially similar (also a creation-time `currentDepth` stamp) but is not
+the same class of bug: its floor semantics (`depth >= origin`) are a deliberate policy about depth
+*severity levels*, meant to generalize across future duress sessions by design (see its own doc
+comment) — not an accidental byproduct with no policy intent behind the specific number, which is
+what makes `VaultEntry`'s case different.
+
+### Fix
+
+Rejected the first design considered (a sentinel value written into `visibleThroughDepth` itself,
+e.g. `-1`, chosen so it could never exact-match a real depth): it would have conflated "which depth
+this entry belongs to" with "is this entry still live," and — found only after tracing the actual
+shard-custody call chain — a sentinel there does nothing for the shard side of this bug at all, since
+`shardRecordsForTrustee` doesn't look at `visibleThroughDepth`.
+
+**Shipped design:** a new `VaultEntry.deletionToken` field (`Vault+Model.swift`), initially mirroring
+`Contact.Profile.deletionToken` exactly — encrypted, nil/non-nil meaningful at the query layer,
+content a fixed sentinel when present — physically kept rather than hard-deleted (same reasoning
+Bug 13 already established for contacts: a row count that drops in step with a duress-layer teardown
+is itself a forensic signal), capped at 50 with oldest-first eviction. `visibleThroughDepth` is left
+untouched — a historical record of the depth the entry was actually created at, now moot for every
+functional purpose since exclusion makes it unreachable.
+
+**Refined the same day, before this shipped to anyone:** nil/non-nil is itself a free,
+zero-decryption signal — SQLite tracks column nullability structurally, independent of any
+encryption applied to the value, so `SELECT COUNT(*) WHERE deletionToken IS NOT NULL` would still
+answer "how many are orphaned" without the key. `deletionToken` is now **always populated** —
+`VaultEntry.liveToken`/`orphanedToken` are two fixed-width, one-byte sentinels (`Data([0])`/
+`Data([1])`) that encrypt to the same ciphertext length, the identical "no plaintext boolean flags"
+principle `AppLayerConfig.pinEnabledPerDepth` already uses (Bug 51) — nothing about the sealed bytes
+reveals which one is inside without decrypting. `VaultEntry.isOrphaned(usingKey:)` replaces every
+`== nil`/`!= nil` check; it fails safe (nil, undecryptable, or an unrecognized value all count as
+orphaned). Stamped live at creation by both `addEntry` and the backup-restore path, mirroring how
+`visibleThroughDepth` is already stamped by its callers rather than defaulted in `init`. This raises
+the bar from "zero-effort" to "requires knowing this app's schema convention and running one
+decryption" — not a guarantee against an examiner already decrypting the database wholesale (who
+gains nothing new to defend against here), but a real improvement against a quick, no-decryption
+pass. `Contact.Profile.deletionToken` was deliberately left on the nil/non-nil pattern: it's shipped,
+its migration cost is real (a production backfill, not a lightweight default), and
+`PQmigration.swift`'s `migrateScrubDeletedDepthStamps` already uses its nil/non-nil status as a
+readability oracle for stranded rows — changing it would mean redesigning that oracle, not just the
+predicate, for the same marginal benefit this fix already delivers where it was cheap.
+
+`VaultManager.fetchAllEntries()` — the single central read every consumer (shard custody, backup
+export, the return buffer, the UI list) goes through — now fetches every row unconditionally and
+filters on `isOrphaned(usingKey:)` in Swift, deriving the local-DB key once and reusing it across
+every row. This is the one real structural cost of the refinement: the old `deletionToken == nil`
+predicate pushed down to SQLite for free; decrypting a column can't be expressed as a SQL `WHERE`
+clause, so filtering moved from the database to the app. Acceptable at the row counts a personal
+vault realistically has. Caught in the same pass: `deleteAllEntries()` (panic wipe) was routing
+through `fetchAllEntries()` too and would have silently stopped erasing orphaned rows — fixed to
+fetch unfiltered, matching how `ContactManager.deleteAllContacts()` already hard-deletes soft-deleted
+contacts during a wipe.
+
+`Manager.Security.orphanVaultEntries(freedFrom:)` runs from both `deactivateSecureMode` and
+`forceDeactivateForRecovery`, right where verifiers for the freed depth(s) are cleared — decodes each
+entry's `visibleThroughDepth` once with a single derived key (not one Secure Enclave round trip per
+row) and orphans anything `>= clearFrom`, the exact depth threshold the deactivation just freed.
+
+**The shard-custody side resolves for free, no new machinery needed** — traced end to end, not
+assumed: `ShardCustodyManager.buildExpectedShards` → `VaultManager.shardRecordsForTrustee` reads
+through `fetchAllEntries()` (`Vault+Manager+Shards.swift:428`), so an orphaned entry's `ShardRecord`s
+simply stop appearing in the `expectedShards` list sent in the next bundle to that trustee. The
+trustee's own `processExpectedShards` (`ShardCustody+Manager.swift:322`) already deletes any
+`CustodyShard` absent from that list — a real, physical deletion on the trustee's device, riding the
+protocol's existing implicit-revoke mechanism (`SHARD_PROTOCOL_CASES.md`). The one honest caveat,
+not new to this fix: revocation only fires the next time the owner sends that specific trustee
+anything — the same eventual-consistency property `deleteEntry`'s existing hard-delete path already
+has, since both ride the identical mechanism.
+
+### Guard
+
+Three tests in `VaultEntryOrphaningTests` (`SecureModeActivationTests.swift`), updated in place when
+`deletionToken` moved to the always-populated scheme (same tests, assertions now go through
+`isOrphaned(usingKey:)` instead of `== nil`/`!= nil`): `staleSessionEntryDoesNotResurface` (the core
+regression — an entry from one duress session must not reappear in a later, unrelated session
+reaching the same depth, and the row must survive physically, marked orphaned, not hard-deleted),
+`shallowerEntrySurvivesCascade` (an entry at a shallower, still-live depth must be untouched by an
+unrelated deeper cascade deactivation), and `orphanCapEvictsOldest` (51 entries orphaned in one call
+caps at 50, with the single oldest hard-deleted — this test also caught a real ordering bug in the
+first implementation pass, where `toOrphan` wasn't sorted before processing, so eviction inside a
+single multi-entry batch wasn't reliably oldest-first).
+Full suite: 0 failures, 6 skips (baseline), confirmed after the original fix and again after the
+always-populated refinement.
+
+---
+
+## Bug 111 — `deactivateSecureMode` collapsed a cascade deactivation straight to depth 1 instead of popping one layer at a time
+
+**Status:** Closed (Fixed), 2026-09-10. Found and fixed the same day, during a user conversation about
+what `activateSecureMode`/`deactivateSecureMode` do post-removal — not related to Bug 110 or anything
+found during the removal effort itself; this is a pre-existing state-machine defect that predates
+Removal Stage 0 and was simply never exercised by a test deep enough to catch it.
+
+**Target:** Fixed.
+
+### Severity: felt wrong / broke the intended mental model — nested duress layers are meant to behave
+as a stack (LIFO): activating pushes one layer at a time, so deactivating should pop one layer at a
+time. It didn't.
+
+### What happened
+
+For any cascade deactivation (calling `deactivateSecureMode` from `currentDepth >= 2`), the function
+unconditionally set `currentDepth = 1` regardless of how deep the stack actually was — confirmed via
+`git log -S`, this exact behavior dates to the very first multi-layer commit (`22762fb`, 2026-06-03),
+not a later regression. Deactivating from depth 3 (in a 0→1→2→3 stack) jumped straight to depth 1,
+silently skipping past depth 2 as a landing state, even though depth 2's own verifiers were never
+touched by the clear (`clearVerifiers(from: clearFrom)` already only removed the popped layer and
+anything nested deeper — the verifier-clearing scope was already correctly LIFO, only the landing
+depth wasn't).
+
+**Why nothing caught it:** the only existing multi-layer test coverage
+(`SecurityMultiLayerTests.deactivation_fromDepth2_goesToDepth1`) used exactly a 2-layer stack, where
+`depth - 1 == 1` regardless — mathematically unable to distinguish "always land at depth 1" from a
+genuine one-level LIFO pop. A 3-layer stack is the minimum needed to tell the two apart, and nothing
+in the suite built one.
+
+A second, coupled defect: `coercerBaseDepth` was unconditionally reset to `0` on every deactivation,
+including cascades. Combined with `Settings.swift`'s `isAtSecureModeHomeDepth` gate
+(`currentDepth == 0 || currentDepth == coercerBaseDepth`), this meant "Deactivate Protection" was
+never visible immediately after any cascade pop — even in the pre-fix single-hop-to-depth-1 behavior,
+landing at depth 1 left `state == .duress`, not `.normal` (confirmed directly: the pre-fix test
+asserted this itself). The operator would have needed to leave and re-verify a PIN to regain the
+button, rather than being able to pop a multi-layer stack down in one sitting.
+
+### Fix
+
+`Manager+Security.swift`'s `deactivateSecureMode`:
+- `newDepth = max(0, depth - 1)` replaces the old `depth <= 1 ? 0 : 1` branch — lands exactly one
+  depth shallower than the layer just removed, for every starting depth, not just a hardcoded floor.
+- `coercerBaseDepth` is now written as `newDepth` (mirroring exactly how `activateSecureMode` already
+  writes `coercerBaseDepth = depth` when creating a layer — Bug 58/61's own precedent) instead of
+  unconditionally `0`. "Deactivate Protection" is now reachable at every intermediate depth
+  immediately after each pop, letting a multi-layer stack be torn down one button-press at a time
+  without a re-verify between steps.
+
+Both changes are additive in scope for a 2-layer stack — `deactivation_fromDepth2_goesToDepth1`
+(renamed `deactivation_fromDepth2_popsOneLevelToDepth1`) still lands at depth 1 for that case, only
+its `state` assertion flipped from `.duress` to `.normal` to match the `coercerBaseDepth` fix.
+
+### Guard
+
+Two new tests in `SecurityMultiLayerTests` (`PINManagerTests.swift`), both requiring a 3-layer stack
+to be meaningful: `deactivation_fromDepth3_popsOneLevelToDepth2` (a single pop lands at depth 2 exactly,
+not depth 1; the un-popped depth-1 layer's own verifier is independently confirmed still
+cold-start-routable) and `deactivation_threeLayerStack_popsOneLevelPerCall` (three sequential
+deactivations, asserting `currentDepth`/`isSecureModeActive` after each one: 3→2→1→0). Full suite
+green, 0 failures, 6 skips (baseline), confirmed after the fix.
+
+---
+
+## Bug 112 — `Contact.Profile.deletionToken`'s nil/non-nil status is a free, zero-decryption signal — scoped, deliberately not fixed
+
+**Status:** Open, low severity, declined for now. Filed 2026-09-10, found immediately after Bug 110's
+fix shipped for `VaultEntry.deletionToken` and the same question was asked of its sibling field on
+`Contact.Profile`. Scoped in full before deciding; the scope is why this is declined rather than
+fixed, not a severity judgment alone.
+
+**Target:** unset — not planned.
+
+### Severity: Low — same class of gap as Bug 110 before its fix, same reasoning for why it's low
+
+SQLite tracks column nullability structurally, independent of any encryption applied to the value —
+`SELECT COUNT(*) WHERE deletionToken IS NOT NULL` answers "how many contacts are soft-deleted" with no
+key at all. Exactly the gap Bug 110 closed for `VaultEntry.deletionToken` by making that field always
+non-nil, content carrying the meaning instead of presence. Low for the same reason Bug 110 was: this
+raises the bar for a quick, no-decryption pass, not a guarantee against an examiner already decrypting
+the database wholesale, who gains nothing new here either way.
+
+### Why it's declined, not just deferred — the real scope, checked before deciding
+
+**The blocking finding: SwiftUI's `@Query` cannot decrypt-and-filter.** `Contact.Profile.descriptor` —
+the fetch descriptor carrying `deletionToken == nil` — is consumed via `@Query` in **18 sites across 14
+files**: every contact list (v1/v2/v3), contact detail screens, group forms, the vault tab's contact
+lookup, key exchange, the share recipient picker, both Secure Mode flows. `@Query`'s predicate must be
+translatable straight to SQL by SwiftData; there is no way to express "and this AES-GCM blob decrypts
+to sentinel X" in a `#Predicate`. Making `deletionToken` always non-nil breaks every one of those 18
+sites' ability to exclude soft-deleted contacts *at the query level* — each would need re-architecting
+to fetch unfiltered and filter reactively elsewhere (a view-model layer deriving the key and decrypting
+per row on every render, or a maintained published "visible contacts" cache). That is not a predicate
+swap; it is a different architecture for the Contacts UI's primary rendering path.
+
+**Beyond the UI, the service/migration layer alone would be a wider version of `VaultEntry`'s fix, same
+shape:** `Contact+Manager.swift` (`fetchAllContacts`, `deleteContact`'s write, `fetchSoftDeletedContacts`
+driving the existing 50-row cap, one more lookup), `ContactManager+Classification.swift` (four
+`identifier == X && deletionToken == nil` lookups), `Manager+Security.swift`'s
+`purgeDraftsNotSafeAtCurrentDepth`.
+
+**`PQmigration.swift` adds a third kind of complexity beyond either of those — an actual oracle, not
+just a filter.** Three backfills (`migrateSafeContactVisibilityBackfill`, `migrateGlobalTrusteeDepthBackfill`,
+`migrateOriginDepthBackfill`) each gate on `someField == nil && deletionToken == nil` (Bug 97) so a
+backfill never stamps a fresh value under the current key onto a row whose other fields are
+deliberately left under a stale one. `migrateDepthFieldsToFixedWidth` excludes soft-deleted rows the
+same way, for the same reason. `migrateScrubDeletedDepthStamps` is the real oracle: it fetches only
+`deletionToken != nil` rows, then uses `deletionToken?.decrypt() == Data([1])` itself to distinguish
+"deleted and still readable under the current key" from "deleted but stranded by a since-superseded key
+rotation," feeding a per-field repair decision. Worth naming precisely: since Removal Stages 0-6 deleted
+key rotation entirely, a contact soft-deleted from now on can never become stranded — that branch is
+permanently historical, relevant only to rows already stranded by a rotation that happened before this
+removal shipped. The oracle's *logic* doesn't need to change, only its entry predicate — but losing the
+SQL-level `!= nil` filter means fetching every contact just to find the (now permanently non-growing)
+deleted population, on every launch, forever, for something that used to be free. A dedicated test
+suite, `DeletedDepthStampScrubTests.swift`, is built entirely around this oracle and would need
+updating in step with it.
+
+**Unlike `VaultEntry.deletionToken`, this field is shipped.** Changing its semantics needs a real
+migration — backfill every existing nil row to encrypted-`0`, re-stamp every existing non-nil row to
+encrypted-`1` — not a lightweight default on an unreleased field.
+
+### Conclusion
+
+The service/migration layer cost alone would be proportionate to the benefit — the same trade Bug 110
+made for `VaultEntry`. The `@Query` architecture problem is not: it is a different, larger project (a
+new data-fetching pattern for the Contacts UI generally) with its own design questions, not a follow-on
+to this bug. Declined for now on that basis. If the Contacts UI's `@Query` pattern is ever revisited for
+an unrelated reason, this fix becomes cheap to fold in at the same time — tracked here so that
+opportunity isn't missed.
+
+### Guard
+
+None — not fixed.
+
+## Bug 113 — The vault entry list reads a raw `@Query`, not `VaultManager.fetchAllEntries()` — the depth-0 duress leak and Bug 110's orphan filter both bypass the UI
+
+**Status:** Closed (Fixed), verified 2026-09-10. Filed 2026-09-10, found while verifying that
+vault entries are depth-aware end-to-end, prompted by re-checking whether the exact-depth-match fix
+(`Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`) and Bug 110's
+orphaning both actually reach the screen. Neither did, for the same root cause.
+
+**Target:** `v1.11.0/vault-key-layering`.
+
+### Severity: Medium
+
+Two independent harms, from one cause. Neither exposes new plaintext to a coercer beyond what a
+correctly-filtered screen would already withhold from the *other* depth — the damage is a UI showing
+content it has no business showing at the depth it's showing it at, not a new decryption path.
+
+### The cause
+
+[Vault+Tab.swift:215-218](Occulta/UI/Tabs/Vault/Vault+Tab.swift:215):
+
+```swift
+private var visibleEntries: [VaultEntry] {
+    guard self.security.isRestricted else { return self.entries }
+    return self.entries.filter { self.security.isEntryVisible($0) }
+}
+```
+
+`self.entries` ([Vault+Tab.swift:81](Occulta/UI/Tabs/Vault/Vault+Tab.swift:81)) is a plain
+`@Query(sort: \VaultEntry.createdAt, order: .reverse)` straight on `VaultEntry` — every row in the
+table, unfiltered by SwiftData itself. `visibleEntries` is the only place that narrows it, and it is
+the sole source for the list, the count text, and the attention section
+(`Occulta/UI/Tabs/Vault/Vault+Tab.swift:221-225`). Nothing else in the file touches orphan status or
+depth.
+
+### Harm 1 — the depth-0 duress leak this branch believed was already fixed
+
+`isRestricted` is `currentDepth > 0`. At depth 0 the guard's `else` branch never runs, so
+`isEntryVisible` — the function `Fix vault entries leaking into the real view with a one-line change,
+not a new schema` (`2392653`) corrected to an exact match — is never called at all. An entry stamped
+`visibleThroughDepth == 2` is returned by `visibleEntries` at depth 0 exactly as it was before that
+fix.
+
+**Confirmed by git history, not assumed:**
+- `git log -L 210,220:Occulta/UI/Tabs/Vault/Vault+Tab.swift` shows the guard was introduced in `5f20dac`
+  ("[step3] Complete Step 3: depth stamping, share index, grace period, file protection"), May 21 2026 —
+  three months before the exact-match fix.
+- `git show --stat 2392653` — the exact-match fix — touched only `Manager+Security.swift`,
+  `Vault+Model.swift`, the bug doc, and `VaultTests.swift`. `Vault+Tab.swift` is absent from that list.
+  The guard was never revisited.
+- The fix's own regression test,
+  `isEntryVisible_stampedDepthN_onlyVisibleAtN_hiddenElsewhere` (`VaultTests.swift:349-363`), asserts
+  `security.isEntryVisible(entry)` directly at depth 0 and correctly gets `false` — proving the
+  *function* is right. It never calls `visibleEntries`, the property that actually gates the screen, so
+  it cannot see that the screen bypasses the function it's testing.
+
+Net effect: an entry created at a duress depth — willingly, by rehearsal, or under live coercion — is
+not confined to that depth. It resurfaces in the real depth-0 list, indistinguishable from anything
+created intentionally, with only a `createdAt` timestamp as a passive tell — the exact risk
+`Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md` describes, reopened at the one
+call site its fix never reached.
+
+### Harm 2 — Bug 110's orphan filter never reaches the screen
+
+`VaultManager.fetchAllEntries()` ([Vault+Manager.swift:314-321](Occulta/Features/Vault/Vault+Manager.swift:314))
+derives the vault key once and filters out every `isOrphaned(usingKey:)` row — the mechanism this
+branch built specifically so an orphaned entry is "genuinely inert everywhere at once, not just hidden
+from the list" (that function's own doc comment, lines 310-313). Checked by grep across
+`Occulta/Features/Vault/`: `Vault+Manager+ReturnBuffer.swift`, `Vault+Manager+Backup.swift`, and
+`Vault+Manager+Shards.swift` all call it and inherit the filter correctly. `Vault+Tab.swift` is not on
+that list — its `@Query` reads `VaultEntry` directly, so `fetchAllEntries()`'s doc comment claiming "the
+UI list" is one of its consumers is itself wrong, not just the code.
+
+Concretely: `Manager.Security.orphanVaultEntries` runs on Secure Mode deactivation
+(`Manager+Security.swift:461,509`) to retire entries at a depth being freed — Bug 110/111's entire
+point. Those rows are not hard-deleted, by design, for the deletion-count cover Bug 110 exists to
+provide. But because `Vault+Tab.swift` never checks `isOrphaned`, a just-orphaned entry keeps appearing
+in the list at whatever depth is current, fully readable, until something else removes the row —
+undoing the "inert" half of Bug 110's fix at the only place a person actually looks.
+
+**Not the same path as user-initiated deletion.** `VaultManager.deleteEntry(id:)`
+(`Vault+Manager.swift:405`) calls `modelContext.delete(entry)` — a real hard delete — so a swipe-deleted
+entry disappears correctly, via SwiftData's own change notification, without touching this bug. This
+entry is specifically about rows `orphanVaultEntries` retires, not ordinary deletion.
+
+### Why this wasn't caught earlier
+
+Both regressions are invisible to the existing test suites because both suites test the correct
+function in isolation (`isEntryVisible`, `isOrphaned(usingKey:)`) rather than the SwiftUI computed
+property that actually decides what renders. `Vault+Tab.swift` has no test coverage of `visibleEntries`
+itself — confirmed by grep, no test file references it. This is the same class of gap this branch's own
+work has hit before: a unit-tested primitive with no test proving its one production call site
+actually uses it.
+
+### Fix
+
+Replaced `Manager.Security.isEntryVisible(_:)` with `visibleVaultEntries(from: [VaultEntry])`
+(`Manager+Security.swift`), which folds both harms into one call over an already-fetched array —
+`Vault+Tab.swift`'s `@Query` results:
+
+```swift
+func visibleVaultEntries(from entries: [VaultEntry]) -> [VaultEntry] {
+    guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+    let depth = self.currentDepth
+    return entries.filter {
+        !$0.isOrphaned(usingKey: key) &&
+        $0.isVisible(atDepth: depth, whenUnclassified: depth == 0, usingKey: key)
+    }
+}
+```
+
+`Vault+Tab.swift`'s `visibleEntries` is now a one-line call to this, at every depth — no
+`isRestricted` shortcut. Two design points worth recording:
+
+- **`whenUnclassified: depth == 0`, not a constant.** A legacy nil-`visibleThroughDepth` entry
+  (pre-dating the field) is a real, persistent state — not swept away by anything (confirmed by grep
+  and by `PQmigration.migrateDepthFieldsToFixedWidth`'s own doc comment, "a legitimate steady state").
+  It must stay visible at the real depth 0 (matching ordinary pre-feature usage) and hidden at every
+  duress depth. A single fixed value for `whenUnclassified` cannot get both right — `true` leaks a
+  real entry into duress; `false` hides legacy entries from their own owner.
+- **Key derived once, reused across every row** — matching `fetchAllEntries()`/`entriesVisible(atDepth:)`'s
+  existing pattern, not the ambient per-row `.decrypt()` that would re-derive it once per entry per
+  SwiftUI render.
+
+The doc comments this bug's investigation showed were stale — the "Step 8 stamps every nil entry"
+claim in `Vault+Model.swift` and the old `isEntryVisible` — have been corrected in place, and
+`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md` has been marked
+partially superseded. See Bug 114 for the related, still-open finding: `entriesVisible(atDepth:)`
+(backup export) has the same unconditional `whenUnclassified: true`, at whatever depth its caller is
+at, including a duress depth — not fixed here, scoped separately.
+
+### Guard
+
+`VaultEntryDepthVisibilityTests` (`VaultTests.swift`) rewritten to call `visibleVaultEntries(from:)`
+directly instead of the deleted `isEntryVisible(_:)` — this is what closes the actual gap this bug
+was about: the old tests exercised a correct function that the real UI call site never invoked. Two
+new cases added: `visibleVaultEntries_excludesOrphanedEntries` (an orphaned entry stays hidden even
+at the depth its untouched `visibleThroughDepth` still names) and
+`visibleVaultEntries_legacyNilVisibleThroughDepth_visibleAtRealDepth0` (the new depth-0 nil-entry
+case this fix adds, mirroring the pre-existing hidden-at-restricted-depth case). Full local suite
+run on a host with Secure Enclave access, per `CLAUDE.md`'s Testing Gate: 842 passed, 0 failed, 6
+skipped (`KeychainMigrationSETests`, the one expected device-only skip), 849 total — clean.
+
+## Bug 114 — A legacy nil-`visibleThroughDepth` `VaultEntry` is swept into a backup exported from a duress depth
+
+**Status:** Closed (Fixed), verified 2026-09-10. Found while checking whether Bug 113's fix for
+the display path had a counterpart on the export path. Filed and fixed the same day.
+
+**Target:** `v1.11.0/vault-key-layering`.
+
+### Severity: High
+
+Real vault content — by construction, since a nil-stamped entry can only be one that predates duress
+depths existing on the device at all — ends up inside a `.occbak` file sealed under a duress depth's
+own backup key. Unlike Bug 113 (a UI display glitch, self-correcting once you're looking at the right
+depth), this produces a durable artifact: a file a coercer who controls that depth's backup key
+custody can decrypt and read, containing content the owner never intended to expose at that layer.
+
+### What happens
+
+`VaultManager.entriesVisible(atDepth:)` ([Vault+Manager+Backup.swift:207](Occulta/Features/Vault/Vault+Manager+Backup.swift:207)):
+
+```swift
+private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
+    guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        throw VaultError.keyDerivationFailed
+    }
+    return try self.fetchAllEntries().filter {
+        $0.isVisible(atDepth: depth, whenUnclassified: true, usingKey: key)
+    }
+}
+```
+
+`whenUnclassified: true` is unconditional — it does not vary with `depth`. Its one caller,
+`exportBackup(currentDepth:)` ([Vault+Manager+Backup.swift:130](Occulta/Features/Vault/Vault+Manager+Backup.swift:130)),
+passes whatever depth it's called with straight through: `let entries = try self.entriesVisible(atDepth: currentDepth)`
+at line 148, with `currentDepth` supplied by the caller — there is no depth-0-only gate anywhere in
+this path. So a legacy nil entry is included in the export at *every* depth, duress ones included.
+
+### Why `whenUnclassified: true` was believed safe here, and why that no longer holds
+
+This exact question was investigated once already, thoroughly, in
+`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md`. Its answer,
+verified correct *at the time*: a nil entry cannot exist at an active duress depth, because
+`activateSecureMode`'s Step 8 unconditionally re-stamped every entry — nil ones included — to a
+hidden sentinel before that depth became reachable, backed by an `assert` and a dedicated regression
+test, `activation_nilDepthVaultEntry_getsStampedHidden`.
+
+**Both are gone.** `ef9c1f4` ("Removal Stage 1: shrink activate/deactivateSecureMode to PIN-only"),
+on this same branch, deleted `activateSecureMode`'s entire re-encryption/stamping sweep — Step 8
+included — along with its `assert` and that regression test, as part of retiring the old blob-based
+activation design. Confirmed three ways:
+
+- `grep -rn "stamps every\|stamp every" Occulta/Features/SecureMode/ Occulta/Features/Vault/` finds
+  nothing — no code anywhere stamps an existing nil entry to a concrete depth.
+- The current `activateSecureMode` ([Manager+Security.swift:337-414](Occulta/Features/SecureMode/Manager+Security.swift:337))
+  read in full: PIN verification and verifier-slot writes only. No loop over `VaultEntry`, no
+  `assert`, no reference to `visibleThroughDepth`.
+- `grep -n "activation_nilDepthVaultEntry_getsStampedHidden" OccultaTests/SecureMode/SecureModeActivationTests.swift`
+  — no match. That file was fully rewritten by this branch's own "Removal Stage 4" commit (`15404b1`).
+
+**Confirmed the opposite is now explicitly true, not just unenforced.** `PQmigration.swift`'s own doc
+comment on `migrateDepthFieldsToFixedWidth` (line 192): *"For `VaultEntry` nil is a legitimate steady
+state rather than a gap... inventing a value there would change what the user sees."* Nil is not an
+unlikely edge case that happens to be unreachable today — it's a documented, permanent population
+this codebase deliberately never touches. Combined with Removal Stage 1 deleting the only thing that
+ever moved a nil entry out of a duress depth's reach, the population this bug affects is real,
+persists indefinitely, and is now reachable at any depth.
+
+### Relationship to Bug 113
+
+Same underlying cause — the Removal effort deleted machinery an unrelated function's safety argument
+depended on, without that function or its doc comments being revisited. Bug 113's fix
+(`Manager.Security.visibleVaultEntries(from:)`) already handled this correctly for the display path
+by conditioning on `depth == 0`; this entry applies the identical fix to the export path.
+
+### Fix
+
+One-line change to `entriesVisible(atDepth:)` ([Vault+Manager+Backup.swift:210](Occulta/Features/Vault/Vault+Manager+Backup.swift:210)):
+`whenUnclassified: true` → `whenUnclassified: depth == 0`. Both of its callers benefit with no fork
+needed — `exportBackup(currentDepth:)` (the `.occbak` builder) and `refreshBackupStaleness(currentDepth:)`
+(which was, as a side effect, counting a legacy entry toward a duress depth's "current" entry count
+even though — pre-fix — it could never actually have been exported there; the fix also resolves that
+inconsistency for free). `Vault+Model.swift`'s shared doc comment on `isVisible(atDepth:whenUnclassified:)`
+updated to describe both callers now agreeing on `depth == 0`, rather than the two-different-answers
+framing that was accurate before this fix.
+
+### Guard
+
+Two new tests in `VaultBackupRoundTripTests.swift`, mirroring `exportExcludesHiddenEntries`'s existing
+full export→wipe→import round-trip pattern: `exportExcludesLegacyNilDepthEntryAtDuressDepth` (a legacy
+nil-depth entry is not present after a round trip through an export taken at depth 2) and
+`exportIncludesLegacyNilDepthEntryAtRealDepth0` (the same entry survives a round trip through an
+export taken at depth 0 — the behavior this fix must not regress, and the original subject of
+`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md`).
+
+Constructing the legacy entry surfaced a real test-harness trap, worth recording since it could bite
+again: mutating the `VaultEntry` object `VaultManager.addEntry` returns, in place, without saving
+through `VaultManager`'s own `ModelContext`, leaves that context's identity map holding a "dirty"
+tracked instance. A later external wipe (a separate `ModelContext` on the same container, the
+established pattern in this file for resetting state before import) deletes and saves the row at the
+persistent-store level, but `VaultManager`'s own context — used internally by `importBackup`'s
+`fetchEntry(by:)` dedup check — can still resolve the stale in-memory instance for that id, so the
+check reads "already exists" and silently skips re-importing it. Nothing to do with depth filtering;
+pure test-setup hazard, caught by adding a diagnostic `isVisible`/`isOrphaned` check and a byte-count
+check on the exported file, both of which showed the export side was already correct while the
+round-tripped count still came back wrong. Fixed by adding `makeLegacyEntry(via:in:)`, which mutates
+and saves through its own freshly-opened `ModelContext`, matching the `wipe` context's own pattern,
+so `VaultManager`'s context never carries an unsaved edit into the dedup check.
+
+Full local suite run on a host with Secure Enclave access: 844 passed, 0 failed, 6 skipped
+(`KeychainMigrationSETests` only), 851 total — clean, and consistent with Bug 113's own verified run.
+
+## Bug 115 — `VaultShardHealth` reads a raw, unfiltered `@Query` and renders decrypted entry labels from every depth
+
+**Status:** Closed (Fixed), verified 2026-09-11. **Moot since 2026-09-27:** `VaultShardHealth` was deleted
+with per-entry splitting (`Docs/General/decisions.md`, "Retire per-entry splitting"). Filed and fixed the same day, found while
+answering "what's left to complete the vault entry refactor" — checked every remaining
+`@Query`/`FetchDescriptor<VaultEntry>` site in the UI against the pattern Bug 113 fixed for
+`Vault+Tab.swift`, since that fix was scoped to one file and never claimed to be exhaustive.
+
+### Severity: High — worse than Bug 113, not just the same class
+
+Bug 113 leaked *visibility* (an entry showing up when it shouldn't). This leaks *content*: the actual,
+decrypted entry label — the thing a seed phrase or password's own descriptive name would be — rendered
+directly on screen for entries at every depth, real and duress alike, and for orphaned entries too.
+
+### What happens
+
+[VaultShardHealth.swift:18](Occulta/UI/Tabs/Settings/VaultShardHealth.swift:18):
+
+```swift
+@Query private var entries: [VaultEntry]
+```
+
+No predicate, no depth check, no orphan check — every row in the table, exactly the pattern
+`Vault+Tab.swift` had before Bug 113. `Manager.Security` is imported (`VaultShardHealth.swift:17`) but
+never referenced anywhere in the file — the depth-awareness the import implies was never wired in.
+
+```swift
+private var entriesWithShards: [VaultEntry] {
+    entries.filter { $0.shardDistributionEncrypted != nil }
+}
+
+private var decoded: [(entry: VaultEntry, meta: ShardDistributionMetadata, label: String, type: VaultEntryType)] {
+    guard vault.isUnlocked else { return [] }
+    return entriesWithShards.compactMap { entry in
+        guard let meta = try? vault.shardDistributionMetadata(for: entry.id) else { return nil }
+        let payload = try? vault.decryptLabelPayload(for: entry)
+        return (entry, meta, payload?.label ?? "–", payload?.type ?? .note)
+    }
+}
+```
+
+`decryptLabelPayload` is called unconditionally for every entry that has shard distribution set up —
+at any depth, orphaned or not — and the resulting plaintext `label` is carried straight into the
+row model. `healthSection`'s `ForEach(decoded, id: \.entry.id) { entry, meta, label, type in ... }`
+(`VaultShardHealth.swift:147`) renders it.
+
+**Reachable from any depth.** Settings → Vault Recovery → Shard Health, `NavigationLink`-accessible
+from `VaultRecoverySettings.swift`'s `pekSummaryRow` (see Bug 116) at any depth, real or duress — the
+screen itself has no depth gate of its own to prevent navigating to it in the first place.
+
+### Two harms, mirroring Bug 113's two but with label content instead of just presence
+
+1. **A coercer at a duress depth sees the real depth-0 vault's entry labels** — not just that entries
+   exist (Bug 113's harm), but what they're called: "Recovery seed," "Bank PIN," whatever descriptive
+   name the owner gave it, for any depth-0 entry that has shards set up.
+2. **The real owner, back at depth 0, sees duress-depth decoy entries' labels too** — and orphaned
+   entries' labels (Bug 110's entire point was making an orphaned entry inert everywhere; this screen
+   doesn't check `isOrphaned` at all, so a decommissioned entry's label still renders here indefinitely).
+
+### Why this wasn't caught by Bug 113's fix
+
+Bug 113 fixed `Vault+Tab.swift`'s `visibleEntries` specifically — the file the bug was filed against.
+It never claimed to audit every other `VaultEntry` consumer in the UI. This file has its own,
+independent `@Query`, never routed through the fix. Confirmed by grep: no test file references
+`VaultShardHealth`'s `entries`/`decoded`/`entriesWithShards` properties at all — zero test coverage of
+this screen's filtering, the same "unit-tested primitive, untested call site" gap Bug 113 named.
+
+### Fix
+
+One-line change to `entriesWithShards`, the single upstream property everything else in the file
+derives from ([VaultShardHealth.swift:22-25](Occulta/UI/Tabs/Settings/VaultShardHealth.swift:22)):
+
+```swift
+private var entriesWithShards: [VaultEntry] {
+    self.security.visibleVaultEntries(from: self.entries).filter { $0.shardDistributionEncrypted != nil }
+}
+```
+
+Routes through `Manager.Security.visibleVaultEntries(from:)` — the same function Bug 113 introduced —
+before the shard-distribution filter runs. `decoded`, `atRiskCount`, `atRiskBanner`, and `healthSection`
+all consume `entriesWithShards`, so every downstream computation and every rendered row is now
+depth-and-orphan-correct with the one change. `self.security` (`Manager.Security`) was already an
+`@Environment` property on this view — imported, per the bug's own write-up, but never used until now.
+
+### Guard
+
+No new test written: `visibleVaultEntries(from:)` itself is already fully covered by
+`VaultEntryDepthVisibilityTests` (Bug 113) — exact-depth match, orphan exclusion, the depth-0
+nil-entry case — and this fix introduces no new logic, only a new caller of that same, already-tested
+function. Neither this file nor `Vault+Tab.swift` has its own test suite (no SwiftUI view in this
+codebase does; view-level logic delegates to tested `Manager`/`VaultManager` functions, confirmed by
+grep — consistent architecture, not a gap specific to this fix). Full local suite run, combined with
+Bug 116's fix: 844 passed, 0 failed, 6 skipped (`KeychainMigrationSETests` only), 851 total — clean.
+
+## Bug 116 — `VaultRecoverySettings`'s PEK summary reads `recoveryHealth.affected` unfiltered, leaking a cross-depth count
+
+**Status:** Closed (Fixed), verified 2026-09-11. **Moot since 2026-09-27:** the PEK summary and
+`recoveryHealth` were deleted with per-entry splitting (`Docs/General/decisions.md`, "Retire per-entry splitting"). Filed and fixed the same day, found alongside
+Bug 115.
+
+### Severity: Medium — a count leak, not a content leak
+
+No entry labels are shown here, only aggregate numbers ("3 entries critical," "1 entry degraded"), but
+those numbers are computed across every depth's entries, not just the current one.
+
+### What happens
+
+[VaultRecoverySettings.swift:108](Occulta/UI/Tabs/Settings/VaultRecoverySettings.swift:108):
+
+```swift
+private var pekSummaryRow: some View {
+    let affected = vault.recoveryHealth?.affected ?? []
+    let critical = affected.filter { $0.status == .critical }.count
+    let degraded = affected.filter { $0.status == .degraded }.count
+    ...
+}
+```
+
+`vault.recoveryHealth` is computed by `VaultManager.recomputeRecoveryHealth()`
+(`Vault+Manager+Shards.swift:341`), which reads `fetchAllEntries()` — orphan-filtered, but not
+depth-filtered — and builds `affected: [RecoveryHealthSummary.AffectedEntry]` (which does carry each
+entry's decrypted `label`, per its own struct) across every depth at once. `Vault+Tab.swift` reads this
+same published property but filters it first: `(self.vault.recoveryHealth?.affected ?? []).filter {
+visibleIDs.contains($0.entryID) }` (`Vault+Tab.swift:223`). `VaultRecoverySettings.swift` does not —
+the count badge on this screen aggregates every depth's critical/degraded entries into one number,
+displayed at whichever depth the viewer is currently at.
+
+**Not a label leak in this file** — `pekSummaryRow` only reads `.status` to build counts, never
+`.label`. But `VaultRecoverySettings.swift`'s own `NavigationLink` from this row goes to
+`VaultShardHealth()` (Bug 115), so the practical path from "the count looks off" to "the actual labels
+are visible" is one tap, not a separate vulnerability chain to build.
+
+### Fix
+
+Added the same `@Query`/filter pair `Vault+Tab.swift` already carries, then applied it to
+`pekSummaryRow` ([VaultRecoverySettings.swift](Occulta/UI/Tabs/Settings/VaultRecoverySettings.swift)):
+
+```swift
+@Query private var entries: [VaultEntry]
+
+private var visibleEntryIDs: Set<UUID> {
+    Set(self.security.visibleVaultEntries(from: self.entries).map(\.id))
+}
+```
+
+```swift
+private var pekSummaryRow: some View {
+    let affected = (vault.recoveryHealth?.affected ?? []).filter { self.visibleEntryIDs.contains($0.entryID) }
+    ...
+}
+```
+
+This view had no `@Query` on `VaultEntry` before — `SwiftData` added as an import. Deliberately local to
+this view rather than a new shared helper on `Manager.Security`: `Vault+Tab.swift` already computes its
+own `visibleIDs` the same inline way, so this matches the existing pattern rather than introducing a
+second one.
+
+### Guard
+
+Same reasoning as Bug 115's Guard: no new logic, only a new caller of the already-tested
+`visibleVaultEntries(from:)`; neither this view nor `Vault+Tab.swift` carries its own test suite. Full
+local suite run, combined with Bug 115's fix: 844 passed, 0 failed, 6 skipped
+(`KeychainMigrationSETests` only), 851 total — clean.
+
+## Bug 117 — `deleteContact`'s 50-row eviction has no defined order, and `Contact.Profile` has no field that could give it one
+
+**Status:** Open, not fixed. Filed 2026-09-11, found while explaining the 50-row soft-delete/orphan
+cap's eviction logic and being asked to verify "oldest evicted first" actually holds for both
+`Contact.Profile` and `VaultEntry`.
+
+### Severity: Low — a correctness/intent gap, not a leak
+
+The 50-cap itself is a practical bound on unbounded dead-row growth, not a security mechanism (see
+the "why cap it, and why 50" discussion this entry's investigation grew out of — no evidence the
+number or the policy was derived from a threat calculation). Evicting the *wrong* soft-deleted row
+doesn't expose anything a correctly-chosen eviction wouldn't: both the evicted row and every row that
+stays are already soft-deleted, already excluded from every functional read, already indistinguishable
+from live rows without the key. Unlike Bugs 113-116, nothing here crosses a depth boundary or reveals
+content. Filed because the code's own shape (mirrored from `VaultEntry`, which *does* implement
+oldest-first correctly) implies a guarantee that doesn't actually hold for contacts, and because fixing
+it properly needs a model decision, not just a one-line patch.
+
+### What happens
+
+[Contact+Manager.swift:524-529](Occulta/Services/Contact+Manager.swift:524), `fetchSoftDeletedContacts`:
+
+```swift
+private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
+    let predicate = #Predicate<Contact.Profile> { $0.deletionToken != nil }
+    let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate)
+    return try self.modelContext.fetch(descriptor)
+}
+```
+
+No `sortBy` at all. [Contact+Manager.swift:467-470](Occulta/Services/Contact+Manager.swift:467),
+`deleteContact`, evicts whichever row this unordered fetch happens to return first:
+
+```swift
+let softDeleted = try self.fetchSoftDeletedContacts()
+if softDeleted.count >= 50, let victim = softDeleted.first {
+    self.modelContext.delete(victim)
+}
+```
+
+`.first` on an unordered `FetchDescriptor` is whatever SwiftData/SQLite's query planner happens to
+return for a plain predicate scan — in practice, likely rowid/insertion order for a table that's
+never reordered, but that's implementation behavior, not a documented guarantee, and nothing in this
+code asserts or depends on it deliberately.
+
+**Contrast: `VaultEntry`'s equivalent (`Manager+Security.swift:562-563`, `orphanVaultEntries`) sorts
+explicitly before evicting:**
+
+```swift
+alreadyOrphaned.sort { $0.createdAt < $1.createdAt }
+toOrphan.sort { $0.createdAt < $1.createdAt }
+```
+
+Bug 110's own doc comment states the vault-entry cap "mirrors `Contact.Profile.deletionToken`'s own
+cap" — but only the *cap number* was carried over. The oldest-first *ordering* that comment implies
+was never actually present on the contacts side to mirror, or existed and was dropped; either way, the
+two implementations have diverged silently.
+
+**Worth being precise about even on the `VaultEntry` side, since "oldest first" undersells what's
+actually being sorted: `createdAt` is when the entry was originally created, not when it was
+orphaned.** There is no separate "orphaned-at" timestamp — `orphanVaultEntries` has nothing else to
+sort by, so creation date stands in as a proxy for "how long has this been orphaned." The two usually
+track closely in practice (orphaning only happens on deactivation, and an entry can't be orphaned
+before it's created), but they're not the same thing, and an entry created long ago but orphaned only
+recently would be evicted ahead of one created recently but orphaned earlier — the reverse of what
+"evict whichever has been dead longest" would actually mean. `VaultEntry` is still strictly better off
+than `Contact.Profile` here (it has *a* defined, deliberate order; contacts have none), but neither
+implementation evicts by true orphaned-duration, and no field exists to make that possible without the
+same new-field, does-it-leak-timing tradeoff named above for contacts.
+
+### Why this can't be fixed with just a `sortBy`
+
+Checked directly: `Contact.Profile` (`Contact+Model.swift`) has **no creation-date field at all** — no
+`createdAt`, `addedDate`, or equivalent, confirmed by grep across the model. `VaultEntry.createdAt`
+exists and is what `orphanVaultEntries` sorts on. Even a correctly-written `sortBy` on
+`fetchSoftDeletedContacts()` would have nothing meaningful to sort *by* — adding real "oldest first"
+behavior needs a new field on the model, not a query fix.
+
+**That new field is its own design question, not a free addition.** It would need the same scrutiny
+this session already gave `deletionToken` itself when asked whether it should carry a timestamp: a
+literal creation-date field, even sealed, is a new place for timing information to live, and this
+codebase has repeatedly chosen not to add exactly that kind of field elsewhere for that reason (see
+the `deletionToken`-has-no-date discussion this bug grew out of). Whether "oldest first" is worth that
+cost for a mechanism whose own stakes are already low (see Severity above) is the actual open question
+here — not resolved by this filing.
+
+### Two remedies, neither chosen
+
+1. **Add a creation-date-equivalent field to `Contact.Profile`**, sealed under the same key discipline
+   the rest of the model uses, enabling genuine oldest-first eviction — brings contacts to parity with
+   `VaultEntry`, at the cost of a new field and a migration for existing rows.
+2. **Leave eviction order unspecified, but say so** — drop the implied "oldest first" framing (the
+   `VaultEntry` mirror comment, and this function's own resemblance to that one) and document
+   `deleteContact`'s eviction as "evicts an arbitrary soft-deleted row when the cap is reached," matching
+   what the code actually does today. Cheapest fix, but a real behavior downgrade from what a reader
+   would currently assume this does.
+
+### Guard
+
+None — not fixed. No test currently asserts eviction order for `deleteContact` at all (unlike
+`VaultEntry`'s orphaning, which per Bug 110's own write-up caught a real ordering bug in an earlier
+draft via a dedicated test) — worth adding regardless of which remedy above is chosen, so the actual
+behavior (ordered or not) is pinned down and visible rather than implied by resemblance to a sibling
+function.
+
+---
+
+## Bug 118 — `deactivateSecureMode` never orphans the freed depth's BEK, so a later, unrelated duress session inherits the old session's backup key and trustee list
+
+**Status:** Closed (Fixed), verified 2026-09-11. Filed and fixed the same day, found while scoping the
+BEK-storage-off-the-array refactor (`VAULT_KEY_LAYERING.md`) — this is the exact BEK-side analog of Bug
+110, one container over, and closing it is what motivated moving BEK storage onto `BackupEncryptionKey`
+SwiftData rows rather than being a separate follow-on patch. Full suite: 841 passed, 0 failed, 6 skips
+(`KeychainMigrationSETests` baseline only), 847 total.
+
+### Severity: Medium — stale-state confusion with a real trustee-facing consequence, not a confidentiality leak
+
+**What this is not:** content leaking to a more-trusted viewer than it was meant for. A depth's BEK,
+like its vault entries, was always visible to whoever reached that depth in the session that created
+it. This bug is about the *same* restriction level inheriting a *different, unrelated* session's key
+and trustee list — not a safer view gaining access to a more-restricted one.
+
+**Why this is worse than Bug 110's own severity, not just the same shape.** Bug 110's stale entry is
+inert content — confusing, but nothing acts on it. A stale BEK is live key material with a live
+consequence: `backupSetupState`/`currentBackupKey` for the reused depth report "already configured,"
+`shardMetadata` lists the *previous* session's trustees as this session's own, and `exportBackup` at
+that depth would seal new content under a key whose distributed shares are held by people the current
+session's owner never chose and may not know about.
+
+### What happens
+
+Before this fix, `deactivateSecureMode` and `forceDeactivateForRecovery` (`Manager+Security.swift`)
+cleared verifiers and called `orphanVaultEntries(freedFrom:)` for the freed depth(s), but never touched
+that depth's `BackupEncryptionKey` row at all — confirmed by reading both functions' full bodies, not
+assumed from the vault-entry precedent. Depth *numbers* are reused across unrelated future duress
+sessions, exactly as Bug 110 found for vault entries: `deactivateSecureMode` always returns to depth 0
+or 1, and a fresh `activateSecureMode` → duress-PIN verification walks back up through 1, 2, 3... the
+same way every time. Concretely: set up backup at duress depth 1 during session A (real trustees, real
+key) → deactivate → later configure an unrelated duress PIN, also reaching depth 1 in session B — session
+B's `backupSetupState(currentDepth: 1)` reports the depth already configured, `currentBackupKey`
+returns session A's key unchanged, and `backupShardMetadata` lists session A's trustees as though the
+new session's owner had chosen them.
+
+### Fix
+
+Folded into the BEK-storage refactor rather than patched as a standalone fix, since the refactor moved
+BEK storage onto the same `deletionToken`-orphaning shape `VaultEntry` already uses (Bug 110) — the
+mechanism this bug needed already existed one container over, just not wired to a BEK-aware version of
+it.
+
+**`BackupEncryptionKey` gained the same three-state shape `VaultEntry` has:** `depth`/`deletionToken`
+fields (sealed under the local DB key, not the vault key — forced, since orphaning has to run from
+`deactivateSecureMode`/`forceDeactivateForRecovery`, neither of which derives the vault key),
+`liveToken`/`orphanedToken` fixed-width one-byte sentinels mirroring `VaultEntry.liveToken`/
+`orphanedToken` exactly, `isOrphaned(usingKey:)` failing safe the same direction. One row per claimed
+depth, drawn from a 32-row filler baseline eagerly created at first launch (see
+`VAULT_KEY_LAYERING.md` for the full storage-migration design this bug's fix rode in on) — uncapped
+beyond 32, since BEK rows are only ever created by an explicit "set up backup at this depth" action,
+not everyday use, so the 50-row cap-and-evict shape `VaultEntry`/`Contact.Profile` use for their much
+higher-frequency writes wasn't judged necessary here.
+
+**`Manager.Security.orphanBackupKeys(freedFrom:)`** (`Manager+Security.swift`), added right after
+`orphanVaultEntries` in both `deactivateSecureMode` and `forceDeactivateForRecovery`, inside the same
+`autosaveEnabled = false` window and committed by the same trailing `save()` — mirrors
+`orphanVaultEntries(freedFrom:)`'s own shape exactly: fetch every `BackupEncryptionKey` row, decrypt
+each `depth` with the local key, skip anything already orphaned or still filler, mark every live match
+`>= clearFrom` as orphaned. No cap, no eviction, matching the row-creation-frequency reasoning above.
+
+### Guard
+
+`BackupKeyOrphaningTests` (`BackupEncryptionKeyStorageTests.swift`), mirroring `VaultEntryOrphaningTests`
+one container over: `staleSessionBackupKeyDoesNotResurface` (the core regression — a BEK set up in one
+duress session must not resurface in a later, unrelated session reaching the same depth; the row must
+survive physically, marked orphaned, not deleted; a fresh `setupBackup` in the new session must produce
+a genuinely different key, not read the old one back), `shallowerBackupKeySurvivesCascade` (a BEK at a
+shallower, still-live depth must be untouched by an unrelated deeper cascade deactivation — exact same
+key, not a fresh one), and `updateShardStatusIgnoresOrphanedRow` (a shard-confirmation call targeting an
+orphaned row's own `attributeID` must be a silent no-op — the row's `encryptedPayload` byte-for-byte
+unchanged — since the row is excluded from the live-row scan `updateShardStatus` searches). All three
+pass; full suite re-run clean after (841/0/6/847).
+
+---
+
+## Bug 119 — The vault key's access control is device-level, not Occulta-level — AFU forensic extraction (Cellebrite/GrayKey-class) derives it via code execution alone, no coercion needed, and one key opens every depth
+
+**Status:** Open. Filed 2026-09-11, during a design conversation about whether replacing the 6-digit
+duress PIN with a longer passphrase would close Bug 62's open gaps. It doesn't, on its own — but
+tracing *why* led to the actual key-derivation code, which confirmed a gap this codebase already has a
+proposed remedy for, filed against a future release and not yet cross-referenced from anywhere a
+reader chasing Bug 62 would find it: **[`PASSPHRASE_LAYER_KEYS.md`](PASSPHRASE_LAYER_KEYS.md)**
+(`Occulta/Features/SecureMode/`, proposed 2026-09-10). This entry exists to make that connection
+findable, record today's confirmation against the current shipped code, and note that the design
+doc's own sequencing precondition has now landed.
+
+### Severity: High — forensic-extraction exposure, not a coercion-scenario bug
+
+Distinct from almost everything else in this file: every other duress/depth bug assumes an attacker
+using the app normally, through its own UI, with or without a compliant owner. This one assumes an
+attacker who has gotten code execution on the device (the realistic AFU — After First Unlock —
+capability class Cellebrite/GrayKey-style tooling targets) and asks: does Occulta's own app-level PIN,
+duress-PIN, or depth logic stand between that attacker and the vault key at all? Traced directly
+against shipped code rather than assumed — it does not.
+
+### What happens, confirmed directly against `Occulta/Services/Key+Manager.swift`
+
+[`createVaultSEKey()`](Occulta/Services/Key+Manager.swift:641) sets the vault SE key's access control
+to `[.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode]` — the **device's own** Face
+ID/Touch ID or iOS system passcode. [`deriveVaultKey(context:)`](Occulta/Services/Key+Manager.swift:707)
+computes `HKDF(ikm: ECDH-shared-secret, salt: vaultPublicKeyBytes, info: kVaultKeyInfo)` — no Occulta
+PIN, duress PIN, or passphrase is an input anywhere in that derivation. Occulta's own depth/duress
+logic never participates in the SE's actual release decision; it's app-level routing sitting entirely
+on top of a key the SE will hand to *any* caller who satisfies the *device's* authentication, because
+that's the only condition the access control actually encodes.
+
+**Practical consequence:** once a device is in AFU state (its system passcode has been entered once
+since boot — compelled from the owner, or reached via an exploit that doesn't trigger the
+erase-after-10-attempts limit), a code-execution exploit can call the identical Keychain/SE API
+Occulta itself uses, with a validly-authenticated `LAContext`, and receive the same vault key —
+regardless of which depth, if any, Occulta's own app believes is active, because that belief was never
+part of the key's release condition.
+
+**And it is one key for every depth, confirmed against `VAULT_KEY_LAYERING.md` §4:** *"vault entries
+carry individual depth stamps, the key they are sealed under does not."* A single successful
+extraction yields the one shared vault key, and every depth's rows — real and every duress layer
+alike — are still physically present (`visibleThroughDepth`/`deletionToken` is UI filtering, not
+cryptographic separation, per Bugs 110-118) and decrypt under it. The duress/depth system was built to
+survive a coercer using the app normally; it was never designed to resist code-execution-class
+extraction, and nothing in its design claims otherwise — this entry is naming that boundary
+explicitly, not reporting a regression.
+
+### The proposed remedy already exists — `PASSPHRASE_LAYER_KEYS.md`
+
+Filed 2026-09-10, one day before this entry, from what its own header describes as the same
+conversation thread ("the 'how does the second attacker get the key' and 'is it impossible if we pair
+ECDH with diceware' exchanges that motivated this doc"). Core mechanism: `layerKey_D = HKDF(ikm:
+Argon2id/PBKDF2(passphrase_D) ‖ ECDH(depth_D_SE_privkey, G), ...)` — a human-only secret that never
+touches the device, combined with the existing per-device SE binding. Extraction alone yields half an
+input, not a usable key.
+
+**That document's §2 already found, independently, the exact structural problem this entry's own
+design conversation re-derived from scratch:** making each depth's content genuinely
+cryptographically distinct (not just UI-filtered) means a row belonging to depth 2, decrypted with
+depth 1's key, must fail *silently* rather than with a loud authentication error — otherwise the mere
+existence of an auth failure is itself the tell Bug 109 already named for a sibling mechanism. Its
+proposed fix is `Manager.LayerStore`'s own retired filler-slot pattern, generalized: every row seals
+cleanly under every depth's key, real content under the depths it belongs to, random filler
+everywhere else. This is flagged there as the actual complexity cost of the whole proposal — "not the
+simple version of Design B" — and remains the open, unresolved design question blocking it, not
+anything raised fresh today.
+
+**What today's conversation adds, not already in that document:**
+
+- **Grounded §0's "why now" framing against the literal current code**, rather than describing the
+  gap abstractly — the `Key+Manager.swift` citations above are new; the document's own text describes
+  the mechanism without line-level citations.
+- **The sequencing precondition has landed.** §5 states this work "depends on the current
+  removal-stages plan (`plan.md`) landing first." Removal Stages 0-4 shipped 2026-09-10 (confirmed
+  repeatedly this session — `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
+  all gone). The blocker named in that document's own sequencing section no longer holds; §2's open
+  structural question is the next real design work, per that section's own words, and nothing is
+  waiting on this session's own BEK/vault-entry refactor either — the two are independent.
+- **A concrete example of what §2's "every consumer needs re-auditing" cost actually touches:**
+  `VaultManager.Backup.updateShardStatus` (`Vault+Manager+Backup.swift:1407`) loops over every depth's
+  BEK row searching for a matching `attributeID`, using the one shared vault key, because today one
+  key opens all of them. Under per-depth keys it has nothing to decrypt other depths' rows *with* — it
+  would need to stop being a decrypt-and-check scan and route by something self-identifying instead
+  (the shard's own `distributionID`, already noted as available in Bug 102's own remedy text before
+  its reclassification). This is one concrete instance of the "real, nontrivial" cost §2 names in the
+  abstract; there are likely others among the vault-key domain's other consumers, not yet enumerated.
+- **Cross-reference to Bug 62.** That entry's Gap 2 (no design exists for a rate limit that survives a
+  compliant-victim relock cycle without becoming its own forensic tell) and its residual-risk section
+  (accidental master-PIN collision, bounded by PIN-space size) are both closed as a side effect if
+  `PASSPHRASE_LAYER_KEYS.md` ships with genuinely high-entropy, non-user-editable phrases — a 7-word
+  Diceware phrase (~90.5 bits against the EFF large wordlist) makes both exhaustive brute force and
+  the targeted, human-plausible guessing Gap 2 actually worries about equally infeasible. Not a reason
+  to build this instead of fixing Gap 2 directly — a reason the two should be decided together rather
+  than Bug 62 acquiring its own separate rate-limit design that this proposal would make moot.
+  **Re-examined 2026-09-11: Gap 3's trigger mechanism closes the same way.** `masterPINCollision`
+  only exists because today's routing scans a small array of stored verifiers, comparing a new
+  candidate against existing ones — that comparison is what turns a rare accidental match into a
+  detectable, nameable event. Canary-based per-depth authentication at ~90 bits doesn't need that
+  setup-time check at all (accidental collision odds go from 1-in-10⁶ to ~1-in-2⁹⁰), so there's no
+  error to throw and no oracle to build a wipe response around. **Gap 3's own "deeper structural
+  problem" is not closed by this, and can't be by any secret-format change** — it was never a
+  guessing-difficulty question. Once the real depth-0 secret is known to be in a coercer's hands (via
+  direct compulsion, not probing), the app still has no way to tell that apart from the real owner's
+  own legitimate entry, and the Bug 13 hard-delete conflict Gap 3 names is unaffected by whether the
+  secret was 6 digits or 7 words.
+- **§4's PBKDF2-vs-Argon2id tradeoff is lower-stakes than it reads, not resolved.** At ~90 bits of
+  input entropy (7 words), even PBKDF2's weaker resistance to parallel/GPU attack leaves brute force
+  well outside feasibility — the KDF choice stops being what stands between an attacker and the phrase.
+  It still matters for defense-in-depth against a future entropy-reducing mistake (a shorter phrase, a
+  user-edited one), so this doesn't remove the decision, just lowers what's riding on it.
+
+### Absorbs Bug 92's on-device half, 2026-09-24
+
+Per-depth backup keys (`BackupEncryptionKey` rows) are sealed under the same vault key as everything
+else, so this entry's extraction also yields every depth's backup key, and with it any real `.occbak`
+the attacker finds. Bug 92 carried that case separately; it is folded in here, because the fix is the
+same: `PASSPHRASE_LAYER_KEYS.md`'s per-layer keys, sealing the real layer's backup key under the real
+layer's key. Bug 92 stays open for the exported file itself (an opt-in export passphrase).
+
+One thing the backup file adds beyond the entries in the database: it lives off the device (iCloud,
+Files, AirDrop) and can hold entries later deleted from the phone. And the backup key is deliberately
+reused across trustee changes (`decisions.md`, "Reuse the same BEK across trustee-set changes"), so a
+key extracted once opens that depth's earlier and later exports until it is rotated. Rotation has no
+UX or caller yet: Bug 121.
+
+### Absorbs Bug 123, 2026-09-26
+
+The small local-key fields (`VaultEntry.visibleThroughDepth`/`.deletionToken`, `BackupEncryptionKey.depth`/
+`.deletionToken`, `Contact.Profile`'s three depth fields, `PendingShamirSecretRestore.attributeID`/
+`.deletionToken`) all seal with one fixed AAD, so their ciphertext can be moved between rows. That only
+matters to an attacker who can write the store but can't use the local key, and on an unlocked phone
+anyone who can write the store can use it (no prompt on that key). So it is folded in here: **when this
+entry's remedy re-seals these fields under layer keys, the same migration must bind each to its row and
+field** (an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)` already does for the
+content fields). Recorded as a requirement in `PASSPHRASE_LAYER_KEYS.md` §2.
+
+### Guard
+
+None — not built. Tracked as `PASSPHRASE_LAYER_KEYS.md`'s own §2, unresolved. This entry's job is
+findability (a reader starting from Bug 62 or from this file's Cellebrite/AFU-adjacent entries has no
+path to the document that already designed the fix) and confirmation against current code, not new
+design work.
+
+---
+
+## Bug 120 — Modifying one depth's stored data never touches a sibling depth's bytes, so write frequency across snapshots reveals which depth is used most — likely identifying the real one
+
+**Status:** Open. Filed 2026-09-12, found while designing `RECOVERY_BUFFER_LAYERING.md` Stage 4's
+shard-buffer cap and generalizing the question to the rest of the app's per-depth storage.
+
+**Target:** None — cross-cutting, affects every per-depth container currently shipped, not a single
+release's scope.
+
+### Severity: Medium (forensic — reveals which depth is real, not vault contents)
+
+Exposes no content. Answers a narrower but still load-bearing question: given two or more on-disk
+snapshots taken over time, with no key at all, which depth is used the most? Ordinary daily use happens
+overwhelmingly more often at the real depth than at any duress depth, which exists only for the rare
+coercion window — so the depth showing the most write activity across snapshots is very likely the real
+one, independent of whether any content is ever actually decrypted.
+
+### What happens, confirmed directly against current code, 2026-09-12
+
+Checked every per-depth-keyed object currently shipped:
+
+- `BackupEncryptionKey` rows — `Backup.persist`/`seal` write only the one row being claimed or updated
+  (`Vault+Manager+Backup.swift`).
+- `AppLayerConfig.sealedNormalVerifiers`/`.sealedDuressVerifiers` — `writeNormalVerifier`/
+  `writeDuressVerifier` assign exactly one array index (`AppLayerConfig+Model.swift:138,146`).
+- `AppLayerConfig.pinEnabledPerDepth` — same shape, one-index assignment
+  (`AppLayerConfig+Model.swift:281`).
+- `VaultEntry.visibleThroughDepth`/`.deletionToken` — per-row field assignment
+  (`Vault+Manager.swift:259,262`).
+- `Contact.Profile`'s depth fields (`visibleThroughDepth`/`originDepth`/`globalTrusteeDepth`/
+  `deletionToken`) — per-row field assignment (`Contact+Manager.swift:194-201`).
+- `CustodyShard`, `ReconstructShard`, `PendingShardDistribute` rows — same per-row shape.
+
+In every one of these, writing depth N's data leaves every other depth's stored bytes byte-for-byte
+identical to before. Exactly one thing currently shipped does the opposite: `backup-export-meta.dat`
+(`ExportMetaSlotCodec`/`writeBackupExportMetadata`, `Vault+Manager+Backup.swift:930`) loads all 32 slots'
+plaintext, updates one, re-encodes all 32 into one buffer, and seals that whole buffer under one fresh
+nonce — every byte of the output changes on every write, regardless of which slot's plaintext actually
+moved. That is the only currently-live precedent for closing this; everything else leaks.
+
+### Why this is not the same thing as row-count camouflage
+
+Bug 110/118's fixed-filler-baseline work (and this session's shard-buffer design) defends against "how
+many rows exist" being informative — an examiner with a single snapshot can't tell real content from
+padding. This is a different axis: **which** row or slot changes across **multiple** snapshots taken over
+time. Row-count camouflage says nothing about it — a fully padded row set can still show exactly one
+entry's ciphertext changing between two captures, which is enough to mark that entry, and by extension
+whichever depth it belongs to, as "active," with no decryption needed at all.
+
+### This was an accepted, narrow trade-off for BEK specifically — it is not narrow once generalized
+
+`VAULT_KEY_LAYERING.md` item 7 (superseded by item 14) explicitly accepted losing "which slot changed"
+undiffability when BEK moved off its old full-reseal array onto rows, reasoning that the realistic
+threat — physical re-imaging of the same device at two points in custody, given the array was already
+backup-excluded — was narrow enough to accept. That reasoning was scoped to BEK alone. It was never
+re-examined against every *other* per-depth object in the app also lacking this property, or against the
+specific, high-value signal of "which depth is used more often" as opposed to "was any write made at all
+to this one field." Generalized across every per-depth container in the app, and weighted by how starkly
+real-depth activity outpaces duress-depth activity in ordinary use, this is a considerably stronger signal
+than the narrow one item 7 weighed.
+
+### Cross-reference
+
+Also flagged in [`PASSPHRASE_LAYER_KEYS.md`](PASSPHRASE_LAYER_KEYS.md) §2, 2026-09-12 — that document's
+proposed per-depth-key storage mechanism ("structurally close to what the blob array already did for
+contacts") would need to deliberately re-adopt the old array's full-reseal behavior to avoid inheriting
+this leak, and currently doesn't specify that it does.
+
+### Guard
+
+None — not built, and not yet designed. Whoever picks this up needs to decide, for each affected
+container, either: (a) reseal every sibling slot/row on every write (the old array's actual mechanism, at
+whatever storage-churn cost that implies — worse for containers written to often, like the shard buffer,
+than for ones written rarely, like BEK), or (b) some other mechanism that hides write-frequency-by-depth
+without paying that cost everywhere. Not resolved by anything currently in this file or in either design
+document.
+
+---
+
+## Bug 121 — Backup key rotation has no UX, and no caller at all — `Backup.rotate()` is unreachable dead code
+
+**Status:** Open. Filed 2026-09-12, found while explaining what rotating a BEK actually looks like to a
+user and confirming directly against code that nothing calls it.
+
+**Partly overtaken, 2026-09-26:** Bug 141's decision generates a new backup key whenever a trustee is removed,
+so that path reaches a key change with its own confirmation and re-export prompt. A deliberate "rotate now"
+without changing trustees is still missing.
+
+**Target:** v2.0.0 — not urgent for the current release. Nothing depends on rotation existing today;
+`decisions.md`'s "reuse the same BEK across trustee-set changes" entry treats rotation as the rare,
+deliberate escape hatch, not something routine use ever needs.
+
+### Severity: Low (missing feature, not a security regression)
+
+Nothing is less safe because of this — `Backup.rotate()` being unreachable doesn't expose anything or
+weaken any existing guarantee. It means the one deliberate mechanism this design's own reasoning relies on
+("a genuine rotation is the only path that invalidates old backups, and it's explicit") doesn't actually
+work: a user who concludes a share may have leaked and wants to kill the old key has no way to do it.
+
+### What's missing, confirmed directly against code
+
+- `Backup.rotate(vaultKey:currentDepth:modelContext:)` (`Vault+Manager+Backup.swift:1367`) exists and is
+  presumably correct, but has zero callers anywhere — confirmed by grep across `Occulta/` and
+  `OccultaTests/`: no `VaultManager` wrapper (unlike `setupBackup`/`prepareBackupShards`/`currentBackupKey`,
+  which all have one), no UI button or flow, not even a direct unit test.
+- The only UI surface touching rotation at all is reactive, not a trigger: `VaultRecoverySettings.swift:160`
+  shows a "BEK rotated" staleness warning when `backupStaleness.bekRotated` is true, comparing the
+  `distributionID` recorded at the last export against the current one. That reports a rotation that
+  already happened by some other means; nothing in the app is that means.
+
+### Remedy
+
+Add a `VaultManager` wrapper mirroring `setupBackup`'s shape (derive `vaultKey`, call through to
+`self.backup.rotate`), then a UI entry point calling it — most naturally in `VaultRecoverySettings` next to
+the staleness warning it currently only reports on. Needs its own confirmation UX too: rotating
+deliberately invalidates every existing `.occbak` (per `decisions.md`'s entry), so the user needs to
+understand that cost before triggering it, the same way `storePendingRestore`'s `.alreadyProcessed`
+refusal already treats an irreversible state change as something to confirm rather than fire silently.
+
+### Guard
+
+None — not built.
+
+---
+
+## Bug 122 — A cap on `PendingShamirSecretRestore` would let a coercer count how many restores are live, without any key
+
+**Status:** Closed, 2026-09-13 — resolved by deciding never to cap this container at all, rather than by
+fixing the cap. Filed the same day, while sizing a cap for `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's
+`PendingShamirSecretRestore` model. **Was never exploitable and never will be:** `PendingShamirSecretRestore`
+has no working implementation at all — no cap, no read/write logic, nothing beyond the bare model
+definition in `Vault+Model.swift` — and per the resolution below, it never gains one. This entry exists so
+the reasoning behind "no cap, ever" on this container is findable, not to report something that happened.
+
+**Target:** None — blocks adopting any cap on this container, whenever that's attempted; not tied to a
+release.
+
+### Severity: High, if a cap is ever added the naive way (deniability break, same class as Bug 99)
+
+Doesn't expose vault contents. Answers the same question Bug 99 already named as the one thing this whole
+layering effort exists to keep unanswerable: *is a restore genuinely in progress on this device right now?*
+Unlike Bug 99, this would need no shard delivery at all to test — just a row count. Stated as a
+conditional (*if* a cap is added without resolving the isolation question below) because that's exactly
+what it is right now — a condition that hasn't occurred, on a mechanism that hasn't been built.
+
+### What happens
+
+§6 item 9.3 generalized BEK-restore tracking past depth-indexing: `PendingShamirSecretRestore` is now keyed
+by the secret's own identity (`attributeID`) rather than by which of 32 depths it belongs to, so a
+per-entry PEK restore (keyed by `VaultEntry.id`) can be tracked the same way a BEK restore is. That
+generalization is real progress, but it removed something the depth-indexed design provided for free:
+per-depth isolation, the exact precondition `RECOVERY_BUFFER_LAYERING.md` §3 already requires before any
+cap on this kind of container is safe (*"a cap on a shared buffer is a cross-layer denial channel... safe
+only once the buffer is per-depth"*).
+
+Suppose a cap of N live rows exists, to bound Bug 96 item 2's resource-exhaustion problem. Suppose one
+genuine restore is already live, anywhere on the device, at any depth. A coercer holding the phone:
+
+1. Re-pairs N distinct identities with the victim's phone at their own duress depth — free, they're already
+   holding it (Bug 99's own step 1, reused here).
+2. Sends N `.handback` shard operations, each carrying a different, never-seen-before `attributeID`
+   (garbage `SignedAttribute`s work fine — see the earlier finding on Branch B attestation requiring no
+   real prior distribution).
+3. Extracts the device (physical custody is already assumed) and counts `PendingShamirSecretRestore` rows
+   directly from the raw SQLite file. No key needed — row count is always plaintext.
+
+If fewer than N new rows exist, a live row already occupied one of the N slots before the coercer started
+— meaning a restore is genuinely in progress somewhere on this device. If exactly N new rows exist, no
+prior restore was live. Either answer is the thing this design exists to keep the coercer from ever
+learning.
+
+### Why this is sharper than the denial-channel framing §3 already names
+
+§3's own concern was an attacker *destroying* a real recovery's collected shares by flooding the shared
+buffer — a denial attack. This doesn't destroy anything and needs the victim's restore to survive intact;
+it only *counts*. A coercer never needs to identify which row is the real one, decrypt anything, or prevent
+the real restore from completing — they only need to know whether it exists at all, which the cap's own
+admission behavior answers for free.
+
+### Remedy — resolved: no cap at all, permanently
+
+Two ways to close this were on the table. **Restoring per-depth isolation** — a local-key-sealed `depth`
+field recording where a row's first shard arrived, capping per-depth instead of globally — was technically
+sound (it does restore the isolation §3 requires, and `attributeID`/`depth` answer genuinely different
+questions, so nothing about generalizing past BEK required giving it up). It was rejected anyway, for a
+reason worth recording precisely since it isn't a security objection: enforcing any cap needs a decision
+about what happens at the boundary — reject silently, surface an error, something a person eventually has
+to design UX for — and that scope was judged not worth taking on for what Bug 96 item 2 already called a
+"nice-to-have, not urgent" resource-exhaustion concern.
+
+So: **no cap, adopted permanently, not as a placeholder.** This closes the counting oracle by removing its
+precondition outright — there is no cap boundary to fill, so there is nothing for a coercer to learn by
+filling one. `PendingShamirSecretRestore` rows are deliberately, permanently unbounded. See Bug 96 item 2
+for the resource-exhaustion trade-off this decision accepts, in full and without a future revisit implied.
+
+### Guard
+
+None needed — closed by removing the mechanism (a cap) rather than by guarding it. Tracked as
+`RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's own closing decision, now final.
+
+---
+
+## Bug 123 — `depth`/`deletionToken`/`visibleThroughDepth` share one fixed AAD across every row and field, so their ciphertext is splice-able without the key
+
+**Closed, subsumed into Bug 119, 2026-09-26.** See "Closed as subsumed" below. Earlier: **Status:** Open. Found 2026-09-13 during a security review of `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's
+`PendingShamirSecretRestore` model, before it gains any read/write logic — its `attributeID`/`deletionToken`
+fields are specified to inherit this exact pattern from `BackupEncryptionKey`. Pre-existing, not introduced
+by that work: `BackupEncryptionKey.depth`/`.deletionToken` and `VaultEntry.deletionToken`/
+`.visibleThroughDepth` already ship this way.
+
+**Target:** None — not planned. Needs a deliberate decision, not a quick patch; see Remedy for why.
+
+### Severity: Moderate — an integrity bypass, not a confidentiality leak, and it needs a stronger attacker than this codebase's usual threat model
+
+Every field sealed through the generic `Data.encrypt(using:)`/`decrypt(using:)` helper
+([Crypto+Manager.swift:242-250](Occulta/Services/Crypto+Manager.swift:242), routing to
+`Manager.Crypto.encrypt(data:using:)`/`decrypt(data:using:)`,
+[Crypto+Manager.swift:93-110](Occulta/Services/Crypto+Manager.swift:93)) authenticates under
+`EncryptionScheme.v2_hybridPQ.aad` — one fixed byte (`0x02`), identical for every call, regardless of which
+model, which row, or which field. Contrast the "big" fields (`VaultEntry.encryptedLabel`/`.encryptedContent`,
+`BackupEncryptionKey.encryptedPayload`, `CustodyShard.encryptedPayload`), which seal directly via
+`AES.GCM.seal(..., authenticating: row.aad())`, binding the ciphertext to that row's own `id` (and, for
+`VaultEntry`, a field tag and timestamp too). The small "local key" fields never get that binding.
+
+GCM authentication only proves "sealed under this key with this exact AAD" — nothing about which row or
+field it was originally for, when the AAD never encoded that. An attacker with **write access to the raw
+on-device database** (not the key — just the bytes) can copy one row's `deletionToken` ciphertext (say, a
+live row's, decrypting to `liveToken`) onto a different row's `deletionToken` column. Same key, same AAD:
+it authenticates and decrypts cleanly, just to the wrong row's truth. That's a genuine bypass, not something
+the existing fail-safe defaults catch — `isOrphaned`'s fail-safe direction only protects *ambiguous*
+ciphertext (nil, garbled, wrong key) by defaulting to "hidden." This attack produces a perfectly valid
+decrypt; it's just borrowed from elsewhere. Concretely, it undoes exactly what Bugs 110/118 exist to
+prevent — a stale depth's old `BackupEncryptionKey`/`VaultEntry` state resurfacing — via ciphertext splicing
+instead of via "nobody bothered to orphan it."
+
+Called Moderate, not High, because it needs write access to the raw SQLite file without the key — a
+stronger attacker than this codebase's primary concern throughout (a coercer who gets the device unlocked
+and reads through the UI or a full decrypt pass). Realistic for forensic tooling that can extract, modify,
+and reflash a device image, or jailbreak-level access — not for a coercer standing over the user's shoulder.
+
+### Why the fixed AAD exists as the default — not why a fix would need to touch `Group`
+
+This same file's `Group` re-encryption entry already relies on this AAD staying identical across a field's
+entire lifetime: `reencrypt(from:to:)` reseals `Group` member slots under a new key but the *same* AAD,
+specifically so `readName()`/`readID()` keep working through a key rotation with no AAD bookkeeping. That
+explains why the helper defaults to one fixed byte today — it does **not** mean a fix has to touch `Group`.
+Checked while scoping the remedy below: `Group`'s calls never need to pass anything but the default, so an
+additive change (a new optional parameter, current behavior when omitted) leaves `Group` — and any other
+untouched caller — byte-for-byte unaffected. The earlier draft of this entry claimed the fix would need to
+be "app-wide or not at all" and specifically need `Group`'s rotation path reviewed first; that overstated
+it, corrected here.
+
+### Remedy — not attempted; scope is narrower than first filed
+
+Add an optional `aad:` parameter to the shared helper (`Data.encrypt(using:)`/`decrypt(using:)` and
+`Manager.Crypto.encrypt(data:using:)`/`decrypt(data:using:)`), defaulting to today's fixed byte so every
+existing, unmodified call site — `Group` included — keeps working exactly as it does now. Then bind only
+the fields that actually need it, each via a small per-model field-discriminator mirroring `VaultEntry`'s
+existing `VaultField` enum:
+
+- `BackupEncryptionKey.depth`/`.deletionToken` (2 fields)
+- `VaultEntry.deletionToken`/`.visibleThroughDepth` (2 fields — `VaultField` would need extending; it
+  currently only tags the `encryptedPayload`-style fields, not these two)
+- `Contact.Profile.originDepth`/`.visibleThroughDepth`/`.globalTrusteeDepth` (3 fields — `Contact.Profile
+  .deletionToken` is not in scope here; it's a plain `#Predicate { $0.deletionToken == nil }` check, Bug
+  112's mechanism, not this one)
+
+Three models, seven already-shipped fields, roughly 15-20 read/write call sites across
+`BackupEncryptionKey+Model.swift`, `Vault+Manager+Backup.swift`, `Manager+Security.swift` (both orphan
+functions), `Contact+Model.swift`, `Contact+Manager.swift`, and `ContactManager+Classification.swift`. The
+real cost is a one-time migration per model — decrypt every existing row's ciphertext under the old fixed
+AAD, re-seal under the new row-bound one, crash-safe and idempotent, same shape as
+`migrateLegacyBackupStorageIfNeeded` — plus a splice-attempt test per field proving GCM now rejects
+ciphertext copied from a different row or field, since nothing currently tests for that. `Group` needs no
+change and no new test. `PendingShamirSecretRestore.attributeID`/`.deletionToken` cost nothing extra either
+way — nothing has shipped for them yet, so building them bound from the start carries no migration debt.
+
+### Closed as subsumed into Bug 119, 2026-09-26
+
+Re-examined against who can actually splice. Two facts from the code:
+- **The store is only readable while the phone is unlocked:** it carries `FileProtectionType.complete`
+  (`OccultaApp.swift`), so rewriting it needs an unlocked phone and write access to the app container.
+- **The key these fields are sealed under needs no user prompt:** the local database SE key is created with
+  `[.privateKeyUsage]` only and `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (`Key+Manager.swift`), so
+  any code running as the app on an unlocked phone can use it.
+
+An attacker able to rewrite the database is therefore, in practice, running code on the phone, and can
+use the local key to decrypt and re-seal these fields with any value at all. Row binding wouldn't stop
+that; they don't need to splice. That is Bug 119's attacker, who also gets the vault key. The only
+attacker binding stops is one who can write a modified container back without running code that uses
+the app's SE keys, a narrow capability.
+
+So binding pays only once these fields are sealed under a key hostile code can't just use, which is what
+Bug 119's remedy (`PASSPHRASE_LAYER_KEYS.md`) would bring, and that design already lists these fields.
+The requirement moves there: when these fields are re-sealed under layer keys, the same migration binds
+each to its row and field. Fixing it now would mean a migration now and another then, against an attacker
+who can forge the values outright.
+
+Fields carried into that requirement: `VaultEntry.visibleThroughDepth`/`.deletionToken`,
+`BackupEncryptionKey.depth`/`.deletionToken`, `Contact.Profile.originDepth`/`.visibleThroughDepth`/
+`.globalTrusteeDepth`, and `PendingShamirSecretRestore.attributeID`/`.deletionToken` (built unbound on
+this branch, against this entry's earlier advice; consistent with this closure).
+
+### Guard
+
+None. Filed so the tradeoff is visible and decided on purpose the next time a model — `PendingShamirSecretRestore`
+included — reaches for `Data.encrypt(using:)` for a field where row-identity binding might matter.
+
+---
+
+## Bug 124 — A removed trustee's shard stays valid forever; neither branch checks current trustee status
+
+**Status:** Closed, 2026-09-19 — BEK fixed and tested 2026-09-14, PEK fixed and tested 2026-09-19 (see
+Guard). Found 2026-09-14, while working out whether Bug 94 remedy 2's
+attestation actually distinguishes a legitimate trustee from anyone else. It doesn't, on its own — tracing
+the acceptance path directly turned up a broader, pre-existing gap that has nothing to do with attestation
+specifically.
+
+**Target:** unset.
+
+### Severity: High (availability, same class as Bug 95) — and the attacker population is larger than Bug 95's own text assumed
+
+Bug 95's severity section reads: *"the attacker set is exactly the people the user chose to trust with
+recovery."* That's too narrow. It's exactly the people the user **ever** chose to trust, at any point in
+that secret's history, including everyone since removed. Trustee-set changes don't shrink this population —
+they only add to it.
+
+### What happens
+
+Neither `handleHandback` ([ShardCustody+Manager.swift:219-247](Occulta/Features/Vault/ShardCustody+Manager.swift:219))
+nor `acceptReturnedShard` ([Vault+Manager+ReturnBuffer.swift:44-77](Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift:44))
+ever checks whether the sender is a *current* trustee for the entry in question. `ShardRecord.status` models
+exactly this (`.revoked` is a real case), but it's only ever consulted on the outbound side — building the
+manifest of what Alice still expects trustees to hold. The inbound handback path never reads it.
+
+**This does not need identity rotation, and does not need Branch B at all.** Branch A alone is enough:
+`attribute.verify(against: ownKey)` only checks "did my key sign this" — it says nothing about whether the
+signer is still someone I trust. A trustee Alice removed months ago, who kept their original, genuinely-
+Alice-signed share from before removal, passes Branch A exactly as well as a current trustee does, because
+nothing about their credential expires when they're removed from the list.
+
+**Root cause: neither the BEK's `distributionID` nor a `VaultEntry`'s `entryID` changes when the trustee
+list changes without a full secret rotation.** `prepareShards`/`distributeShards` re-split the *same*
+underlying secret (`bekBytes`, or the PEK) under the *same* id every time trustees are added, removed, or
+replaced — confirmed directly: BEK's `prepareShards` reads `decoded.payload.distributionID` rather than
+minting a new one ([Vault+Manager+Backup.swift:1170](Occulta/Features/Vault/Vault+Manager+Backup.swift:1170)),
+and PEK's shard-signing payload binds to `entryID` = `VaultEntry.id` ([Vault+Manager+Shards.swift:84-91](Occulta/Features/Vault/Vault+Manager+Shards.swift:84)),
+which never changes for the entry's life. The doc comment there claims `entryID` "binds this shard to the
+specific key generation" — it doesn't; there is no separate notion of "generation" anywhere in the model,
+only the entry's own permanent identity. So a removed trustee's old credential remains bound to the exact
+same id a current restore attempt is grouped by, forever.
+
+### A real precondition — Marla needs a fresh key exchange with Alice's new device first — that turns out not to matter
+
+Raised directly and checked rather than assumed: bundle encryption requires the *sender's own* local record
+of the recipient's current key (`resolveKeyMaterial`, [Contact+Manager.swift:1418-1425](Occulta/Services/Contact+Manager.swift:1418)).
+If a removed trustee hasn't re-paired with the owner's new device, anything they send encrypts to the
+owner's *old* key and the new device can't decrypt it at all — not a signature failure, a transport one. So
+a removed trustee genuinely cannot submit anything until they've done a fresh exchange with the new device.
+
+That looks like a mitigation until you trace *why* that exchange happens. There's already a real, working
+self-cleaning mechanism for the adjacent case: `deleteMismatchShards`
+([ShardCustody+Manager.swift:183-189](Occulta/Features/Vault/ShardCustody+Manager.swift:183)) wipes a
+trustee's stale, pre-rotation `CustodyShard` copy automatically — but only as a side effect of that trustee
+receiving a fresh `.distribute`/`.replace` from the owner. A *continuing* trustee gets this for free the
+next time they're redistributed to. A *removed* trustee never receives another `.distribute`/`.replace` at
+all, so this never fires for them — confirmed, not assumed, by reading both handlers directly.
+
+And the re-exchange that lets a removed trustee send anything in the first place doesn't require anything
+vault-related — it's the same routine key exchange that happens whenever two people who message each other
+normally both get new phones. Nothing about that moment involves the vault, signals anything to Alice, or
+triggers `deleteMismatchShards` (which only fires on `.distribute`/`.replace`, never on a plain key
+exchange). So the precondition is real, but it's satisfied by ordinary, unrelated contact maintenance, not
+by anything that would make Alice think twice — it raises the bar from "passive, no action needed" to
+"needs one ordinary interaction that isn't unusual on its own," not from "exploitable" to "safe."
+
+The one thing that *would* structurally close it: Alice deleting Marla as a contact entirely, not just as a
+trustee — then `senderPublicKey` resolution on Alice's side has nothing to find, and nothing from Marla can
+authenticate at all. Not a realistic mitigation to depend on; it's a far bigger, more disruptive action than
+ordinary trustee-list management, and isn't what removing someone as a *trustee* should require.
+
+### Bounded the same way Bug 95 already is, but that's not a reason to leave it
+
+A revoked trustee resubmitting a stale share can't complete a fraudulent recovery — the final GCM check
+against the real backup file (or, for PEK, against the real vault content) is still the actual arbiter, and
+a wrong contribution poisons the interpolation rather than succeeding with fabricated content. What it *can*
+do is deny a legitimate recovery indefinitely, on a secret they were explicitly and deliberately removed
+from — which is exactly the harm Bug 95 already tracks, just from a population nobody scoped correctly
+until now.
+
+### Remedy — both built and shipped
+
+Regenerate the SSS distribution identity on every trustee-set mutation, not just on an explicit full
+rotation. The two secret kinds split differently, because only one has an external-artifact cost:
+
+- **BEK: regenerate `distributionID` only, never `bekBytes`. Done, 2026-09-14** — `prepareShards`
+  ([Vault+Manager+Backup.swift:1163](Occulta/Features/Vault/Vault+Manager+Backup.swift:1163)) now mints
+  `UUID()` on every call instead of reusing `decoded.payload.distributionID`. This does not conflict with
+  `decisions.md`'s "reuse the same BEK across trustee-set changes" decision — that decision is specifically
+  about the *key bytes*, made to avoid orphaning every `.occbak` already exported (sealed under `bekBytes`
+  alone, confirmed directly: `VaultManager.backupFileAAD` is a fixed constant, never `distributionID`-
+  dependent). Rotating just the id costs nothing there. A removed trustee's old share now groups under an
+  id nothing currently tracks — it never reaches the live reconstruction pool at all, rather than being
+  merged in and poisoning it. Full suite green (844/0/6) after the change; regression tests added the
+  same day (`BackupTrusteeRotationTests.swift`) — see Guard.
+- **PEK: regenerate the actual PEK value. Done, 2026-09-19** — a new `rotatePEK(for:vaultKey:)`
+  ([Vault+Manager+Shards.swift](Occulta/Features/Vault/Vault+Manager+Shards.swift)), called as step 0 of
+  every `prepareShards`: decrypts the entry's current label/content, generates a fresh key, re-seals both
+  under it, re-seals the new key under the vault key. Nothing external ever depends on a `VaultEntry`'s PEK
+  bytes the way exported `.occbak` files depend on `bekBytes` — it's an internal field, re-encryptable at
+  will — so the fuller fix (that BEK can't afford) was available and simpler here: no new id field needed,
+  `entry.id` never changes, only the key does. A removed trustee's old share now reconstructs a PEK that
+  decrypts nothing, even in the case where it somehow still got admitted. Full suite green (846/0/6) after
+  the change — no regressions in the many existing tests that already exercise `prepareShards` for PEK.
+  Dedicated regression test added the same day (`PEKTrusteeRotationTests.swift`) — see Guard.
+
+Either way, this is also the more direct fix for the underlying problem than a trustee-list-membership check
+on the receiving side would be on its own — regenerating the id/value makes a stale credential inert by
+construction, rather than requiring every acceptance path to remember to check status correctly forever.
+
+### BEK chain traced end to end, 2026-09-14 — only one line actually changes
+
+Walked every step distribution touches, to make sure the fix doesn't need to be bigger than it looks:
+
+- **`Backup.setup`/`Backup.rotate()`** already mint a fresh `distributionID` — no change.
+- **`prepareShards`** ([Vault+Manager+Backup.swift:1163](Occulta/Features/Vault/Vault+Manager+Backup.swift:1163))
+  is the one line: stop reading `decoded.payload.distributionID`, mint `UUID()` instead.
+- **`distributeShards`'s `oldAttrIDs` capture** (decides `.replace` vs `.distribute` per recipient) is keyed
+  by `contactIdentifier`, never by `distributionID` — unaffected, keeps producing the right op per trustee.
+- **`updateShardStatus`** matches purely by `attributeID`, a fresh UUID every split regardless of
+  `distributionID` — a stale confirmation for a superseded `attributeID` already finds no match and falls
+  through silently. Unaffected.
+- **`handleReplace`** on the trustee's own device (`ShardCustody+Manager.swift:149`) deletes the old shard by
+  `op.attributeID`, also independent of `entryID`. Unaffected.
+- **`attemptBackupRestore`**'s grouping ([Vault+Manager+Backup.swift:516-520](Occulta/Features/Vault/Vault+Manager+Backup.swift:516))
+  already buckets every collected shard **by `entryID`** before attempting reconstruction — built for Bug 95,
+  isolating a poisoned group from a clean one. It's the exact mechanism this fix needs on the receiving end,
+  and it needs nothing added: once distribution actually produces two different ids, a removed trustee's
+  stale submission lands in its own group, never reaches threshold, and never touches the live one. No
+  restore-side change at all — it was already built to isolate by id, it just never had two different ids to
+  isolate before.
+
+**One adjacent, pre-existing discrepancy found while tracing this, not part of the fix.**
+`storeRestoreShard`'s dedup ([Vault+Manager+ReturnBuffer.swift:346](Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift:346))
+matches only on `senderIdentifier` — its own doc comment claims `(entryID, senderIdentifier)`, but the code
+never checks `entryID`. Doesn't undermine this fix (Marla and a current trustee are different senders
+regardless), and doesn't need to block it, but the doc comment is wrong about what the code actually checks
+and should eventually be corrected to match one or the other.
+
+### A consequence worth stating, and a correction to an earlier version of this same section
+
+Traced what attestation (Branch B) actually proves, end to end, to answer a direct question about whether
+it protects against anything: it doesn't verify that the underlying share value is genuine — the attester
+controls both the fabricated `attribute` *and* the attestation hashed over it, so a dishonest attester can
+self-consistently vouch for anything. What Branch B actually reduces to is "this signature comes from an
+identity I currently recognize."
+
+**An earlier version of this entry claimed that once both regeneration fixes shipped, Branch B would stop
+doing anything a plain membership check wouldn't do better — that overreached, corrected here rather than
+left standing.** Branch B exists for a scenario this bug has nothing to do with: a *current*, never-removed
+trustee whose share still verifies fine against the old key, but whose signature Alice's device can no
+longer check directly because *her* identity rotated (Bug 94's original motivation). A membership check
+alone doesn't solve that — it would need to be layered on top of some form of Branch A/B, not instead of
+it, since membership alone verifies nothing cryptographically. Both regeneration fixes closing means a
+*revoked* trustee's stale credential is now inert regardless of which branch they'd otherwise pass — that
+is real and worth having — but it does nothing to remove Branch B's actual, ongoing job.
+
+**Superseded again, same day, by a sharper and independent finding — `bugs.md` Bug 125.** "Branch B stays"
+above is still right about the *job* (letting a rotated-identity trustee's genuine share through) — it was
+wrong to assume attestation, as a mechanism, is what has to keep doing that job. Bug 125 traces the actual
+transport layer and finds sender identity is already proven, cryptographically, one level up, before
+`handleHandback` ever looks at `op.attestation` — making attestation's own signature redundant for reasons
+that have nothing to do with revocation. See that entry for the full reasoning; it's the current word on
+whether attestation (in any form, not just its size) is needed at all.
+
+**Foundation half acted on 2026-09-14; the shipped half followed on 2026-09-19, as Bug 125's remedy, not
+this bug's.** `PendingRestoreShardSlot.attestation` and its half of `ShardsCodec`'s per-slot layout were
+removed (`Vault+Model.swift`, cutting the slot from 862 to 449 bytes and the per-row cost from ≈215 KB to
+≈112 KB) — safe to do outright since nothing called that codec yet, and, per Bug 125, correct for a reason
+beyond just being safe: there was nothing to restore there, not even a presence flag. The *shipped, tested*
+Branch B mechanism (`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`,
+originally 2026-08-26) has since been collapsed too — see Bug 125's own Remedy for the full account of what
+changed there.
+
+### Guard
+
+BEK covered, 2026-09-14 — `BackupTrusteeRotationTests.swift`. `redistributionMintsNewDistributionID`
+is the load-bearing one (verified it actually fails if the fix is reverted, not just that it passes);
+`cleanRestoreStillSucceedsAfterRedistribution` confirms the fix didn't break a legitimate restore.
+**Deliberately doesn't assert that mixing a stale share into a live reconstruction throws** — checked
+`ShamirSecretSharing.lagrange()` directly, it uses every supplied point unconditionally with no
+error-correction, so that mix fails the GCM check regardless of whether `distributionID` changed
+between rounds. Grouping-by-`entryID` is what actually keeps the mix from being attempted at all in
+production (`attemptBackupRestore`), and that's what the first test already covers.
+
+PEK covered, 2026-09-19 — `PEKTrusteeRotationTests.swift`. Unlike BEK, `entryID` (=
+`VaultEntry.id`) never changes between rounds, so there's no second id for a stale round to be isolated
+by — the discriminating property here is that a stale round's shares reconstruct a PEK that no longer
+opens the entry's own content. `redistributionInvalidatesStalePEKShares` is the load-bearing one
+(verified it fails if `rotatePEK`'s call in `prepareShards` is commented out, reverting to reading the
+entry's unrotated PEK — confirmed directly, not just assumed); `cleanRestoreStillSucceedsAfterRedistribution`
+confirms a legitimate restore using the current round's shares still recovers the real content
+afterward. No Secure Enclave dependency — `rotatePEK` only touches the vault key and
+`SecRandomCopyBytes`, unlike `Backup.persist`'s ambient `Manager.Key()` path.
+
+---
+
+## Bug 125 — Branch B's attestation signature is redundant with transport-level sender authentication it never needed to duplicate
+
+**Status:** Fixed, 2026-09-19 — found and built the same day. A design finding about shipped, tested code
+(`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`), acted on the same day
+it was recorded rather than left for a separate decision. Never a vulnerability in the traditional sense:
+nothing got *less* secure while attestation was still in place. The finding was that it carried real cost
+(bytes, complexity, a second signing/verification path) for a security property already established
+elsewhere, for free — and that cost is why it was worth removing outright rather than just documenting.
+
+**Target:** unset.
+
+### Severity: N/A as a vulnerability — this is a simplification finding
+
+Current behavior isn't insecure; it's redundant. Severity classification doesn't really apply the way it
+does to the rest of this file's entries.
+
+### What happens — the redundancy, traced precisely
+
+Two separate claims get conflated by attestation's current shape, and only one of them is actually true
+once you check the surrounding transport:
+
+1. **Content authenticity — "is this value genuinely what Alice signed."** This is what Branch A's own
+   signature (`attribute.verify(against: ownKey)`) proves, and transport authentication cannot substitute
+   for it: knowing *who sent a message* says nothing about whether its *content* is truthful. Branch A
+   stays exactly as it is — real, non-redundant, unrotated case only.
+2. **Sender authenticity — "who actually sent this."** This is all attestation's own signature
+   (`attestation.verify(against: senderPublicKey)`) ever proved. Checked whether the transport layer
+   already proves the same thing, rather than assuming: `shardOperations` (carrying both `attribute` and
+   `attestation`) is a field inside `OccultaBundle.SealedPayload`
+   ([OccultaBundle.swift:394-424](Occulta/Features/Forward+Secrecy/OccultaBundle.swift:394)), sealed as one
+   GCM-authenticated blob. `senderProof`'s own doc comment states plainly what that buys: *"only the
+   actual sender can produce this value."* For a 1:1 exchange — which handback always is, trustee to
+   owner, never a group — the session key itself is derivable only by the two parties involved, so a
+   successful decrypt already proves who sent the content, before `handleHandback` ever inspects
+   `op.attestation`.
+
+Once (2) is established, attestation's signature isn't adding a second, independent proof — it's
+re-proving the exact same fact, more weakly (an ECDSA signature nobody downstream ever independently
+re-verifies against anything, versus a transport layer already checked as a precondition to reaching this
+code at all). Confirmed nothing re-checks it later either: `Backup.reconstruct`'s own `ownerIdentity`
+verification only ever re-checks `attribute`, never `attestation` — its entire job is done, once, at the
+moment `handleHandback` accepts or rejects, inside the same session it arrived in. Unlike the original
+`.shard` attribute (created once at distribution, consumed possibly months later over a completely
+different transport session, which is exactly why *that* signature has to be independently, transport-
+independently verifiable), attestation is created and consumed within one interaction — it never needs to
+outlive the transport session that already authenticated it.
+
+**Once you subtract what Branch A already provides (content authenticity, unrotated) and what transport
+already provides (sender authenticity, always), there's nothing left for attestation to add — signature,
+hash-binding, or even a bare presence flag.** Content authenticity is not recoverable after identity
+rotation, with or without attestation; that was never fixable by this mechanism, and isn't the gap
+attestation was ever capable of closing. Branch B's actual logic collapses to: *if Branch A fails, accept
+`attribute` anyway* — because sender identity was already established one layer up, and that was always
+the only thing Branch B was checking.
+
+### Why this doesn't reopen Bug 94
+
+`attribute.entryID` matching a real, live distribution is what limits the population to people who were
+actually sent a share — that check is untouched, still runs, still does the actual work of keeping this
+scoped to trustees. Removing attestation removes a redundant second signature, not the binding to a real
+distribution.
+
+**Corrected 2026-09-26 (branch security review): the check the paragraph above relies on doesn't exist.**
+Nothing verifies that `attribute.entryID` names a real, live distribution. `acceptReturnedShard` and
+`absorbShard` bank a shard under any `entryID`, and `bekRestoreDistributionIDs` enumerates every row. For a
+backup-key restore it couldn't be checked anyway: the restoring phone is usually new, and the record of
+what was distributed was on the lost one. The conclusion still holds, for other reasons:
+- one slot per `(entryID, sender)`, with the sender resolved from the transport, so no single contact can
+  supply a threshold alone (Bug 94 remedy 2);
+- `restoreBackup` counts only senders visible at the current depth, and refuses a depth that already has
+  a backup key (Bug 94 remedy 1);
+- a reconstructed key counts only if it opens the `.occbak` the owner chose to open;
+- a per-entry key is only finalised for an entry this device split, checked against its own ciphertext.
+
+What remains is the case Bug 94 already accepts: two or more contacts visible at a depth with no backup
+key, plus the owner choosing to open their file. The stray rows a non-trustee can create are Bug 96
+item 2's accepted unbounded growth. `ShardCustody+Manager.swift`'s `handleHandback` comment, which
+repeated the claim, is corrected to match.
+
+### Remedy — both surfaces done
+
+- **Foundation model:** settled the question `bugs.md` Bug 124 paused and then answered incompletely —
+  `PendingRestoreShardSlot` needs no attestation field of any kind, not a `SignedAttribute`, not a trimmed
+  104-byte version, not a presence flag. Already the current shape as of Bug 124's own foundation-half
+  edit; this entry is why that shape is correct, not merely safe.
+- **Shipped mechanism, done 2026-09-19:** `handleHandback`'s Branch A/B split
+  ([ShardCustody+Manager.swift:219-267](Occulta/Features/Vault/ShardCustody+Manager.swift:219)) now runs
+  Branch A for the real, non-redundant thing it proves when it succeeds (content authenticity) but no
+  longer gates on it — failure falls straight through to acceptance instead of trying a second check.
+  Removed `op.attestation` from `OccultaBundle.ShardOperation` (a real wire-format change — old builds
+  simply never see the key, matching this codebase's established "unknown fields are silently ignored"
+  tolerance), `attestationFiller`, `attestation(for:retainedKeysByFingerprint:)`, and
+  `retainedKeysByFingerprint(forOwner:)`. `ShardHandbackAttestationTests.swift` kept its name (cosmetic
+  rename, not done) but lost every test that only made sense with Branch B — attestation construction,
+  attestation-signature/hash mismatch rejection — and kept/reworked the ones that don't: Branch A
+  acceptance, unconditional acceptance on Branch A failure, and distinct-sender enforcement, which is the
+  property actually doing security work now. `Vault+Manager+ReturnBuffer.swift`, `ReconstructShard+Model
+  .swift`, `SignedAttribute.swift`'s `AttestedShard`, and `Contact+Manager.swift`'s
+  `fillerShardOperation`/tier-padding all lost their `attestation` parameter or field to match.
+  `GroupShardGatingTests.swift`'s padding-parity suite (`ShardOperationPaddingTests`) updated to compare a
+  filler op against a plain `.handback` instead of an attested one — see Bug 94a's own moot-as-of-today
+  note.
+
+### Guard
+
+Covered by the reworked `ShardHandbackAttestationTests.swift` (Branch A acceptance, rotated-identity
+acceptance with no signature at all, distinct-sender enforcement, trustee-side handback still fires on
+fingerprint mismatch) and `GroupShardGatingTests.swift`'s updated padding-parity suite. Full suite run
+after the change — see the commit this note lands with for the pass/fail/skip counts.
+
+---
+
+## Bug 126 — `pendingRestoreActive`/`pendingRestoreShardCount` are hand-synced at five separate sites instead of queried from the data that already answers them
+
+**Status:** **Closed — moot, 2026-09-23.** Bug 99's remedy removed `pendingRestoreActive`,
+`pendingRestoreShardCount` and `refreshPendingRestoreState` along with the held file. See the note at the end
+of this entry. Filed 2026-09-22, **Open** until then. Found while designing the fix for `storePendingRestore` not
+immediately re-attempting reconstruction against already-collected shards (`decisions.md`'s "Don't
+auto-arm shard collection on first vault-tab visit," the gap it surfaced). No code changed — this
+entry documents the finding so the simplification is tracked, not lost, while that other fix proceeds
+first.
+
+**Target:** unset — a design/maintainability finding, not tied to a release.
+
+### Severity: Low as a vulnerability, real as a correctness risk in a codebase that treats UI-state honesty as security-relevant
+
+Nothing here decrypts anything or crosses a depth boundary. But `pendingRestoreActive` is exactly the
+kind of published state Bug 93 spent real design effort making depth-uniform and honest — "duress
+advertises an event whose result it will never show" only holds if the flag is reliably correct. Five
+independent hand-written assignment sites is exactly the shape that produces the "missed-consumer"
+bugs this codebase has already hit more than once for a structurally similar reason (Bug 110/113/115/116,
+all "a functional read forgot to apply a filter the model itself requires").
+
+### What happens
+
+`pendingRestoreActive: Bool` and `pendingRestoreShardCount: Int`
+([Vault+Manager.swift:81,85](Occulta/Features/Vault/Vault+Manager.swift:81)) are plain `@Observable`
+properties on `VaultManager` — not computed, not re-derived on read. SwiftUI's `@Observable` only
+tracks "did this stored value change since the view last read it"; it gives no help recomputing a
+stale value, so whatever last assigned it is the only thing keeping it honest. Both are entirely
+derivable on demand: `pendingRestoreActive` from `FileManager.default.fileExists(atPath:
+pendingRestoreURL.path)`, `pendingRestoreShardCount` from `bekRestoreShardCount()` — which already
+queries `PendingShamirSecretRestore` rows directly, the actual source of truth. Nothing about either
+value requires caching.
+
+Despite that, the same two-line formula is written out by hand in five places:
+
+1. **`refreshPendingRestoreState(currentDepth:)`**
+   ([Vault+Manager+Backup.swift:415-420](Occulta/Features/Vault/Vault+Manager+Backup.swift:415)) — the
+   one function that's actually named for this job: `active = fileExists(...)`, `count = active ?
+   bekRestoreShardCount() : 0`.
+2. **`storePendingRestore`**
+   ([Vault+Manager+Backup.swift:459-460](Occulta/Features/Vault/Vault+Manager+Backup.swift:459)) —
+   re-derives the same two fields by hand, with `active` hardcoded `true` instead of calling
+   `fileExists` (reasoned to be equivalent at that point, but that reasoning lives only in a
+   comment, not in the code).
+3. **`attemptBackupRestore`'s early "already has BEK" cleanup branch**
+   ([Vault+Manager+Backup.swift:505-506](Occulta/Features/Vault/Vault+Manager+Backup.swift:505)) —
+   hand-sets `active = false`, `count = 0`.
+4. **`attemptBackupRestore`'s pre-loop recompute**
+   ([Vault+Manager+Backup.swift:514](Occulta/Features/Vault/Vault+Manager+Backup.swift:514)) —
+   hand-sets `count` alone, a third independent copy of half the formula.
+5. **`attemptBackupRestore`'s success branch**
+   ([Vault+Manager+Backup.swift:538-539](Occulta/Features/Vault/Vault+Manager+Backup.swift:538)) —
+   hand-sets `active = false`, `count = 0` again.
+
+Concrete evidence this already causes friction, not just a hypothetical: the fix under discussion for
+the `storePendingRestore` gap was to append a call to `attemptBackupRestore(currentDepth: 0)`
+immediately after site 2's two hand-set lines. If that call reaches site 5, it silently overwrites the
+values site 2 just set, three lines earlier, in the same function — correct in that instance only
+because both sites happen to compute a value that's consistent, not because anything enforces it.  A
+future edit to either site has no compiler help catching a mismatch, and only a careful read (like the
+one that surfaced this) catches it by inspection.
+
+### Remedy — proposed, not built
+
+Collapse to one source of truth. Two shapes were discussed, neither implemented yet:
+
+- **Computed properties**, replacing the two stored `var`s outright: `var pendingRestoreActive: Bool {
+  FileManager.default.fileExists(...) }`, `var pendingRestoreShardCount: Int { pendingRestoreActive ?
+  ((try? bekRestoreShardCount()) ?? 0) : 0 }`. Removes all five hand-sync sites at once — every reader
+  gets the current on-disk/on-database truth by construction, and there is nothing left to drift.
+  Trade-off to weigh: `bekRestoreShardCount()` decrypts each `PendingShamirSecretRestore` row's
+  `shards` field to count slots, and a computed property re-runs on every SwiftUI access, not just at
+  the five points that used to assign it — needs checking whether that cost is acceptable on
+  `Vault+Tab.swift`'s render path, or whether it needs its own cheap count-only path (e.g. counting
+  rows without decrypting slot contents).
+- **If the decrypt cost turns out to matter**, keep a cache but reduce it to one writer: only
+  `refreshPendingRestoreState` ever assigns the two stored fields, and every other site
+  (`storePendingRestore`, both `attemptBackupRestore` branches) calls it instead of hand-rolling the
+  formula. Keeps the caching, removes the duplication.
+
+Whichever shape is chosen, the fix for the `storePendingRestore` immediate-recheck gap (still open,
+see `decisions.md`) should land on top of it, not before it — building the new call site on the
+current five-way duplication just adds a sixth.
+
+### Guard
+
+None yet — not fixed.
+
+### Superseded, 2026-09-23: the state itself goes away
+
+Bug 99's 2026-09-23 addendum settles that the `.occbak` is never held: opening it is a one-shot
+reconstruction attempt, and a failed attempt stores nothing. Without a held file, there is nothing for
+`pendingRestoreActive` to mirror and no "Recovery in progress" section for `pendingRestoreShardCount`
+to feed, so both are removed along with `refreshPendingRestoreState` and all five assignment sites
+above. The "immediate-recheck" fix this entry was sequenced ahead of no longer exists either. Until that
+change ships, the five sites stay exactly as described. Two findings from the review, kept for the
+record:
+
+- **The computed form already existed.** `isRestorePending`
+  ([Vault+Manager+Backup.swift:380](Occulta/Features/Vault/Vault+Manager+Backup.swift:380)) is a
+  computed `fileExists` check, used by functional callers. `pendingRestoreActive` was a hand-synced
+  cached copy of a value the type already computed.
+- **The computed-properties remedy above wouldn't have worked on its own.** `VaultManager` is
+  `@Observable`, which invalidates views on writes to *stored* properties. A computed property that reads
+  the filesystem or SwiftData gives it nothing to observe. Making `pendingRestoreActive` computed would
+  have kept the banner updating only because `pendingRestoreShardCount`, still stored, happens to be
+  written at the same moments. Making both computed would have left nothing to trigger a redraw.
+
+Closed as moot, 2026-09-23, when Bug 99's remedy shipped.
+
+---
+
+## Bug 127 — v1.10.3's restore-file rename left files from v1.10.2 and earlier orphaned on disk, named for the mechanism and included in device backups
+
+**Status:** **Fixed, 2026-09-23.** `VaultManager.deleteLegacyRestoreState()` deletes both names on every
+unlock (test: `unlockDeletesLegacyRestoreState`). Filed the same day, while listing what legacy restore state
+`RECOVERY_BUFFER_LAYERING.md` §9.4's migration has to handle.
+
+**Target:** unset. The fix belongs in §9.4's legacy migration (being decided).
+
+### Severity: Medium (forensic), plus a silently lost restore
+
+It affects only devices that were mid-restore when they upgraded from v1.10.2 or earlier to v1.10.3 or later.
+
+### What happens
+
+Bug 93 Part D (`0e35dd6`, 2026-08-25, shipped in v1.10.3) renamed `pending-restore.occbak` →
+`backup-import-cache.occbak` and `pending-restore-shards.dat` → `backup-import-cache-shards.dat`. Its commit
+message says "filesystem paths only", and it included no migration. Nothing in current code references the
+old names (`grep` for `pending-restore.occbak` finds only history). So on an upgraded device:
+
+- **The old files are never read and never deleted.** Their names state what they are, the exact tell Part
+  D existed to remove, readable with `ls` and no key. The `.occbak`'s length estimates the vault's size
+  (Bug 100).
+- **They are in device backups.** Bug 100 remedy 1 (`f9aeaca`, 2026-08-28) sets `isExcludedFromBackup` only
+  on files it writes, under the new names. Old-name files were written before it existed, so they never
+  got the attribute.
+- **The in-flight restore silently died.** `pendingRestoreActive` and `isRestorePending` check the new path
+  only, so the banner vanished and nothing ever attempted the old file again.
+  `migrateLegacyRestoreShardFile` reads only `backup-import-cache-shards.dat`, which no release ever wrote:
+  shards moved into rows (remedy 2) in the same release as the rename.
+
+### Remedy
+
+Fold into §9.4's legacy migration. **Decided 2026-09-23** (`RECOVERY_BUFFER_LAYERING.md` §8): at the first
+unlock at any depth, delete `pending-restore.occbak`, `pending-restore-shards.dat` and
+`backup-import-cache.occbak`, without a final restore attempt. The old shard file is deleted, not salvaged,
+because the restore it belonged to already died at the v1.10.3 upgrade.
+
+### Guard
+
+A migration test seeding both old-name files and asserting neither survives the first unlock after upgrade.
+
+---
+
+## Bug 128 — "Erase all data" leaves the backup and restore files in Application Support
+
+**Status:** **Fixed, 2026-09-23.** `deleteAllData()` now deletes the legacy restore files and
+`backup-export-meta.dat` (test: `wipeDeletesBackupFiles`). The `Documents/Inbox` copies remain Bug 101's.
+Filed the same day, while drafting the §9.4 changes.
+
+**Target:** unset.
+
+### Severity: Medium (forensic), a trace that survives the wipe
+
+### What happens
+
+`Manager.App.eraseAllData()` deletes prekeys, contacts, the vault's SwiftData rows
+(`VaultManager.deleteAllData()`), and then the Secure Enclave keys. It deletes no files. Nothing in the
+erase path removes:
+- `backup-import-cache.occbak`, the held restore file (and its v1.10.2-and-earlier name,
+  `pending-restore.occbak`, plus `pending-restore-shards.dat`; see Bug 127);
+- `backup-export-meta.dat`, written by every backup export.
+
+Once the keys are gone, the contents can't be decrypted. The files' existence, length and timestamps still
+say that this device exported a vault backup and was mid-restore, and the held `.occbak`'s length estimates
+the vault's size (Bug 100). An old-name file states the mechanism outright. A wiped device is supposed to
+carry none of this. The OS copies in `Documents/Inbox` (Bug 101) survive a wipe too.
+
+### Remedy
+
+Have the erase path delete these files. §9.4's legacy-cleanup function already deletes the three restore
+files, so the wipe can call it and also remove `backup-export-meta.dat`. The Inbox copies belong with
+Bug 101's fix.
+
+**Follow-up, 2026-09-26 (branch code review):** the wipe also deleted the `Vault` singleton and every
+`BackupEncryptionKey` row, including the 32-row filler baseline, and only `VaultManager.init` recreated
+them. Erase all data doesn't relaunch the app, so until the next launch `absorbShard` threw
+`vaultNotFound` (returned pieces dropped), and a backup set up in that session sat without its filler, the
+row count revealing it. `deleteAllData()` now ends with `ensureBackupKeyFillerRows()` and
+`ensureVaultExists()`; `VaultBackupRoundTripTests.wipeRestoresFreshShape` pins it (fails without the fix).
+
+### Guard
+
+Seed every file, run `eraseAllData()`, and assert none remain.
+
+---
+
+## Bug 129 — A restore whose entry import fails after the key is saved leaves that depth stuck: key installed, entries missing, every retry refused
+
+**Status:** **Fixed, 2026-09-23.** `restoreBackup` checks everything, then writes once with rollback. `importBackup`,
+`reconstructBackup` and `Backup.reconstruct` were deleted, since no production code called them any more;
+their tests now go through `restoreBackup`. Found while drafting §9.4's `restoreBackup`. Present in shipped code
+(`attemptBackupRestore`), and the new function keeps the same shape.
+
+**Target:** unset.
+
+### Severity: Medium
+
+A genuine owner can lose the ability to restore. A crafted file can install its author's backup key in a
+layer without importing anything.
+
+### What happens
+
+Completion runs two steps in order: `Backup.reconstruct` (Shamir combine, GCM check against the file, then
+`persist` the reconstructed key for the depth), then `importBackup` (decrypt, decode `VaultBackup`, insert
+the entries). `importBackup` can still throw after `persist` has run:
+- the JSON doesn't decode;
+- an entry's `entryType` doesn't fit a `UInt8`;
+- an entry's `createdAt` is out of range;
+- sealing an entry or saving the context fails.
+
+The catch block moves on to the next distribution, but the key is already saved. Every later attempt at
+that depth is then refused by the "this depth already has a backup key" check (Bug 94 remedy 1), so the
+same file can never be restored there again. The entry loop can also throw partway, after inserting some
+entries.
+
+- **Genuine owner:** an import error at depth 0 leaves the real key in place with some or none of the
+  entries, and no way to retry.
+- **Crafted file:** a file that passes the GCM check but fails decoding installs its author's key as this
+  layer's backup key with nothing imported. Later exports from that layer are then readable by the file's
+  author.
+
+**A second failure in the same path, found 2026-09-23 while deciding the fix.** `importBackup` inserts
+entries one at a time and saves once at the end. If an entry fails validation partway (an out-of-range
+`entryType` or `createdAt`), the entries inserted before it stay in `VaultManager`'s shared `modelContext`
+unsaved, and the next `save()` anywhere commits them. So a failed import can leave a partial import behind
+later, even when no key was saved.
+
+### Remedy — decided and built 2026-09-23
+
+**Check everything first, then write once.**
+- Split `Backup.reconstruct` into a step that verifies the key against the file and writes nothing, and
+  the existing `persist`.
+- Split `importBackup` into decrypt, decode and validate every entry, and insert without saving.
+- `restoreBackup` runs all the checks before any write, stages the key and the entries, and commits them
+  in one `modelContext.save()`. On any failure, `modelContext.rollback()` discards the staged changes.
+- A failed attempt leaves nothing behind, and the layer can still be restored from a good copy of the
+  file. `importBackup` and `reconstructBackup` are rebuilt from the same pieces and also roll back.
+
+**Shards after a file that verifies but won't decode are kept, not consumed.** They reconstructed the
+file's key, so they're genuine; only this copy of the file is bad, and a good copy can still complete. The
+owner sees the usual neutral message.
+
+Not chosen:
+- **Undo afterwards** (revert the saved key row): it would have to become indistinguishable from a
+  filler row again, and inserted entries would still need cleanup.
+- **SwiftData `transaction { }`:** how the inner `save()` calls behave inside a transaction isn't
+  documented.
+
+`rollback()` discards every unsaved change in the shared context, not only this attempt's. That's
+acceptable because every other `VaultManager` operation saves before returning, but it is worth knowing.
+
+### Guard
+
+- A file that passes the GCM check but fails decoding: after the attempt, that depth has no backup key and
+  no new entries, the banked shards are still there, and a valid file can still restore there.
+- A file whose second entry is invalid: no entries are inserted, including the first, and a later `save()`
+  elsewhere commits nothing from it.
+
+---
+
+## Bug 130 — Three of the four custody-shard deletions leave every other row byte-identical, so a snapshot diff shows exactly which row was removed
+
+**Status:** Fixed 2026-09-23, on `v1.11.0/vault-key-layering`. Filed the same day, found while answering
+whether `CustodyShard` has a `deletionToken` (it doesn't; its rows are hard-deleted), after closing
+`RECOVERY_BUFFER_LAYERING.md` §6 item 7.
+
+**Target:** unset.
+
+### Severity: Low (forensic)
+
+Needs two snapshots of the trustee's database, which means extracting the device twice (the store is
+excluded from device backups). Without a key, the diff can't tell whose shard was removed.
+
+### What happens
+
+`CustodyShard` rows (shards this device holds for other people) are hard-deleted in four places in
+`ShardCustody+Manager.swift`:
+- `handleReplace`: the old shard, when the owner sends a replacement;
+- `deleteMismatchShards`: shards tied to the owner's old key, when the owner redistributes under a new one;
+- `processExpectedShards`: a shard the owner no longer lists (implicit revoke);
+- `purgeCustody`: everything held for an owner, when that contact is deleted.
+
+Only `purgeCustody` re-seals the surviving rows with a fresh nonce
+(`decoded.row.encryptedPayload = try self.sealRow(...)`). Its own doc comment gives the reason: without
+it, "a raw-DB examiner comparing two snapshots across a deletion would see exactly which rows
+disappeared and find every surviving row byte-for-byte identical". The other three paths skip that
+step, so the comparison it closes is still open after every replace, re-key and revoke. It shows that
+one custody relationship changed, and when.
+
+Hard deletion itself isn't the problem: custody rows don't belong to a depth, so this is not the case the
+"orphan rows in place" decision covers (`decisions.md`). The changing row count is the same accepted class
+recorded when item 7 was closed.
+
+### Remedy (built)
+
+The three paths now delete through one helper, `deleteCustodyShards(using:where:)`. It deletes the
+rows matching a predicate and re-seals every other readable row with a fresh nonce and the same content.
+`handleReplace`'s two deletions (the replaced shard, and the owner's old-key shards) became one
+predicate, so survivors are re-sealed once rather than twice.
+
+Two differences from the proposal:
+- **Re-seal only when something is deleted.** The row count already shows whether a deletion
+  happened, so re-sealing on a no-op leaks nothing less. It would also rewrite every custody row on
+  every inbound bundle, since `processExpectedShards` runs on each one.
+- **`purgeCustody` keeps its own loop.** It re-seals on every purge, even one that deletes nothing,
+  and `ShardCustodyPurgeTests` pins that. Routing it through the helper would have quietly dropped the
+  unconditional re-seal, so it wasn't moved. The helper's doc comment names the exception.
+
+### Guard
+
+`CustodyDeletionResealTests` (`ShardCustodyTests.swift`) covers `.distribute` under a new owner key,
+`.replace` and `processExpectedShards`. Each snapshots every row's bytes and decrypted attribute ID,
+runs the operation, and asserts the deleted row is gone and every survivor has new bytes and the same
+content. All three fail on the pre-fix code. A fourth test pins that a `processExpectedShards` which
+revokes nothing leaves every row's bytes unchanged, so moving to always re-sealing has to be deliberate.
+
+---
+
+## Bug 131 — `gfMul` branches on its inputs, so Shamir split and reconstruct take data-dependent time
+
+**Status:** Fixed 2026-09-23, on `v1.11.0/vault-key-layering`. Filed the same day, found while
+reviewing Bug 95's change to `ShamirSecretSharing.reconstruct`, which computes the Lagrange weights
+once per reconstruction instead of once per byte.
+
+**Less live than filed.** Checking the compiled output while fixing it showed that shipped builds
+never branched here: at `-O` the compiler turned both `if`s into conditional selects (`csel`, 7 in the
+specialized `gfMul`), and ARM treats `csel` as a data-independent-timing instruction. Only unoptimized
+builds branched, and those don't ship. The exposure was that nothing in the source guaranteed the
+optimizer's choice.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (side channel)
+
+The only realistic observer is code on the same device measuring CPU or cache timing, which iOS
+sandboxing makes hard. Restore and split are local and offline, so there is no network observer. A
+coercer holding the phone sees only how long a whole restore takes, which is milliseconds to seconds
+dominated by the GCM check, SwiftData and Enclave calls. A nanosecond-scale difference is lost in that.
+
+### What happens
+
+`gfMul` (`ShamirSecretSharing.swift`) multiplies two bytes bit by bit, and two of its steps are
+conditional:
+
+```swift
+if b & 1 != 0 { p ^= a }      // runs only when b's low bit is 1
+...
+if carry { a ^= 0x1B }        // runs only when a's high bit was 1
+```
+
+So a multiplication's running time depends on the bits of `a` and `b`. Unoptimized builds certainly
+branch here. Optimized builds may compile these to branch-free instructions (`csel` on ARM), but Swift
+doesn't guarantee it, and nobody has checked the compiled output.
+
+Secret data reaches `gfMul` in two places, both in the `a` slot, where the `carry` step depends on it:
+
+| Where | Secret input | Public input |
+|---|---|---|
+| `split` (owner's phone, at distribution), `eval`'s `gfMul(acc, x)` | `acc`, built from the key byte and random coefficients | the share's x |
+| `reconstruct`, `gfMul(yᵢ, wᵢ)` once per share per byte | the share's value `yᵢ` | the Lagrange weight `wᵢ`, from x-coordinates only |
+
+`gfInv` runs only on values derived from x-coordinates, which are public (byte 0 of every share), and
+its loop runs over the fixed exponent 254, so it leaks nothing.
+
+Bug 95's change doesn't make this worse. Before it, each share's value went through n
+secret-dependent multiplications per byte; now it goes through one. Its subset search does repeat
+reconstruction, up to 1,024 times over the same shares in one failing restore. Repetition helps an
+attacker average out noise, so it adds a little exposure, and only for the same on-device observer.
+
+`VAULT_SSS_GUIDE.md` has called this "acceptable for SSS" since the guide was written.
+`RUST_PACKAGES_SPEC.md` already specifies constant-time GF(2⁸) for its planned `shamir.rs`.
+
+### Remedy (built)
+
+Replace the two conditionals with masks. This is the standard constant-time form and returns the same
+result:
+
+```swift
+static func gfMul(_ a: UInt8, _ b: UInt8) -> UInt8 {
+    var p: UInt8 = 0
+    var a = a
+    var b = b
+    for _ in 0..<8 {
+        p ^= a & (0 &- (b & 1))          // all-ones mask when b's low bit is set
+        let carry = 0 &- (a >> 7)        // all-ones mask when a's high bit is set
+        a = (a << 1) ^ (0x1B & carry)
+        b >>= 1
+    }
+    return p
+}
+```
+
+Every step runs whatever the inputs. The speed should be about the same. Log/exp lookup tables are not
+an alternative: indexing a table by a secret leaks through the cache, which is worse than the branches
+here.
+
+### Guard
+
+Timing can't be asserted reliably in a unit test, so the guard is equivalence plus inspection:
+- `GFArithmeticTests.mulMatchesBranchingForm` compares the new `gfMul` with the branching form it
+  replaced on all 65,536 input pairs;
+- the existing GF tests, including the exhaustive `a · a⁻¹ == 1`;
+- a manual check of the compiled output, recorded below.
+
+**Compiled output, checked 2026-09-23** (Apple Swift 6.2.3, `swiftc -emit-assembly`,
+`-target arm64-apple-ios18.6`, on `ShamirSecretSharing.swift` itself):
+
+| Build | Old `gfMul` | New `gfMul` |
+|---|---|---|
+| `-O` | 0 conditional branches, 7 `csel` | 0 conditional branches, 0 `csel` |
+| `-Onone` | 3 conditional branches: the loop's end check and both `if`s | 1: the loop's end check |
+
+At `-O`, `reconstruct` calls the specialized `gfMul` rather than inlining it, and has no bit-test
+branches of its own. `split`'s six bit-test branches are the same before and after, and are all
+copy-on-write uniqueness checks (`swift_isUniquelyReferenced`), not secret values. Re-check after a
+Swift toolchain upgrade if this ever matters more; the source no longer depends on the optimizer's
+choice, but the check is cheap.
+
+---
+
+## Bug 132 — `migrateLegacyRestoreShardFile` migrates a file no release ever wrote
+
+**Status:** Fixed 2026-09-24, on `v1.11.0/vault-key-layering`: the function and its call are deleted.
+Filed the same day, found while listing what was left in the vault refactor: the
+function looked like a gap, since it runs only when a shard arrives (not on unlock) and "Erase all
+data" doesn't delete its file. Checking which builds wrote the file showed there is no population for
+either concern.
+
+**Target:** unset.
+
+### Severity: Low (dead code, with a doc comment that says otherwise)
+
+No user device can hold the file. The only cost is code that runs for nothing and describes a
+population that doesn't exist.
+
+### What happens
+
+`acceptReturnedShard` calls `migrateLegacyRestoreShardFile()` on every shard delivery
+(`Vault+Manager+ReturnBuffer.swift`). It checks for `backup-import-cache-shards.dat` in Application
+Support and, if present, decrypts it, absorbs its shards into `PendingShamirSecretRestore` rows and
+deletes it. Its doc comment says it exists for "devices upgrading mid-restore, from a build old enough
+to predate Bug 100's move off this file entirely", and that dropping the file "would strand a genuine
+recovery".
+
+No such device exists:
+- `backup-import-cache-shards.dat` was introduced by `0e35dd6` (2026-08-25, Bug 93 Part D, renaming
+  `pending-restore-shards.dat`), and writing it stopped with `284e145` (2026-08-27, Bug 100 remedy 2,
+  shards into `ReconstructShard` rows).
+- The only release tag containing either commit is `v1.10.3`, which contains both. Checked in the
+  released trees: `v1.10.2` writes `pending-restore-shards.dat`. `v1.10.3` (released; tag `92e3e6e`,
+  2026-09-02) names `backup-import-cache-shards.dat` only in this migration, which reads it, and in a
+  comment, and writes shards as `ReconstructShard` rows. No shipped build wrote the file.
+- So the migration shipped in `v1.10.3` never fired on a real device. It looked for the new name while
+  `v1.10.2` devices mid-restore held the old one, which is how their restores died at the upgrade
+  (Bug 127).
+- Bug 127 already recorded this ("reads only `backup-import-cache-shards.dat`, which no release ever
+  wrote"). Its remedy deletes `pending-restore-shards.dat` on unlock and wipe without salvaging it,
+  because the restore it belonged to died at the v1.10.3 upgrade, and left this function alone.
+
+So the file can exist only on a development device that ran a build from 2026-08-25 to 2026-08-27.
+
+### Remedy (built)
+
+Delete `migrateLegacyRestoreShardFile`, its two constants (`legacyRestoreShardsURL`,
+`legacyRestoreShardsAAD`), its call in `acceptReturnedShard`, and the reference to it in
+`ReconstructShard+Model.swift`'s header comment. Don't add the name to `deleteLegacyRestoreState`'s
+list: no user has the file, and a development device can be reinstalled.
+
+### Guard
+
+None beyond the build: no test references the function. After the change, searching the source for
+`backup-import-cache-shards` should find nothing outside `bugs.md`. Checked 2026-09-24: nothing in
+`Occulta/` or `OccultaTests/`. (`Docs/Bugs/v1.10.3/` still names the function, as a record of that
+release.)
+
+---
+
+## Bug 133 — Upgrading from v1.10.3 hides every existing vault entry: they have no `deletionToken`, which reads as orphaned
+
+**Status:** Fixed 2026-09-24, on `v1.11.0/vault-key-layering`, and confirmed on the device that found it.
+Found testing on a device: an entry created before the update was gone from the Vault tab.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (data availability)
+
+No data is destroyed by the upgrade itself, but every pre-update entry disappears from every read, and
+two follow-on paths can make the loss real (below). It hits every user who upgrades with a non-empty
+vault.
+
+### What happens
+
+Bug 110's fix (2026-09-10) added `VaultEntry.deletionToken`, a sealed live/orphaned sentinel. `addEntry`
+writes a live token for every new entry. v1.10.3's `VaultEntry` had no such field, so every entry it
+created has `deletionToken == nil` after the lightweight schema migration, and no migration ever filled
+it in.
+
+`VaultEntry.isOrphaned(usingKey:)` fails closed on a missing token (`guard let data =
+self.deletionToken ... else { return true }`). Its doc comment claimed a nil row "cannot happen on this
+branch", which holds for a fresh install and not for an upgrade. So every pre-update entry reads as
+orphaned, and is excluded by:
+- the Vault tab's filter, `Manager.Security.visibleVaultEntries` (v1.10.3's tab applied no such filter,
+  which is why the entry showed before the update);
+- `VaultManager.fetchAllEntries()`, the central read behind backup export, shard custody
+  (`shardRecordsForTrustee`) and the return buffer.
+
+**How the loss can become real:**
+- **Export writes an incomplete backup.** `exportBackup` reads through `fetchAllEntries()`, so a new
+  `.occbak` omits every pre-update entry. Worst if it replaces an older, complete backup.
+- **The orphan cap can hard-delete them.** `Manager.Security.orphanVaultEntries` counts rows that
+  already read as orphaned toward a cap of 50 and hard-deletes the oldest when orphaning more on
+  deactivation. Pre-update entries count, and are the oldest. Needs 50 or more such rows, so unlikely
+  on one device, but it is a real deletion path.
+- Trustees holding shards of these entries' keys also stop seeing them in `expectedShards`, which reads
+  as an implicit revoke (per `deletionToken`'s own doc comment), so they delete their copies.
+
+Checked for the same mistake elsewhere: `BackupEncryptionKey`'s legacy row is carried forward explicitly
+(`migrateLegacyBackupRowIfNeeded`), `PendingShamirSecretRestore` is new on this branch, and
+`Contact.Profile.deletionToken` uses nil for live. Only vault entries are affected. The local key the
+token is sealed under is derived the same way as in v1.10.3, and this branch no longer rotates it, so a
+missing token is the only cause.
+
+### Fix, as built
+
+- **`DatabaseMigration.migrateVaultEntryDeletionTokens`** (`PQmigration.swift`), run from
+  `OccultaApp.migrate()` at every launch. It gives every `VaultEntry` whose `deletionToken` is nil a live
+  token, sealed per row under the local key exactly as `addEntry` does, and saves once. Idempotent.
+- **Live is the correct value, not a guess:** every path that orphans an entry writes a sealed token, so
+  nil can only mean the row predates the field. Undecryptable tokens are left alone and still read as
+  orphaned, so the fail-closed design stands.
+- **No trace:** every pre-field row is rewritten in the same pass, so the change says nothing about any
+  one entry.
+- The wrong claim in `isOrphaned`'s doc comment is corrected.
+
+**Confirmed on a device, 2026-09-24:** on the phone that found it, installing the fixed build over the
+existing one (not a reinstall) brought the hidden entry back.
+
+### Guard
+
+`VaultEntryDeletionTokenMigrationTests` (Enclave-gated):
+- a pre-field entry is hidden from `fetchAllEntries()` before the migration, and live and returned after
+  it; two such entries get different ciphertexts;
+- entries that already have a token, live or orphaned, are left byte-identical;
+- a second run changes nothing.
+
+**What let it through:** no test ever built a `VaultEntry` the way v1.10.3 left it. Every test creates
+entries through `addEntry`, which writes the token. The same gap applies to any field added with a
+fail-closed reading of nil.
+
+---
+
+## Bug 134 — After the vault locks, the backup setup screen keeps showing its trustees and threshold, and Export fails silently
+
+**Status:** Fixed 2026-09-25, on `v1.11.0/vault-key-layering` (`7e977f8`); not yet checked on a
+device. Found checking which pushed vault screens react to a lock, after the restore screen's picker
+case (`decisions.md`, "Restore discoverability", 2026-09-25 note).
+
+**Changed 2026-09-29 (Bug 150):** the screen no longer navigates back on lock. It clears everything
+seeded from the vault and shows a locked state with Unlock Vault in place; navigating back could be
+ignored while the education sheet was up, and the screen could also be opened already locked.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (vault-key data visible after lock; a silent failure)
+
+### What happens
+
+The Vault tab swaps its root view for the lock screen when the vault locks, but screens already pushed
+onto its navigation stack stay. `VaultEntryDetail` closes itself on lock; two others didn't.
+
+- **`VaultShardSetup`** (reached from 7 places: the Vault tab, an entry's detail, the post-restore
+  prompt and two Settings screens) keeps the trustee checkmarks and threshold it seeded from the
+  distribution metadata, which is sealed under the vault key, in its own state. After a lock they stay
+  on screen, while the status chips vanish on the next redraw (`fetchDistributionMeta()` reads with
+  `try?`), so it reads as "nothing distributed" with the selection still showing. Distributing then
+  fails with "Vault locked — unlock and try again", revoking with a generic "Revoke failed".
+  The global trustee list is readable without the vault key anyway (contact records); this
+  distribution's selection, threshold and status are not.
+- **`BackupExportEducationView`** shows only fixed text, but "I understand — Export" after a lock calls
+  `startExport()`, `exportBackup` throws `locked`, and the error is swallowed by an unfinished
+  `// TODO: surface export error`.
+
+The inactivity timer only resets when the vault key is used, so five minutes on either screen is
+enough, as is leaving the app.
+
+### Fix, as built
+
+- **`VaultShardSetup` closes on lock,** clearing the seeded selection, threshold and pending revoke
+  first: the same `onChange(of: vault.isUnlocked)` → `dismiss()` as `VaultEntryDetail`. One change covers
+  all 7 entry points. It opens no system picker, so the concern that ruled closing-on-lock out for the
+  restore screen doesn't apply. Unsaved selection changes are lost once the vault locks.
+- **Export goes through `VaultManager.whenUnlocked`:** a lock since the screen opened means Face ID, then
+  the export, as the restore paths do.
+
+Not changed: other export failures are still silent (the existing TODO); choosing their message is a
+separate decision.
+
+### Guard
+
+None automated: these are SwiftUI views with no test harness here, and the simulator can't unlock the
+vault. Device check: open Backup Recovery (and an entry's Shard Distribution), wait five minutes or
+leave the app, and confirm the screen has closed; open Export Backup, wait, tap Export, and confirm
+Face ID appears and the export sheet follows.
+
+**Related:** `VaultNewEntrySheet` had no lock handling either; filed and fixed as Bug 135.
+
+---
+
+## Bug 135 — A vault entry being typed stays on screen after the vault locks, and Save can't unlock
+
+**Status:** Fixed 2026-09-25, on `v1.11.0/vault-key-layering`; not yet checked on a device. Found as the
+related case noted under Bug 134.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (the secret being entered stays visible over a locked vault)
+
+### What happens
+
+`VaultNewEntrySheet` is a sheet on the Vault tab, presented independently of the lock, so it stayed
+open when the vault locked. Two things lock it: the five-minute inactivity timer, which only counts
+use of the vault key, so typing never reset it and a slowly typed seed phrase could outlast it; and
+leaving the app (`willResignActive`). After that:
+- **the label and content stayed on screen,** including the secret. `privacySensitive` only redacts
+  system snapshots, not the live view;
+- **Save failed with "Vault locked — unlock and try again",** but the sheet has no way to unlock. The
+  only way out was Cancel, which discarded the entry.
+
+### Fix, as built
+
+- **Typing counts as vault activity in this sheet.** `VaultManager.extendSession()` resets the inactivity
+  timer, only while unlocked, and the sheet calls it on every change to the label or content. The
+  vault now locks only after five minutes without typing, or on leaving the app. Everywhere else only
+  use of the vault key counts (`decisions.md`, "Typing in the new-entry sheet counts as vault activity").
+  *(Superseded 2026-09-25 by Bug 136's fix: key use no longer counts anywhere; typing here is one of
+  the deliberate actions that do.)*
+- **On lock, the sheet clears the label and content and closes,** as `VaultEntryDetail` and
+  `VaultShardSetup` do. Nothing typed is kept, in memory or anywhere else; the user unlocks and starts
+  again. Chosen over hiding the fields and keeping the draft until Face ID. The cost, accepted: anything
+  that briefly takes the app out of focus (a call, Control Center, a notification banner, switching
+  apps to copy words) also discards the entry.
+
+### Guard
+
+`VaultManagerLifecycleTests` (`VaultTests.swift`): `extendSession` moves the inactivity deadline later
+on an unlocked vault, and on a locked one leaves it locked with no timer. Both read the timer's deadline
+(`VaultManager.inactivityDeadline`, internal for tests) rather than timing the lock: a first,
+real-time version failed in full-suite runs both ways, kept unlocked by other tests' saves (Bug 136)
+and locked early by main-thread contention, while passing on its own. The sheet is a SwiftUI view with
+no test harness here. Device check: type for more than five minutes and confirm the vault stays
+unlocked; stop typing for five minutes, or leave the app, and confirm the sheet has closed and is empty
+when reopened.
+
+---
+
+## Bug 136 — Any save anywhere in the app resets the vault's inactivity timer
+
+**Status:** Fixed 2026-09-25, on `v1.11.0/vault-key-layering`; not yet checked on a device. Filed the
+same day, found when Bug 135's `extendSession` test failed in full-suite runs only: other tests' saves
+kept its vault unlocked. **The scope turned out wider than saves; see "Wider than filed" below.**
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (weakens the inactivity lock)
+
+### What happens
+
+`VaultManager.init` subscribes to every `ModelContext.didSave`, from any context, and while the vault is
+unlocked calls `recomputeRecoveryHealth()` (`Vault+Manager.swift`). That calls `currentKey()`
+(`Vault+Manager+Shards.swift`), and `currentKey()` resets the inactivity timer on every success. The
+hook's comment calls the extra recomputes "harmless"; each one extends the vault session.
+
+So using any other part of the app that saves (sending a message, editing a contact, opening a file)
+keeps the vault unlocked, not just using the vault. Nothing in the app was found to save on a timer
+while idle (the only repeating timers are UI ones: the PIN countdown, the identity challenge's 30-second
+tick), so an idle app still locks after five minutes. The rule the inactivity lock is built on, that
+only use of the vault counts, doesn't hold.
+
+### Wider than filed
+
+It wasn't the save hook alone: `currentKey()` reset the timer on every success, so every automatic use
+of the vault key extended the session:
+
+| Use of the key | Triggered by |
+|---|---|
+| `recomputeRecoveryHealth()` | any save anywhere, through the `ModelContext.didSave` hook |
+| `shardRecordsForTrustee(_:)` | building each outgoing message to a trustee (`expectedShards`), the lost-shard check |
+| `markShardsLost(forContact:)` | a contact's key changing on an incoming message, or deleting a contact |
+| `tryFinalizeReconstruction(entryID:)` | a returned shard arriving |
+| `updateShardStatus(...)` from `ShardCustody+Manager.swift` | an incoming manifest confirming shards |
+| `decryptLabelPayload` for the entry list | redrawing the Vault tab when data changes |
+
+A first proposal, rejected in review: a `currentKey(extendingSession:)` parameter passed `false` by the
+automatic callers. Deriving the key isn't activity at all, and a per-caller flag would drift as callers
+are added.
+
+### Fix, as built
+
+- **`currentKey()` only derives the key;** its timer reset is removed. Lock condition 5 (lock on a
+  derivation failure) is unchanged.
+- **The session is extended only by `unlock` and `extendSession()`,** and the vault screens call
+  `extendSession()` for the person's deliberate actions, 21 events in all (`decisions.md`, "Vault
+  activity is the person's deliberate actions, not key use"): opening any vault screen, switching to the
+  Vault tab, hold-to-reveal (once, when the hold starts), Copy, Delete, typing and choosing a type and
+  Save in a new entry, choosing and picking a restore file, confirming export, ticking trustees and
+  changing the threshold, distributing, revoking, and the post-restore prompt.
+- **The save hook's comment** no longer calls the recomputes harmless for the session.
+
+Behaviour change: the vault locks five minutes after the last deliberate action in it, whatever the
+app does meanwhile. Reading a revealed entry without touching anything for five minutes locks it, and
+using other tabs no longer keeps it open.
+
+### Guard
+
+`VaultManagerLifecycleTests` (`VaultTests.swift`), reading `VaultManager.inactivityDeadline`:
+- `currentKey()` leaves the deadline unchanged;
+- a save on an unrelated context leaves it unchanged once the hook has run (the filed case);
+- `unlock` sets it one timeout from now; `extendSession` moves it later, and does nothing while locked.
+
+The first two fail with the old reset put back into `currentKey()`. `locksAfterInactivity`, which
+failed once in a full run for this bug, now waits 1 s rather than 150 ms past a 50 ms timeout, so a
+busy main thread can't beat the timer. The UI calls have no test harness here; the event list in
+`decisions.md` is what reviews check against. Device check: keep tapping in the vault past five
+minutes and it stays unlocked; stay idle on a vault screen, or use other tabs, for five minutes and it
+locks.
+
+---
+
+## Bug 137 — Upgrading from v1.10.3 deletes every banked recovery piece: the migration derives the key under a renamed HKDF info string
+
+**Status:** Fixed 2026-09-26, on `v1.11.0/vault-key-layering`. Filed the same day, found by the branch
+security review against `develop`, then confirmed against the `v1.10.3` tree.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (data loss on upgrade)
+
+Silent and permanent for anyone upgrading mid-recovery. Recovering needs every trustee to send their
+piece again, in person-paired messages, and nothing tells the owner the pieces were lost.
+
+### What happens
+
+v1.10.3 banks returned recovery pieces in `ReconstructShard` rows: both backup-key restore pieces and
+per-entry key reconstruction pieces. Each row's payload is sealed under
+`deriveRecoveryBufferKey()`: ECDH with the shard-custody SE key, then HKDF with salt = that key's public
+bytes and **info = `SaltInfo.kRecoveryBufferKeyInfo` = `"Occulta-v1-recovery-buffer-2026"`**.
+
+`44c983e` ("Rename deriveRecoveryBufferKey to deriveRestoreVaultKey…") renamed the function and, with
+it, the info string: `deriveRestoreVaultKey()` uses the same SE key and salt but
+**`SaltInfo.kRestoreVaultKeyInfo` = `"Occulta-v1-restore-vault-2026"`** (`Key+Manager.swift:49`). A
+different info string derives a different key.
+
+`migrateReconstructShardsIfNeeded()` (`Vault+Manager+ReturnBuffer.swift`), run on every unlock, opens
+each legacy row with `deriveRestoreVaultKey()`. No v1.10.3 row authenticates under it, and the function's
+own rule is to delete a row it can't read (`defer { self.modelContext.delete(row) }`, then `continue`).
+So the first unlock after upgrading deletes every banked piece without absorbing any of them.
+
+The payload format is not the obstacle: v1.10.3's `Payload` has an `attestation` field and no `depth`;
+the current one drops `attestation` and adds an optional `depth`. `JSONDecoder` ignores the unknown key
+and reads the missing optional as `nil`, so a v1.10.3 payload would decode once decrypted.
+
+**Why tests missed it:** `ReconstructShardMigrationTests` builds its legacy rows with
+`km.deriveRestoreVaultKey()` while describing them as "sealed exactly as the retired mechanism used to
+seal it". They are sealed with the new key, so the migration reads them. The same gap as Bug 133: no
+test builds data the way the last release actually wrote it.
+
+### Fix, as built
+
+**`SaltInfo.kRestoreVaultKeyInfo` is back to `"Occulta-v1-recovery-buffer-2026"`,** v1.10.3's value. Same
+SE key, same salt, same info: `deriveRestoreVaultKey()` produces v1.10.3's key again, and the migration
+opens and absorbs every legacy row unchanged. The constant's doc comment says the value must never
+change, and why the name and the string no longer match. Domain separation from the custody key is
+unaffected (`distinctFromCustodyKey` still passes).
+
+Rejected: keeping the new string and adding a legacy constant for the migration to try as well. The
+rename had no security reason to change the key; HKDF info strings are protocol constants (as
+`RUST_PACKAGES_SPEC.md` already states), and a second key would have been carried only to undo the
+change.
+
+**Cost, development phones only:** `PendingShamirSecretRestore` rows banked by this branch's builds were
+sealed under the other string and no longer decrypt. `decodedSlots` reads such a row as empty, and the
+next piece to arrive is saved into it under the reverted key, so collection carries on; the pieces
+banked before the revert are lost. No release ever had that model.
+
+### Guard
+
+- `ReconstructShardMigrationTests` now seals its legacy rows under v1.10.3's derivation, with the info
+  string written out literally (`TestKeyManager.deriveCustodySEKey(info:)`, made internal for this),
+  not through the current constant. Against the renamed string, 5 of its 7 tests failed, reproducing
+  this bug; all pass after the revert.
+- `RecoveryBufferKeyTests.infoStringIsV1_10_3s` pins the constant's exact bytes and checks the derived
+  key equals the literal-string derivation, so a future rename can't pass silently.
+
+---
+
+## Bug 138 — The v1.10.3 backup-key migration destroys the only copy of the key before the replacement is saved
+
+**Status:** Fixed 2026-09-26, on `v1.11.0/vault-key-layering`. Filed the same day, found by the branch
+code review against `develop`.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (catastrophic loss, narrow trigger)
+
+Nothing is lost on the ordinary path: the upgrade from v1.10.3 was checked on a device (`6242b9c`) and the
+backup key survived. But on any failure between the two saves, or if the process dies between them, the
+device's backup key is gone for good: every `.occbak` ever exported can no longer be restored, and the
+pieces trustees hold rebuild a key nothing is sealed under. Nothing reports it.
+
+### What happens
+
+`VaultManager.unlock` runs `migrateLegacyBackupStorageIfNeeded` inside `try?`, which calls
+`migrateLegacyBackupRowIfNeeded` (`Vault+Manager+Backup.swift`) for v1.10.3's single `BackupEncryptionKey`
+row (`depth == nil && deletionToken == nil`). It:
+1. decrypts and decodes the payload into memory (`try?`, so a failure gives `nil`);
+2. **folds the legacy row into filler** (`foldLegacyRowIntoFiller`: random bytes over `encryptedPayload`,
+   `depth` and `deletionToken`) **and saves**;
+3. only then, `guard let legacyPayload else { return }`, and `backup.persist(...)` writes the key into a
+   depth-0 row and saves.
+
+So the only durable copy is destroyed at step 2, before the replacement exists on disk:
+- **if decoding failed,** step 3 returns early and the key is simply gone;
+- **if `persist` throws** (`localKey()` or sealing the depth stamp fails, `PayloadCodec.encode` throws, the
+  seal or the save fails), the error vanishes into `unlock`'s `try?` and the key is gone;
+- **if the process dies** between the two saves, the next unlock finds no legacy row and no depth-0 row.
+
+The code contradicts its own documentation: `migrateLegacyBackupStorageIfNeeded`'s doc comment says a row
+that decrypts but fails to decode "simply stays un-migrated and the next unlock tries again — safe, not
+silent data loss". The fold-first order was chosen so `persist`'s filler-claiming can't pick the legacy
+row by chance (`isUnclaimed` is true for a nil `depth`); that concern is real, but it doesn't need the
+fold to be saved first.
+
+The array path next to it (`migrateBackupArrayIfNeeded`) doesn't have this problem: it persists each slot
+first and deletes the file only after every slot is committed.
+
+### Remedy (built)
+
+Make the migration all-or-nothing and leave the legacy row alone whenever the key can't be carried over:
+- **Decode first; on failure, touch nothing.** Return without folding, so the next unlock retries, as the
+  doc comment promises.
+- **Stage the new row, fold the legacy row, then save once.** Use `Backup.stage` (it doesn't save), making
+  sure it doesn't claim the legacy row itself (claim with the legacy row excluded, or if it does claim it,
+  skip the fold, since sealing the new payload into that row already replaces its content). Then fold and
+  call `save()` once. On any error, `modelContext.rollback()`, which restores the legacy row.
+
+As built: after `stage`, the legacy row is folded only if its `depth` is still nil, meaning `stage` claimed
+a different row. The decrypted plaintext is zeroed after decoding. `migrateLegacyBackupStorageIfNeeded`'s
+"stays un-migrated … the next unlock tries again" promise now holds, and says since when.
+
+Behaviour change, accepted: a legacy row that can never decode (for example, sealed under a vault key that
+no longer exists) used to be folded into filler as a side effect. It now stays in its nil/nil state, and
+each unlock tries it again cheaply. That row is only a leftover of the pre-refactor format; keeping it
+rules out ever destroying a key that could have been recovered.
+
+### Guard
+
+`BackupKeyLegacyStorageMigrationTests` (`BackupEncryptionKeyStorageTests.swift`), rows built the way
+v1.10.3 left them (depth and token nil, payload JSON-encoded, sealed under the vault key with `row.aad()`):
+- `undecodableLegacyRowIsUntouched`: a payload that decrypts but won't decode leaves the row
+  byte-identical, still nil/nil, and no depth-0 key;
+- `failureAfterStagingRollsBack`: 256 shard records decode from JSON but make `PayloadCodec.encode` throw
+  `tooManyShards` inside `stage`, after a depth-0 row is claimed; the error surfaces, the legacy row is
+  byte-identical, and there's no depth-0 key. No seam needed;
+- the existing `migratesLegacyRowOnly` stays green on both versions.
+
+Both new tests fail against the pre-fix migration.
+
+---
+
+## Bug 139 — Keys left by an interrupted v1.10.3 key rotation are never deleted, not even by "Erase all data"
+
+**Status:** Fixed 2026-09-26 for the wipe, on `v1.11.0/vault-key-layering`; the optional launch clean-up
+is not built. Filed the same day, found by the branch code review against `develop`.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (forensic trace that survives a panic wipe; narrow trigger)
+
+Needs a v1.10.3 activation or deactivation of Secure Mode that was interrupted (app killed, crash, a
+failed keychain call) partway through its key rotation. Where it happened, the leftover items outlive
+every later wipe, and their names say what they were for.
+
+### What happens
+
+v1.10.3 rotated the local database key on every Secure Mode activation and deactivation, using three
+items besides the canonical ones (`Key+Manager.swift` in `v1.10.3`):
+- SE key `local.db.se.key.occulta.staged` and keychain item `local.db.random.key.occulta.staged`,
+  created by `createStagedLocalDBKey()`;
+- SE key `local.db.se.key.occulta.superseded`, the old canonical key, renamed by
+  `commitStagedLocalDBKey()`.
+
+On success, step 11 called `deleteSupersededLocalDBArtefacts()`; on failure, `rollbackStagedLocalDBKey()`.
+An interruption between those points left items behind, and v1.10.3 had two things that removed them
+later: `createStagedLocalDBKey()` rolls back leftover staged items before starting, and
+`Manager.Key.deleteAllKeys()` swept all three on "Erase all data".
+
+This branch removed key rotation (Removal Stages 0-3, `plan.md`), and with it both clean-ups. `plan.md`
+records dropping the wipe's sweep on the grounds that "nothing rotates any more, so there is never a
+transient artefact to sweep". That holds for new installs, not for a device upgraded from v1.10.3 that
+already has leftovers. Nothing on this branch reads or deletes those three names (confirmed by search).
+So on such a device they stay forever, including after "Erase all data", and a keychain dump shows
+items named `…staged` / `…superseded`: evidence that Secure Mode was activated, surviving the very
+wipe meant to leave nothing. The same class as Bug 133 and Bug 137: an upgrade path from what v1.10.3
+actually left on disk.
+
+They grant nothing: the old random component is overwritten at commit, and the wipe deletes the
+canonical SE key, so no leftover can re-derive a key that decrypts anything.
+
+### Remedy
+
+- **Built: the wipe deletes the three legacy names again.** `Manager.Key.deleteLegacyRotationArtefacts()`
+  deletes the two SE keys and the keychain item under private constants that nothing else uses, and
+  `deleteAllKeys()` calls it; missing items count as deleted, so a device that never had leftovers still
+  wipes cleanly. Keep them as private constants used only for
+  deletion, and delete them in `deleteAllKeys()`. Always safe there: after a wipe there is no data left
+  that any of them could be needed for.
+- **Not built: optionally, clean up once at launch, but only in unambiguous states.** A blind delete is not safe:
+  if a v1.10.3 commit stopped between sub-step A (canonical → `.superseded`) and sub-step B (`.staged` →
+  canonical), the key the data is sealed under sits at `.superseded`, and nothing holds the canonical
+  name. Delete leftovers only when the canonical key demonstrably opens existing data (for example a
+  `VaultEntry.deletionToken` or an `AppLayerConfig` field); otherwise leave them.
+
+Out of scope, pre-existing: an interrupted v1.10.3 rotation could already leave data sealed under a key
+the canonical name no longer holds (v1.10.3 had no launch-time recovery either). Recovering that is a
+separate problem; the launch rule above only has to avoid making it permanent.
+
+### Guard
+
+`LegacyRotationArtefactTests` (`OccultaTests/SecureMode/`): creates the two SE keys and the keychain item
+under the names written out as v1.10.3 used them, calls `deleteLegacyRotationArtefacts()`, and asserts all
+three are gone (Enclave-gated); and with nothing there, deletion still reports success. It tests the
+helper rather than `deleteAllKeys()`, which would delete the canonical keys other tests in the process
+use. If the launch clean-up is built: a test per state (post-commit leftovers deleted; staged-only
+leftovers deleted; canonical missing with `.superseded` present, left untouched).
+
+---
+
+## Bug 140 — Session state outlives the session: nothing clears it at a new unlock or an in-place depth change
+
+**Status:** Fixed 2026-09-26, on `v1.11.0/vault-key-layering`; not yet walked through on a device or in
+the simulator. Found by the branch code review against `develop` as a pending restore prompt surviving the
+PIN screen; rewritten the same day around the invariant that case breaks.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (state from one session, at one depth, reaches the next, possibly a coercer's)
+
+### The invariant
+
+Everything the app holds in memory is one of two kinds:
+1. **Input queued before anyone authenticated.** A file or share that arrives while the PIN screen is up
+   (`pendingFileData`, `pendingShareSession`, a `.occbak` opened at the PIN screen) is kept on purpose and
+   delivered after whichever PIN is entered, the same at every depth; treating it differently by depth
+   would itself be a tell.
+2. **State created during an authenticated session, at one depth.** Presented screens and sheets,
+   decrypted content, unanswered decisions (a pending prompt, a draft, a trustee selection), values
+   computed for "this depth", and an unlocked vault. This must end when the session or the depth changes:
+   the next session may be someone else, in another layer.
+
+The code has no single boundary where kind 2 ends.
+
+### Two ways the session changes, and what each clears today
+
+1. **Leaving `.unlocked`** (the PIN screen after the grace period). `AppScreen` switches to
+   `.pinRequired`, which tears down the unlocked view tree, so state *inside* it goes. State held *above*
+   it, on `RootView` or in the managers, survives unless cleared by hand. `RootView`'s
+   `onChange(of: appScreen.phase)` clears a hand-picked list, `openedFileContents` and `shareResult`,
+   because "their item state outlives the branch … otherwise the next unlock re-presents a sheet the user
+   already finished with". The restore prompt added on this branch (`pendingRestoreFile`,
+   `showRestoreConfirmation`) isn't on the list: the same manual-sync weakness as Bug 126.
+2. **Depth changing while the app stays unlocked.** `Manager.Security.deactivateSecureMode` moves
+   `currentDepth` from N to N−1 in place, called from `SecureModeDeactivateFlow` in Settings; no PIN screen,
+   nothing torn down, nothing cleared. (`forceDeactivateForRecovery`, which moves to 0 the same way, has no
+   caller in the app today.)
+
+### What survives, and into which session
+
+| State | Held by | After the PIN screen | After an in-place depth change |
+|---|---|---|---|
+| Pending restore prompt and the `.occbak` bytes | `RootView` | **survives** | **survives** |
+| An opened message, a share result | `RootView` | cleared | **survives** |
+| The vault's unlocked session (`authContext`) | `VaultManager` | locked (the app resigned active) | **survives: the new depth has an unlocked vault with no Face ID of its own** |
+| Post-restore prompt, recovery health, backup erosion, staleness | `VaultManager` | cleared on lock | **survives, computed for the old depth until a view refreshes it** |
+| Pushed vault screens (an entry's detail, backup setup) and their cached `@State` | the Vault tab's navigation stack | torn down | **survives: switch to Settings, deactivate, come back, and the old depth's screen is still open** |
+
+The case that surfaced this: the owner opens their real `.occbak` and leaves without answering. Past the
+grace period a coercer enters the duress PIN; the unlocked tree is rebuilt around the same `RootView`
+state, the owner's file bytes are still held, and the "Restore from this backup?" prompt can be offered
+in the duress layer. That both tells the coercer a restore was in progress and lets Accept run the
+owner's restore there, completing whenever the owner's trustees are visible in that layer (the case Bug 99
+and §9.4 accept), without the coercer ever holding the file. Whether the prompt itself reappears depends
+on SwiftUI writing `false` back to `showRestoreConfirmation` when its host is torn down; the bytes stay
+either way.
+
+### Remedy: one session boundary (as proposed; see "Built" below for where it differs)
+
+- **A session identifier** owned by `Manager.Security`, changed on every successful unlock and every
+  in-place depth change.
+- **The unlocked view tree keyed by it** (`.id(session)` on the `.unlocked` branch). A change rebuilds the
+  whole tree, discarding every pushed screen, sheet and cached `@State` at once, with no list to keep.
+- **State above the tree resets through one hook** on the same change: `RootView` clears its
+  session presentations (replacing the hand-picked clearing in the phase handler), and `VaultManager`
+  locks and drops its depth-scoped values, so a new depth needs its own Face ID.
+- **Queued input is exempt by an explicit, documented list** kept outside the session scope on purpose:
+  `pendingFileData`, `pendingShareSession`, and a `.occbak` staged while `.pinRequired`.
+
+### Built
+
+- **`Manager.Security.sessionID`** changes in `setState` whenever the depth actually changes, which is the
+  in-place case (`deactivateSecureMode`). It does **not** change at a PIN unlock, unlike the proposal:
+  `applyVerifyState` and the phase flip run in one synchronous block, so their two `onChange` handlers
+  would fire in one SwiftUI update in no guaranteed order, and a reset there could race the delivery of a
+  file queued at the PIN screen. The PIN path doesn't need it: the PIN screen tears the unlocked tree down,
+  and the reset runs on leaving `.unlocked`.
+- **`RootView.endSession()`** is the one reset: it clears `openedFileContents`, `shareResult`,
+  `pendingRestoreFile`, `showRestoreConfirmation`, `showNothingRestored`, `showError`, the identity
+  challenge's three presentations (`outboundShare`, `incomingChallenge`, `verificationOutcome`, also held
+  above the tree), and calls `vaultManager.lock()`. It runs when the phase changes *from* `.unlocked` (not
+  on a cold launch's `.covered` → `.pinRequired`, which may already have staged the file that launched the
+  app), and on every `sessionID` change. It replaces the phase handler's hand-picked clearing.
+- **`.id(self.security.sessionID)`** on the `.unlocked` branch rebuilds the whole tree on an in-place
+  depth change. The selected tab moved up into `RootView` (`selectedTab`, bound to the `TabView`) so it
+  survives; it isn't sensitive.
+- **`VaultManager.lock()`** now also clears `backupStaleness`, the one depth-scoped value it missed.
+- **The exempt list** is one comment above `RootView`'s session state: `pendingFileData`,
+  `pendingShareSession`, and a `.occbak` staged while `.pinRequired`. No separate queued slot was needed:
+  such a file is staged after the reset, so it reaches the prompt after the PIN.
+
+Accepted edge: a `.occbak` whose read finishes before a warm return's phase change to `.pinRequired` is
+cleared with the session; the owner reopens it. The read is asynchronous, so the file normally lands after.
+
+Out of scope, worth its own look: which depth `deactivateSecureMode` lands on when used from a duress
+depth. The boundary makes any in-place change safe to leave behind; whether that transition should be
+allowed is a separate question.
+
+### Guard
+
+- `SessionIdentifierTests` (`SecureModeActivationTests.swift`): the identifier changes when
+  `deactivateSecureMode` moves the depth (2 → 1), and stays the same through PIN setup, activation, a wrong
+  PIN and a same-depth verify.
+- `VaultManagerLifecycleTests.lockClearsStaleness`: `lock()` clears `backupStaleness`, recovery health,
+  erosion and the post-restore prompt.
+- `RootView` and the view tree can't be built in a unit test. Device or simulator check (needs a PIN):
+  open a `.occbak`, leave without answering, return past the grace period, enter a PIN, and confirm no
+  prompt; open an entry, switch to Settings, deactivate, return to the Vault tab, and confirm the entry is
+  closed and the vault asks for Face ID; open a `.occbak` while the PIN screen is up and confirm the prompt
+  appears after the PIN.
+
+---
+
+## Bug 141 — Messaging a trustee with the vault unlocked makes them delete their backup-key piece: `expectedShards` never lists backup-key pieces
+
+**Status:** Fixed 2026-09-27 (`ba57be1`, see "Built" below); filed and reproduced 2026-09-26,
+remedy decided the same day. Found while inventorying per-entry shard splitting for retirement.
+**Shipped:** `v1.10.3` builds the list the same way.
+
+**Target:** `v1.11.0`. **Release blocker, and a blocker for retiring per-entry splitting.**
+
+### Severity: High (silent loss of backup recoverability)
+
+A restore needs k trustees' backup-key pieces. Ordinary messaging destroys them, the owner's app keeps
+showing the backup as healthy, and the loss surfaces only when a restore fails, after the phone is gone.
+
+### What happens
+
+Every outgoing bundle from the owner to a contact carries `expectedShards`, "the IDs the owner expects
+this trustee to hold", built by `ShardCustodyManager.buildExpectedShards` from
+`VaultManager.shardRecordsForTrustee`. That function reads **only per-entry distribution records**
+(`VaultEntry.shardDistributionEncrypted`); backup-key pieces, recorded in the `BackupEncryptionKey`
+payload's `ShardDistributionMetadata`, are never included. Senders:
+- `ComposeViewModel` (1:1 messages) and `RootView`'s share flow (`OccultaApp.swift`): `try?`, so the field is
+  `nil` when the vault is locked and the list, possibly empty, when it is unlocked;
+- `ContactManager`'s group path: per recipient, `[]` on failure with `shardMetadataAttempted` false.
+
+`[]` is encoded (`encodeIfPresent` omits only `nil`), and the bundle's own doc comment defines it as "holds
+nothing". On the trustee, `handleInbound` → `processExpectedShards` deletes every custody piece from that
+owner, under the owner's current fingerprint, that isn't listed. It doesn't distinguish backup-key pieces
+(`"vault-bek-shard"`) from per-entry ones.
+
+So whenever the owner sends a trustee anything with the vault unlocked:
+- **owner who split no entry:** the list is `[]`, and the trustee deletes all of that owner's pieces;
+- **owner who split entries:** the list holds those entries' piece IDs only, and the trustee still deletes
+  the backup-key piece.
+
+When the vault is locked the list isn't sent, so nothing is deleted; that may be why the device upgrade
+check (`6242b9c`) saw a healthy backup.
+
+### Reproduction
+
+Alice (`TestKeyManager`) sets up a backup at depth 0 and splits it for Bob and Carol
+(`prepareBackupShards`); Bob's `ShardCustodyManager` receives his piece (`handleInbound`, `.distribute`).
+With Alice's vault unlocked, `buildExpectedShards(for: bob, vaultManager: alice)` returns `[]`; Bob
+processes a bundle carrying it. Bob's custody pieces: **1 before, 0 after.**
+
+### The owner never finds out
+
+- The status Alice sees is her own record (`confirmed`), not the trustee's state.
+- Absence detection can't see it either: when Bob's `custodyManifest` later omits the piece,
+  `drainPotentiallyLostShards` checks the missing ID against `shardRecordsForTrustee`, which knows only
+  per-entry records, so a backup-key piece is never marked `.lost`. `markShardsLost` (a contact's key
+  change) is per-entry only too.
+- So "Backup Recovery" and `backupErosion` keep reporting a healthy backup.
+
+**Why tests missed it:** every `expectedShards` test uses per-entry pieces (`makeShardAttr`, label
+`"vault-shard"`); none sends a backup-key piece through `buildExpectedShards` to a trustee.
+
+### Remedy: needs a decision (depth)
+
+Backup keys are per depth, and one trustee can hold the owner's pieces from several depths. What a message
+sent at depth *d* should say about backup-key pieces isn't obvious:
+1. **List only depth *d*'s backup-key pieces:** the trustee deletes the owner's pieces from every other depth
+   it holds, so using the app at one layer destroys another layer's backup.
+2. **List every depth's backup-key pieces:** the owner's device, at any depth, enumerates other depths'
+   backup keys to build a bundle, and a trustee comparing lists from different sessions can see there are
+   pieces the current layer doesn't account for.
+3. **Take backup-key pieces out of implicit revoke:** the trustee never deletes a `"vault-bek-shard"` piece
+   because of `expectedShards`; those are replaced or removed only by `.replace`, a new-fingerprint
+   `.distribute`, or `purgeCustody`. Depth-neutral and simple. The cost: a trustee dropped from a
+   redistribution keeps their old piece, and because the backup key is reused across trustee changes
+   (`decisions.md`, "Reuse the same BEK across trustee-set changes"), k such dropped trustees colluding could
+   still rebuild it.
+
+Whichever is chosen, `drainPotentiallyLostShards` and `markShardsLost` need backup-key records so a lost
+piece shows up in the owner's backup health.
+
+A fourth option was added in discussion: **generate a new backup key whenever a trustee is removed.** Option 2
+was rejected because the owner's device would read other depths' backup keys to build a bundle, and v2.0.0
+derives each depth's keys from its own passphrase (`PASSPHRASE_LAYER_KEYS.md`), so no depth can read another's.
+Every part of the remedy has to work from the current depth's own data.
+
+### Decision, 2026-09-26
+
+**Option 3 + option 4, plus automatic re-sending.** Recorded in `decisions.md`, "Rotate the backup key when
+a trustee is removed; re-send automatically otherwise".
+
+1. **Implicit revoke and the `expectedShards` field are removed (option 3, widened 2026-09-27).**
+   - The field goes from every payload that carries it (`WireHandle`'s 1:1 payload, `SealedPayload`, the
+     group recipient payload with `expectedShardsCount`), with its three builders, `buildExpectedShards`,
+     `handleInbound`'s parameter and `processExpectedShards`.
+   - Old bundles still decode: every payload reads the field with `decodeIfPresent` from a keyed container,
+     which ignores keys it doesn't know, so a `v1.10.3` owner's `[]` is dropped unread. A `v1.10.3` trustee
+     decodes a missing 1:1 field as `nil` and deletes nothing.
+   - **Groups always send `shardMetadataAttempted = false`.** A `v1.10.3` member reads a group recipient's
+     list as `attempted ? prefix(expectedShardsCount) : nil`, and a missing list decodes as `[]` with count 0,
+     so `attempted = true` would tell it to delete every piece it holds from us. The flag also gates the
+     manifest, so our group messages carry no manifest; the block building both for group recipients goes.
+     Manifests still travel in 1:1 messages and the share flow, and a `v1.10.3` sender's group manifest is
+     still read. Re-enabling group manifests for new members (a capability bit plus version gating) was
+     rejected: it only speeds up absence detection.
+
+   First decided as an exemption for backup-key pieces only, checked by `label != "vault-bek-shard"`, with the
+   owner sending `nil`. Changed the same weekend, first to ignoring the field, then to removing it: the label is the only field that tells the two kinds apart (`category`, value
+   size and `entryID` are the same shape for both), it isn't covered by the signature, and no code had ever
+   read it. With the owner no longer sending the list, the only lists left come from `v1.10.3` owners, and
+   the one thing lost is such an owner removing a per-entry piece by omission; per-entry splitting is being
+   retired, and `.replace` still removes pieces.
+2. **Removing a trustee generates a new backup key (option 4).** A distribution that drops any trustee
+   splits a freshly generated key instead of the current one, in the same save. Only a new secret makes the
+   removed trustee's piece useless: the distribution ID is a label for grouping on restore, and any k pieces
+   of the old split still rebuild the old key whatever they are labelled. Every `.occbak` exported before
+   the change stops being restorable, so the owner confirms the removal knowing that, and the backup status
+   asks for a new export. Adding a trustee, or re-sending, keeps the key.
+3. **A piece the trustee no longer has is re-sent automatically; the owner does nothing.** Two triggers,
+   both depth-local:
+   - the trustee's identity key changes (only possible through the in-person key exchange,
+     `KeyExchange.swift`), handled at the current depth at once;
+   - a confirmed piece is missing from the trustee's `custodyManifest`, handled by each depth at its own
+     next vault unlock. This also catches a key change for the depths that weren't current: the trustee's
+     new phone reports holding nothing.
+
+   Re-sending re-splits the **same** key for the same trustees and threshold, and queues `.replace` for
+   each; the owner doesn't keep the old split's coefficients, so a single piece can't be re-created. Until
+   k trustees have the new split, restore relies on the old split's pieces, which are no longer revoked.
+4. **Lost** is kept for what a re-send can't fix: a trustee whose contact was deleted. That shows through the
+   existing backup erosion warning, and the owner removes them, which is step 2.
+5. **Bug 142's queue fix:** before queuing a new split, the depth deletes the queued rows, and the watch rows
+   below, of its previous split, found by its own previous `distributionID`.
+
+### Found while designing the fix, 2026-09-26
+
+Three defects the decision depends on, fixed with it:
+- **Absence detection works once per piece.** `processInboundManifest` inserts a `PotentiallyLostShard` watch
+  row only when a queued piece is first confirmed, and `drainPotentiallyLostShards` deletes **every** row at
+  every vault unlock. After one unlock nothing watches the piece, so a later disappearance is never seen.
+  Watch rows become persistent: removed only when their split is replaced or their contact deleted, and
+  created at unlock for any confirmed backup-key piece that lacks one.
+- **Backup-key status updates read every depth's backup key.** `Backup.updateShardStatus` tries each live
+  `BackupEncryptionKey` row until one holds the ID (reached from `processInboundManifest`,
+  `drainPendingShardStatusUpdates` and `markForDistribution`), which the decision above rules out. Backup-key
+  status is instead reconciled by the current depth against the watch rows: at vault unlock, and when a
+  manifest arrives while the vault is unlocked.
+- **Every redistribution reports "BEK rotated — Existing backup file is permanently unrestorable".**
+  `refreshBackupStaleness` detects rotation by comparing `distributionID`s, and since Bug 124 every
+  redistribution mints a new one. The export record stores a key identifier derived from the backup key
+  instead (HKDF, 16 bytes, in the same field). An existing record still matches if it holds the current
+  `distributionID`, so an upgrade doesn't show a false warning.
+
+**Related, filed 2026-09-26:** Bug 142. Redistributing never removes the previous split's queued pieces,
+so a trustee removed before delivery still receives theirs. That part is a queue fix; a removed trustee
+whose piece was already delivered is this entry's decision.
+
+### Guard
+
+A test through the real paths: owner sets up a backup and distributes; a trustee receives a piece; the owner,
+unlocked, builds `expectedShards` for that trustee (with no entries split, and with one split); the trustee
+processes it; the backup-key piece is still there. Plus: a piece missing from a later manifest is marked
+`.lost` in the backup-key metadata.
+
+**Revised with the decision, 2026-09-26.** The guards become:
+- a bundle from a `v1.10.3` owner carrying `expectedShards: []` decodes, and the trustee keeps every piece;
+- our group recipient payloads always have `shardMetadataAttempted == false`;
+- dropping a trustee changes the backup key, and an old `.occbak` no longer opens; adding one doesn't;
+- a trustee's key change re-queues a piece for every current trustee, at the current depth only;
+- a confirmed piece missing from a manifest is re-sent at that depth's next unlock, and still after an
+  earlier unlock (the watch row persists); another depth's pieces are untouched;
+- a redistribution without a key change doesn't report "BEK rotated"; a rotation does.
+
+### Built, 2026-09-27
+
+- **Wire:** `expectedShards` removed from `SealedPayload`, `WireHandle`'s metadata, the group
+  `RecipientPayload` (with `expectedShardsCount`) and `GroupRecipient`; the group path always sends
+  `shardMetadataAttempted: false` and no manifest (`GroupRecipient` no longer carries one, and
+  `encryptGroupBundle` lost its `vaultManager` parameter, as did `ComposeViewModel.encrypt` and its four
+  callers). `processExpectedShards` and `buildExpectedShards` are deleted.
+- **Rotation:** `Backup.prepareShards(newKey:)` splits a fresh key in the same save.
+  `ShardCustodyManager.distributeBackup` re-splits, deletes the previous split's queued and watch rows, and
+  queues `.replace`/`.distribute`. `VaultShardSetup` in backup mode asks "Remove trustee?" when the selection
+  drops a current trustee, then splits a new key; its per-trustee "Revoke Shard" menu is entry-mode only.
+- **Reconcile:** `ShardCustodyManager.reconcileBackupPieces`, from `RootView` at vault unlock, after every
+  inbound bundle, and on `contactKeyRotated`. `Backup.updateShardStatus` (the all-depths scan) is replaced
+  by the depth-local `setShardStatuses`; `VaultManager.updateShardStatus` is per-entry only.
+  `drainPotentiallyLostShards` keeps backup-key watch rows.
+- **Staleness:** the export record stores `backupKeyIdentifier(for:)` (`keyID`). Settings' Vault Recovery screen now
+  words the warning as the Vault tab does ("Backup can't be restored" / "Backup key changed — export a new
+  backup", was "BEK rotated"), and drops "BEK" from its other strings; the "not set up" row pointed to
+  Export, which fails without a key, and now points to Backup Key Trustees, where the key is created.
+- **Tests:** `BackupPieceReconcileTests.swift` (12), three staleness/rotation tests in
+  `VaultBackupRoundTripTests`, group-payload tests in `GroupEncryptTests`; the implicit-revoke tests in
+  `ShardManifestTests` and `ShardCustodyTests` are deleted, and backup-key tests confirm pieces through
+  `setBackupShardStatuses`.
+- **Not handled:** per-entry revoke (the context menu, `.revokePending`) no longer reaches trustees. Resolved
+  2026-09-27: per-entry splitting was retired (`Docs/General/decisions.md`, "Retire per-entry splitting"). `Backup.distributeShards` has no callers (pre-existing).
+- **Full suite:** 928 tests, 922 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+  Not walked through on a device: the "Remove trustee?" prompt, and a re-send reaching a real trustee.
+
+---
+
+## Bug 142 — Redistributing leaves the superseded split's pieces queued: a removed trustee still gets one, and kept trustees get old and new together
+
+**Status:** Fixed 2026-09-27 with Bug 141 (step 5, `ba57be1`); remedy decided 2026-09-26. Found while verifying how backup-key pieces reach trustees after a trustee-list change, for Bug 141's
+decision; reproduced with a throwaway test.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (revocation fails before delivery; stale pieces kept)
+
+### What happens
+
+Distributing pieces queues one `PendingShardDistribute` row per trustee (`ShardCustodyManager.queueDistribute`,
+from `VaultShardSetup.markForDistribution`). Every outgoing message to that contact carries all of its queued
+rows (`buildShardOperations` → `pendingDistributeOps`, on the 1:1, share-flow and group paths) until the
+trustee's manifest lists the piece and `processInboundManifest` drops the row. That part works: after a
+change, added trustees get `.distribute` and kept trustees `.replace` with their next message.
+
+What nothing does is remove the **previous split's** queued rows when the depth redistributes.
+`markForDistribution` marks removed trustees' pieces `.revoked` and queues the new split, but never touches
+the queue, and `queueDistribute` only deduplicates identical pieces. Reproduced with trustees A, B, C, then
+the list changed to A, B, D before anything was delivered:
+
+```
+backup key regenerated on mutation: false
+A (kept):    distribute(round1), replace(round2, replaces)
+B (kept):    distribute(round1), replace(round2, replaces)
+C (removed): distribute(round1)
+D (added):   distribute(round2)
+C's record in current metadata: nil
+```
+
+- **A removed trustee still receives their piece.** C's next message delivers the round-1 piece although C
+  was dropped. C's record is also gone from the backup's metadata (`prepareShards` writes the new recipient
+  list only), so the owner has no trace that C holds anything. Because the backup key is reused across
+  trustee changes, that piece works together with any other round-1 piece.
+- **Kept trustees receive the stale piece and its replacement in the same message.** The two rows go out in
+  fetch order, which isn't guaranteed. If `.replace` is processed first it deletes nothing (the old piece
+  hasn't arrived yet), then `.distribute` stores the round-1 piece, and the trustee ends up holding both. The
+  stale one never goes away: implicit revoke can't remove backup-key pieces correctly (Bug 141).
+
+The per-entry split path has the same shape; it is being retired.
+
+### Remedy (proposed, not built)
+
+When a depth redistributes its backup key, delete the queued rows of the split it replaces before queuing
+the new one: rows whose piece carries the depth's previous `distributionID` (the attribute's `entryID`).
+The depth reads only its own `BackupEncryptionKey` row to find that ID, so it stays depth-local, as Bug 141
+requires. A removed trustee whose piece was **already delivered** is a revocation, and falls to Bug 141's
+decision; if that is option 4 (a new backup key whenever a trustee is removed), such pieces become harmless.
+
+### Guard
+
+A test through the queue: distribute to A, B, C; change to A, B, D before delivery; then C's next message
+carries no piece, A's and B's carry only the round-2 piece, and D's carries its round-2 piece. Also: a piece
+already confirmed by C is outside this fix (Bug 141).
+
+**Decided 2026-09-26:** Bug 141 chose option 4, so dropping C also generates a new backup key; a piece C
+already holds then opens nothing exported afterwards.
+
+---
+
+## Bug 143 — A trustee who only messages the owner in groups never confirms their backup-key piece, so export stays blocked
+
+**Status:** Accepted limitation, decided 2026-09-28 (option B below); the wording is built.
+Found by the branch code review of 2026-09-28, as a consequence of Bug 141's fix.
+
+**Target:** `v1.11.0` (the wording change only).
+
+### Severity: Low (export delayed, nothing exposed)
+
+### What happens
+
+Bug 141's fix sends `shardMetadataAttempted = false` to every group recipient: a `v1.10.3` member reads `true`
+with no expected-shards list as "delete every piece you hold from me". The same flag gates the custody
+manifest, so a trustee's group messages carry no manifest; only 1:1 messages and the share flow do. A piece
+is confirmed only when a manifest lists it (`reconcileBackupPieces`), so:
+
+- a trustee who writes to the owner only in groups never confirms, however many group messages they send;
+- the queued piece rides along in every group message the owner sends them (pieces still go out in groups);
+- `backupSetupState` stays `waitingForConfirmations`, and `exportBackup` refuses below the threshold.
+
+It ends as soon as the trustee sends the owner a 1:1 message.
+
+### Options considered
+
+- **A. Group manifests again for members on this version:** a capability case derived from `appVersion`,
+  `shardMetadataAttempted = true` and a real manifest only for members at or above it, manifest padding
+  restored across the membership. About 30 lines. Not chosen.
+- **B. Accept it, and say so where the owner waits:** the "awaiting confirmations" status says that
+  confirmations arrive with a trustee's next direct message. **Chosen, 2026-09-28.**
+
+### Guard
+
+None beyond the wording; `shardMetadataAttempted == false` for group recipients is pinned by
+`GroupEncryptFallbackTests`.
+
+---
+
+## Bug 144 — A trustee left out of a redistribution without being deselected keeps a valid backup-key piece: hidden, ineligible and deleted trustees don't trigger a new key
+
+**Status:** Fixed 2026-09-28 (see "Built" below). Filed the same day, found by the branch code
+review of 2026-09-28 (findings 1 and 2).
+
+**Target:** `v1.11.0`. Undoes part of Bug 141's guarantee.
+
+### Severity: Medium (a removed trustee keeps a working piece)
+
+### What happens
+
+Bug 141 made a distribution that drops a trustee split a new key. What counts as "dropped" misses three cases:
+
+- **Hidden or no longer ML-KEM-capable.** `VaultShardSetup.commitDistribution` splits to
+  `mlkemContacts ∩ selectedIDs`, but `droppedBackupTrustees()` compares the record with `selectedIDs`.
+  `seedInitialState` puts every current trustee in `selectedIDs`, including one now hidden at this depth or
+  without quantum material, who isn't listed on screen. Changing only the threshold re-splits without them,
+  with no prompt and no new key.
+- **Deleted.** A deleted trustee's piece is marked `.lost`, and `droppedBackupTrustees()` counts only
+  `.pending`/`.confirmed` records, so leaving them out never rotates.
+- **Automatic re-send.** When another piece goes missing, `reconcileBackupPieces` re-splits the **same** key for
+  the live trustees, leaving the deleted one out.
+
+In each case the left-out trustee still holds a piece of the current key, which rebuilds it with k−1 others of
+the same split, against every backup exported afterwards. Deleting a contact is the owner dropping them.
+
+### Remedy (built 2026-09-28)
+
+One rule, owned by `ShardCustodyManager`: a distribution splits a new key whenever anyone in the depth's
+current record, of any status, is missing from the real recipient list
+(`distributionDropsTrustee(recipients:currentDepth:vaultManager:)`). `distributeBackup` applies it itself and
+stops taking `newKey`; the setup screen asks it, with the real recipients, whether to prompt; reconcile skips
+the automatic re-send while any trustee is lost, leaving the erosion warning for the owner, since a re-send
+would have to rotate and rotating silently breaks exported backups.
+
+### Guard
+
+Dropping a pending, confirmed or lost trustee rotates; adding one or changing only the threshold keeps the key;
+reconcile doesn't re-send while a trustee is lost.
+
+### Built, 2026-09-28
+
+- `ShardCustodyManager.distributionDropsTrustee(recipients:currentDepth:vaultManager:)` is the rule;
+  `distributeBackup(threshold:recipients:currentDepth:vaultManager:)` applies it and no longer takes `newKey`.
+- `VaultShardSetup` asks it with `recipientIDs` (selected ∩ `mlkemContacts`), the list it distributes to;
+  `droppedBackupTrustees()` is gone.
+- `reconcileBackupPieces` re-sends only when every trustee in the record is active and still a contact, and then
+  to the whole record.
+- Same pass, from the same review:
+  - `distributeBackup` deletes the previous split's rows first, then persists, then queues in one save, so a
+    failure leaves pending pieces with nothing queued, which reconcile re-sends (finding 4);
+  - `RootView` reconciles after an inbound bundle only when it carried a manifest (finding 5);
+  - `ContactManager.contactDeleted`, observed by `RootView`, reconciles on deletion so a deleted trustee's
+    piece shows as lost at once (finding 6);
+  - `Backup.distributeShards`, dead and bypassing the queue and the rule, is deleted (finding 7);
+  - Bug 143's wording: Vault Recovery's waiting row and the setup screen's export note say trustees confirm
+    with their next direct message.
+- Tests: `BackupDropRuleTests` (pending, lost, threshold-only, the rule itself), `noResendWhileLost`,
+  `deleteContact_announcesTheDeletion`. The failure ordering has no direct test.
+- Full suite: 919 tests, 913 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+---
+
+## Bug 145 — Distributing the backup key fails for every real trustee: the stored record assumes contact identifiers are UUIDs
+
+**Status:** Fixed 2026-09-28 (see "Built" below). Found testing the backup flow on a device:
+"Queue for Distribution" showed no result. Traced in code the same day.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (the backup key can't be distributed at all)
+
+### What happens
+
+`BackupEncryptionKey.Payload`'s fixed-width codec (`Backup.PayloadCodec`, this branch) stores each trustee record's
+`contactIdentifier` as 16 raw UUID bytes; `encodeShard` throws `invalidContactIdentifier` when it isn't a UUID
+string (`Vault+Manager+Backup.swift`, `guard let contactID = UUID(uuidString: shard.contactIdentifier)`).
+
+A real `Contact.Profile.identifier` is not a UUID: since SecurityReview 2026-07-24 finding #11 it is encrypted before
+it is first stored (`ContactManager`, `encryptedIdentifier` in `createContacts` and the new-contact branch), the
+base64 of the ciphertext, far longer than 36 characters.
+
+So `VaultShardSetup.commitDistribution` → `distributeBackup` → `prepareBackupShards` → `persist` →
+`PayloadCodec.encode` throws for any real trustee. Nothing is written or queued; the button stays "Review".
+
+**Why it looked like nothing happened:** `commitDistribution` catches the error into `self.error`, rendered inside
+the scroll view after the trustee list and both notes, below the fold with a few trustees. The bottom bar doesn't
+change.
+
+**Why tests missed it:** every backup-key test passes `UUID().uuidString` as a trustee identifier. `ShardRecord`'s
+doc comment states the wrong premise ("a stable SwiftData UUID").
+
+### Remedy
+
+Built 2026-09-28, with Bugs 146 and 147 (same premise): records store a fixed-width tag derived from the
+identifier instead of the identifier.
+
+### Built, 2026-09-28
+
+- `TrusteeTag` (`Vault+Model.swift`): the first 16 bytes of SHA-256 over `TrusteeTag.domainLabel`
+  (`"occulta-trustee-tag"`) and the stored identifier. Depends on the whole identifier, needs no key, reveals
+  nothing on its own. Decrypting the identifier instead was considered and rejected: the raw value isn't a UUID
+  either (`CNContact` identifiers carry a `:ABPerson` suffix), every comparison would need a decryption on both
+  sides, and it would put raw Contacts identifiers back into the restore buffer, which opens without Face ID
+  (what finding #11 removed).
+- `ShardRecord.contactIdentifier` → `trustee: TrusteeTag`, with `isHeld(by:)`; its JSON decoding still reads
+  v1.10.3's `contactIdentifier` and tags it. `PayloadCodec` format 2 stores the tag in the same 16 bytes; format
+  1 decodes its UUID to that UUID string's tag. `invalidContactIdentifier` is gone.
+- `PendingRestoreShardSlot`/`AttestedShard` carry `sender: TrusteeTag`; `ShardsCodec` format 2 stores the tag
+  plus 20 random bytes in the same 36-byte field. `absorbShard` de-duplicates by tag; `restoreBackup` counts a
+  piece when its sender's tag is among the visible contacts' tags.
+- `ShardCustodyManager` compares by tag and maps tags back to identifiers through the contacts it already has.
+- Setup screen: records matched with `isHeld(by:)`; the selection, when seeded and after a successful queue, is
+  the listed contacts holding an active piece, so the screen reads up to date and "Pieces queued for delivery."
+  shows; first-time seeding keeps only Global Trustees who can receive a piece here; errors show in the bottom
+  bar; a success haptic plays.
+- Tests: `realFormatContactIdentifier()` (base64 of 64 random bytes) replaces UUID strings and short labels in
+  every backup-key and restore suite; codec tests for real-format identifiers, format 1 decoding, the v1.10.3
+  JSON record and `TrusteeTag`; `distributedLegacyKeyMigrates` (Bug 146); `longSendersStayDistinct` (Bug 147).
+- Full suite: 923 tests, 917 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+---
+
+## Bug 146 — Upgrading from v1.10.3 with a distributed backup key: the key never migrates, and opening Backup Recovery can overwrite it
+
+**Status:** Fixed 2026-09-28 by Bug 145's remedy. Filed the same day, found tracing Bug 145.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: Critical (the only copy of a v1.10.3 backup key can be destroyed)
+
+### What happens
+
+`migrateLegacyBackupRowIfNeeded` decodes v1.10.3's JSON payload, whose trustee records hold real contact
+identifiers, and stages it through the same codec (Bug 145). `encode` throws; the migration rolls back and is
+retried at every unlock, never succeeding. Depth 0 then has no live backup-key row:
+
+- the Vault tab and Vault Recovery show the backup as not set up;
+- opening Backup Recovery runs `seedInitialState` → `setupBackup(currentDepth: 0)`, which finds no depth-0 key and
+  generates a new one, sealed into `claimFillerRow`'s first unclaimed row. The legacy row (`depth` and
+  `deletionToken` nil) counts as unclaimed, and as the oldest row it is likely first: the new key overwrites the
+  v1.10.3 key, the only copy. Bug 138's loss, by a different route.
+- if another row is claimed instead, the legacy row survives but is never migrated (the guard sees a depth-0 key
+  and returns), staying behind as a distinguishable nil/nil row.
+
+Either way every `.occbak` exported under v1.10.3 can no longer be opened from this phone's key, and trustees'
+pieces are for the old key.
+
+An owner who never distributed in v1.10.3 has no records and migrates fine.
+
+### Remedy
+
+Fixed by Bug 145's remedy: the legacy JSON records decode into the new record form, so staging succeeds. Devices
+that already ran a build of this branch after upgrading (test devices only; nothing has shipped) may already have
+lost or stranded the key; not repaired.
+
+### Guard
+
+A v1.10.3 legacy row with records holding real-format identifiers migrates on unlock, and `setupBackup` afterwards
+keeps the migrated key.
+
+---
+
+## Bug 147 — A restore never completes on a real device: banked pieces keep only the first 36 bytes of the sender's identifier
+
+**Status:** Fixed 2026-09-28 by Bug 145's remedy. Filed the same day, found tracing Bug 145.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (recovery from a lost phone doesn't work)
+
+### What happens
+
+`PendingShamirSecretRestore.ShardsCodec` writes each banked piece's `senderIdentifier` into 36 bytes
+(`fixedWidthUTF8(senderIdentifier, count: 36)`), assuming a UUID string; a real identifier is longer (Bug 145) and
+is silently cut. `restoreBackup` counts only pieces whose sender is in `visibleContactIdentifiers`, which holds full
+identifiers, so no banked piece ever matches and every restore attempt finds nothing. The per-sender
+de-duplication in `absorbShard` also compares the cut form.
+
+Tests use `"trustee-0"`, `"alice"` and the like, which fit.
+
+### Remedy
+
+Same as Bug 145: the slot stores a fixed-width tag of the sender's identifier, and both comparisons use tags.
+
+### Guard
+
+A restore end to end with real-format sender identifiers completes; a second piece from the same sender replaces
+the first.
+
+
+---
+
+## Bug 148 — A message opened from outside the app shows before the PIN screen on a warm return past the grace period
+
+**Status:** Fixed 2026-09-28, on `v1.11.0/vault-key-layering`; not yet walked through on a device. Reported the
+same day from a device: Secure Mode and PIN on, a `.occ` opened from another app, the message visible before the
+PIN screen came up. Regression of Bug 1 Incident A, through a gap the Bug 84 Part B fix left open.
+
+**Target:** `v1.11.0`. **Release blocker.**
+
+### Severity: High (message content shown without a PIN, and the inbound pipeline run before one)
+
+### What happens
+
+`AppScreen.phase` keeps its last value, `.unlocked`, for the whole time the app is in the background. The grace
+period is evaluated only in `sceneDidBecomeActive`. On a warm return UIKit calls `sceneWillEnterForeground`,
+then delivers the URL (`onOpenURL`), then `sceneDidBecomeActive`. So `handleOpenURL` runs while the phase still
+reads `.unlocked` from the session that expired, and its gate (`if self.appScreen.phase != .unlocked { queue }`)
+passes. Two outcomes, depending on which runs first on the main actor:
+
+1. **The decryption finishes first.** `openedFileContents` is set, the `.sheet` in the `.unlocked` branch
+   presents, and UIKit adds its container view to the window above the snapshot cover (the cover is a plain
+   window subview installed earlier). `sceneDidBecomeActive` then sets `.pinRequired`, which tears the branch
+   down and dismisses the sheet with its animation. The message is on screen from the sheet appearing until it
+   has finished sliding away. This is the reported case.
+2. **The phase flips first, after the gate has passed.** The decryption keeps going and sets
+   `openedFileContents` while `.pinRequired`. `endSession()` already ran on the `.unlocked → .pinRequired`
+   transition, so nothing clears it, and the sheet presents after the next PIN, whichever it is. That is not a
+   leak of its own: a message nobody has seen yet is equivalent to queued input, and showing it after either
+   PIN looks the same as the designed queued flow (a file opened, a PIN entered, the message shown). It only
+   happens by timing, though, and loses the message in the gap before `endSession()` runs.
+
+In both cases the whole inbound pipeline ran before any PIN: prekey consumption, shard ops, manifest
+reconciliation and their saves, at the expired session's depth (the shape Bug 84 Part A removed for shares).
+
+A `.occbak` takes the same path without the phase check: its prompt can show over the cover, and `endSession()`
+then drops the staged file.
+
+### Why now
+
+The race has existed since `8b95ee5` moved the lock decision into `sceneDidBecomeActive`. It was probably hidden
+by the read before the gate: until `7edef05` (2026-08-01) that was `URLSession.shared.data(from:)`, slow enough
+that `sceneDidBecomeActive` usually won; the memory-mapped read returns in microseconds. Not yet confirmed on a
+device with the old read.
+
+### Resolution
+
+Lock as early as possible, unlock as late as possible.
+
+1. **`AppScreen.lockIfGracePeriodExpired`**, called first in `sceneWillEnterForeground`, sets `.pinRequired`
+   when a PIN is configured, the gate is up, and the time in the background exceeds the grace period, so the
+   phase is right before UIKit can deliver the URL and `handleOpenURL` queues the file as designed. The unlock
+   decision stays in `sceneDidBecomeActive`, which already leaves `.pinRequired` alone.
+2. **A result that finishes after its session ended is dropped.** `endSession()` advances a `sessionEpoch`;
+   `RootView.processInboundFile` captures it before decrypting and, if the session ended (or the phase isn't
+   `.unlocked`) by the time decryption finishes, presents nothing, neither the basket nor an error.
+
+   The gate can't come up *during* decryption: identifying the sender, opening the bundle, burning the prekey,
+   the shard ops and the save run as one synchronous block on the main actor, and the lock is itself a
+   main-thread scene callback. Only the step after, writing decrypted attachments to temp files, can straddle
+   it, and by then the prekey is gone, so the bytes cannot be re-queued. Holding the result and showing it
+   after the next PIN would have been safe too (see outcome 2). **Dropping was chosen by the owner,
+   2026-09-29:** a message is lost only if the user leaves before it finishes decrypting and stays away past
+   the grace period, which is acceptable; the sender can resend.
+
+Not covered by (2): an identity-challenge sheet, set inside `buildOwnedBasket` before its first suspension, so
+it cannot outlive a session change that (1) now prevents from happening first.
+
+### Guard
+
+`AppScreenLockTests` (6 tests, no Enclave needed): past the grace period the phase is `.pinRequired` before
+activation; within it, with no background entry, with no PIN, with the gate lowered, and before `wire`, nothing
+changes. `sceneWillEnterForeground` needs a live `UIScene`, so the call from it is covered by reading, not a test;
+`processInboundFile` lives on a SwiftUI `View` and is untested, like the rest of that type.
+
+Still to do on a device: background for more than 5 minutes, open a `.occ` from Files or Messages; expect the PIN
+screen with no sheet before it, and the message after the PIN.
+
+---
+
+## Bug 149 — A contact marked as a Global Trustee carries the depth it was marked at, readable without Face ID
+
+**Renumbered 2026-09-29:** filed as Bug 148 by mistake, colliding with the warm-return lock entry above
+(`d88ba22`); commit `1e8d949`'s message cites the old number.
+
+**Status:** Fixed 2026-09-29 by retiring Global Trustees (`decisions.md`, "Backup recovery
+lives only in the Vault tab; Global Trustees retired"). Found while costing that retirement.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (a duress depth's existence readable without coercion)
+
+### What happens
+
+`Contact.Profile.globalTrusteeDepth` held `-1` for "not a trustee", or the depth a contact was marked a Global
+Trustee at (`saveGlobalTrusteeDepth` stamped the current depth). It is sealed under the local key, which opens
+without Face ID, so anyone running code as the app could read a contact marked at depth 2 and learn that a
+depth 2 exists, and who its trustees are. `migrateGlobalShardConfigToPerContact` also stamped `0` on contacts
+from the old depth-0 list.
+
+### Fix
+
+- The feature is gone: `VaultGlobalTrustees`, `saveGlobalTrusteeDepth`, `isGlobalTrustee`,
+  `globalTrusteeIdentifiers`, and the setup screen's pre-selection and GLOBAL badge.
+- `DatabaseMigration.migrateRetireGlobalTrustees` (replacing the nil backfill, every launch) resets every live
+  contact's stamp to a sealed, fixed-width `-1` through `scrubbedStamp`; a row already there is left
+  byte-identical. Soft-deleted rows were already scrubbed to `-1` (`migrateScrubDeletedDepthStamps`).
+- `migrateDeleteGlobalShardConfig` (was `migrateGlobalShardConfigToPerContact`) only deletes old rows.
+- The field keeps being written as `-1` at creation and deletion so every row stays alike, and leaves the schema
+  next release with `shardDistributionEncrypted` and `PendingShardStatusUpdate`.
+
+### Guard
+
+`GlobalTrusteeRetirementTests`: stamps of 0, 2, legacy JSON and nil all read a sealed `-1`; a `-1` row is left
+byte-identical and a second run rewrites nothing; soft-deleted rows are left to their own scrub; the old list is
+deleted without re-marking anyone.
+
+Full suite after the change: 919 tests, 913 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+**Review follow-up, 2026-09-29:** the retire pass first rewrote every live stamp as if readable, so a stamp that
+doesn't decrypt would have become a readable -1 among unreadable fields (Bug 97's pattern). It now leaves an
+undecryptable stamp alone, as the fixed-width pass does, and derives the local key once for the pass instead of
+once per contact. Guard: `leavesUndecryptableStampAlone`. Full suite: 924 tests, 918 passed, 0 failed, 6 skipped.
+
+---
+
+## Bug 150 — Backup Recovery opens on a locked vault from Settings; queueing fails with "Vault locked", and a locked vault reads as "no distribution"
+
+**Renumbered 2026-09-29:** filed as Bug 149, shifted when the Global Trustees entry moved to 149; commit
+`1e8d949`'s message cites the old number.
+
+**Status:** Fixed 2026-09-29. Found testing the backup flow on a device.
+
+**Target:** `v1.11.0`.
+
+### Severity: Medium (the backup can't be set up from that path; an existing distribution looks absent)
+
+### What happens
+
+Settings › Vault Recovery's "Backup Key Trustees" link wasn't gated on the vault being unlocked, unlike the Vault
+tab, which shows its lock screen. On a locked vault the setup screen:
+
+- skipped `setupBackup` silently (`try?`);
+- listed trustees anyway (contacts need no vault key);
+- read `fetchDistributionMeta()`'s `nil` (a `try?` over a locked vault) as "no distribution yet", so the button
+  read "Review" and the education sheet opened even when a distribution existed;
+- failed at "Queue for Distribution": `currentKey()` threw `VaultError.locked`, shown as "Vault locked — unlock and
+  try again" with nothing to unlock with;
+- never closed itself: Bug 134's handler reacts to the vault *becoming* locked.
+
+A lock while the education sheet was open could also leave the screen in place, since dismissing the screen and
+the sheet at once could be ignored.
+
+### Fix
+
+- The Settings path is gone (`VaultRecoverySettings` deleted); the setup screen is reached only from the unlocked
+  Vault tab.
+- The screen shows its content only while the vault is unlocked, otherwise a locked state with Unlock Vault
+  (`vault.whenUnlocked`). Seeding, the Review/education decision and queueing run only while unlocked; a lock
+  clears the seeded state and closes the sheet and alert, in place (Bug 134's navigate-back is replaced).
+
+### Guard
+
+The button's decision is `VaultShardSetup.nextStep`, which checks the lock before reading the distribution or
+the recipients (`DistributionStepTests`, added in the review follow-up of 2026-09-29). The rest is view code: a device
+check (open the screen, lock the phone or wait out the timeout with the education sheet open, unlock again).
+
+## Bug 151 — The Backup Recovery row reads "0 of 2 trustees confirmed" for three trustees with a threshold of two
+
+**Status:** Fixed 2026-09-29. Found testing the backup flow on a device.
+
+**Target:** `v1.11.0`.
+
+### Severity: Low (misleading wording; no data or security effect)
+
+### What happens
+
+`Backup.setupState` returned `.waitingForConfirmations(confirmed:threshold:)`, and the Vault tab's `VaultBackupRow`
+rendered it as "`confirmed` of `threshold` trustees confirmed". The denominator is the number of confirmations export
+needs, not the number of trustees, so a split among three trustees with a threshold of two read as if two trustees
+had been chosen.
+
+### Fix
+
+`waitingForConfirmations` carries `total` as well: the pieces still `.pending` or `.confirmed`, the same set the setup
+screen treats as active. A lost piece can't confirm, so it leaves the total. The row reads
+"`confirmed` of `total` trustees confirmed · `threshold` needed", for example "0 of 3 trustees confirmed · 2 needed".
+
+No leak: the row shows only while the vault is unlocked, at the current depth, and the setup screen already shows
+the trustee count and threshold there.
+
+### Guard
+
+`BackupSetupStateTests` (`BackupPieceReconcileTests.swift`): three trustees, threshold two, counts 0 and 1 confirmed
+of 3, then `.ready` at 2; a lost piece drops the total to 2.
+

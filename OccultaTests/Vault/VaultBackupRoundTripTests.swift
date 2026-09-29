@@ -4,18 +4,17 @@
 //
 //  Bug 88 — vault backup ignores `visibleThroughDepth` in both directions.
 //
-//  Written before any fix, to pin current behaviour. Until this file, a repo-wide search for
-//  `exportBackup` or `importBackup` under OccultaTests returned nothing, so the format had no
-//  round-trip coverage at all — depth-related or otherwise. That matters because the leading
-//  remedy bumps the wire format, and a format change with no round-trip test underneath it is
-//  how you lose backups.
+//  Written before any fix, to pin current behaviour. Until this file, the backup format had no
+//  round-trip coverage at all — depth-related or otherwise. That matters because a format
+//  change with no round-trip test underneath it is how you lose backups.
 //
 //  Export half fixed 2026-08-24 — exportBackup(currentDepth:) filters to that depth's
-//  entries. exportExcludesHiddenEntries is a real assertion now, not a withKnownIssue.
-//  Import half fixed 2026-08-25, once Bug 93 made "stamp with currentDepth" safe on the
-//  automatic restore-on-unlock path — importBackup(_:currentDepth:) now stamps every
-//  restored entry the same way addEntry does. importRestoresDepthCeiling is a real
-//  assertion now too.
+//  entries. Import half fixed 2026-08-25 — restored entries are stamped with the depth they
+//  are restored at, the same way addEntry does.
+//
+//  Since 2026-09-23 (bugs.md Bug 129) the only way to import is restoreBackup, the new-device
+//  path: every round trip here exports from one vault and restores into a fresh one holding
+//  the owner's shards, rather than re-importing into the vault it came from.
 //
 
 import Testing
@@ -49,14 +48,25 @@ private func secureEnclaveAvailable() -> Bool {
 // MARK: - Harness
 
 /// Export refuses to run below the shard threshold, so a usable vault needs a BEK *and*
-/// enough confirmed BEK shards. `prepareBEKShards` creates them `.pending`;
-/// `updateBEKShardStatus` is the seam that confirms them without driving the whole
+/// enough confirmed BEK shards. `prepareBackupShards` creates them `.pending`;
+/// `setBackupShardStatuses` is the seam that confirms them without driving the whole
 /// distribution and manifest flow.
 @MainActor
-private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer) {
+private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer, [SignedAttribute]) {
+    let (vault, container) = try makeVault()
+    let shards = try setUpConfirmedBEK(for: vault, currentDepth: 0)
+    return (vault, container, shards)
+}
+
+/// A vault with no backup key — the fresh device a restore lands on.
+@MainActor
+private func makeVault() throws -> (VaultManager, ModelContainer) {
     let schema = Schema([
         VaultEntry.self,
         BackupEncryptionKey.self,
+        // restoreBackup reads banked shards from these.
+        Vault.self,
+        PendingShamirSecretRestore.self,
         Contact.Profile.self,
         Contact.Profile.PhoneNumber.self,
         Contact.Profile.EmailAddress.self,
@@ -75,25 +85,46 @@ private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer) {
     let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
-    let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-    vault.unlock(context: LAContext(), currentDepth: 0)
-    try vault.setupBEK()
-
-    let recipients = (0..<2).map { i -> Contact.Profile in
-        let p = Contact.Profile(
-            identifier: "trustee-\(i)", givenName: "", familyName: "", middleName: "",
-            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        container.mainContext.insert(p)
-        return p
-    }
-    try container.mainContext.save()
-
-    let attributes = try vault.prepareBEKShards(threshold: 2, recipients: recipients)
-    for attribute in attributes {
-        try vault.updateBEKShardStatus(attributeID: attribute.id, to: .confirmed)
-    }
+    let vault = VaultManager(
+        modelContainer: container, keyManager: TestKeyManager()
+    )
+    vault.unlock(context: LAContext())
     return (vault, container)
+}
+
+/// Set up a BEK and confirm enough shards to clear `exportBackup`'s threshold check, at
+/// `currentDepth`'s own slot. Stage 2 (`VAULT_KEY_LAYERING.md`) made each depth's BEK
+/// independent — `exportBackup(currentDepth:)` reads whichever depth it's exporting *at*,
+/// so a depth other than 0 needs its own call to this, not just depth 0's.
+@MainActor
+@discardableResult
+private func setUpConfirmedBEK(for vault: VaultManager, currentDepth: Int) throws -> [SignedAttribute] {
+    try vault.setupBackup(currentDepth: currentDepth)
+
+    // Identifiers in the form the app stores (encrypted base64), not UUIDs or labels — the
+    // assumption that they were UUIDs broke every real distribution (bugs.md Bug 145). No
+    // Contact.Profile needed — prepareBackupShards takes identifiers directly.
+    let recipients = (0..<2).map { _ in realFormatContactIdentifier() }
+
+    let attributes = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: currentDepth)
+    try vault.setBackupShardStatuses(Dictionary(uniqueKeysWithValues: attributes.map { ($0.id, .confirmed) }), currentDepth: currentDepth)
+    return attributes
+}
+
+/// Restores `backup` the way a new phone does: a fresh vault banks every one of the owner's
+/// `shards`, then opens the file at `depth`. Returns the fresh vault's container.
+@MainActor
+private func restoreOnFreshVault(_ backup: Data, shards: [SignedAttribute], atDepth depth: Int) throws -> ModelContainer {
+    let (fresh, container) = try makeVault()
+    var senders = Set<String>()
+    for (i, shard) in shards.enumerated() {
+        let sender = realFormatContactIdentifier()
+        try fresh.absorbShard(shard, senderIdentifier: sender)
+        senders.insert(sender)
+    }
+    let imported = try fresh.restoreBackup(from: backup, currentDepth: depth, visibleContactIdentifiers: senders)
+    try #require(imported, "the restore itself failed, so nothing below measures the backup's contents")
+    return container
 }
 
 @MainActor
@@ -110,20 +141,12 @@ struct VaultBackupRoundTripTests {
     @Test("Entries survive export → import with id, timestamp, label and content intact",
           .enabled(if: secureEnclaveAvailable()))
     func roundTripPreservesEntries() throws {
-        let (vault, container) = try makeBackupReadyVault()
+        let (vault, _, shards) = try makeBackupReadyVault()
         let note = try vault.addEntry(label: "note-label", content: Data("note-body".utf8), type: .note)
         let card = try vault.addEntry(label: "card-label", content: Data("card-body".utf8), type: .note)
         let backup = try vault.exportBackup(currentDepth: 0)
 
-        // Wipe, then restore from the backup alone.
-        let wipe = ModelContext(container)
-        for entry in try wipe.fetch(FetchDescriptor<VaultEntry>()) { wipe.delete(entry) }
-        try wipe.save()
-        #expect(try entries(in: container).isEmpty)
-
-        try vault.importBackup(backup, currentDepth: 0)
-
-        let restored = try entries(in: container)
+        let restored = try entries(in: restoreOnFreshVault(backup, shards: shards, atDepth: 0))
         #expect(restored.count == 2, "both entries must come back")
 
         let byID = Dictionary(uniqueKeysWithValues: restored.map { ($0.id, $0) })
@@ -135,7 +158,7 @@ struct VaultBackupRoundTripTests {
 
     @Test("A backup is unreadable without the BEK", .enabled(if: secureEnclaveAvailable()))
     func backupIsSealed() throws {
-        let (vault, _) = try makeBackupReadyVault()
+        let (vault, _, _) = try makeBackupReadyVault()
         _ = try vault.addEntry(label: "secret-label", content: Data("secret-body".utf8), type: .note)
         let backup = try vault.exportBackup(currentDepth: 0)
 
@@ -154,7 +177,7 @@ struct VaultBackupRoundTripTests {
     @Test("Export excludes entries hidden at the current depth",
           .enabled(if: secureEnclaveAvailable()))
     func exportExcludesHiddenEntries() throws {
-        let (vault, container) = try makeBackupReadyVault()
+        let (vault, _, _) = try makeBackupReadyVault()
         // Visible at the duress depth this export is taken from.
         _ = try vault.addEntry(label: "decoy", content: Data("decoy".utf8), type: .note, currentDepth: 2)
 
@@ -164,18 +187,15 @@ struct VaultBackupRoundTripTests {
                                         type: .note, currentDepth: 0)
         #expect(hidden.visibleThroughDepth != nil, "addEntry always stamps a ceiling")
 
+        // Depth 2 needs its own confirmed BEK before it can export — Stage 2 made each
+        // depth's BEK independent, so depth 0's setup in makeBackupReadyVault() doesn't
+        // cover depth 2.
+        let depth2Shards = try setUpConfirmedBEK(for: vault, currentDepth: 2)
+
         // Export taken under coercion, from the duress depth — not the real one.
         let backup = try vault.exportBackup(currentDepth: 2)
 
-        // Wipe before importing: importBackup skips any entry whose id already exists,
-        // so without a wipe both entries would be skipped regardless of what the file
-        // actually contains, and the count below would never reflect export filtering.
-        let wipe = ModelContext(container)
-        for entry in try wipe.fetch(FetchDescriptor<VaultEntry>()) { wipe.delete(entry) }
-        try wipe.save()
-
-        try vault.importBackup(backup, currentDepth: 2)
-        let restoredCount = try entries(in: container).count
+        let restoredCount = try entries(in: restoreOnFreshVault(backup, shards: depth2Shards, atDepth: 2)).count
 
         #expect(restoredCount == 1, """
             The export from depth 2 contained \(restoredCount) entries. Only the entry \
@@ -184,23 +204,78 @@ struct VaultBackupRoundTripTests {
             """)
     }
 
-    /// Fixed: `importBackup(_:currentDepth:)` now stamps every restored entry with
-    /// `currentDepth`, mirroring `addEntry`. A file only ever holds one layer's entries
-    /// (Bug 88 remedy 4), so the depth to stamp is simply whichever depth the import is
-    /// running at — here, the same depth 0 the backup was exported from.
+    // MARK: - Bug 114: legacy nil-depth entries and duress-depth exports
+
+    /// Simulates a legacy pre-field entry by clearing `visibleThroughDepth` through a
+    /// separate, saved `ModelContext`, so the change is committed before `exportBackup`
+    /// reads it rather than sitting unsaved on `VaultManager`'s own context.
+    @MainActor
+    private func makeLegacyEntry(via vault: VaultManager, in container: ModelContainer) throws -> UUID {
+        let entry = try vault.addEntry(label: "legacy", content: Data("legacy".utf8), type: .note)
+        let id    = entry.id
+        let mutate = ModelContext(container)
+        let toMutate = try #require(
+            try mutate.fetch(FetchDescriptor<VaultEntry>(predicate: #Predicate { $0.id == id })).first
+        )
+        toMutate.visibleThroughDepth = nil
+        try mutate.save()
+        return id
+    }
+
+    /// `entriesVisible(atDepth:)` passes `whenUnclassified: depth == 0` (Bug 114) — a
+    /// legacy entry with no `visibleThroughDepth` (pre-dating the field) is real content
+    /// that predates duress depths existing at all, and must not be swept into a backup
+    /// exported from one.
+    @Test("Export excludes a legacy nil-depth entry when taken from a duress depth",
+          .enabled(if: secureEnclaveAvailable()))
+    func exportExcludesLegacyNilDepthEntryAtDuressDepth() throws {
+        let (vault, container, _) = try makeBackupReadyVault()
+        _ = try makeLegacyEntry(via: vault, in: container)
+
+        let depth2Shards = try setUpConfirmedBEK(for: vault, currentDepth: 2)
+        let backup = try vault.exportBackup(currentDepth: 2)
+
+        let restoredCount = try entries(in: restoreOnFreshVault(backup, shards: depth2Shards, atDepth: 2)).count
+
+        #expect(restoredCount == 0, """
+            The export from depth 2 contained \(restoredCount) entries. A legacy entry with \
+            no depth stamp must not be swept into a backup exported from a duress depth.
+            """)
+    }
+
+    /// The other half, and the behavior Bug 114's fix must not regress: at the real depth
+    /// 0, a legacy nil-depth entry must still be included — the original fix
+    /// (`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md`)
+    /// this codebase shipped specifically to stop it silently vanishing from ordinary,
+    /// non-duress backups.
+    @Test("Export still includes a legacy nil-depth entry at the real depth 0",
+          .enabled(if: secureEnclaveAvailable()))
+    func exportIncludesLegacyNilDepthEntryAtRealDepth0() throws {
+        let (vault, container, shards) = try makeBackupReadyVault()
+        _ = try makeLegacyEntry(via: vault, in: container)
+
+        let backup = try vault.exportBackup(currentDepth: 0)
+
+        let restoredCount = try entries(in: restoreOnFreshVault(backup, shards: shards, atDepth: 0)).count
+
+        #expect(restoredCount == 1, """
+            The export from the real depth 0 contained \(restoredCount) entries. A legacy \
+            entry with no depth stamp must still be included in an ordinary, non-duress backup.
+            """)
+    }
+
+    /// Fixed: a restore stamps every entry with the depth it runs at, mirroring `addEntry`.
+    /// A file only ever holds one layer's entries (Bug 88 remedy 4), so the depth to stamp
+    /// is simply whichever depth the restore is running at — here, the same depth 0 the
+    /// backup was exported from.
     @Test("Import restores the depth ceiling rather than defaulting to always-visible",
           .enabled(if: secureEnclaveAvailable()))
     func importRestoresDepthCeiling() throws {
-        let (vault, container) = try makeBackupReadyVault()
+        let (vault, _, shards) = try makeBackupReadyVault()
         _ = try vault.addEntry(label: "hidden", content: Data("hidden".utf8), type: .note, currentDepth: 0)
         let backup = try vault.exportBackup(currentDepth: 0)
 
-        let wipe = ModelContext(container)
-        for entry in try wipe.fetch(FetchDescriptor<VaultEntry>()) { wipe.delete(entry) }
-        try wipe.save()
-
-        try vault.importBackup(backup, currentDepth: 0)
-        let restored = try #require(try entries(in: container).first)
+        let restored = try #require(try entries(in: restoreOnFreshVault(backup, shards: shards, atDepth: 0)).first)
 
         let decodedDepth = restored.visibleThroughDepth?.decrypt().flatMap { DepthCodec.decode($0) }
         #expect(decodedDepth == 0, """
@@ -221,10 +296,15 @@ struct VaultBackupRoundTripTests {
     @Test("Staleness for one depth is never derived from another depth's export or entries",
           .enabled(if: secureEnclaveAvailable()))
     func stalenessIsIsolatedPerDepth() throws {
-        let (vault, _) = try makeBackupReadyVault()
+        let (vault, container, _) = try makeBackupReadyVault()
 
         _ = try vault.addEntry(label: "real",  content: Data("real".utf8),  type: .note, currentDepth: 0)
         _ = try vault.addEntry(label: "decoy", content: Data("decoy".utf8), type: .note, currentDepth: 2)
+
+        // Depth 2 needs its own confirmed BEK before it can export — Stage 2 made each
+        // depth's BEK independent, so depth 0's setup in makeBackupReadyVault() doesn't
+        // cover depth 2.
+        try setUpConfirmedBEK(for: vault, currentDepth: 2)
 
         _ = try vault.exportBackup(currentDepth: 0)
         _ = try vault.exportBackup(currentDepth: 2)
@@ -258,7 +338,7 @@ struct VaultBackupRoundTripTests {
     @Test("An old single-record export-meta file degrades to nil, not a crash",
           .enabled(if: secureEnclaveAvailable()))
     func oldFormatFileDegradesGracefully() throws {
-        let (vault, _) = try makeBackupReadyVault()
+        let (vault, _, _) = try makeBackupReadyVault()
         let vaultKey = try vault.currentKey()
 
         struct LegacyMeta: Codable {
@@ -284,5 +364,139 @@ struct VaultBackupRoundTripTests {
         _ = try vault.exportBackup(currentDepth: 0)
         vault.refreshBackupStaleness(currentDepth: 0)
         #expect(vault.backupStaleness == nil, "a fresh export must read back cleanly under the new format")
+    }
+
+    // MARK: - Key changes and staleness (Bug 141)
+
+    @Test("A redistribution that keeps the key does not report it rotated",
+          .enabled(if: secureEnclaveAvailable()))
+    func redistributionIsNotRotation() throws {
+        let (vault, _, _) = try makeBackupReadyVault()
+        _ = try vault.exportBackup(currentDepth: 0)
+
+        _ = try vault.prepareBackupShards(threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], currentDepth: 0)
+
+        vault.refreshBackupStaleness(currentDepth: 0)
+        #expect(vault.backupStaleness?.bekRotated != true,
+                "a new distributionID alone used to read as a rotation")
+    }
+
+    @Test("A new key reports the key rotated, and an earlier backup no longer opens",
+          .enabled(if: secureEnclaveAvailable()))
+    func newKeyIsRotation() throws {
+        let (vault, _, _) = try makeBackupReadyVault()
+        let earlier = try vault.exportBackup(currentDepth: 0)
+
+        _ = try vault.prepareBackupShards(
+            threshold: 2, recipients: [realFormatContactIdentifier(), realFormatContactIdentifier()], newKey: true, currentDepth: 0
+        )
+
+        vault.refreshBackupStaleness(currentDepth: 0)
+        #expect(vault.backupStaleness?.bekRotated == true)
+
+        let box = try AES.GCM.SealedBox(combined: earlier.dropFirst(VaultManager.backupMagic.count))
+        #expect(throws: (any Error).self) {
+            try AES.GCM.open(box, using: try vault.currentBackupKey(currentDepth: 0), authenticating: VaultManager.backupFileAAD)
+        }
+    }
+
+    /// Before Bug 141 the export record held the `distributionID`; one that still matches
+    /// means nothing has changed since that export.
+    @Test("An export record from before the fix, holding the current distributionID, is not a rotation",
+          .enabled(if: secureEnclaveAvailable()))
+    func legacyRecordMatchingDistributionIsNotRotation() throws {
+        let (vault, _, shards) = try makeBackupReadyVault()
+        let distributionID = try #require(shards.first?.entryID)
+        try vault.writeBackupExportMetadata(
+            VaultManager.BackupExportMetadata(exportedAt: Date(), keyID: distributionID, shardCount: 2, entryCount: 0),
+            at: 0, vaultKey: try vault.currentKey()
+        )
+
+        vault.refreshBackupStaleness(currentDepth: 0)
+        #expect(vault.backupStaleness == nil)
+    }
+
+    // MARK: - Shard status routing (VAULT_KEY_LAYERING.md §8, Bug 141)
+
+    /// Backup-key statuses change only at the depth that owns them (`bugs.md` Bug 141).
+    /// `updateShardStatus` used to search every depth's row for the ID; now a depth
+    /// writes only its own row, and an ID another depth owns is ignored.
+    @Test("A backup-key status change touches only the current depth's row",
+          .enabled(if: secureEnclaveAvailable()))
+    func shardConfirmationAppliesToOwningDepthOnly() throws {
+        let (vault, _, _) = try makeBackupReadyVault() // depth 0: both shards pre-confirmed
+
+        // Depth 2 gets its own BEK with shards left pending (not auto-confirmed).
+        try vault.setupBackup(currentDepth: 2)
+        let recipients = (0..<2).map { _ in realFormatContactIdentifier() }
+        let depth2Shards = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: 2)
+
+        // Named from depth 0: not depth 0's piece, so nothing changes anywhere.
+        try vault.setBackupShardStatuses([depth2Shards[1].id: .confirmed], currentDepth: 0)
+        try vault.setBackupShardStatuses([depth2Shards[0].id: .confirmed], currentDepth: 2)
+
+        let depth0Meta = try vault.backupShardMetadata(currentDepth: 0)
+        #expect(depth0Meta?.shards.allSatisfy { $0.status == .confirmed } == true,
+                "depth 0's shards, confirmed before depth 2 even existed, must be untouched")
+
+        let depth2Meta = try vault.backupShardMetadata(currentDepth: 2)
+        #expect(depth2Meta?.shards.first { $0.attributeID == depth2Shards[0].id }?.status == .confirmed,
+                "the targeted shard must be confirmed")
+        #expect(depth2Meta?.shards.first { $0.attributeID == depth2Shards[1].id }?.status == .pending,
+                "the other depth-2 shard must be left alone")
+    }
+
+    /// Bug 128: "Erase all data" deleted rows and keys but no files. The wipe now also deletes
+    /// the held `.occbak` under both its names, the old shard file, and the export metadata.
+    /// Lives in this serialized suite because it deletes the export-metadata file the
+    /// staleness tests above read.
+    @Test("Wiping the vault deletes the backup and restore files",
+          .enabled(if: secureEnclaveAvailable()))
+    func wipeDeletesBackupFiles() throws {
+        let schema = Schema([
+            VaultEntry.self, BackupEncryptionKey.self, CustodyShard.self, PendingShardDistribute.self,
+            PendingShardStatusUpdate.self, PendingShamirSecretRestore.self, Vault.self,
+            ReconstructShard.self, GlobalShardConfig.self, PotentiallyLostShard.self, AppLayerConfig.self,
+        ])
+        let container = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+        vault.unlock(context: LAContext())
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        let files = ["backup-import-cache.occbak", "pending-restore.occbak", "pending-restore-shards.dat", "backup-export-meta.dat"]
+            .map { appSupport.appendingPathComponent($0) }
+        for url in files { try Data("x".utf8).write(to: url) }
+
+        try vault.deleteAllData()
+
+        for url in files {
+            #expect(!FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) survived the wipe")
+        }
+    }
+    /// Erase all data doesn't relaunch the app, and `init` was the only place the Vault row and
+    /// the backup-key filler baseline were created.
+    @Test("Wiping the vault restores a fresh install's Vault row and filler baseline")
+    func wipeRestoresFreshShape() throws {
+        let schema = Schema([
+            VaultEntry.self, BackupEncryptionKey.self, CustodyShard.self, PendingShardDistribute.self,
+            PendingShardStatusUpdate.self, PendingShamirSecretRestore.self, Vault.self,
+            ReconstructShard.self, GlobalShardConfig.self, PotentiallyLostShard.self, AppLayerConfig.self,
+        ])
+        let container = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+        let context = ModelContext(container)
+        let baseline = try context.fetchCount(FetchDescriptor<BackupEncryptionKey>())
+        #expect(baseline == AppLayerConfig.maxDepthCount)
+
+        try vault.deleteAllData()
+
+        #expect(try context.fetchCount(FetchDescriptor<Vault>()) == 1)
+        #expect(try context.fetchCount(FetchDescriptor<BackupEncryptionKey>()) == baseline)
+        #expect(throws: Never.self) { _ = try vault.requireVault() }
     }
 }

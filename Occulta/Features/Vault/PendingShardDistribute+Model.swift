@@ -7,10 +7,13 @@
 //
 //  Inserted by `ShardCustodyManager.queueDistribute` when `markForDistribution`
 //  prepares a fresh shard batch. Alice piggybacks the op on her next outbound
-//  bundle to each trustee. The row is deleted on send (fire-and-forget); if
-//  the bundle never reaches the trustee, the next outbound message retries
-//  automatically because the row was already deleted on this call — and the
-//  7-day `.inquire` probe will recover from prolonged silence.
+//  bundle to each trustee, and every one after that — the row is deleted only
+//  once the trustee's own `custodyManifest` confirms the ID
+//  (`processInboundManifest`), not on send, so a bundle lost in transit or a
+//  shard the trustee's device dropped for any reason is retried automatically
+//  on every subsequent bundle with no separate tracking needed. The 7-day
+//  `.inquire` probe is a backstop for prolonged silence, not the retry path
+//  itself.
 //
 //  One row per attributeID. Two ops for the same contact (rare: two rapid
 //  markForDistribution calls) produce two rows and two ops in the same bundle.
@@ -26,9 +29,10 @@
 //
 //  Lifecycle:
 //  - Inserted by `ShardCustodyManager.queueDistribute` after `prepareShards`.
-//  - Read before every outbound bundle; `.distribute` / `.replace` operations
-//    are added to `SealedPayload.shardOperations`.
-//  - Deleted on send.
+//  - Read (never deleted) before every outbound bundle; `.distribute` /
+//    `.replace` operations are added to `SealedPayload.shardOperations`.
+//  - Deleted only in `processInboundManifest`, once the trustee's own
+//    `custodyManifest` shows this attributeID present.
 //
 
 import Foundation

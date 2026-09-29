@@ -1,8 +1,19 @@
 # Rotation Coverage — making the Model Coverage contract executable
 
-**Status:** Scoping. No code written. Proposed 2026-08-16, **revised the same day** after a
-scoping review found the first version conflated detection with prevention and absorbed an
-unrelated fix. See "What the first version got wrong".
+**Retired, moot, 2026-09-10.** The Secure Mode local-DB-key rotation this entire proposal exists to
+protect — `activateSecureMode`/`deactivateSecureMode` staging a new key, re-encrypting every covered
+model, committing, and deleting the superseded key — was deleted whole (Removal Stages 0-3,
+`plan.md`). Nothing rotates any more, so there is no coverage question left to make executable: G1-G3
+below ask "can a field/model/path be silently missed by rotation," and the honest answer for every
+one of them is now "there is no rotation to miss." This proposal was never implemented (see the
+original status line below — no code was ever written against it), so nothing here describes shipped
+behavior; kept as a historical record of the scoping work, and because its reasoning about
+build-time-vs-runtime detection (G4) may be worth revisiting if this project ever builds comparable
+coverage for a different mechanism.
+
+**Original status (superseded):** Scoping. No code written. Proposed 2026-08-16, **revised the same
+day** after a scoping review found the first version conflated detection with prevention and
+absorbed an unrelated fix. See "What the first version got wrong".
 **Owner doc it extends:** [`SecureMode+RotationContract.md`](../../../Occulta/Features/SecureMode/SecureMode+RotationContract.md),
 "Model Coverage" — this does not replace that reasoning, it proposes making it enforceable.
 **Register item:** supersedes F3 in `Docs/Audit/OPEN_LIMITATIONS.md`.

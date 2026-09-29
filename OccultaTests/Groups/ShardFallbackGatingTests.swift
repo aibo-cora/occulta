@@ -3,10 +3,11 @@
 //  OccultaTests
 //
 //  Regression coverage for the fallback-vs-forward-secrecy handling of shard-
-//  protocol fields (shardOperations / custodyManifest / expectedShards):
+//  protocol fields (shardOperations / custodyManifest; expectedShards was removed with
+//  implicit revoke, bugs.md Bug 141):
 //
 //  1. Sender side (ContactManager.encryptBundle, single-recipient / ephemeral
-//     group-envelope path): custodyManifest and expectedShards must be dropped
+//     group-envelope path): custodyManifest must be dropped
 //     alongside shardOperations whenever no prekey is available for this send —
 //     not just shardOperations, which is what the code checked before this fix.
 //
@@ -153,8 +154,8 @@ private enum TestSetupError: Error { case seUnavailable }
 @Suite("encryptBundle — shard-protocol fallback gate")
 @MainActor struct EncryptBundleShardFallbackTests {
 
-    @Test("no prekey available: custodyManifest/expectedShards are dropped even with no real shardOperations")
-    func fallbackDropsManifestAndExpectedWithoutShardOps() throws {
+    @Test("no prekey available: custodyManifest is dropped even with no real shardOperations")
+    func fallbackDropsManifestWithoutShardOps() throws {
         let cm = try makeContactManager()
         guard let (_, recipientKM) = try makeRecipient(
             identifier: "alice", contactManager: cm, capability: .groupCapable, hasPrekey: false
@@ -164,8 +165,7 @@ private enum TestSetupError: Error { case seUnavailable }
             basket: Basket(files: []),
             for: "alice",
             shardOperations: nil,
-            custodyManifest: [UUID()],
-            expectedShards:  [UUID()]
+            custodyManifest: [UUID()]
         )
 
         let bundle = try OccultaBundle.decoded(from: encoded)
@@ -185,11 +185,10 @@ private enum TestSetupError: Error { case seUnavailable }
         let sealed      = try WireHandle.decode(payload: payloadData)
 
         #expect(sealed.custodyManifest == nil, "custodyManifest must not ride the fallback (non-FS) path")
-        #expect(sealed.expectedShards  == nil, "expectedShards must not ride the fallback (non-FS) path")
     }
 
-    @Test("no prekey available: shardOperations, custodyManifest, and expectedShards are all dropped together")
-    func fallbackDropsAllThreeShardFields() throws {
+    @Test("no prekey available: shardOperations and custodyManifest are dropped together")
+    func fallbackDropsBothShardFields() throws {
         let cm = try makeContactManager()
         // A real .distribute attribute sets isCarryingShard, which sends encryptBundle
         // through resolveKeyMaterial(requireQuantum: true) -- hence the ML-KEM material
@@ -197,7 +196,7 @@ private enum TestSetupError: Error { case seUnavailable }
         // derivation, which is symmetric on both sides, so the bundle stays openable
         // here with syntheticQuantumMaterial() (unlike the FS path, whose one-time
         // prekey private half this fixture does not hold -- see
-        // forwardSecretPathPreservesManifestAndExpected).
+        // forwardSecretPathPreservesManifest).
         guard let (_, recipientKM) = try makeRecipient(
             identifier: "bob", contactManager: cm, capability: .groupCapable,
             hasPrekey: false, hasQuantumMaterial: true
@@ -209,8 +208,7 @@ private enum TestSetupError: Error { case seUnavailable }
             basket: Basket(files: []),
             for: "bob",
             shardOperations: [op],
-            custodyManifest: [UUID()],
-            expectedShards:  [UUID()]
+            custodyManifest: [UUID()]
         )
 
         let bundle = try OccultaBundle.decoded(from: encoded)
@@ -231,11 +229,10 @@ private enum TestSetupError: Error { case seUnavailable }
 
         #expect(sealed.shardOperations == nil, "shardOperations must not ride the fallback (non-FS) path")
         #expect(sealed.custodyManifest == nil, "custodyManifest must not ride the fallback (non-FS) path")
-        #expect(sealed.expectedShards  == nil, "expectedShards must not ride the fallback (non-FS) path")
     }
 
-    @Test("prekey available: custodyManifest/expectedShards are NOT stripped (control — fix isn't over-broad)")
-    func forwardSecretPathPreservesManifestAndExpected() throws {
+    @Test("prekey available: custodyManifest is NOT stripped (control — fix isn't over-broad)")
+    func forwardSecretPathPreservesManifest() throws {
         let cmWithPrekey    = try makeContactManager()
         let cmWithoutPrekey = try makeContactManager()
 
@@ -247,7 +244,6 @@ private enum TestSetupError: Error { case seUnavailable }
         ) else { print("⚠︎ Skipping — SE unavailable"); return }
 
         let manifest = [UUID(), UUID(), UUID()]
-        let expected = [UUID(), UUID(), UUID()]
 
         // The FS path's wrapping key is derived from a one-time prekey whose private
         // half is intentionally not real SE material here (see makeRecipient), so full
@@ -257,16 +253,16 @@ private enum TestSetupError: Error { case seUnavailable }
         // encoded bundle relative to the same call with the field preserved (FS).
         let encodedWithPrekey = try cmWithPrekey.encryptBundle(
             basket: Basket(files: []), for: "carol",
-            shardOperations: nil, custodyManifest: manifest, expectedShards: expected
+            shardOperations: nil, custodyManifest: manifest
         )
         let encodedWithoutPrekey = try cmWithoutPrekey.encryptBundle(
             basket: Basket(files: []), for: "carol",
-            shardOperations: nil, custodyManifest: manifest, expectedShards: expected
+            shardOperations: nil, custodyManifest: manifest
         )
 
         #expect(
             encodedWithPrekey.count > encodedWithoutPrekey.count,
-            "manifest/expected content preserved on the FS path must make the bundle larger than the same call falling back (fields dropped)"
+            "manifest content preserved on the FS path must make the bundle larger than the same call falling back (fields dropped)"
         )
     }
 }
@@ -291,9 +287,7 @@ private enum TestSetupError: Error { case seUnavailable }
             publicKey: selfPub, quantumMaterial: nil,
             contactPrekey: nil,   // no prekey -> this slot seals via longTermFallback
             pendingBatch: nil,
-            shardOperations: [realOp],
-            custodyManifest: [UUID()], custodyManifestCount: 1,
-            expectedShards:  [UUID()], expectedShardsCount: 1
+            shardOperations: [realOp]
         )
 
         let bundle = try Manager.Crypto(keyManager: senderKM).seal(
@@ -304,7 +298,6 @@ private enum TestSetupError: Error { case seUnavailable }
 
         #expect(result.recipientShardOperations == nil, "shard ops must be dropped when this recipient's slot used the fallback path")
         #expect(result.recipientCustodyManifest == nil, "custody manifest must be dropped when this recipient's slot used the fallback path")
-        #expect(result.recipientExpectedShards  == nil, "expected shards must be dropped when this recipient's slot used the fallback path")
     }
 
     @Test("decryptSealed drops shard content on the legacy single-recipient path when the bundle used fallback", .enabled(if: secureEnclaveAvailable()))
@@ -318,8 +311,7 @@ private enum TestSetupError: Error { case seUnavailable }
         let sealedPayload = OccultaBundle.SealedPayload(
             message: Data("hi".utf8),
             shardOperations: [OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: senderKM))],
-            custodyManifest: [UUID()],
-            expectedShards:  [UUID()]
+            custodyManifest: [UUID()]
         )
         let encodedPayload = try WireHandle.encode(payload: sealedPayload)
 
@@ -336,6 +328,5 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(ownerID == "sender")
         #expect(sealed.shardOperations == nil, "shardOperations must be dropped on a fallback bundle")
         #expect(sealed.custodyManifest == nil, "custodyManifest must be dropped on a fallback bundle")
-        #expect(sealed.expectedShards  == nil, "expectedShards must be dropped on a fallback bundle")
     }
 }

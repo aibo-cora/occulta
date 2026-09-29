@@ -14,7 +14,7 @@ struct VaultPostRestoreSheet: View {
     let onDone: () -> Void
 
     /// Called when the user taps "Set up backup recovery". Caller dismisses the
-    /// sheet and pushes VaultShardSetup(mode: .backup) onto the NavigationStack.
+    /// sheet and pushes VaultShardSetup() onto the NavigationStack.
     let onSetupBackup: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -67,13 +67,6 @@ struct VaultPostRestoreSheet: View {
                         )
                     }
                     .tint(.primary)
-
-                    self.infoRow(
-                        icon: "key.fill",
-                        iconColor: .secondary,
-                        title: "Redistribute entry shards",
-                        subtitle: "Any flagged entries in your vault list need new recovery pieces. Tap each one to reshare."
-                    )
                 } header: {
                     Text("Next Steps")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))

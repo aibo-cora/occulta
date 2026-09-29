@@ -184,41 +184,51 @@ private struct Pair {
         #expect(recipientPayload.shardOperations.isEmpty)
         #expect(recipientPayload.custodyManifest.isEmpty)
         #expect(recipientPayload.custodyManifestCount == 0)
-        #expect(recipientPayload.expectedShards.isEmpty)
-        #expect(recipientPayload.expectedShardsCount == 0)
+        #expect(!recipientPayload.shardMetadataAttempted)
     }
 
-    @Test func shardFields_present_survivesRoundTrip() throws {
+    /// A v1.10.3 member reads `shardMetadataAttempted == true` with no expected-shards
+    /// list as "delete every piece you hold from me" (bugs.md Bug 141), so a group
+    /// recipient payload must never claim it, even one carrying real shard operations.
+    @Test func shardOperations_present_survivesRoundTrip_neverClaimsMetadata() throws {
         let pair = try Pair()
         let groupID = UUID()
-        let manifestID = UUID()
-        let expectedID = UUID()
         let op = OccultaBundle.ShardOperation(kind: .distribute)
         let r = GroupRecipient(
             publicKey:            pair.recipientPub,
             quantumMaterial:      nil,
             contactPrekey:        nil,
             pendingBatch:         nil,
-            shardOperations:      [op],
-            custodyManifest:      [manifestID],
-            custodyManifestCount: 1,
-            expectedShards:       [expectedID],
-            expectedShardsCount:  1
+            shardOperations:      [op]
         )
         let bundle = try pair.senderCrypto.seal(message: Data("hi".utf8), groupID: groupID, recipients: [r])
 
         let recipientPayload = try pair.openFallback(entry: bundle.group!.recipients[0], blind: bundle.group!.blind)
         #expect(recipientPayload.shardOperations.count == 1)
         #expect(recipientPayload.shardOperations.first?.kind == .distribute)
-        #expect(recipientPayload.custodyManifest == [manifestID])
-        #expect(recipientPayload.custodyManifestCount == 1)
-        #expect(recipientPayload.expectedShards == [expectedID])
-        #expect(recipientPayload.expectedShardsCount == 1)
+        #expect(recipientPayload.custodyManifest.isEmpty)
+        #expect(!recipientPayload.shardMetadataAttempted)
+
+        let json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(recipientPayload)) as? [String: Any])
+        #expect(json["expectedShards"] == nil && json["expectedShardsCount"] == nil, "the removed fields are not written")
+    }
+
+    /// A v1.10.3 sender still writes `expectedShards`/`expectedShardsCount`; the payload
+    /// decodes, the fields are dropped unread, and its manifest is still read.
+    @Test func v1_10_3Payload_withExpectedShards_decodes() throws {
+        let manifestID = UUID()
+        let json = """
+        {"sessionKey":"aGVsbG8=","custodyManifest":["\(manifestID.uuidString)"],"custodyManifestCount":1,
+         "expectedShards":[],"expectedShardsCount":0,"shardMetadataAttempted":true}
+        """
+        let payload = try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: try #require(json.data(using: .utf8)))
+        #expect(payload.shardMetadataAttempted)
+        #expect(Array(payload.custodyManifest.prefix(payload.custodyManifestCount)) == [manifestID])
     }
 
     @Test func oldFormatPayload_missingShardKeys_decodesWithEmptyDefaults() throws {
         // Simulates a RecipientPayload JSON blob from a pre-groupShardCapable
-        // sender — no shardOperations/custodyManifest/expectedShards keys at all.
+        // sender — no shardOperations/custodyManifest keys at all.
         let json = """
         {"sessionKey":"aGVsbG8="}
         """
@@ -227,8 +237,6 @@ private struct Pair {
         #expect(payload.shardOperations.isEmpty)
         #expect(payload.custodyManifest.isEmpty)
         #expect(payload.custodyManifestCount == 0)
-        #expect(payload.expectedShards.isEmpty)
-        #expect(payload.expectedShardsCount == 0)
     }
 }
 

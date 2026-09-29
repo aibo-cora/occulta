@@ -2,22 +2,38 @@
 //  SecureModeActivationTests.swift
 //  OccultaTests
 //
-//  Data-integrity regression tests for Secure Mode activation and deactivation.
+//  Regression coverage for Secure Mode activation and deactivation, reworked for the
+//  PIN-only shape (Removal Stages 0-3, `plan.md`): `activateSecureMode`/`deactivateSecureMode`
+//  verify a PIN and write or clear `AppLayerConfig` verifiers — nothing else. They no longer
+//  touch `Contact.Profile`, `Message.Draft`, `Group`, or any of `AppLayerConfig`'s other
+//  local-DB-key fields at all; there is no blob to seal sensitive contacts into and no staged
+//  key to re-encrypt anything under.
 //
-//  Architecture note — key-manager split:
-//  Manager.Security uses the injected TestKeyManager (in-memory, no SE).
-//  ContactManager uses Manager.Crypto() → Manager.Key() (real Keychain / SE).
-//  After activation, contact fields are re-encrypted with TestKeyManager's staged
-//  key, which Manager.Key cannot decrypt.  This makes post-activation field-content
-//  round-trips impossible in tests without a full key-injection refactor.
+//  This file used to test the opposite: that activation/deactivation correctly re-encrypted,
+//  classified, and restored application data during a key rotation that no longer exists. That
+//  content is gone. What replaces it:
 //
-//  What IS testable without that refactor:
-//  1. Blob I/O — sealed/unsealed with TestKeyManager's SecureMode key, SE-independent.
-//  2. WAL-persistence smoke test — fetch from a brand-new ModelContext to verify
-//     contactManager.modelContext.save() actually wrote to the persistent store.
-//     This is the direct Bug 37 regression guard.
-//  3. SE-availability guard — a helper checks whether Manager.Key can derive a
-//     key at runtime; tests that require real SE skip gracefully on the simulator.
+//  1. Non-interference — a contact's, vault entry's, and key record's bytes must be
+//     byte-identical before and after any activate/deactivate cycle, including a nested one.
+//     The direct regression guard for the removal itself: if a future change reintroduces
+//     data-touching in either function, this fails loudly.
+//  2. WAL persistence (Bug 37, PIN-only shape) — the `AppLayerConfig` verifier writes
+//     activate/deactivate still make are their entire remaining job; this confirms they reach
+//     the persistent store, not just an in-memory `ModelContext`, by fetching from a
+//     brand-new one afterward.
+//  3. VaultEntry orphaning (Bug 110) — the one deliberate exception to point 1.
+//     `deactivateSecureMode` marks (never hard-deletes) any `VaultEntry` whose duress-depth
+//     stamp names a depth just freed, since depth numbers are reused across unrelated duress
+//     sessions and an unmarked entry would otherwise resurface in a later one. See
+//     `VaultEntryOrphaningTests` below for why this doesn't contradict point 1: contacts and
+//     key records still see no data-touching at all, and a vault entry at a depth that
+//     *wasn't* just freed is exactly as untouched as everything else in this file proves.
+//
+//  SE-availability guard — a helper checks whether `Manager.Key` can derive a key at runtime.
+//  Every test here uses the injected `TestKeyManager` throughout and never the real
+//  `Manager.Key()`, so none of them strictly need it; the gate is kept only for consistency
+//  with the rest of the Secure Mode suite, which does depend on it for reasons unrelated to
+//  what this file tests.
 //
 
 import Testing
@@ -28,8 +44,8 @@ import SwiftData
 
 // MARK: - Container
 
-/// Schema used by all activation/deactivation tests.
-/// Includes VaultEntry so vaultManager.fetchAllEntries() does not throw.
+/// Schema used by every test in this file. Includes `VaultEntry` so `vault.fetchAllEntries()`
+/// does not throw.
 @MainActor
 private func makeActivationContainer() throws -> ModelContainer {
     let schema = Schema([
@@ -55,10 +71,6 @@ private struct ActivationComponents {
     let container:  ModelContainer
     let contacts:   ContactManager
     let vault:      VaultManager
-    /// Raw backend — used for low-level assertions (e.g. `.exists`).
-    let backend:    InMemoryLayerStoreBackend
-    /// Layer store — used for readPayload() in blob-content tests.
-    let layerStore: Manager.LayerStore
     let keyManager: TestKeyManager
 }
 
@@ -66,60 +78,55 @@ private struct ActivationComponents {
 private func makeComponents() throws -> ActivationComponents {
     let container  = try makeActivationContainer()
     let keyManager = TestKeyManager()
-    let backend    = InMemoryLayerStoreBackend()
-    let layerStore = Manager.LayerStore(backend: backend)
-    let security   = Manager.Security(
-        modelContainer: container,
-        keyManager:     keyManager,
-        layerStore:     layerStore
-    )
-    let contacts = ContactManager(modelContainer: container, security: security)
-    let vault    = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+    let security   = Manager.Security(modelContainer: container, keyManager: keyManager)
+    let contacts   = ContactManager(modelContainer: container, security: security)
+    let vault      = VaultManager(modelContainer: container, keyManager: TestKeyManager())
     return ActivationComponents(
-        security:   security,
-        container:  container,
-        contacts:   contacts,
-        vault:      vault,
-        backend:    backend,
-        layerStore: layerStore,
+        security: security, container: container, contacts: contacts, vault: vault,
         keyManager: keyManager
     )
 }
 
+/// True when this host can derive the real hybrid local DB key. False on the iOS Simulator or a
+/// CI runner with no Secure Enclave.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
 // MARK: - Contact helpers
 
-/// Insert a Contact.Profile directly into the persistent store.
-/// Using direct insertion keeps the helper SE-independent: no ContactManager
-/// field-encryption is involved, so the test works on both simulator and device.
+/// Insert a `Contact.Profile` directly into the persistent store, with arbitrary — not
+/// necessarily decryptable — bytes in its depth fields and key material. Activation and
+/// deactivation no longer read or decrypt any of this, so what it contains is irrelevant to
+/// every test in this file; only whether the bytes change matters.
 @MainActor
 private func insertContact(
     identifier: String,
     in container: ModelContainer,
     visibleThroughDepth: Data? = nil,
     globalTrusteeDepth: Data? = nil,
-    originDepth: Data? = nil
+    originDepth: Data? = nil,
+    keyMaterial: Data? = nil
 ) throws {
     let ctx = ModelContext(container)
     let profile = Contact.Profile(
-        identifier:       identifier,
-        givenName:        "",
-        familyName:       "",
-        middleName:       "",
-        nickname:         "",
-        organizationName: "",
-        departmentName:   "",
-        jobTitle:         ""
+        identifier: identifier, givenName: "", familyName: "", middleName: "",
+        nickname: "", organizationName: "", departmentName: "", jobTitle: ""
     )
     profile.visibleThroughDepth = visibleThroughDepth
     profile.globalTrusteeDepth  = globalTrusteeDepth
     profile.originDepth         = originDepth
+    if let keyMaterial {
+        profile.contactPublicKeys = [
+            Contact.Profile.Key(material: keyMaterial, owner: Data("owner".utf8), date: Data("date".utf8))
+        ]
+    }
     ctx.insert(profile)
     try ctx.save()
 }
 
-/// Fetch all non-deleted Contact.Profile rows from a fresh ModelContext.
-/// A fresh context bypasses the contactManager's in-memory cache, so we see
-/// exactly what is on disk — this is used to verify that save() reached the WAL.
+/// Fetch all non-deleted `Contact.Profile` rows from a fresh `ModelContext` — bypasses any
+/// in-memory cache, so this sees exactly what reached the persistent store.
 @MainActor
 private func fetchAllProfiles(from container: ModelContainer) throws -> [Contact.Profile] {
     let ctx       = ModelContext(container)
@@ -127,1247 +134,243 @@ private func fetchAllProfiles(from container: ModelContainer) throws -> [Contact
     return try ctx.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
 }
 
-/// Returns true if Manager.Key can derive the hybrid local key in this environment.
-/// False on the iOS Simulator where no Secure Enclave is present.
-/// Used to skip tests whose correctness depends on real SE-backed field encryption.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
-/// Decrypts and JSON-decodes an `Int` depth ceiling. `nil` in, or any failure, → `nil` out —
-/// callers distinguish "no depth stamped" from "stamped but undecryptable" only where it matters.
-///
-/// Only valid for fields sealed with the REAL SE-backed key (`Manager.Key`) — i.e. before
-/// any activate/deactivate cycle. After a cycle, `deactivateSecureMode`/`activateSecureMode`
-/// re-encrypt `visibleThroughDepth` under `Manager.Security`'s OWN key manager (here,
-/// `TestKeyManager`, injected in-memory — see this file's header comment on the key-manager
-/// split), which the real `Manager.Key` cannot decrypt. Use `decodedStagedDepth` instead once
-/// any activation/deactivation has happened.
-private func decodedDepth(from data: Data?) -> Int? {
-    guard let data, let plain = data.decrypt() else { return nil }
-    return DepthCodec.decode(plain)
-}
-
-/// Same as `decodedDepth`, but decrypts using the given `TestKeyManager`'s CURRENT
-/// canonical key rather than the real `Manager.Key()` — the correct way to read back
-/// `visibleThroughDepth` after any activate/deactivate cycle, since Manager.Security's
-/// staged-key rotation re-encrypts that field under its own (test) key manager, not the
-/// real SE-backed one the global `.decrypt()` convenience uses.
-@MainActor
-private func decodedStagedDepth(from data: Data?, keyManager: TestKeyManager) -> Int? {
-    guard let data,
-          let key   = try? keyManager.createHybridLocalEncryptionKey(),
-          let box   = try? AES.GCM.SealedBox(combined: data),
-          let plain = try? AES.GCM.open(box, using: key,
-                                         authenticating: EncryptionScheme.v2_hybridPQ.aad)
-    else { return nil }
-    return DepthCodec.decode(plain)
-}
-
 // MARK: - Vault entry helpers
 
-/// Insert a VaultEntry directly into the persistent store, mirroring `insertContact`.
-/// Returns the entry's `id` so the caller can find it again after a fresh fetch
-/// (VaultEntry has no string identifier field to match on).
+/// Insert a `VaultEntry` directly into the persistent store, mirroring `insertContact`. Returns
+/// the entry's `id` so the caller can find it again after a fresh fetch (`VaultEntry` has no
+/// string identifier field to match on).
 @MainActor
-private func insertVaultEntry(
-    in container: ModelContainer,
-    visibleThroughDepth: Data? = nil
-) throws -> UUID {
+private func insertVaultEntry(in container: ModelContainer, visibleThroughDepth: Data? = nil) throws -> UUID {
     let ctx   = ModelContext(container)
     let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
     entry.visibleThroughDepth = visibleThroughDepth
+    // Always-populated orphan flag (Bug 110), matching VaultManager.addEntry — every
+    // entry starts live.
+    entry.deletionToken = try VaultEntry.liveToken.encrypt()
     ctx.insert(entry)
     try ctx.save()
     return entry.id
 }
 
-/// Fetch all VaultEntry rows from a fresh ModelContext — bypasses any in-memory cache,
-/// same rationale as `fetchAllProfiles`.
+/// Fetch all `VaultEntry` rows from a fresh `ModelContext` — same rationale as
+/// `fetchAllProfiles`.
 @MainActor
 private func fetchAllVaultEntries(from container: ModelContainer) throws -> [VaultEntry] {
-    let ctx = ModelContext(container)
-    return try ctx.fetch(FetchDescriptor<VaultEntry>())
+    try ModelContext(container).fetch(FetchDescriptor<VaultEntry>())
 }
 
-// MARK: - Blob helpers
-
-/// Reads the activation payload non-destructively from the blob store.
-/// Uses the slot index stored in AppLayerConfig to locate the right slot.
+/// Fetch the single `AppLayerConfig` row from a fresh `ModelContext` — same rationale as
+/// `fetchAllProfiles`, applied to the one model activation/deactivation still writes.
 @MainActor
-private func readActivationPayload(from c: ActivationComponents) throws -> LayerPayload {
-    let config = try c.container.mainContext.fetch(FetchDescriptor<AppLayerConfig>()).first!
-    guard let seKey    = try c.keyManager.deriveSecureModeKey(),
-          let layerKey = c.layerStore.deriveKey(from: seKey)
-    else { throw TestError("could not derive blob key from TestKeyManager") }
-    // Blob metadata is sealed under the SE-derived key, not the local DB key (Bug 76).
-    guard let slotIndex = config.readBlobSlot(at: 0, using: AppLayerConfig.blobMetadataKey(from: seKey)) else {
-        throw TestError("no blob slot stored in config after activation")
-    }
-    return try c.layerStore.readPayload(key: layerKey, slotIndex: slotIndex)
+private func fetchConfig(from container: ModelContainer) throws -> AppLayerConfig? {
+    try ModelContext(container).fetch(FetchDescriptor<AppLayerConfig>()).first
 }
 
-// MARK: - Blob lifecycle
-
-@MainActor
-@Suite("Secure Mode — Blob lifecycle", .serialized)
-struct SecureModeBlobLifecycleTests {
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_writesBlob() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        #expect(!c.backend.exists, "blob should not exist before activation")
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        #expect(c.backend.exists, "blob must be written during activation")
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobReadableWithCorrectKey() async throws {
-        // Verifies push/pop are symmetric end-to-end using TestKeyManager's
-        // SecureMode key — entirely SE-independent (no Manager.Key involvement).
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        // readPayload should not throw — proves the push payload is decodable.
-        let payload = try readActivationPayload(from: c)
-        _ = payload  // structure is valid; contact content depends on SE availability
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_blobStillReadableDuringDeactivation() async throws {
-        // The deactivation sequence pops the blob to restore sensitive contacts.
-        // If pop throws, it falls back to an empty payload — verify it doesn't throw.
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        // Deactivation must complete successfully; if blob was unreadable it would
-        // fall back to an empty payload but the sequence would still succeed.
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        #expect(!c.security.isSecureModeActive)
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobIsCorrectSize() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        let data = try c.backend.read()
-        let expectedSize = Manager.LayerStore.slotCount * Manager.LayerStore.slotCiphertextSize
-        #expect(data.count == expectedSize, "blob must be exactly \(expectedSize) bytes (32 fixed slots)")
-    }
-}
-
-// MARK: - Contact classification
-
-@MainActor
-@Suite("Secure Mode — Contact classification in blob", .serialized)
-struct SecureModeClassificationTests {
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_appearsInBlob() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
-        // depth 0 encrypted → decrypt succeeds → value 0 == activation depth 0 → sensitive
-        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
-        try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: sensitiveDepthValue)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let payload           = try readActivationPayload(from: c)
-        let identifiersInBlob = payload.contacts.map { $0.draft.identifier }
-        #expect(identifiersInBlob.contains(sensitiveID),
-                "sensitive contact must be sealed in the blob during activation")
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func safeContact_doesNotAppearInBlob() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let safeID      = "contact-safe-\(UUID().uuidString)"
-        let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
-        // nil → classified safe (default visible, Int.max)
-        try insertContact(identifier: safeID, in: c.container, visibleThroughDepth: nil)
-        // depth 0 encrypted → decrypt succeeds → value 0 == activation depth 0 → sensitive
-        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
-        try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: sensitiveDepthValue)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let payload           = try readActivationPayload(from: c)
-        let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
-
-        #expect(!identifiersInBlob.contains(safeID),
-                "safe contact must NOT be in the blob")
-        #expect(identifiersInBlob.contains(sensitiveID),
-                "sensitive contact must be in the blob")
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_restoredByIdentifier_afterDeactivation() async throws {
-        // Verifies the deactivation blob-restore path rewrites the contact row.
-        // Identifier equality is SE-independent (identifier field is not encrypted).
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
-        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
-        try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: sensitiveDepthValue)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        // Fetch from a fresh context to verify persistence (not just in-memory state).
-        let profiles = try fetchAllProfiles(from: c.container)
-        let restored = profiles.first { $0.identifier == sensitiveID }
-        #expect(restored != nil,
-                "sensitive contact must be restored from blob after deactivation")
-    }
-}
-
-// MARK: - WAL-persistence regression guard (Bug 37)
-
-/// These tests guard against the regression introduced in commit 70e1f77:
-/// `reencryptAllFields` mutated SwiftData objects in-memory but never called
-/// `contactManager.modelContext.save()`. The WAL checkpoint fired on an empty WAL,
-/// leaving the main SQLite file with pre-activation ciphertext. After the old SE key
-/// was deleted those rows became permanently unreadable.
-///
-/// The fix: explicit `contactManager.modelContext.save()` after Step 8 (activation)
-/// and after Step 4 (deactivation). These tests verify that the save actually reaches
-/// the persistent store by fetching from a brand-new ModelContext that bypasses all
-/// in-memory caches.
-@MainActor
-@Suite("Secure Mode — WAL persistence (Bug 37 regression guard)", .serialized)
-struct SecureModeWALPersistenceTests {
-
-    // MARK: Activation
-
-    /// Verifies that activation's contact re-encryption is flushed to the WAL.
-    ///
-    /// Strategy: insert a contact whose `visibleThroughDepth` is nil.  Activation
-    /// Step 5 stamps `encrypt(Int.max)` on nil-depth safe contacts (SE required); if
-    /// SE is unavailable the stamp silently fails and the field stays nil — in that
-    /// case the test skips rather than producing a false result.
-    ///
-    /// On a physical device (SE available):
-    /// - Before activation: `visibleThroughDepth` = `encrypt(Int.max)` (Manager.Key)
-    /// - After activation:  `visibleThroughDepth` = AES-GCM(stagedKey, Int.max)  ← different bytes
-    /// - If Bug 37 regresses (save omitted): fresh context sees pre-activation bytes → test FAILS.
-    @Test func activation_contactChanges_persistedToWAL() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping activation WAL-persistence test — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container)
-
-        // Stamp safe classification so visibleThroughDepth becomes a real ciphertext.
-        try c.contacts.saveClassification(safeIDs: [id])
-
-        // Capture the pre-activation ciphertext from a fresh context.
-        let profilesBefore    = try fetchAllProfiles(from: c.container)
-        let depthBefore       = profilesBefore.first { $0.identifier == id }?.visibleThroughDepth
-        guard depthBefore != nil else {
-            print("⚠︎ Skipping activation WAL-persistence test — visibleThroughDepth not set (SE unavailable)")
-            return
-        }
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        // Fetch from a brand-new context to bypass all in-memory caches.
-        let profilesAfter = try fetchAllProfiles(from: c.container)
-        let depthAfter    = profilesAfter.first { $0.identifier == id }?.visibleThroughDepth
-
-        // The staged-key ciphertext must differ from the pre-activation ciphertext.
-        // If Bug 37 regresses, the WAL was never written and the fresh fetch returns
-        // the unchanged pre-activation bytes → depthAfter == depthBefore → FAIL.
-        #expect(depthAfter != depthBefore,
-                """
-                visibleThroughDepth unchanged after activation.
-                contactManager.modelContext.save() was not called before key rotation \
-                (Bug 37 regression).
-                """)
-    }
-
-    /// Same guard for a sensitive contact.  Its `visibleThroughDepth` must also
-    /// be re-encrypted in-place during activation Step 8 and saved before commit.
-    @Test func activation_sensitiveContactChanges_persistedToWAL() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping sensitive-contact activation WAL-persistence test — SE not available")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-sensitive-\(UUID().uuidString)"
-        // A valid encrypted 0 value makes isVisible return false → sensitive.
-        try insertContact(identifier: id, in: c.container)
-        try c.contacts.setVisibility(for: id, isSensitive: true)
-
-        let profilesBefore = try fetchAllProfiles(from: c.container)
-        let depthBefore    = profilesBefore.first { $0.identifier == id }?.visibleThroughDepth
-        guard depthBefore != nil else {
-            print("⚠︎ Skipping — visibleThroughDepth not set (SE unavailable)")
-            return
-        }
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let profilesAfter = try fetchAllProfiles(from: c.container)
-        let depthAfter    = profilesAfter.first { $0.identifier == id }?.visibleThroughDepth
-
-        #expect(depthAfter != depthBefore,
-                "sensitive contact visibleThroughDepth unchanged — Bug 37 regression in activation")
-    }
-
-    /// Regression coverage for Bug 26: a pre-existing `VaultEntry` with a nil depth
-    /// stamp (created before the field existed) must not survive activation still
-    /// nil. `isEntryVisible` now fails closed on nil independently
-    /// (`whenUnclassified: false` — see `VaultEntry.isVisible`'s doc comment), but
-    /// that's a second line of defense, not a substitute for this: Step 8 is what's
-    /// actually supposed to stamp every entry hidden (depth 0) before a duress
-    /// depth exists. This is also the invariant the `assert` in
-    /// `Manager+Security.swift`'s Step 8 checks at the source; this test is what
-    /// would actually fail a CI run (in Release, asserts are compiled out) if that
-    /// invariant regressed.
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_nilDepthVaultEntry_getsStampedHidden() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: nil)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let entriesAfter = try fetchAllVaultEntries(from: c.container)
-        let stampAfter    = entriesAfter.first { $0.id == entryID }?.visibleThroughDepth
-
-        #expect(stampAfter != nil,
-                "pre-existing nil-depth VaultEntry must be stamped during activation Step 8 (Bug 26)")
-        #expect(decodedStagedDepth(from: stampAfter, keyManager: c.keyManager) == 0,
-                """
-                a previously-nil VaultEntry must be stamped hidden (depth 0) once a duress \
-                depth exists — leaving it visible would resurface Bug 26.
-                """)
-    }
-
-    // MARK: Deactivation
-
-    /// Verifies that deactivation's Step 4 nil-assignment is flushed to the WAL.
-    ///
-    /// Step 4 sets `profile.visibleThroughDepth = nil` for ALL contacts and then
-    /// calls `contactManager.modelContext.save()`.  Without that save (regression),
-    /// a fresh-context fetch would still see the pre-deactivation ciphertext.
-    ///
-    /// This test is SE-independent: it sets `visibleThroughDepth` to a raw byte
-    /// sentinel in the test body (no Manager.Crypto involvement) and verifies that
-    /// nil — not the sentinel — is visible to a fresh context after deactivation.
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_nilVisibilityField_persistedToWAL() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-        // A real ciphertext, not raw garbage. Garbage used to work here because
-        // reencryptAllFields nil-ed anything it could not decrypt, so the field visibly
-        // changed; since Bug 87 it is preserved byte-identical on purpose, which is
-        // exactly the wrong property for a test that detects a save by the bytes changing.
-        // encode(0) is still sensitive at activation depth 0, so the blob path is unchanged.
-        let sentinel = try DepthCodec.encode(0).encrypt()
-        try insertContact(identifier: id, in: c.container, visibleThroughDepth: sentinel)
-
-        // Activation seals this contact into the blob (it's sensitive).
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        // After activation, Step 8's reencryptAllFields on a non-AES field returns nil
-        // (decrypt fails).  Confirm the save wrote nil to the store before deactivation.
-        let profilesMid = try fetchAllProfiles(from: c.container)
-        let depthMid    = profilesMid.first { $0.identifier == id }?.visibleThroughDepth
-        // depthMid should be nil (reencrypt of non-AES sentinel → nil, persisted by activation fix).
-        // If it's still the original sentinel, activation's save was missing.
-        #expect(depthMid == nil || depthMid != sentinel,
-                "activation did not persist re-encryption result to WAL (Bug 37 regression in activation)")
-
-        // Deactivation: Step 4 re-sets to nil; Step 5 restores blob contact with depth 0.
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        // After deactivation the contact is restored from the blob with a fresh
-        // visibleThroughDepth = AES-GCM(stagedKey, 0).  It must not still be
-        // the original sentinel — that would mean deactivation's save was missing.
-        let profilesAfter = try fetchAllProfiles(from: c.container)
-        let depthAfter    = profilesAfter.first { $0.identifier == id }?.visibleThroughDepth
-
-        #expect(depthAfter != sentinel,
-                """
-                visibleThroughDepth is still the pre-activation sentinel after deactivation.
-                contactManager.modelContext.save() was not called in deactivation Step 4 \
-                (Bug 37 regression).
-                """)
-    }
-
-    /// Deactivation must re-seal `visibleThroughDepth` to Int.max (not nil) for safe
-    /// contacts and flush that to the WAL. Nil would stand out against the "always
-    /// non-nil since creation" baseline every other contact carries — see
-    /// forensic-trace-avoidance.md S6. On a device where SE is available, this contact
-    /// will have a real ciphertext after activation; without the Step 4 save the
-    /// fresh context would still see that ciphertext after deactivation.
-    @Test func deactivation_safeContactVisibility_reencryptedToIntMax_inWAL() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping deactivation WAL-persistence test — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-safe-\(UUID().uuidString)"
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        // The safe ceiling is written directly, after activation, for this file's
-        // key-manager split (see header). Two reasons it cannot be done the obvious way:
-        //
-        // Before activation, the ceiling ends up under TestKeyManager's staged key and the
-        // deactivation path's ambient decrypt cannot read it — this test passed that way
-        // only because Bug 87's fallback resolved the unreadable field to Int.max, which is
-        // the value being asserted. Green for the wrong reason.
-        //
-        // After activation, `saveClassification` cannot help either: it guards on
-        // `isVisible(atDepth:)`, which fails closed on that same unreadable ceiling, so it
-        // skips the contact and writes nothing. Writing the ceiling directly is what the
-        // cascade tests in this file already do, and it keeps the subject of the test —
-        // deactivation's re-seal and its WAL flush — the only thing under test.
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: try DepthCodec.encode(Int.max).encrypt())
-
-        let profilesBefore = try fetchAllProfiles(from: c.container)
-        guard profilesBefore.first(where: { $0.identifier == id })?.visibleThroughDepth != nil else {
-            print("⚠︎ Skipping — visibleThroughDepth not set (SE unavailable)")
-            return
-        }
-
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let profilesAfter = try fetchAllProfiles(from: c.container)
-        let depthAfter    = profilesAfter.first { $0.identifier == id }?.visibleThroughDepth
-
-        // Deactivation Step 4 re-seals visibleThroughDepth = Int.max for safe contacts
-        // under the staged key and saves. If Bug 37 regresses (save missing), the fresh
-        // context sees the activation-time ciphertext instead. If the nil-reset bug
-        // regresses, depthAfter is nil instead of decoding to Int.max.
-        #expect(decodedStagedDepth(from: depthAfter, keyManager: c.keyManager) == Int.max,
-                """
-                Safe contact visibleThroughDepth does not decode to Int.max after deactivation.
-                Either contactManager.modelContext.save() was not called in deactivation \
-                Step 4 (Bug 37 regression), or safe contacts are being reset to nil again.
-                """)
-    }
-
-    // MARK: Round-trip identity
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func roundTrip_contactRowCount_preserved() async throws {
-        // A complete activate → deactivate cycle must not gain or lose contact rows.
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let sentinel = Data([0xDE, 0xAD])
-        try insertContact(identifier: "safe-\(UUID().uuidString)",      in: c.container)
-        try insertContact(identifier: "sensitive-\(UUID().uuidString)", in: c.container,
-                          visibleThroughDepth: sentinel)
-
-        let countBefore = try fetchAllProfiles(from: c.container).count
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let countAfter = try fetchAllProfiles(from: c.container).count
-        #expect(countAfter == countBefore,
-                "activate → deactivate must not change the number of contact rows")
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func multipleRoundTrips_doNotAccumulateRows() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        try insertContact(identifier: "contact-\(UUID().uuidString)", in: c.container)
-        let countBefore = try fetchAllProfiles(from: c.container).count
-
-        for _ in 0..<2 {
-            try await c.security.activateSecureMode(
-                confirmingEntryPIN: "111111", duressPIN: "999999",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
-            try await c.security.deactivateSecureMode(
-                confirmingEntryPIN: "111111",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
-        }
-
-        let countAfter = try fetchAllProfiles(from: c.container).count
-        #expect(countAfter == countBefore,
-                "repeated activate/deactivate cycles must not create duplicate rows")
-    }
-}
-
-// MARK: - Cascade deactivation depth preservation
-//
-// Regression coverage for the bug where deactivateSecureMode's Step 4 (contacts) and
-// Step 6 (vault entries) unconditionally wiped `visibleThroughDepth` to `nil` on EVERY
-// deactivation, including a *cascade* deactivation (currentDepth >= 2, removing only the
-// outermost nested duress layer). That unconditionally exposes:
-//   - contacts/entries hidden at a SHALLOWER depth than the layer being removed (e.g. the
-//     real user's depth-0 secrets, surfaced the moment a nested depth-2 layer is stripped
-//     back to depth 1), and
-//   - contacts/entries classified at a DEEPER depth than the layer being removed (e.g. "hide
-//     once beyond depth 2", flattened to "never hide" by an unrelated depth-3→2 cascade).
-// The fix: always re-encrypt the item's real classification depth under the new staged key;
-// never manufacture `nil` for a value that was genuinely finite. `nil` is reserved for items
-// whose real classification already decodes to `Int.max` (never classified), matching the
-// existing "erase the activation watermark" forensic-neutrality convention.
-@MainActor
-@Suite("Secure Mode — Cascade deactivation depth preservation", .serialized)
-struct CascadeDeactivationDepthTests {
-
-    /// A depth-0 secret must still be hidden after activating two nested layers
-    /// (0→1→2) and then cascading back down from depth 2 to depth 1 — it must NOT
-    /// become visible just because an unrelated, deeper layer was removed.
-    @Test func depthZeroContact_staysHiddenAfterCascadeDeactivation() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("999999"))
-        #expect(c.security.currentDepth == 1)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("777777"))
-        #expect(c.security.currentDepth == 2)
-
-        // Insert the depth-0 secret AFTER both activations, right before the cascade
-        // deactivation this test targets — not before them. Letting a contact ride
-        // through two TestKeyManager-driven rotations hits a SEPARATE, pre-existing
-        // test-harness limitation (see this file's header comment): reencryptAllFields'
-        // internal decrypt always uses the real SE key, so a field already re-encrypted
-        // once under TestKeyManager's staged key can't survive a second TestKeyManager
-        // rotation here. That's orthogonal to the bug this test targets — inserting
-        // here isolates exactly the one rotation (this deactivation) the fix touches.
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: try JSONEncoder().encode(0).encrypt())
-
-        // Cascade deactivation: depth 2 → depth 1. Must NOT touch the depth-0 secret.
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        #expect(c.security.currentDepth == 1)
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(restored != nil, "contact row must survive the cascade")
-        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 0,
-                """
-                depth-0 contact was exposed by an unrelated depth-2→1 cascade deactivation — \
-                visibleThroughDepth must decode to 0 (still hidden), not nil (always visible).
-                """)
-    }
-
-    /// Same scenario as above, for a VaultEntry. Vault entries have no blob/restore
-    /// mechanism at all, so this specifically guards Step 6 in isolation.
-    @Test func depthZeroVaultEntry_staysHiddenAfterCascadeDeactivation() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let entryID = try insertVaultEntry(
-            in: c.container,
-            visibleThroughDepth: try JSONEncoder().encode(0).encrypt()
-        )
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("999999"))
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("777777"))
-        #expect(c.security.currentDepth == 2)
-
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        #expect(c.security.currentDepth == 1)
-
-        let restored = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
-        #expect(restored != nil, "vault entry must survive the cascade")
-        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 0,
-                """
-                depth-0 vault entry was exposed by an unrelated depth-2→1 cascade \
-                deactivation — visibleThroughDepth must decode to 0, not nil.
-                """)
-    }
-
-    /// A contact classified "hide once beyond depth 2" must keep that exact classification
-    /// after a shallower, unrelated cascade (depth 2 → depth 1) — it must NOT be flattened
-    /// to "never hide" (nil).
-    ///
-    /// Only checks the raw stored value, not a behavioral re-nesting round-trip: re-nesting
-    /// would require this contact to survive a SECOND TestKeyManager-driven rotation, which
-    /// hits the same pre-existing test-harness limitation noted on `insertContact`'s call
-    /// site below (reencryptAllFields' internal decrypt always uses the real SE key) —
-    /// orthogonal to the bug this test targets.
-    @Test func deeperClassification_survivesUnrelatedShallowerCascade() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("999999"))
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("777777"))
-        #expect(c.security.currentDepth == 2)
-
-        // Classify a contact as "hide once we go past depth 2" while at depth 2 — inserted
-        // AFTER both activations (see the type doc comment above on why this can't ride
-        // through the activations themselves in this test harness).
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: try JSONEncoder().encode(2).encrypt())
-
-        // Cascade depth 2 → depth 1. blobDepth (1) < this contact's depth (2) —
-        // it is not the layer being removed, so it must survive untouched.
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        #expect(c.security.currentDepth == 1)
-
-        let afterCascade = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: afterCascade?.visibleThroughDepth, keyManager: c.keyManager) == 2,
-                """
-                contact classified at depth 2 was flattened to nil by an unrelated \
-                depth-2→1 cascade — its classification must survive exactly as 2.
-                """)
-    }
-
-    /// A contact classified sensitive at EXACTLY the depth a cascade deactivation is
-    /// removing (contactDepth == blobDepth) must still be correctly restored via Step 5's
-    /// blob-restore path — Step 4's depth-preservation logic (this fix) must not interfere
-    /// with or duplicate what Step 5 already does for this specific contact. Whatever
-    /// Step 4 writes for it is transient: Step 5 always overwrites it afterward with the
-    /// authoritative value from the blob.
-    @Test func blobBoundaryContact_stillRestoredCorrectlyDuringCascade() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("999999"))
-        #expect(c.security.currentDepth == 1)
-
-        // Classify a contact as sensitive exactly at depth 1 — it must be captured into
-        // the blob the upcoming 1→2 activation pushes at blobDepth 1, the SAME blob the
-        // eventual 2→1 cascade deactivation will pop and restore from. Inserted before
-        // that one activation (not two), so it only rides through a single
-        // TestKeyManager-driven rotation before the deactivation under test — see the
-        // other tests in this suite for why a second rotation is out of scope here.
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: try JSONEncoder().encode(1).encrypt())
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("777777"))
-        #expect(c.security.currentDepth == 2)
-
-        // Cascade deactivation: depth 2 → depth 1. blobDepth == 1 == this contact's
-        // classification — it IS the layer being removed, so Step 5 must restore it.
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        #expect(c.security.currentDepth == 1)
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(restored != nil, "contact must be restored from the blob, not left as a shell")
-        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 1,
-                """
-                contact classified at the exact depth being removed by this cascade must be \
-                restored via Step 5's blob-restore path with its classification (1) intact.
-                """)
-    }
-
-    /// A never-classified ("safe") contact must come back as literal `nil` after a cascade
-    /// deactivation, not an explicit encrypted `Int.max` — matching the codebase's own
-    /// stated forensic-neutrality goal (deactivated-but-never-sensitive must be
-    /// indistinguishable from a contact that never went through Secure Mode at all).
-    @Test func neverClassifiedContact_isIntMaxNotNilAfterCascadeDeactivation() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("999999"))
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("777777"))
-
-        // Inserted with a nil ceiling AFTER both activations, so nil is what deactivation
-        // actually sees — which is the case this test is about. Inserting before them made
-        // the field ride through Step 8, ending up under TestKeyManager's staged key and
-        // therefore unreadable to the deactivation path; the Int.max this asserts came from
-        // Bug 87's fallback resolving that unreadable field, not from the nil branch. The
-        // nil branch is still the one under test, and it is now genuinely exercised.
-        try insertContact(identifier: id, in: c.container, visibleThroughDepth: nil)
-
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == Int.max,
-                """
-                never-classified contact must decode to Int.max after deactivation, not literal \
-                nil — every contact has carried a non-nil visibleThroughDepth since creation, so \
-                nil is what would now stand out to a raw-DB examiner. See \
-                forensic-trace-avoidance.md S6.
-                """)
-    }
-}
-
-// MARK: - globalTrusteeDepth preservation
-
-@MainActor
-@Suite("Secure Mode — globalTrusteeDepth preservation", .serialized)
-struct GlobalTrusteeDepthPreservationTests {
-
-    /// A safe contact's real globalTrusteeDepth stamp must survive deactivation —
-    /// never flattened to -1 or nil. Inserted AFTER activation, right before the
-    /// deactivation this test targets — same workaround as the cascade tests above
-    /// (see their comment): a field already re-encrypted once under TestKeyManager's
-    /// staged key can't survive a second TestKeyManager-driven decrypt in this harness,
-    /// which is orthogonal to the preservation behavior actually under test here.
-    @Test func safeContact_preservedAcrossDeactivate() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(
-            identifier: id, in: c.container,
-            visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt(),
-            globalTrusteeDepth:  try JSONEncoder().encode(0).encrypt()
-        )
-
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == 0,
-                "a real global-trustee designation must survive deactivation unchanged")
-    }
-
-    /// A never-stamped contact must decode to the -1 sentinel after deactivation,
-    /// not literal nil — same non-nil invariant as visibleThroughDepth (S6).
-    @Test func neverStamped_isSentinelNotNilAfterDeactivation() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container, globalTrusteeDepth: nil)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == -1,
-                "a never-stamped contact must decode to -1 after deactivation, not literal nil")
-    }
-
-    /// A sensitive contact (blob-bound at activation) carrying a real globalTrusteeDepth
-    /// must have that designation restored after deactivation — the blob round-trip
-    /// must not silently lose it (LayerContact.globalTrusteeDepth).
-    @Test func sensitiveContact_survivesBlobRoundTrip() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-        // Ceiling 0 at depth-0 activation: contactDepth == depth → sensitive for this
-        // layer, sealed into the blob rather than re-encrypted in place.
-        try insertContact(
-            identifier: id, in: c.container,
-            visibleThroughDepth: try JSONEncoder().encode(0).encrypt(),
-            globalTrusteeDepth:  try JSONEncoder().encode(0).encrypt()
-        )
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(restored != nil, "contact row must survive the blob round trip")
-        #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == 0,
-                "a blob-bound contact's real global-trustee designation must be restored, not lost or reset to -1")
-    }
-}
-
-// MARK: - originDepth preservation
-
-@MainActor
-@Suite("Secure Mode — originDepth preservation", .serialized)
-struct OriginDepthPreservationTests {
-
-    /// A real contact's originDepth (the 0 sentinel) must survive deactivation —
-    /// never flattened to a stray non-zero value or nil. Same workaround as the
-    /// globalTrusteeDepth suite above: inserted AFTER activation, right before the
-    /// deactivation this test targets.
-    @Test func realContact_zeroSentinel_preservedAcrossDeactivate() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(
-            identifier: id, in: c.container,
-            visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt(),
-            originDepth:         try JSONEncoder().encode(0).encrypt()
-        )
-
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: restored?.originDepth, keyManager: c.keyManager) == 0,
-                "a real contact's origin sentinel must survive deactivation unchanged")
-    }
-
-    /// A never-stamped contact must decode to the 0 sentinel after deactivation, not
-    /// literal nil — same non-nil invariant as visibleThroughDepth/globalTrusteeDepth (S6).
-    @Test func neverStamped_isZeroSentinelNotNilAfterDeactivation() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container, originDepth: nil)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: restored?.originDepth, keyManager: c.keyManager) == 0,
-                "a never-stamped contact must decode to 0 after deactivation, not literal nil")
-    }
-
-    /// The core behavior this whole field exists for: a duress-origin contact must
-    /// never be sealed into the activation blob, even when its visibleThroughDepth
-    /// ceiling would otherwise mark it sensitive for this exact activation. Mirrors
-    /// SecureModeClassificationTests' sensitiveContact_appearsInBlob, but stamped
-    /// originDepth > 0 on top of an otherwise-sensitive ceiling — the origin floor
-    /// must take priority and keep it live.
-    @Test func duressOriginContact_neverSealedIntoBlob_evenWithASensitiveCeiling() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-        // Ceiling 0 alone would make this "sensitive for this layer" and blob-seal it
-        // (see sensitiveContact_appearsInBlob) — originDepth > 0 must override that.
-        try insertContact(
-            identifier: id, in: c.container,
-            visibleThroughDepth: try JSONEncoder().encode(0).encrypt(),
-            originDepth:         try JSONEncoder().encode(1).encrypt()
-        )
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let payload           = try readActivationPayload(from: c)
-        let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
-        #expect(!identifiersInBlob.contains(id),
-                "a duress-origin contact must never be sealed into the blob, regardless of its visibleThroughDepth ceiling")
-
-        // Still live in the DB (re-encrypted under the staged key in Step 8), not a
-        // sealed-away shell.
-        let stillLive = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(stillLive != nil, "the contact row must remain live, not be removed from the DB")
-    }
-}
-
-// MARK: - Error type
-
-private struct TestError: Error, CustomStringConvertible {
-    let description: String
-    init(_ message: String) { self.description = message }
-}
-
-// MARK: - Bug 78 — rotation must abort, not skip, when the old key is unavailable
-
-@MainActor
-@Suite("Secure Mode — rotation aborts on unavailable key", .serialized)
-struct SecureModeRotationKeyGuardTests {
-
-    /// Regression for Bug 78. The re-encryption passes for drafts, `Group` and
-    /// `AppLayerConfig` used to sit inside `if let oldKey = …` with no `else`, so a nil key
-    /// skipped all three and control fell through to `commitStagedLocalDBKey()` and
-    /// `deleteSupersededLocalDBArtefacts()` — leaving groups and the config sealed under a key
-    /// that had just been destroyed. That is Bugs 75 and 76, reached through their own fix.
-    ///
-    /// The failure was silent, so the only thing that pins it is asserting the throw.
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_abortsWhenHybridKeyUnavailable() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        // A contact whose Data fields would be nil-ed by `reencryptAllFields` if the rotation
-        // were allowed to start without a usable key.
-        let ceiling = Data([0xC0, 0xFF, 0xEE])
-        try insertContact(identifier: "victim", in: c.container, visibleThroughDepth: ceiling)
-
-        c.keyManager.simulatesHybridKeyUnavailable = true
-
-        await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
-            try await c.security.activateSecureMode(
-                confirmingEntryPIN: "111111", duressPIN: "999999",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
-        }
-
-        // Must not have reached the commit: Secure Mode stays off, so the superseded key was
-        // never deleted and everything sealed under it is still readable.
-        #expect(!c.security.isSecureModeActive)
-
-        // And must not have reached Step 8 either. The guard originally sat *after*
-        // `reencryptAllFields` had run over every contact and saved, so aborting still cost
-        // every contact its `Data` fields — `reencrypt(data:)` returns nil for anything it
-        // cannot decrypt, and rolling the staged key back does not restore them. Losing
-        // `visibleThroughDepth` drops the Secure Mode visibility ceiling for the whole address
-        // book, so this asserts the failure is genuinely inert.
-        let survivor = try #require(
-            try fetchAllProfiles(from: c.container).first { $0.identifier == "victim" }
-        )
-        #expect(survivor.visibleThroughDepth == ceiling, "aborted rotation must not mutate contacts")
-    }
-
-    /// Same guard on the way out. Deactivation deletes the superseded key exactly as
-    /// activation does, so skipping its re-encryption pass strands the same rows.
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_abortsWhenHybridKeyUnavailable() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        try #require(c.security.isSecureModeActive)
-
-        let ceiling = Data([0xC0, 0xFF, 0xEE])
-        try insertContact(identifier: "victim", in: c.container, visibleThroughDepth: ceiling)
-
-        c.keyManager.simulatesHybridKeyUnavailable = true
-
-        await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
-            try await c.security.deactivateSecureMode(
-                confirmingEntryPIN: "111111",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
-        }
-
-        // Still active — the rotation aborted before its point of no return.
-        #expect(c.security.isSecureModeActive)
-
-        // Same inertness requirement as activation: nothing re-encrypted, nothing saved.
-        let survivor = try #require(
-            try fetchAllProfiles(from: c.container).first { $0.identifier == "victim" }
-        )
-        #expect(survivor.visibleThroughDepth == ceiling, "aborted rotation must not mutate contacts")
-    }
-}
-
-// MARK: - Launch migration composed with rotation
-
-/// The fixed-width normalisation (Bug 85) runs in `App.init()`, before any UI and before
-/// PIN entry, while rotation runs later on user action. These two have to compose in
-/// every order, and a device part-way through the rollout has a *mixed* population — some
-/// rows converted, some not — which is the state most likely to be got wrong.
-@Suite("Secure Mode — launch migration composed with rotation", .serialized)
-struct DepthMigrationRotationCompositionTests {
-
-    /// Migration first, then a full cycle. The ceiling has to survive both.
-    @Test("A migrated contact survives activate → deactivate with its ceiling intact",
+// MARK: - Non-interference
+
+/// The direct regression guard for this removal: activation and deactivation must not read,
+/// decrypt, or rewrite a single byte of application data — contacts, vault entries, or key
+/// records — regardless of nesting depth or whether the bytes happen to be real ciphertext or
+/// garbage nothing can decrypt. There is no classification, no blob, and no key rotation left
+/// to make any of that matter.
+@Suite("Secure Mode — activation and deactivation never touch application data", .serialized)
+struct SecureModeNonInterferenceTests {
+
+    @Test("A contact's depth fields and key material survive a single activate/deactivate cycle",
           .enabled(if: secureEnclaveAvailable()))
     @MainActor
-    func migratedContactSurvivesFullCycle() async throws {
+    func contactSurvivesSingleCycle() throws {
         let c = try makeComponents()
-        let id = "migrated-\(UUID().uuidString)"
-
-        // Seed in the OLD format, exactly as a pre-upgrade install has it.
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: try JSONEncoder().encode(0).encrypt())
-
-        // Launch migration converts it to fixed-width.
-        try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: ModelContext(c.container))
-        let afterMigration = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedDepth(from: afterMigration?.visibleThroughDepth) == 0,
-                "migration must preserve the ceiling verbatim")
-
         try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "222222",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("222222"))
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "222222",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
 
-        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 0, """
-            A contact converted to fixed-width by the launch migration lost its ceiling \
-            across an activate/deactivate cycle. The rotation paths must read both formats.
+        let id       = "contact-\(UUID().uuidString)"
+        let visible  = Data([0x01, 0x02, 0x03])
+        let trustee  = Data([0x04, 0x05])
+        let origin   = Data([0x06])
+        let material = Data([0x07, 0x08, 0x09, 0x0A])
+        try insertContact(identifier: id, in: c.container, visibleThroughDepth: visible,
+                          globalTrusteeDepth: trustee, originDepth: origin, keyMaterial: material)
+
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")
+
+        let after = try #require(try fetchAllProfiles(from: c.container).first { $0.identifier == id })
+        #expect(after.visibleThroughDepth == visible)
+        #expect(after.globalTrusteeDepth == trustee)
+        #expect(after.originDepth == origin)
+        #expect(after.contactPublicKeys?.first?.material == material)
+    }
+
+    @Test("A contact survives a nested two-layer activate/deactivate cycle unchanged",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func contactSurvivesNestedCycle() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id      = "contact-\(UUID().uuidString)"
+        let visible = Data([0xAA, 0xBB])
+        try insertContact(identifier: id, in: c.container, visibleThroughDepth: visible)
+
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+        try c.security.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
+
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+        #expect(c.security.currentDepth == 1)
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        #expect(!c.security.isSecureModeActive)
+
+        let after = try #require(try fetchAllProfiles(from: c.container).first { $0.identifier == id })
+        #expect(after.visibleThroughDepth == visible,
+                "an unrelated nested layer's activation/deactivation must not touch a shallower contact")
+    }
+
+    @Test("A vault entry's visibility ceiling survives an activate/deactivate cycle",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func vaultEntrySurvivesCycle() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let ceiling = Data([0xC0, 0xC0])
+        let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: ceiling)
+
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")
+
+        let after = try #require(try fetchAllVaultEntries(from: c.container).first { $0.id == entryID })
+        #expect(after.visibleThroughDepth == ceiling)
+    }
+
+    @Test("Bytes nothing can decrypt survive identically too — there is no decrypt-and-fallback path left",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func undecryptableBytesSurviveUnchanged() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id      = "contact-\(UUID().uuidString)"
+        let garbage = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        try insertContact(identifier: id, in: c.container, visibleThroughDepth: garbage)
+
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+
+        let after = try #require(try fetchAllProfiles(from: c.container).first { $0.identifier == id })
+        #expect(after.visibleThroughDepth == garbage, """
+            Every prior activation used to decrypt-and-reseal or decrypt-and-fallback this \
+            field, so unreadable bytes were a special case with their own failure mode (Bugs \
+            37, 87). Now nothing reads it at all, so there is no special case: readable and \
+            unreadable bytes behave identically, which this asserts directly.
             """)
     }
+}
 
-    /// The half-converted population: a device part-way through the rollout has some rows
-    /// in each format, and deactivation must read both identically.
-    ///
-    /// Contacts are inserted AFTER activation for the reason in this file's header — a row
-    /// that rides through an activation is re-sealed under `TestKeyManager`'s staged key,
-    /// which the deactivation path's ambient `.decrypt()` (real `Manager.Key`) cannot read,
-    /// so it would fall back to `Int.max` for *both* formats and prove nothing about
-    /// either. In production both are the same key manager and that split does not exist.
-    /// Ceilings are deeper than any live layer so the assertion isolates format handling
-    /// from cascade semantics.
-    @Test("Legacy and fixed-width rows deactivate identically",
-          .enabled(if: secureEnclaveAvailable()))
+// MARK: - WAL persistence (Bug 37, PIN-only shape)
+
+/// Guards a narrower version of the regression commit 70e1f77 fixed: that fix was
+/// `contactManager.modelContext.save()` being skipped during a rotation this codebase no
+/// longer has. What `activateSecureMode`/`deactivateSecureMode` still write — the
+/// `AppLayerConfig` verifiers — goes through a different `modelContext`
+/// (`Manager.Security`'s own) and a different call path entirely, so this is a fresh check,
+/// not a resurrection of the old one: does that write reach the persistent store, verified
+/// from a brand-new `ModelContext` that bypasses every in-memory cache, not just the
+/// in-memory `AppLayerConfig` instance every other test in this file reads through
+/// `c.security` directly.
+/// Bug 140: `sessionID` marks where session state must end. It changes when the depth changes
+/// while the app stays unlocked, which has no PIN screen to tear anything down; a PIN unlock
+/// doesn't need it (the PIN screen already tears the unlocked tree down).
+@Suite("Secure Mode — session identifier (Bug 140)", .serialized)
+struct SessionIdentifierTests {
+
+    @Test("An in-place depth change starts a new session", .enabled(if: secureEnclaveAvailable()))
     @MainActor
-    func mixedFormatPopulationSurvivesDeactivation() async throws {
+    func deactivationChangesSession() throws {
         let c = try makeComponents()
-        try c.security.configurePIN("333333")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "333333", duressPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("444444"))
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try c.security.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
+        let before = c.security.sessionID
 
-        let legacyID = "legacy-\(UUID().uuidString)"
-        let fixedID  = "fixed-\(UUID().uuidString)"
-        let safeID   = "safe-\(UUID().uuidString)"
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
 
-        // Same ceiling, two formats — the only variable under test.
-        try insertContact(identifier: legacyID, in: c.container,
-                          visibleThroughDepth: try JSONEncoder().encode(5).encrypt())
-        try insertContact(identifier: fixedID, in: c.container,
-                          visibleThroughDepth: try DepthCodec.encode(5).encrypt())
-        // The commonest value, in the old format — the one Bug 85 was actually about.
-        try insertContact(identifier: safeID, in: c.container,
-                          visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt())
-
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let rows = try fetchAllProfiles(from: c.container)
-        func ceiling(_ id: String) -> Int? {
-            decodedStagedDepth(from: rows.first { $0.identifier == id }?.visibleThroughDepth,
-                               keyManager: c.keyManager)
-        }
-        #expect(ceiling(legacyID) == 5,       "an un-migrated legacy row must keep its ceiling")
-        #expect(ceiling(fixedID)  == 5,       "an already-converted row must keep its ceiling")
-        #expect(ceiling(safeID)   == Int.max, "a legacy Int.max must not be lost or truncated")
-        #expect(ceiling(legacyID) == ceiling(fixedID),
-                "the two formats must be indistinguishable to the rotation path")
-
-        // And the mix resolves itself: rotation re-seals every row through the codec, so
-        // all three come out one length regardless of which format they went in as.
-        let lengths = Set([legacyID, fixedID, safeID].compactMap { id in
-            rows.first { $0.identifier == id }?.visibleThroughDepth?.count
-        })
-        #expect(lengths.count == 1,
-                "after a rotation every row must be one ciphertext length, got \(lengths.sorted())")
+        #expect(c.security.currentDepth == 1)
+        #expect(c.security.sessionID != before)
     }
 
-    /// The migration is written to skip rows it cannot decrypt. An interrupted rotation
-    /// leaves exactly that: rows sealed under a key that is no longer canonical. The
-    /// migration must be inert against them rather than resolving them to a default.
-    @Test("The migration is a no-op against rows it cannot decrypt, leaving them for rotation",
+    @Test("Setup, activation and PIN verification keep the session", .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func sameDepthKeepsSession() throws {
+        let c = try makeComponents()
+        let initial = c.security.sessionID
+
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("000000"))   // wrong PIN
+        c.security.applyVerifyState(for: try c.security.verify("111111"))   // same depth
+
+        #expect(c.security.currentDepth == 0)
+        #expect(c.security.sessionID == initial)
+    }
+}
+
+@Suite("Secure Mode — verifier writes persist to the WAL (Bug 37, PIN-only shape)", .serialized)
+struct SecureModeVerifierPersistenceTests {
+
+    @Test("activateSecureMode's verifier write is readable from a fresh ModelContext",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func activationPersistsVerifiers() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+
+        let config = try #require(try fetchConfig(from: c.container))
+        #expect(config.sealedDuressVerifier != nil,
+                "activateSecureMode's own state write did not reach the persistent store")
+    }
+
+    @Test("deactivateSecureMode's verifier clear is readable from a fresh ModelContext",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func deactivationPersistsClearedVerifiers() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")
+
+        let config = try #require(try fetchConfig(from: c.container))
+        #expect(config.sealedDuressVerifier == nil,
+                "deactivateSecureMode's own state write did not reach the persistent store")
+    }
+}
+
+// MARK: - Launch migration
+
+/// `DatabaseMigration.migrateDepthFieldsToFixedWidth` runs in `App.init()`, independently of
+/// Secure Mode activation entirely — it normalises the legacy JSON depth encoding to the
+/// fixed-width one (Bug 85) regardless of PIN or duress state. Its one piece of coverage that
+/// belongs in this file: a row sealed under a key the migration cannot derive (the same end
+/// state a rotation used to leave stranded rows in, before rotation itself was removed) must
+/// be left alone rather than resolved to a default.
+@Suite("Launch migration — inert against undecryptable rows")
+struct DepthMigrationInertnessTests {
+
+    @Test("The migration is a no-op against rows it cannot decrypt",
           .enabled(if: secureEnclaveAvailable()))
     @MainActor
     func migrationIsInertAgainstForeignKeyRows() throws {
-        let c = try makeComponents()
+        let c  = try makeComponents()
         let id = "foreign-\(UUID().uuidString)"
 
-        // Sealed under a key that is not the canonical one — what an interrupted
-        // rotation leaves behind.
         let foreignKey = SymmetricKey(size: .bits256)
         let foreign = try AES.GCM.seal(JSONEncoder().encode(0), using: foreignKey,
                                        authenticating: EncryptionScheme.v2_hybridPQ.aad).combined
@@ -1377,115 +380,121 @@ struct DepthMigrationRotationCompositionTests {
 
         let row = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(row?.visibleThroughDepth == foreign, """
-            A row sealed under a non-canonical key must be left byte-identical. Rewriting \
-            it would need a decrypt that cannot succeed; resolving it to a default would \
-            persist Int.max — visible at every duress depth.
+            A row sealed under a key the migration cannot derive must be left byte-identical. \
+            Rewriting it would need a decrypt that cannot succeed; resolving it to a default \
+            would persist Int.max — visible at every duress depth.
             """)
     }
 }
 
-// MARK: - Bug 87: a stranded ceiling must not be un-hidden by rotation
+// MARK: - VaultEntry orphaning on deactivation (Bug 110)
 
-/// `isVisible` fails closed on a ceiling it cannot decrypt — "non-nil field that won't
-/// decrypt = sensitive shell; exclude" — so a stranded contact is correctly hidden right up
-/// until a rotation touches it. Both halves of the cycle used to undo that, by different
-/// routes, and both landed on *visible at every duress depth*.
-@Suite("Bug 87 — stranded ceiling survives rotation", .serialized)
-struct StrandedCeilingRotationTests {
+/// Regression coverage for `bugs.md` Bug 110: `VaultEntry.visibleThroughDepth` is stamped
+/// once, at creation, with whatever `currentDepth` is at that moment, and compared by exact
+/// match — never reset. Duress depth *numbers* are reused across unrelated sessions (a fresh
+/// `activateSecureMode` → duress-PIN verification always counts back up 1, 2, 3... the same
+/// way), so without a reset, an entry created in one duress session stays exact-match-visible
+/// to a later, unrelated session that reaches the same depth number.
+///
+/// `deactivateSecureMode` now orphans (marks `VaultEntry.deletionToken`, never hard-deletes)
+/// any entry whose stamp names a depth just freed — `VaultManager.fetchAllEntries()` excludes
+/// orphaned rows, so the entry becomes inert everywhere (UI, shard custody, backup export) at
+/// once, the same way a soft-deleted `Contact.Profile` is.
+@Suite("Secure Mode — VaultEntry orphaning on deactivation (Bug 110)", .serialized)
+struct VaultEntryOrphaningTests {
 
-    /// Activation's route: `reencryptAllFields` used `reencrypt(data:)`, which nils anything
-    /// it cannot decrypt — and `isVisible` reads a nil ceiling as visible everywhere. The
-    /// launch backfill then re-stamped that nil to `Int.max`, cementing it.
-    @Test("Activation preserves a stranded ceiling rather than nil-ing it",
+    @Test("A vault entry from one duress session does not resurface in a later, unrelated session at the same depth",
           .enabled(if: secureEnclaveAvailable()))
     @MainActor
-    func strandedCeilingSurvivesActivation() async throws {
+    func staleSessionEntryDoesNotResurface() throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
-        let id       = "stranded-\(UUID().uuidString)"
-        let stranded = Data([0xA5, 0x5A, 0x3C, 0x7E])   // present, will not decrypt
-        try insertContact(identifier: id, in: c.container, visibleThroughDepth: stranded)
+        // Session A: reach depth 1, insert a vault entry stamped for that depth.
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+        let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: try DepthCodec.encode(1).encrypt())
 
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "222222",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+        // End session A entirely.
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        #expect(!c.security.isSecureModeActive)
 
-        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(after?.visibleThroughDepth == stranded, """
-            A ceiling that will not decrypt must come through activation byte-identical. \
-            Nil-ing it makes isVisible report the contact as visible at every depth, and the \
-            launch backfill then stamps Int.max over it — permanent, and in the one direction \
-            this field exists to prevent.
-            """)
-        #expect(after?.isVisible(atDepth: 1) == false, "and it must still read as hidden")
-    }
+        // The entry must already be orphaned — gone from the functional read, not merely
+        // hidden by no longer matching the current depth.
+        let afterSessionA = try c.vault.fetchAllEntries()
+        #expect(!afterSessionA.map(\.id).contains(entryID))
 
-    /// Deactivation's route: it decodes the ceiling with a fallback and re-seals whatever it
-    /// decided into a *readable* field, so an unknown resolved to `Int.max` became a
-    /// persisted "visible at every duress depth".
-    ///
-    /// Inserted after activation for this file's key-manager split — see the header.
-    @Test("Deactivation resolves a stranded ceiling to hidden, not always-visible",
-          .enabled(if: secureEnclaveAvailable()))
-    @MainActor
-    func strandedCeilingResolvesToHiddenOnDeactivation() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("333333")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "333333", duressPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+        // The row itself must still physically exist, marked inert — never hard-deleted.
+        let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
+        #expect(raw != nil, "orphaned row must be hard-kept, not deleted")
+        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        #expect(raw?.isOrphaned(usingKey: key) == true)
+
+        // Session B: a completely unrelated duress PIN, also reaching depth 1.
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "444444")
         c.security.applyVerifyState(for: try c.security.verify("444444"))
+        #expect(c.security.currentDepth == 1)
 
-        let id = "stranded-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: Data([0xA5, 0x5A, 0x3C, 0x7E]))
-
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-
-        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        let ceiling = decodedStagedDepth(from: after?.visibleThroughDepth, keyManager: c.keyManager)
-
-        #expect(ceiling != Int.max, """
-            Deactivation resolved an unreadable ceiling to Int.max and persisted it, which \
-            means visible at every duress depth for a contact that was hidden a moment ago.
-            """)
-        #expect(ceiling == 0, """
-            The fail-safe resolution is 0: hidden at every duress depth, still visible to the \
-            real user at depth 0. That is the principle S7 already states for vault entries.
-            """)
+        // The stale entry must not resurface in session B either.
+        let sessionBEntries = try c.vault.fetchAllEntries()
+        #expect(!sessionBEntries.map(\.id).contains(entryID))
     }
 
-    /// A readable ceiling must be untouched by the same change — the fallback only applies
-    /// where the value genuinely cannot be read.
-    @Test("A readable ceiling is unaffected by the fail-safe fallback",
+    @Test("A vault entry at a shallower, still-live depth survives an unrelated deeper cascade deactivation",
           .enabled(if: secureEnclaveAvailable()))
     @MainActor
-    func readableCeilingIsUnaffected() async throws {
+    func shallowerEntrySurvivesCascade() throws {
         let c = try makeComponents()
-        try c.security.configurePIN("555555")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "555555", duressPIN: "666666",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
-        c.security.applyVerifyState(for: try c.security.verify("666666"))
+        try c.security.configurePIN("111111")
 
-        let id = "readable-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: try DepthCodec.encode(4).encrypt())
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+        let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: try DepthCodec.encode(1).encrypt())
 
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "666666",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+        try c.security.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
 
-        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedStagedDepth(from: after?.visibleThroughDepth, keyManager: c.keyManager) == 4,
-                "a ceiling that decodes must survive verbatim, not be flattened by the fallback")
+        // Deactivate the depth-2 layer only — depth 1's own entry must be untouched.
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+        #expect(c.security.currentDepth == 1)
+
+        let entries = try c.vault.fetchAllEntries()
+        #expect(entries.map(\.id).contains(entryID),
+                "a shallower, still-live layer's entry must survive an unrelated deeper cascade")
+        let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
+        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        #expect(raw?.isOrphaned(usingKey: key) == false, "must not be orphaned — its own depth was never freed")
+    }
+
+    @Test("Orphaning caps at 50 rows, evicting the oldest first",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func orphanCapEvictsOldest() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+
+        // 51 entries at depth 1, spaced so `createdAt` ordering is unambiguous.
+        var ids: [UUID] = []
+        for _ in 0..<51 {
+            let id = try insertVaultEntry(in: c.container, visibleThroughDepth: try DepthCodec.encode(1).encrypt())
+            ids.append(id)
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+
+        let allRows  = try fetchAllVaultEntries(from: c.container)
+        let key      = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let orphaned = allRows.filter { $0.isOrphaned(usingKey: key) }
+        #expect(orphaned.count == 50, "cap must hold at 50 orphaned rows")
+        #expect(!allRows.map(\.id).contains(ids[0]),
+                "the single oldest row must be hard-deleted once the cap is exceeded")
+        #expect(allRows.map(\.id).contains(ids[50]), "the newest orphan must survive")
     }
 }

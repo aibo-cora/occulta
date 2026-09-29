@@ -3,6 +3,11 @@
 Occulta Vault — Shamir's Secret Sharing engineering reference.  
 Commit this file alongside any PR that touches the vault or SSS implementation.
 
+> **Per-entry splitting was retired 2026-09-27** (`Docs/General/decisions.md`, "Retire per-entry splitting"). Each entry
+> still has its own PEK under the vault key, but it is no longer split; the backup key (BEK) is the only
+> secret distributed to trustees. Sections below that describe splitting a PEK, per-entry reconstruction,
+> `RecoveryHealthSummary` or the Shard Health screen are historical.
+
 ---
 
 ## Design intent
@@ -323,7 +328,8 @@ upgrade.
 1. Trustees detect Alice's key change during proximity exchange and auto-return
    their shards. Each sends `.handback` operations in the next outbound bundle to
    Alice (see "Owner key rotation = auto-return trigger" below).
-2. Alice's app collects arriving shards into the `ReconstructShard` buffer.
+2. Alice's app collects arriving shards into the `PendingShamirSecretRestore` buffer
+   (`ReconstructShard` before 2026-09-21, see below).
 3. When ≥ k shards are buffered, `tryFinalizeReconstruction` runs automatically.
 4. If Alice still has her original SE key: verify each shard's signature.
    If on a new device: skip signature verification, rely on GCM authentication.
@@ -345,20 +351,39 @@ reconstruction, asking her to redistribute.
 
 ## Reconstruction buffer (`ReconstructShard`)
 
+> **Retired 2026-09-21. The live buffer is `PendingShamirSecretRestore`**
+> (`Vault+Model.swift`; design in [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) §9.3).
+> The text below describes `ReconstructShard`, which is now read only by the one-time migration
+> that moves its rows over on unlock. What differs now:
+> - One row per secret (`attributeID`: a `VaultEntry.id` for PEK recovery, a `distributionID` for
+>   BEK restore), not one row per shard. `attributeID` and `deletionToken` are sealed under the local
+>   key.
+> - The shards live in a single `shards` field: up to 255 fixed-width slots (`ShardsCodec`), sealed
+>   with AAD bound to the row.
+> - Still at most one slot per `(attributeID, senderIdentifier)`.
+> - On success or cancel, the row is **orphaned in place** (`orphanShards`: shards overwritten with
+>   random bytes, `deletionToken` set to orphaned), not bulk-deleted. The Lifecycle table's last two
+>   rows are stale on that point.
+> - No cap, permanently (`bugs.md` Bug 122).
+>
+> The BEK-restore flow around this buffer is also being changed; see §9.4 of the same document.
+
 Owner-side transient queue for `.handback` bundles arriving during recovery. Each
 arriving shard becomes one `ReconstructShard` row, sealed under the recovery
 buffer key with AAD = `id` (id-only). The plaintext columns carry no
 identifying information.
 
-Sealed payload: `{ entryID, attrID, signedAttribute, senderIdentifier, attestation }`.
+Sealed payload: `{ entryID, attrID, signedAttribute, senderIdentifier }`.
 The `entryID` lives inside the seal so a forensic reader cannot tell which entries
 are mid-recovery or how many shards have arrived per entry.
 
-`senderIdentifier` and `attestation` were added by Bug 94 remedy 2 — see *Handback
-verification* below. `senderIdentifier` is the receiver's own resolution of who sent
-the bundle, never sender-asserted, and at most one row is kept per
-`(entryID, senderIdentifier)` so a threshold-reaching group requires distinct
-senders rather than distinct `SignedAttribute.id`s.
+`senderIdentifier` was added by Bug 94 remedy 2 — see *Handback verification*
+below. It is the receiver's own resolution of who sent the bundle, never
+sender-asserted, and at most one row is kept per `(entryID, senderIdentifier)`
+so a threshold-reaching group requires distinct senders rather than distinct
+`SignedAttribute.id`s. This payload used to also carry `attestation`; `bugs.md`
+Bug 125 (2026-09-19) removed it — it never verified content authenticity, only
+sender identity, which the bundle's own transport already establishes.
 
 **BEK restore shards live here too, since 2026-08-27** (Bug 100 remedy 2). They
 previously had their own sealed file, whose length divided out to the number of
@@ -440,6 +465,11 @@ the vault SE key.
 ---
 
 ## Shard revocation
+
+> **Removed 2026-09-27 (`bugs.md` Bug 141).** Implicit revoke is gone. For the backup key, dropping a trustee
+> splits a new key (`ShardCustodyManager.distributeBackup(newKey: true)`), which makes the
+> removed trustee's piece useless without their cooperation; the owner confirms, since earlier
+> backup files stop opening. The text below describes the removed mechanism.
 
 Revocation is implicit — no `.revoke` operation is required.
 
@@ -542,6 +572,11 @@ Processing order when a bundle arrives:
 
 ## Trustee key rotation = implicit shard loss
 
+> **Changed 2026-09-27 (`bugs.md` Bug 141), backup key.** A trustee's key change no longer marks a backup-key
+> piece lost: the current depth re-sends at once, and other depths re-send at their own unlock
+> when the trustee's next manifest shows the piece missing. `markShardsLost` still applies to
+> per-entry pieces.
+
 When a trustee (Bob) re-exchanges keys with Alice, Bob's identity key fingerprint
 has changed. Since Occulta has no in-app identity key rotation, this can only mean
 Bob is on a new device. A new device is a clean app install: Bob's SwiftData store
@@ -573,36 +608,35 @@ Bob's app responds automatically, with no separate scheduling model:
    every outbound bundle to Alice. Bob does not delete these rows pre-emptively.
    `encryptBundle` enforces ML-KEM when `.handback` ops are present.
 3. **Alice receives `.handback`** — `handleHandback` verifies it first (see below),
-   then `acceptReturnedShard` stores each shard in the `ReconstructShard` buffer
-   (sealed under the recovery buffer key, no biometric). `tryFinalizeReconstruction`
-   is triggered opportunistically.
+   then `acceptReturnedShard` stores each shard in the `PendingShamirSecretRestore` buffer
+   (no biometric needed). For a per-entry PEK, `tryFinalizeReconstruction` is triggered
+   opportunistically; a BEK restore completes only when Alice opens her backup file
+   (`restoreBackup`, `RECOVERY_BUFFER_LAYERING.md` §9.4).
 
-### Handback verification: two branches
+### Handback verification
 
-Added by Bug 94 remedy 2 and absent from earlier drafts of this document.
+Added by Bug 94 remedy 2; revised by `bugs.md` Bug 125 (2026-09-19), which removed
+the second branch entirely rather than merely narrowing it.
 
 **Branch A — direct.** The shard verifies against Alice's *own current* identity key.
-This is the ordinary case: Alice still holds the key that signed the shard.
+This is the ordinary case: Alice still holds the key that signed the shard, and this
+proves content authenticity — that the shard value is genuinely what she signed —
+which nothing else in this flow can substitute for.
 
-**Branch B — trustee attestation.** Alice's device cannot verify the shard, because
-Secure Enclave identity keys are non-exportable and die with the device they were
-created on — which is precisely the situation a new-device recovery is in. So Bob
-verifies it instead, against his own retained copy of Alice's *old* public key
-(`Contact.Profile.Key`'s history is append-only), and vouches with his current
-identity, which Alice's new device can check because it just re-paired with him over
-UWB. `attestation(for:)` returns nil on any failure, which is the safe default: the
-op still goes out and simply has no Branch B path.
+**Branch A failing means accept, not "try a second check."** Alice's device cannot
+verify a signature made by a key that no longer exists — true whether Alice's
+identity rotated (the ordinary reason) or the content is simply fabricated; nothing
+distinguishes those two causes, and nothing ever could. The mechanism that used to
+run here — Bob independently checking the shard against Alice's retained old key and
+vouching with his own current identity — never actually closed that gap: it only
+ever proved "a recognized identity vouches for this," which the bundle's own
+transport (a 1:1 exchange; the session key is derivable only by the two real
+parties) already proves before `handleHandback` is ever called. So Branch A failing
+now falls straight through to acceptance. `attribute.entryID` matching a real, live
+distribution — checked downstream, in `acceptReturnedShard` and
+`restoreBackup`'s own grouping — is what actually scopes this to real
+trustees, and that check is unaffected.
 
-Only a Branch B-verified attestation is carried into storage. Since Bug 94a every op
-ships an attestation — a real one where it exists and same-sized random filler
-otherwise — so `op.attestation` is no longer evidence of anything on its own.
-
-**Why the filler.** `attestation` is roughly 260 encoded bytes, and
-`Recipient.wrappedPayload` lengths are cleartext in a group bundle. Tier padding
-equalises the op *count* per recipient and nothing equalises their encoded size, so
-an optional field present on some recipients and absent on others partitions the
-bundle by who is genuinely mid-recovery. Same reasoning as `wrapRecipient`'s
-`randomEphemeralSignatureFiller`.
 4. **Cleanup** — when Alice successfully redistributes (sends `.distribute` with her
    new fingerprint), `handleDistribute` detects the fingerprint change and deletes
    all mismatch-fingerprint shards for Alice's contact. No explicit acknowledgement
@@ -624,6 +658,10 @@ bundle by who is genuinely mid-recovery. Same reasoning as `wrapRecipient`'s
 ---
 
 ## Shard custody reconciliation
+
+> **Removed 2026-09-27 (`bugs.md` Bug 141).** Only `custodyManifest` remains, sent in 1:1 bundles. Backup-key
+> pieces are reconciled per depth from persistent watch rows (`PotentiallyLostShard`):
+> present → confirmed, missing → re-sent, deleted trustee → lost.
 
 ### The approach: manifest-based (push, continuous)
 
@@ -769,7 +807,7 @@ her original SE key.
 ```
 enum BEKSetupState: Equatable {
     case notSetup                                          // no BEK in SwiftData
-    case waitingForConfirmations(confirmed: Int, threshold: Int)  // BEK exists, below threshold
+    case waitingForConfirmations(confirmed: Int, total: Int, threshold: Int)  // BEK exists, below threshold
     case ready                                             // confirmed ≥ threshold
 }
 ```
@@ -780,13 +818,15 @@ State derivation:
 bekSetupState:
   → try bekShardMetadata()          // decrypt BackupEncryptionKey row
   → nil                  → .notSetup
-  → meta.confirmed < k   → .waitingForConfirmations(confirmed, threshold)
+  → meta.confirmed < k   → .waitingForConfirmations(confirmed, total, threshold)
   → meta.confirmed ≥ k   → .ready
 ```
 
 `confirmed` counts only `.confirmed` shards (not `.pending`). A BEK shard is
 confirmed when the trustee's `custodyManifest` includes it — the same manifest
-mechanism used for PEK shards.
+mechanism used for PEK shards. `total` counts `.pending` and `.confirmed` shards:
+the trustees who can still confirm. The Vault tab shows "1 of 3 trustees
+confirmed · 2 needed" (`bugs.md` Bug 151).
 
 **Why `.notSetup` is critical:** an unset BEK means any exported backup file is
 undecryptable without Alice's original SE key. If that device is lost, the
@@ -873,7 +913,7 @@ possible from it.
 | Aggregate PEK health indicator (vault tab attention section) | ✅ Done |
 | BEKSetupState health signal (bekSetupState)                  | ✅ Done |
 | Backup staleness report (backupStaleness / BackupStalenessReport) | ✅ Done |
-| Vault health dashboard (VaultRecoverySettings — BEK + PEK + backup) | ✅ Done |
+| Vault health dashboard (VaultRecoverySettings — BEK + PEK + backup) | Removed 2026-09-29; the Vault tab covers it (`Docs/General/decisions.md`, "Backup recovery lives only in the Vault tab; Global Trustees retired") |
 | ownerContactIdentifier in CustodyShard.Payload | ✅ Done |
 | [ShardOperation]? on SealedPayload (multi-shard bundles) | ✅ Done |
 | .returnAcknowledged ShardOperation kind | ✅ Done |
@@ -938,7 +978,13 @@ possible from it.
   note, key token) are not recoverable without the vault key.
 - **GF(2⁸) arithmetic timing:** `gfMul` and `gfInv` contain data-dependent
   branches. On Apple Silicon this is acceptable for SSS (not key derivation),
-  but the implementation is not formally constant-time.
+  but the implementation is not formally constant-time. *(2026-09-23: filed as
+  `bugs.md` Bug 131, with a branch-free `gfMul` as the proposed fix. `gfInv`'s
+  branches depend only on its fixed exponent and on public x-coordinates, so
+  `gfMul` is the one that matters. Fixed the same day: `gfMul` is mask-based, and
+  the compiled arm64 output has no conditional branches at `-O`. Shipped builds
+  already compiled the old form to conditional selects; the source now guarantees
+  it.)*
 
 ---
 
@@ -952,6 +998,13 @@ protocol described here is not, and neither was the thinking behind it.
 That gap is the shared root of Bugs 99, 100, 102 and 103. None was found by reading
 this document or the code it describes — each came from asking what a specific
 observation looks like from inside a duress session.
+
+**Updated 2026-09-06 — Bug 102's half of this now has an active design.**
+[`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) (the shard buffer and restore machinery
+this document describes) and [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) (the BEK record) carry
+the current decisions; check there rather than assuming this section is still the last word. Bugs 103
+and 104 were separately closed as duplicates of an accepted limitation, not open — see
+`Docs/Features/Secure Mode/bugs.md` for the current status of any bug number named below.
 
 **The one that touches this document most directly is Bug 103.** *Inbound bundle
 processing order*, above, describes the sequence faithfully and does not mention that

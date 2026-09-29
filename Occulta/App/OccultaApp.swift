@@ -31,13 +31,10 @@ struct OccultaApp: App {
     /// fresh -wal/-shm files that SQLite creates after the initial attributes call.
     private let storeURL: URL
 
-    /// Every persisted model. Extracted from `init()` so `RotationRegistryTests` can assert
-    /// that each entry is classified as either re-keyed by a Secure Mode rotation or
-    /// deliberately outside it — see `RotationRegistry`.
-    ///
-    /// This array is the anchor for that check precisely because it is load-bearing: the app
-    /// cannot launch without it, so a new model cannot be added to the store without appearing
-    /// here. A test fixture listing the same types could silently fall behind; this cannot.
+    /// Every persisted model. Extracted from `init()` as its own static property rather than
+    /// left inline, so it can be read (not just constructed) from outside `init()` — load-bearing
+    /// by construction: the app cannot launch without it, so a new model cannot be added to the
+    /// store without appearing here.
     static let schema = Schema([
         Contact.Profile.self,
         Contact.Profile.PhoneNumber.self,
@@ -49,6 +46,8 @@ struct OccultaApp: App {
         Message.Draft.self,
         VaultEntry.self,
         CustodyShard.self,
+        // Retired, kept permanently, migration-only — see ReconstructShard+Model.swift's
+        // own header for why this can't just be deleted like the BEK array's old type was.
         ReconstructShard.self,
         PendingShardDistribute.self,
         PendingShardStatusUpdate.self,
@@ -57,6 +56,8 @@ struct OccultaApp: App {
         BackupEncryptionKey.self,
         AppLayerConfig.self,
         Group.self,
+        Vault.self,
+        PendingShamirSecretRestore.self,
     ])
 
     init() {
@@ -85,10 +86,7 @@ struct OccultaApp: App {
         let security = Manager.Security(modelContainer: sharedModelContainer,
                                         storeURL: url,
                                         enabled: FeatureFlags.isEnabled(.secureMode))
-        if FeatureFlags.isEnabled(.secureMode) {
-            security.maintainLayerStore()
-        }
-        
+
         self.security = security
 
         let contactManager = ContactManager(modelContainer: sharedModelContainer, security: security)
@@ -147,10 +145,10 @@ struct OccultaApp: App {
         }
 
         do {
-            try DatabaseMigration.migrateGlobalTrusteeDepthBackfill(modelContext: context)
+            try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: context)
         } catch {
             #if DEBUG
-            debugPrint("globalTrusteeDepth backfill error: \(error)")
+            debugPrint("Global Trustees retirement error: \(error)")
             #endif
         }
 
@@ -183,13 +181,21 @@ struct OccultaApp: App {
         }
 
 
+        // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
+        // this runs (Bug 133). Independent of every pass above.
         do {
-            try DatabaseMigration.migrateGlobalShardConfigToPerContact(
-                modelContext: context, shardCustodyManager: self.shardCustodyManager
-            )
+            try DatabaseMigration.migrateVaultEntryDeletionTokens(modelContext: context)
         } catch {
             #if DEBUG
-            debugPrint("GlobalShardConfig consolidation error: \(error)")
+            debugPrint("VaultEntry deletionToken backfill error: \(error)")
+            #endif
+        }
+
+        do {
+            try DatabaseMigration.migrateDeleteGlobalShardConfig(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("GlobalShardConfig deletion error: \(error)")
             #endif
         }
     }
@@ -275,13 +281,24 @@ struct RootView: View {
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
-    // Backup-file acknowledgment (Bug 93) — deliberately separate from showError/
-    // errorMessage: "already processed" is not a failure, and reusing the "Error" alert
-    // title for it would be a strange thing to show a legitimate user even though it's
-    // harmless at a duress depth.
-    /// A `.occbak` held until the user confirms.
+    // Session state (`bugs.md` Bug 140). Everything below that a session creates, and the
+    // identity challenge's presentations, is cleared by `endSession()` when the session ends:
+    // on leaving `.unlocked`, and on an in-place depth change (`Manager.Security.sessionID`).
+    // Exempt on purpose, because it is input queued before anyone authenticated and is
+    // delivered after whichever PIN is entered, the same at every depth: `pendingFileData`,
+    // `pendingShareSession`, and a `.occbak` staged while `.pinRequired` (staged after the
+    // reset, so it reaches the prompt). New state goes in one list or the other.
+
+    /// Which tab is showing. Held here, above the unlocked tree keyed by the session, so a
+    /// depth change in Settings doesn't drop the user on the first tab; not sensitive.
+    @State private var selectedTab: Tabs = .contacts
+    /// Advanced by `endSession()`. Work that outlives a suspension compares it before
+    /// presenting, so a result finishing after the session ended is dropped (Bug 148).
+    @State private var sessionEpoch = 0
+    /// A `.occbak` held in memory until the user confirms or cancels. Never written to disk.
     @State private var pendingRestoreFile: Data?
     @State private var showRestoreConfirmation = false
+    @State private var showNothingRestored = false
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
     @State private var shareResult: ShareResult?
     /// A share-extension session staged in the App Group, waiting for the user to pick who it
@@ -318,12 +335,6 @@ struct RootView: View {
                 // make checkpoint timing itself a depth signal — the failure
                 // `checkpointStore()`'s own documentation exists to prevent.
                 self.security.checkpointStore()
-
-                // Move blob metadata onto the non-rotating SE-derived key (Bug 76). Runs at
-                // every depth, unlike the purge above: it writes no delete records, and a
-                // still-unmigrated entry would be read as absent by the very next activation —
-                // which can happen at a duress depth — silently orphaning a live blob.
-                self.security.migrateBlobMetadataKeyIfNeeded()
             }
             // onOpenURL must be on the outermost container so it fires in all phases.
             .onOpenURL { url in self.handleOpenURL(url) }
@@ -333,15 +344,16 @@ struct RootView: View {
             // Duress-Detection-Oracle.md) means there's no restriction-gated rejection
             // left to differ on, so a duress unlock draining this the same way as a
             // normal one introduces no new signal.
-            .onChange(of: self.appScreen.phase) { _, newPhase in
+            .onChange(of: self.appScreen.phase) { oldPhase, newPhase in
                 guard newPhase == .unlocked else {
                     // Leaving .unlocked (grace expired on a warm return) tears down the
                     // branch that owns the presentations, dismissing anything on screen.
-                    // Their item state outlives the branch, so clear it here — otherwise
-                    // the next unlock re-presents a sheet the user already finished with,
-                    // over content they have only just re-authenticated to.
-                    self.openedFileContents = nil
-                    self.shareResult = nil
+                    // Their item state outlives the branch, so end the session here —
+                    // otherwise the next unlock, at whatever depth, re-presents what this
+                    // session left behind (Bug 140). Only when actually leaving it: a cold
+                    // launch goes .covered → .pinRequired with no session to end, and may
+                    // already have staged the file that launched the app.
+                    if oldPhase == .unlocked { self.endSession() }
                     return
                 }
                 // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
@@ -358,20 +370,38 @@ struct RootView: View {
                     Task { await self.processInboundFile(data) }
                 }
             }
+            // A depth change while unlocked (`deactivateSecureMode` from Settings) has no PIN
+            // screen to tear anything down; the unlocked tree is rebuilt by its `.id`, and the
+            // state held here ends too (Bug 140).
+            .onChange(of: self.security.sessionID) {
+                self.endSession()
+            }
             .onChange(of: self.scenePhase) { _, newPhase in
                 switch newPhase {
                 case .active:
                     self.contactManager.cleanupPendingSessions()
+                case .background:
+                    // Every file delivered to the app has been read by now (Bug 101).
+                    FileManager.default.clearInboxes()
                 default:
                     break
                 }
             }
             // Key-rotation → two-sided response:
-            // Alice's path: mark any shards distributed TO this contact as .lost.
+            // Alice's path: re-send this depth's backup-key pieces (Bug 141). Other depths
+            // notice at their own unlock, from the trustee's next manifest.
             // Bob's path: mismatch-fingerprint shards are returned via .handback on
             // the next outbound bundle (detected at build time, no scheduling needed).
             .onReceive(self.contactManager.contactKeyRotated) { identifier in
-                self.vaultManager.markShardsLost(forContact: identifier)
+                self.reconcileBackupPieces(keyChangedFor: identifier)
+            }
+            // A deleted trustee's piece shows as lost at once (Bug 144).
+            .onReceive(self.contactManager.contactDeleted) { _ in
+                self.reconcileBackupPieces()
+            }
+            // A depth's backup-key pieces are checked when its vault unlocks (Bug 141).
+            .onChange(of: self.vaultManager.isUnlocked) { _, isUnlocked in
+                if isUnlocked { self.reconcileBackupPieces() }
             }
             // Reapply .completeFileProtection after every save.
             // SwiftData recreates -wal/-shm sidecar files on WAL merges,
@@ -382,19 +412,6 @@ struct RootView: View {
                 for: NSManagedObjectContext.didSaveObjectIDsNotification
             ).receive(on: DispatchQueue.main)) { _ in
                 self.reapplyFileProtection()
-            }
-            // Rewrite the no-op blob on every save (debounced 30 s) so the
-            // blob's Last-Modified timestamp correlates with normal app activity,
-            // not with Secure Mode activation. Only rewrites when Secure Mode is
-            // inactive — when active the blob holds a real payload that must not
-            // be overwritten.
-            .onReceive(NotificationCenter.default.publisher(
-                for: NSManagedObjectContext.didSaveObjectIDsNotification
-            )
-            .receive(on: DispatchQueue.main)
-            .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
-                guard FeatureFlags.isEnabled(.secureMode) else { return }
-                self.security.rewriteLayerStore()
             }
     }
 
@@ -435,22 +452,28 @@ struct RootView: View {
             } message: {
                 Text(self.errorMessage)
             }
-            // Wording is load-bearing three ways. It names no mechanism — "trustees" and
+            // Wording is load-bearing two ways. It names no mechanism — "trustees" and
             // "shards" would tell whoever raised this prompt that a distributed-secret scheme
             // exists and that other people hold pieces, which is a lead a coercer does not
-            // otherwise get from this screen. It leads with the consequence rather than the
+            // otherwise get from this screen. And it leads with the consequence rather than the
             // process, because the risk is that an unrequested file plants someone else's
-            // entries and hands its author a key to every future backup. And the button says
-            // Accept, not Restore, because tapping it restores nothing now — it arms something
-            // that may complete days later or never.
+            // entries and hands its author a key to every future backup. Tapping Accept
+            // restores now if enough pieces have arrived; otherwise nothing is kept, and the
+            // file can be opened again later.
             .alert("Restore from this backup?", isPresented: self.$showRestoreConfirmation) {
                 Button("Cancel", role: .cancel) { self.pendingRestoreFile = nil }
-                Button("Accept", role: .destructive) { self.armPendingRestore() }
+                Button("Accept", role: .destructive) { self.restoreConfirmedFile() }
             } message: {
                 Text("""
-                    This will replace your vault with the contents of this file once enough \
-                    recovery pieces arrive. Only continue if you requested it.
+                    This adds the contents of this file to your vault if enough recovery pieces \
+                    have arrived. If nothing changes, open it again later. Only continue if you \
+                    requested it.
                     """)
+            }
+            .alert("Nothing was restored", isPresented: self.$showNothingRestored) {
+                Button("OK") { }
+            } message: {
+                Text(VaultRestoreView.nothingRestoredMessage)
             }
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
@@ -515,14 +538,47 @@ struct RootView: View {
                     onDismiss: { self.identityChallenge.verificationOutcome = nil }
                 )
             }
+            // One unlocked tree per session: an in-place depth change rebuilds it, dropping
+            // every pushed screen, sheet and cached `@State` from the old depth (Bug 140).
+            .id(self.security.sessionID)
         }
+    }
+
+    /// Ends the session's state held above the unlocked tree (`bugs.md` Bug 140): what this
+    /// session presented or staged, and the vault's unlocked session, so a new depth needs its
+    /// own Face ID. Queued pre-authentication input is left alone (see the list above).
+    /// Reconcile the current depth's backup-key pieces with what trustees have reported,
+    /// re-sending any a trustee no longer has (`ShardCustodyManager.reconcileBackupPieces`,
+    /// `bugs.md` Bug 141). No-op while the vault is locked.
+    private func reconcileBackupPieces(keyChangedFor contact: String? = nil) {
+        let liveContacts = Set(((try? self.contactManager.fetchAllContacts()) ?? []).map(\.identifier))
+        self.shardCustodyManager.reconcileBackupPieces(
+            currentDepth:   self.security.currentDepth,
+            keyChangedFor:  contact,
+            liveContacts:   liveContacts,
+            vaultManager:   self.vaultManager
+        )
+    }
+
+    private func endSession() {
+        self.sessionEpoch           += 1
+        self.openedFileContents      = nil
+        self.shareResult             = nil
+        self.pendingRestoreFile      = nil
+        self.showRestoreConfirmation = false
+        self.showNothingRestored     = false
+        self.showError               = false
+        self.identityChallenge.outboundShare       = nil
+        self.identityChallenge.incomingChallenge   = nil
+        self.identityChallenge.verificationOutcome = nil
+        self.vaultManager.lock()
     }
 
     // MARK: Tab content
 
     @ViewBuilder
     private var tabContent: some View {
-        TabView {
+        TabView(selection: self.$selectedTab) {
             ContactsV2()
                 .tag(Tabs.contacts)
                 .tabItem {
@@ -616,8 +672,12 @@ struct RootView: View {
         }
 
         Task {
+            // Also delete the copy iOS makes in our own container for "Open in Occulta"
+            // (Bug 101). An original opened in place from Files lies outside it and is kept.
+            // Safe after reading: the bytes are memory-mapped, and unlinking a mapped file
+            // leaves the mapping valid.
             defer {
-                if openedThroughShareExtension {
+                if openedThroughShareExtension || FileManager.default.isInsideAppContainer(fileLocation) {
                     try? FileManager.default.removeItem(at: fileLocation)
                 }
             }
@@ -646,21 +706,18 @@ struct RootView: View {
                     try Data(contentsOf: fileLocation, options: .mappedIfSafe)
                 }.value
 
-                // .occbak — vault backup restore file. Opening one only stages it; arming
-                // happens in `armPendingRestore`, behind the confirmation below.
+                // .occbak — vault backup restore file. Opening one only stages it in memory;
+                // the restore happens in `restoreConfirmedFile`, behind the confirmation below.
                 if fileLocation.pathExtension == "occbak" {
-                    // Confirm before arming. Arming is not inert: it makes the device accept BEK
-                    // shards from contacts and, once enough arrive, import the file's entries
-                    // into the real-layer vault with no further prompt. Opening a file must not
-                    // be enough to start that on its own — a device with no BEK of its own
-                    // (fresh install, new phone) will reconstruct whatever key the file's shards
-                    // rebuild, and nothing in the file authenticates who authored it.
+                    // Confirm before restoring. A layer with no backup key of its own will
+                    // reconstruct whatever key the file's shards rebuild and import its entries,
+                    // and nothing in the file authenticates who authored it.
                     //
-                    // At every depth. The prompt is raised before `storePendingRestore` runs, so
-                    // it cannot vary with the outcome — identical text, identical buttons,
-                    // whichever of the three cases the file turns out to be. Showing it only at
-                    // depth 0 would be the leak: its *absence* would tell whoever is holding the
-                    // phone that they are in a duress layer.
+                    // At every depth. The prompt is raised before `restoreBackup` runs, so it
+                    // cannot vary with the outcome — identical text, identical buttons, whatever
+                    // the file turns out to be. Showing it only at depth 0 would be the leak: its
+                    // *absence* would tell whoever is holding the phone that they are in a duress
+                    // layer.
                     self.pendingRestoreFile = data
                     self.showRestoreConfirmation = true
                     return
@@ -675,8 +732,6 @@ struct RootView: View {
                 }
 
                 await self.processInboundFile(data)
-                // BackupError.alreadyProcessed is handled locally in the .occbak branch above —
-                // storePendingRestore is its only source, so no case reaches this far.
             } catch {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
@@ -684,36 +739,39 @@ struct RootView: View {
         }
     }
 
-    /// Arms the confirmed `.occbak` for restore.
+    /// Restores from the confirmed `.occbak`: one attempt, at the current depth, against the
+    /// shards already banked (`RECOVERY_BUFFER_LAYERING.md` §9.4).
     ///
-    /// **Silent on every outcome, at every depth**, and that uniformity is the point. The
-    /// three outcomes — fresh accept, restore already pending, BEK already present — used to
-    /// be distinguishable at depth 0 ("already been processed" versus silence) while duress
-    /// flattened them into one string. Bug 93 harm 4 had compared duress against duress and
-    /// stopped there; the comparison that matters is duress against real, because that is the
-    /// one a coercer can run. They open any `.occbak` — their own will do — and read which
-    /// session they are in off the reply, against a baseline that is public because the app is.
-    ///
-    /// It could not be closed from the duress side. Depth 0 varied its reply on whether a BEK
-    /// exists, and duress is deliberately blind to that. So the acknowledgment is gone
-    /// entirely rather than harmonised: the confirmation the user already tapped is the
-    /// receipt for a fresh accept, and the vault tab's "Recovery in progress…" — now rendered
-    /// at every depth — is the durable one.
-    ///
-    /// What is lost: on a device that already has a backup configured, opening another one now
-    /// does nothing visible at all, where it used to say why. That case is the price of the
-    /// uniformity and is recorded in Bug 93 rather than hidden here.
-    ///
-    /// A malformed file still reports an error at both depths. That branch turns on the file's
-    /// own bytes, not on vault state or depth, so it distinguishes nothing about the session.
-    private func armPendingRestore() {
+    /// The vault is usually locked here — it locks whenever the app goes to the background,
+    /// which opening a file from Files does — so this asks for Face ID first, the same prompt
+    /// the Vault tab uses. The prompt depends only on the vault's lock state, never on depth.
+    /// Cancelling it does nothing, like any failed attempt.
+    private func restoreConfirmedFile() {
         guard let pending = self.pendingRestoreFile else { return }
         self.pendingRestoreFile = nil
 
+        self.vaultManager.whenUnlocked { self.restoreBackup(from: pending) }
+    }
+
+    /// A successful import is visible where it happened: the entries appear, and the vault tab
+    /// shows the post-restore prompt. **Every failure shows the same message at every depth**,
+    /// whatever the cause — this depth already has a backup key, too few pieces, no match — so
+    /// it never reveals which one happened. The acknowledgment removed for Bug 93 was unsafe
+    /// because depth 0 checked its own backup key while duress couldn't; every depth now checks
+    /// its own state (`RECOVERY_BUFFER_LAYERING.md` §4 row 6).
+    ///
+    /// A malformed file still reports an error at every depth. That branch turns on the file's
+    /// own bytes, not on vault state or depth, so it distinguishes nothing about the session.
+    ///
+    /// Depth is read once, so the visible-contact set and the restore depth always agree.
+    private func restoreBackup(from data: Data) {
+        let depth = self.security.currentDepth
         do {
-            try self.vaultManager.storePendingRestore(pending)
-        } catch VaultManager.BackupError.alreadyProcessed {
-            // Deliberately indistinguishable from a fresh accept — see above.
+            let imported = try self.vaultManager.restoreBackup(
+                from: data, currentDepth: depth,
+                visibleContactIdentifiers: self.contactManager.visibleContactIdentifiers(atDepth: depth)
+            )
+            if !imported { self.showNothingRestored = true }
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true
@@ -730,9 +788,27 @@ struct RootView: View {
     /// and process identically.
     ///
     /// All error handling lives here so neither call site needs to repeat it.
+    ///
+    /// Nothing is presented, basket or error, if the session ended while the file was being
+    /// decrypted (Bug 148): `endSession()` has already run, so a result set now would
+    /// survive into the next session, after whichever PIN is entered. The result is dropped
+    /// rather than the bytes re-queued: a forward-secret bundle's prekey is spent by now, so a
+    /// second attempt would only fail. Reachable only if the app is backgrounded past the grace
+    /// period mid-decryption; `AppScreen.lockIfGracePeriodExpired` closes the common case. Losing
+    /// the message then is an accepted cost (`Docs/General/decisions.md`).
     private func processInboundFile(_ data: Data) async {
+        let epoch = self.sessionEpoch
+        let result: Result<OwnedBasket?, Error>
         do {
-            if let ownedBasket = try await self.buildOwnedBasket(from: data) {
+            result = .success(try await self.buildOwnedBasket(from: data))
+        } catch {
+            result = .failure(error)
+        }
+
+        guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else { return }
+
+        do {
+            if let ownedBasket = try result.get() {
                 self.openedFileContents = ownedBasket
             }
         } catch ContactManager.Errors.messageHasNoData {
@@ -832,6 +908,35 @@ struct RootView: View {
         try? self.contactManager.purgeUnreadableGroups(using: key)
     }
 
+    /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,
+    /// `.replace`, `.handback` alike — from a sender not visible at the current depth,
+    /// before any of them reach `ShardCustodyManager`. Safe for all three kinds: each one
+    /// already retries automatically if dropped, so nothing is lost, only delayed until
+    /// the sender is visible again — `.handback` via `mismatchHandbackOps` (retried on
+    /// the trustee's every subsequent bundle), `.distribute`/`.replace` via
+    /// `PendingShardDistribute`, which persists until the trustee's own `custodyManifest`
+    /// confirms receipt (`queueDistribute`'s own doc comment, confirmed directly against
+    /// `processInboundManifest` — the row is not deleted on send).
+    ///
+    /// Fails closed: an unresolvable sender or an unavailable local DB key is treated as
+    /// not visible, so an ambiguous case drops the ops rather than processing them.
+    ///
+    /// Not unit-testable in isolation — constructing an `OccultaApp` instance builds a
+    /// real, on-disk `ModelContainer` and runs live migrations, so this is verified by
+    /// manual/integration checks instead, the same limitation already true of the
+    /// visibility resolution this folds in.
+    private func filterShardOperations(
+        _ ops: [OccultaBundle.ShardOperation]?,
+        from senderIdentifier: String
+    ) -> [OccultaBundle.ShardOperation]? {
+        guard
+            let sender   = try? self.contactManager.fetchContact(by: senderIdentifier),
+            let localKey = try? Manager.Key().createHybridLocalEncryptionKey(),
+            sender.isVisible(atDepth: self.security.currentDepth, usingKey: localKey)
+        else { return nil }
+        return ops
+    }
+
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
     ///
     /// Dispatches to the correct decryption path based on the bundle version:
@@ -875,7 +980,7 @@ struct RootView: View {
                     // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
                     // (messages, shards, custody ops) use this path. Shard-only bundles signal
                     // "no basket" via an empty message field.
-                    let (sealed, ownerID, _, recipShardOps, recipManifest, recipExpected) =
+                    let (sealed, ownerID, _, recipShardOps, recipManifest) =
                         try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version
 
@@ -897,14 +1002,17 @@ struct RootView: View {
                     // which has no per-recipient content to pad) working unchanged.
                     if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                         _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  recipShardOps ?? sealed.shardOperations,
+                            shardOperations:  self.filterShardOperations(
+                                recipShardOps ?? sealed.shardOperations,
+                                from: ownerID
+                            ),
                             custodyManifest:  recipManifest ?? sealed.custodyManifest,
-                            expectedShards:   recipExpected ?? sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager,
-                            currentDepth:     self.security.currentDepth
+                            vaultManager:     self.vaultManager
                         )
+                        // Only a manifest can change a piece's status.
+                        if (recipManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
                     }
 
                     // Shard-only bundle (empty message) — ops handled above, no basket.
@@ -935,21 +1043,23 @@ struct RootView: View {
 
                     #if DEBUG
                     debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
-                    debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
                     #endif
 
                     // Handle shard operations and manifest reconciliation.
 
                     if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                         _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  sealed.shardOperations,
+                            shardOperations:  self.filterShardOperations(
+                                sealed.shardOperations,
+                                from: ownerID
+                            ),
                             custodyManifest:  sealed.custodyManifest,
-                            expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager,
-                            currentDepth:     self.security.currentDepth
+                            vaultManager:     self.vaultManager
                         )
+                        // Only a manifest can change a piece's status.
+                        if sealed.custodyManifest != nil { self.reconcileBackupPieces() }
                     }
 
                     decodedBundleVersion = bundle.version
@@ -1061,14 +1171,12 @@ struct RootView: View {
                 let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
                 let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
                 let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
-                let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
 
                 occData = try self.contactManager.encryptBundle(
                     basket:          basket,
                     for:             contactID,
                     shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: custody,
-                    expectedShards:  expected
+                    custodyManifest: custody
                 )
 
             case .group(let groupID):
@@ -1077,8 +1185,7 @@ struct RootView: View {
                 occData = try self.contactManager.encryptGroupBundle(
                     basket:              basket,
                     groupID:             groupID,
-                    shardCustodyManager: self.shardCustodyManager,
-                    vaultManager:        self.vaultManager
+                    shardCustodyManager: self.shardCustodyManager
                 )
             }
 

@@ -41,12 +41,19 @@ struct SaltInfo {
     /// with device-unlock-level access (no biometric). Used to wrap PIN sentinels in
     /// AppLayerConfig. Domain-separated from all other key paths.
     static let kSecureModeKeyInfo = "Occulta-v1-secure-mode-pin-2026".data(using: .utf8)!
-    /// Recovery buffer key: same SE key as shard custody, distinct HKDF info →
-    /// dedicated symmetric key. Used to encrypt ReconstructShard rows — the
-    /// transient buffer of returned shards Alice's device collects during
+    /// Restore vault key: same SE key as shard custody, distinct HKDF info →
+    /// dedicated symmetric key. Used to encrypt PendingShamirSecretRestore.shards —
+    /// the transient set of returned shards Alice's device collects during
     /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
     /// blob and a reconstruct blob are never decryptable with the same key.
-    static let kRecoveryBufferKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
+    ///
+    /// **The value must never change.** It keys every banked recovery piece on disk,
+    /// including the `ReconstructShard` rows v1.10.3 wrote, which is why it still reads
+    /// "recovery-buffer" after `deriveRecoveryBufferKey` was renamed. That rename once
+    /// changed this string too, re-keying the key, so the upgrade migration couldn't open
+    /// a single legacy row and deleted them all (`bugs.md` Bug 137). Pinned by
+    /// `RecoveryBufferKeyTests.infoStringIsV1_10_3s`.
+    static let kRestoreVaultKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
     nonisolated static let kFileKeyInfo           = "Occulta-v1-file-key-2025".data(using: .utf8)!
 }
 
@@ -59,7 +66,7 @@ struct SaltInfo {
 //  "master.key.privacy.turtles.are.cute"    │ No             │ Identity — ECDSA signing, ECDH transport
 //  "local.db.se.key.occulta"                │ No             │ Local DB hybrid key ECDH component
 //  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault PEK derivation
-//  "shard.custody.occulta"                  │ No             │ Shard custody records + recovery buffer
+//  "shard.custody.occulta"                  │ No             │ Shard custody records + restore vault key
 //  "app.layer.key.occulta.v1"               │ No             │ Secure Mode PIN sentinel encryption
 //
 // All four keys carry `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — never backed up,
@@ -68,9 +75,9 @@ struct SaltInfo {
 // The vault SE key requires a pre-evaluated `LAContext`; the other three operate
 // automatically while the device is unlocked.
 //
-// The shard custody key is reused as the base for the recovery buffer key — the two
+// The shard custody key is reused as the base for the restore vault key — the two
 // derived symmetric keys are domain-separated by `kShardCustodyKeyInfo` vs
-// `kRecoveryBufferKeyInfo` in HKDF.
+// `kRestoreVaultKeyInfo` in HKDF.
 
 extension Manager {
     class Key {
@@ -388,12 +395,6 @@ extension Manager.Key {
 
 extension Manager.Key {
     enum Errors: Error { case noIdentityAvailable }
-
-    enum StagedKeyError: Error {
-        case stagedKeyNotFound      // staged artefacts missing when commit was called
-        case randomGenerationFailed // SecRandomCopyBytes or SecItemAdd failed
-        case derivationFailed       // ECDH or HKDF failed on the staged key
-    }
 }
 
 //  Phase 1: Hybrid PQ-reinforced local database encryption key.
@@ -497,10 +498,7 @@ extension Manager.Key: KeyManagerProtocol {
     }
 
     /// Create a local-DB-style P-256 SE key with an explicit application tag.
-    ///
-    /// Used for both the canonical key and the staged key during key rotation.
-    /// Access policy is identical to the canonical key: `.privateKeyUsage` only,
-    /// device-unlock level, no biometric.
+    /// Access policy: `.privateKeyUsage` only, device-unlock level, no biometric.
     private func createLocalDBSEKey(tag: String) throws {
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(
@@ -839,20 +837,20 @@ extension Manager.Key: KeyManagerProtocol {
         )
     }
 
-    // MARK: - Recovery buffer key
+    // MARK: - Restore vault key
 
-    /// Derive the recovery buffer key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256
-    /// with `kRecoveryBufferKeyInfo`. Reuses the shard custody SE key (same access
+    /// Derive the restore vault key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256
+    /// with `kRestoreVaultKeyInfo`. Reuses the shard custody SE key (same access
     /// policy: device-unlock, no biometric) but produces a distinct symmetric key
     /// via HKDF domain separation.
     ///
-    /// Used to seal ReconstructShard rows — the transient buffer of returned
-    /// shards collected during reconstruction.
+    /// Used to seal PendingShamirSecretRestore.shards — the transient set of
+    /// returned shards collected during reconstruction.
     ///
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
-    func deriveRecoveryBufferKey() throws -> SymmetricKey? {
+    func deriveRestoreVaultKey() throws -> SymmetricKey? {
         guard let custodyPriv  = try self.retrieveShardCustodyPrivateKey() else { return nil }
         guard let fixedPubKey  = self.convert(material: fixedX963)         else { return nil }
 
@@ -873,7 +871,7 @@ extension Manager.Key: KeyManagerProtocol {
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: custodyPubData,
-            info: SaltInfo.kRecoveryBufferKeyInfo,
+            info: SaltInfo.kRestoreVaultKeyInfo,
             outputByteCount: 32
         )
     }
@@ -959,260 +957,6 @@ extension Manager.Key: KeyManagerProtocol {
         }
     }
 
-    // MARK: - Staged DB key (activation / deactivation key rotation)
-    //
-    // Key rotation uses a staged approach: a new SE key + random are created at
-    // temporary tags ("staged"), contacts are re-encrypted under the derived key,
-    // and only then the staged key is promoted to canonical. The old canonical key
-    // is renamed to a "superseded" tag and deleted last (step 11 of activation) —
-    // never before the staged key is confirmed canonical.
-    //
-    // Tags/accounts used:
-    //   SE key, canonical:    Tags.localDB.rawValue         ("local.db.se.key.occulta")
-    //   SE key, staged:       stagedLocalDBSETag            ("local.db.se.key.occulta.staged")
-    //   SE key, superseded:   supersededLocalDBSETag        ("local.db.se.key.occulta.superseded")
-    //   Keychain, canonical:  localDBRandomKeychainAccount  ("local.db.random.key.occulta")
-    //   Keychain, staged:     stagedLocalDBRandomAccount    ("local.db.random.key.occulta.staged")
-
-    private static let stagedLocalDBSETag           = "local.db.se.key.occulta.staged"
-    private static let supersededLocalDBSETag       = "local.db.se.key.occulta.superseded"
-    private static let stagedLocalDBRandomAccount   = "local.db.random.key.occulta.staged"
-
-    /// Create a staged local DB key for use in the activation/deactivation sequence.
-    ///
-    /// Creates a new SE key at `stagedLocalDBSETag` and a new 32-byte random at
-    /// `stagedLocalDBRandomAccount`. Any leftover staged artefacts from a prior
-    /// aborted attempt are cleaned up first (idempotent).
-    ///
-    /// Returns the hybrid key derived from the staged components — use this key
-    /// to re-encrypt contacts in step 8 of activation. It is NOT the canonical
-    /// key until `commitStagedLocalDBKey()` is called.
-    ///
-    /// **Call `rollbackStagedLocalDBKey()` on any failure before commit.**
-    func createStagedLocalDBKey() throws -> SymmetricKey {
-        // Clean up any leftover staged artefacts from a prior aborted attempt.
-        self.rollbackStagedLocalDBKey()
-
-        // 1. New SE key at staged tag.
-        try self.createLocalDBSEKey(tag: Self.stagedLocalDBSETag)
-
-        // 2. New random component stored at staged Keychain account.
-        guard
-            let stagedRandom = try self.generateAndStoreRandomComponent(account: Self.stagedLocalDBRandomAccount)
-        else {
-            self.rollbackStagedLocalDBKey()
-            
-            throw StagedKeyError.randomGenerationFailed
-        }
-
-        // 3. Derive the hybrid key from staged components.
-        guard
-            let key = try self.deriveHybridKey(seTag: Self.stagedLocalDBSETag, randomData: stagedRandom)
-        else {
-            self.rollbackStagedLocalDBKey()
-            
-            throw StagedKeyError.derivationFailed
-        }
-        
-        return key
-    }
-
-    /// Promote the staged key to canonical. ⚠️ Point of no return.
-    ///
-    /// After this call:
-    /// - `Tags.localDB` SE key = new key (renamed from staged)
-    /// - `localDBRandomKeychainAccount` value = staged random value
-    /// - Old canonical SE key exists at `supersededLocalDBSETag` (delete in step 11)
-    /// - Staged random entry exists at `stagedLocalDBRandomAccount` (delete in step 11)
-    ///
-    /// Call `deleteSupersededLocalDBArtefacts()` in step 11, after AppLayerConfig
-    /// is written and state has transitioned to `.normal`.
-    ///
-    /// If sub-step B (rename staged → canonical) fails, attempts to restore the
-    /// old canonical tag before throwing.
-    func commitStagedLocalDBKey() throws {
-        // Read staged random before touching SE keys.
-        guard let stagedRandom = self.retrieveRandomComponent(
-            account: Self.stagedLocalDBRandomAccount
-        ) else {
-            throw StagedKeyError.stagedKeyNotFound
-        }
-
-        // A. Rename canonical SE key → superseded tag (frees the canonical slot).
-        //    errSecItemNotFound is acceptable — crash-recovery path where canonical
-        //    was already renamed in a prior partial commit attempt.
-        //
-        //    kSecAttrTokenID and kSecAttrKeyType are omitted from the search dict:
-        //    SecItemUpdate rejects them as invalid search criteria on some iOS versions
-        //    (errSecNoSuchAttr). kSecAttrApplicationTag alone identifies the key uniquely.
-        let renameCanonical: [String: Any] = [
-            kSecClass as String:              kSecClassKey,
-            kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!
-        ]
-        let markSuperseded: [String: Any] = [
-            kSecAttrApplicationTag as String: Self.supersededLocalDBSETag.data(using: .utf8)!
-        ]
-        let renameStatus = SecItemUpdate(renameCanonical as CFDictionary, markSuperseded as CFDictionary)
-        guard renameStatus == errSecSuccess || renameStatus == errSecItemNotFound else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(renameStatus))
-        }
-
-        // B. Rename staged SE key → canonical tag.
-        let findStaged: [String: Any] = [
-            kSecClass as String:              kSecClassKey,
-            kSecAttrApplicationTag as String: Self.stagedLocalDBSETag.data(using: .utf8)!
-        ]
-        let makeCanonical: [String: Any] = [
-            kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!
-        ]
-        let promoteStatus = SecItemUpdate(findStaged as CFDictionary, makeCanonical as CFDictionary)
-        
-        guard promoteStatus == errSecSuccess else {
-            // Promotion failed — attempt to restore the canonical tag on the old key.
-            let findSuperseded: [String: Any] = [
-                kSecClass as String:              kSecClassKey,
-                kSecAttrApplicationTag as String: Self.supersededLocalDBSETag.data(using: .utf8)!
-            ]
-            let restoreCanonical: [String: Any] = [
-                kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!
-            ]
-            _ = SecItemUpdate(findSuperseded as CFDictionary, restoreCanonical as CFDictionary)
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(promoteStatus))
-        }
-
-        // C. Update canonical Keychain random → staged value.
-        //    The entry already exists; we update its data in-place.
-        let findRandom: [String: Any] = [
-            kSecClass as String:       kSecClassGenericPassword,
-            kSecAttrAccount as String: Self.localDBRandomKeychainAccount
-        ]
-        let newRandomValue: [String: Any] = [kSecValueData as String: stagedRandom]
-        var randomStatus = SecItemUpdate(findRandom as CFDictionary, newRandomValue as CFDictionary)
-        if randomStatus == errSecItemNotFound {
-            // Should not happen in normal operation; add defensively.
-            let addRandom: [String: Any] = [
-                kSecClass as String:          kSecClassGenericPassword,
-                kSecAttrAccount as String:    Self.localDBRandomKeychainAccount,
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-                kSecValueData as String:      stagedRandom
-            ]
-            randomStatus = SecItemAdd(addRandom as CFDictionary, nil)
-        }
-        guard randomStatus == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(randomStatus))
-        }
-    }
-
-    /// Delete leftover artefacts after `commitStagedLocalDBKey()` completes.
-    ///
-    /// Removes the old canonical SE key (at `supersededLocalDBSETag`) and the
-    /// staged Keychain random entry. Both deletions are no-ops if the items are
-    /// already absent. Call from step 11 of activation, after AppLayerConfig is
-    /// written and the state machine has transitioned to `.normal`.
-    func deleteSupersededLocalDBArtefacts() {
-        self.delete(using: Self.supersededLocalDBSETag)
-        let query: [String: Any] = [
-            kSecClass as String:       kSecClassGenericPassword,
-            kSecAttrAccount as String: Self.stagedLocalDBRandomAccount
-        ]
-        SecItemDelete(query as CFDictionary)
-    }
-
-    /// Delete staged artefacts without touching the canonical key.
-    ///
-    /// No-op if items do not exist. Call on any error before `commitStagedLocalDBKey()`,
-    /// or during crash recovery to guarantee a clean baseline before retrying.
-    func rollbackStagedLocalDBKey() {
-        self.delete(using: Self.stagedLocalDBSETag)
-        let query: [String: Any] = [
-            kSecClass as String:       kSecClassGenericPassword,
-            kSecAttrAccount as String: Self.stagedLocalDBRandomAccount
-        ]
-        SecItemDelete(query as CFDictionary)
-    }
-
-    // MARK: - Staged key private helpers
-
-    /// Retrieve an SE private key by explicit tag without auto-creating.
-    /// Returns `nil` if not found; throws on unexpected Keychain errors.
-    private func retrieveExistingLocalDBPrivateKey(tag: String) throws -> SecKey? {
-        let query: [String: Any] = [
-            kSecClass as String:              kSecClassKey,
-            kSecAttrApplicationTag as String: tag.data(using: .utf8)!,
-            kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
-            kSecReturnRef as String:          true,
-            kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
-        ]
-        var item: CFTypeRef?
-        switch SecItemCopyMatching(query as CFDictionary, &item) {
-        case errSecSuccess:     return (item as! SecKey)
-        case errSecItemNotFound: return nil
-        case let status:        throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
-        }
-    }
-
-    /// Generate 32 random bytes and store in the Keychain under the given account.
-    /// Access policy matches the canonical random: `.whenUnlockedThisDeviceOnly`.
-    private func generateAndStoreRandomComponent(account: String) throws -> Data? {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, 32, &bytes) == errSecSuccess else { return nil }
-        let randomData = Data(bytes)
-        let addQuery: [String: Any] = [
-            kSecClass as String:          kSecClassGenericPassword,
-            kSecAttrAccount as String:    account,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            kSecValueData as String:      randomData
-        ]
-        guard SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess else { return nil }
-        return randomData
-    }
-
-    /// Retrieve a stored random component from Keychain. Returns `nil` if absent or wrong size.
-    private func retrieveRandomComponent(account: String) -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String:          kSecClassGenericPassword,
-            kSecAttrAccount as String:    account,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            kSecReturnData as String:     true
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data, data.count == 32 else { return nil }
-        return data
-    }
-
-    /// Derive the hybrid local DB key from an explicit SE tag and random data.
-    ///
-    /// Replicates the derivation in `createHybridLocalEncryptionKey()` but with
-    /// caller-supplied components — used to derive the key from staged artefacts
-    /// before they are promoted to canonical.
-    ///
-    /// IKM = ECDH(seKey, G) || randomData · Salt = seKey public x963 · Info = kLocalDBHybridKeyInfo
-    private func deriveHybridKey(seTag: String, randomData: Data) throws -> SymmetricKey? {
-        guard let privateKey = try self.retrieveExistingLocalDBPrivateKey(tag: seTag) else { return nil }
-        guard let fixedPubKey = self.convert(material: self.fixedX963) else { return nil }
-
-        var error: Unmanaged<CFError>?
-        guard let rawSecret = SecKeyCopyKeyExchangeResult(
-            privateKey, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
-            [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
-            &error
-        ) as? Data else { return nil }
-
-        guard let pub = self.retrivePublicKey(using: privateKey),
-              let pubData = self.convert(key: pub) else { return nil }
-
-        var ikm = rawSecret
-        ikm.append(randomData)
-
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm),
-            salt: pubData,
-            info: SaltInfo.kLocalDBHybridKeyInfo,
-            outputByteCount: 32
-        )
-    }
-
     // MARK: - Cleanup
 
     /// Deletes all SE keys enumerated in Tags and the local DB random Keychain component.
@@ -1221,15 +965,34 @@ extension Manager.Key: KeyManagerProtocol {
     @discardableResult
     func deleteAllKeys() -> Bool {
         let seDeleted = Tags.allCases.allSatisfy { delete(using: $0.rawValue) }
-        // Also sweep transient staged/superseded artefacts in case a wipe fires mid-rotation.
-        self.deleteSupersededLocalDBArtefacts()
-        self.rollbackStagedLocalDBKey()
+        let legacyDeleted = self.deleteLegacyRotationArtefacts()
         let keychainQuery: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrAccount as String: Self.localDBRandomKeychainAccount
         ]
         let keychainStatus = SecItemDelete(keychainQuery as CFDictionary)
-        return seDeleted && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
+        return seDeleted && legacyDeleted && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
+    }
+
+    /// The names v1.10.3's local-DB key rotation used for its transient keys (`bugs.md` Bug 139).
+    /// Nothing creates or reads them any more: they exist only so the wipe can delete leftovers
+    /// from a rotation that was interrupted before this branch removed rotation.
+    private static let legacyRotationSETags          = ["local.db.se.key.occulta.staged", "local.db.se.key.occulta.superseded"]
+    private static let legacyRotationRandomAccount   = "local.db.random.key.occulta.staged"
+
+    /// Deletes any keys left by an interrupted v1.10.3 rotation (`bugs.md` Bug 139). Their
+    /// names show Secure Mode was activated, and they must not outlive a wipe. Always safe from
+    /// `deleteAllKeys()`: after a wipe no data remains that any of them could be needed for.
+    /// Not called at launch, where a `.superseded` key can still be the one existing data is
+    /// sealed under. Missing items count as deleted.
+    func deleteLegacyRotationArtefacts() -> Bool {
+        let seDeleted = Self.legacyRotationSETags.allSatisfy { self.delete(using: $0) }
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrAccount as String: Self.legacyRotationRandomAccount
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return seDeleted && (status == errSecSuccess || status == errSecItemNotFound)
     }
 }
 

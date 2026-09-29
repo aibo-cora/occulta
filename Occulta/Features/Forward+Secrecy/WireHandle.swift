@@ -183,7 +183,6 @@ struct WireHandle {
             identityChallenge: payload.identityChallenge,
             shardOperations:   payload.shardOperations,
             custodyManifest:   payload.custodyManifest,
-            expectedShards:    payload.expectedShards,
             senderProof:       payload.senderProof,
             groupID:           payload.groupID
         )
@@ -216,7 +215,6 @@ struct WireHandle {
             identityChallenge: meta.identityChallenge,
             shardOperations:   meta.shardOperations,
             custodyManifest:   meta.custodyManifest,
-            expectedShards:    meta.expectedShards,
             appVersion:        meta.appVersion,
             senderProof:       meta.senderProof,
             groupID:           meta.groupID
@@ -342,7 +340,6 @@ private struct PayloadMeta: Codable {
     var identityChallenge: IdentityChallengeEnvelope?
     var shardOperations: [OccultaBundle.ShardOperation]?
     var custodyManifest: [UUID]?
-    var expectedShards: [UUID]?
     var senderProof: Data?
     var groupID: UUID?
 
@@ -353,13 +350,12 @@ private struct PayloadMeta: Codable {
         try c.encodeIfPresent(self.identityChallenge, forKey: .identityChallenge)
         try c.encodeIfPresent(self.shardOperations,   forKey: .shardOperations)
         try c.encodeIfPresent(self.custodyManifest,   forKey: .custodyManifest)
-        try c.encodeIfPresent(self.expectedShards,    forKey: .expectedShards)
         try c.encodeIfPresent(self.senderProof,       forKey: .senderProof)
         try c.encodeIfPresent(self.groupID,           forKey: .groupID)
     }
 
     enum CodingKeys: String, CodingKey {
-        case appVersion, prekeyBatch, identityChallenge, shardOperations, custodyManifest, expectedShards, senderProof, groupID
+        case appVersion, prekeyBatch, identityChallenge, shardOperations, custodyManifest, senderProof, groupID
     }
 }
 

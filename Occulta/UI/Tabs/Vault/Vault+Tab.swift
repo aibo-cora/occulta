@@ -82,19 +82,19 @@ struct VaultTab: View {
     @Query private var rawCustodyShards: [CustodyShard]
     @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
 
-    @AppStorage("vault.postRestoreActionNeeded") private var postRestoreActionNeeded = false
-
     @State private var filter: Filter = .all
     @State private var showNewEntry = false
     @State private var unlocking = false
     @State private var showExportEducation = false
-    @State private var showPostRestoreSheet = false
+    @State private var showRestore = false
+    /// The entry list's rows, decrypted once per data change (`refreshListRows()`).
+    @State private var listRows: [VaultManager.EntryListRow] = []
     @State private var showBEKSetup = false
 
     private enum Filter: String, CaseIterable {
         case all      = "All"
         case personal = "Personal"
-        case shards   = "Shards"
+        case custody  = "Custody"
     }
 
     var body: some View {
@@ -110,7 +110,10 @@ struct VaultTab: View {
             .toolbar {
                 if self.vault.isUnlocked {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Button { self.showNewEntry = true } label: {
+                        Menu {
+                            Button("New Entry", systemImage: "square.and.pencil") { self.showNewEntry = true }
+                            Button("Restore from Backup…", systemImage: "arrow.down.doc") { self.showRestore = true }
+                        } label: {
                             Image(systemName: "plus")
                         }
                         .tint(.occultaAccent)
@@ -124,41 +127,60 @@ struct VaultTab: View {
                 VaultEntryDetail(entryID: id)
             }
             .navigationDestination(isPresented: $showExportEducation) {
-                BackupExportEducationView { self.startExport() }
+                // The vault can lock while this screen is read; export asks for Face ID then,
+                // rather than failing silently.
+                BackupExportEducationView {
+                    self.vault.extendSession()
+                    self.vault.whenUnlocked { self.startExport() }
+                }
+                .onAppear { self.vault.extendSession() }
             }
             .navigationDestination(isPresented: $showBEKSetup) {
-                VaultShardSetup(mode: .backup)
+                VaultShardSetup()
             }
-            .sheet(isPresented: $showPostRestoreSheet) {
+            .navigationDestination(isPresented: self.$showRestore) {
+                VaultRestoreView()
+            }
+            // Bound straight to the manager's flag: the import can happen outside this tab
+            // (Open in Occulta), and a view-side copy would need syncing by hand.
+            .sheet(isPresented: Bindable(self.vault).postRestorePromptPending) {
                 VaultPostRestoreSheet {
-                    self.postRestoreActionNeeded = false
+                    self.vault.extendSession()
+                    self.vault.postRestorePromptPending = false
                 } onSetupBackup: {
-                    self.postRestoreActionNeeded = false
-                    self.showPostRestoreSheet    = false
-                    self.showBEKSetup            = true
+                    self.vault.extendSession()
+                    self.vault.postRestorePromptPending = false
+                    self.showBEKSetup = true
                 }
+                .onAppear { self.vault.extendSession() }
             }
             .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
-                if isUnlocked && self.postRestoreActionNeeded {
-                    self.showPostRestoreSheet = true
-                }
-                // backupStaleness is depth-scoped and VaultManager has no way to know
-                // currentDepth on its own — refresh it here, where both vault and
-                // security are in scope, rather than inside unlock() itself.
+                // backupStaleness and backupErosion are both depth-scoped and
+                // VaultManager has no way to know currentDepth on its own — refresh
+                // them here, where both vault and security are in scope, rather than
+                // inside unlock() itself.
                 if isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                    self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
                 }
             }
-            .onChange(of: self.postRestoreActionNeeded) { _, newValue in
-                if newValue && self.vault.isUnlocked {
-                    self.showPostRestoreSheet = true
-                }
+            // Rebuilds the entry rows only when entries, depth or the lock state change —
+            // not on every redraw.
+            .task(id: ListInputs(
+                entryIDs: self.entries.map(\.id),
+                depth:    self.security.currentDepth,
+                unlocked: self.vault.isUnlocked
+            )) {
+                self.refreshListRows()
             }
             .onAppear {
+                // Switching to this tab, or coming back to it, is vault activity (Bug 136).
+                self.vault.extendSession()
                 // Covers returning to this tab while already unlocked, when the
                 // isUnlocked transition above never fires.
                 if self.vault.isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                    self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
                 }
             }
         }
@@ -207,31 +229,42 @@ struct VaultTab: View {
 
     // MARK: Entry list
 
-    /// Entries visible at the current depth. In restricted mode this excludes
-    /// entries whose visibleThroughDepth ceiling is below currentDepth.
-    private var visibleEntries: [VaultEntry] {
-        guard self.security.isRestricted else { return self.entries }
-        return self.entries.filter { self.security.isEntryVisible($0) }
+    /// What decides the entry rows: which entries exist, the depth, and whether the vault is
+    /// unlocked. The rows are rebuilt only when this changes, not on every redraw.
+    private struct ListInputs: Hashable {
+        let entryIDs: [UUID]
+        let depth:    Int
+        let unlocked: Bool
+    }
+
+    /// Rebuilds `listRows`: the entries visible at the current depth (see
+    /// `Manager.Security.visibleVaultEntries`, Bug 113: orphaned rows excluded, exact-depth
+    /// match at every depth), decrypted once with one vault-key derivation. Empty while locked,
+    /// so no decrypted label stays in view state over a locked vault.
+    private func refreshListRows() {
+        guard self.vault.isUnlocked else {
+            self.listRows = []
+            return
+        }
+        self.listRows = self.vault.entryListRows(for: self.security.visibleVaultEntries(from: self.entries))
     }
 
     private var list: some View {
-        let visibleEntries = self.visibleEntries
-        let visibleIDs     = Set(visibleEntries.map(\.id))
-        let affected       = (self.vault.recoveryHealth?.affected ?? []).filter { visibleIDs.contains($0.entryID) }
-        let affectedIDs    = Set(affected.map(\.entryID))
-        let normalEntries  = visibleEntries.filter { !affectedIDs.contains($0.id) }
+        let rows           = self.listRows
+        // Each of these derives keys and decrypts; read once per redraw, not per use.
+        let setupState     = self.vault.backupSetupState(currentDepth: self.security.currentDepth)
+        let custodianRows  = self.custodianRows
 
-        // BEK erosion: read the stored property computed by recomputeRecoveryHealth().
+        // Backup-key erosion: read the stored property computed by refreshBackupErosion().
         // Same pending+confirmed logic as PEK — no crypto calls at render time.
-        let bekAffected = self.vault.bekErosion
+        let bekAffected = self.vault.backupErosion
 
         let stale      = self.vault.backupStaleness
         let staleCount = stale.map {
             ($0.bekRotated ? 1 : 0) + ($0.newEntryCount > 0 ? 1 : 0) + ($0.trusteeSetChanged ? 1 : 0)
         } ?? 0
 
-        let hasCritical    = affected.contains { $0.status == .critical }
-                          || bekAffected.map { $0.active == 0 } ?? false
+        let hasCritical    = bekAffected.map { $0.active == 0 } ?? false
                           || stale?.bekRotated == true
         let attentionColor = hasCritical ? Color.red : Color.occultaWarn
 
@@ -247,54 +280,8 @@ struct VaultTab: View {
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             }
 
-            // Pending restore section — shown while a .occbak file awaits BEK shard collection
-            if self.vault.pendingRestoreActive {
-                Section {
-                    HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9)
-                                .fill(Color.occultaAccent.opacity(0.12))
-                                .frame(width: 36, height: 36)
-                            Image(systemName: "arrow.down.circle")
-                                .font(.system(size: 16))
-                                .foregroundStyle(Color.occultaAccent)
-                        }
-                        // No count, and that omission is what lets this render at every depth.
-                        // A climbing tally is a live report on real depth-0 activity and would
-                        // contradict itself in a duress session, where collection continues but
-                        // reconstruction never fires. A static line claims no progress, so it
-                        // reads the same as a real recovery still waiting on trustees it has not
-                        // met — see `refreshPendingRestoreState`.
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Recovery in progress…")
-                                .font(.system(size: 16, weight: .medium))
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 3)
-                } header: {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                            .tint(Color.occultaAccent)
-                        Text("Recovery in Progress")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .tracking(1.6)
-                            .foregroundStyle(Color.occultaAccent)
-                    }
-                } footer: {
-                    // Names no mechanism, for the same reason the restore confirmation does not:
-                    // this section renders at every depth now, so "your trustees" would tell
-                    // whoever is holding the phone that the recovery is split among specific
-                    // people and that proximity to them is what advances it. The real user still
-                    // gets the one instruction that matters — be near them with the app open.
-                    Text("Recovery continues when Occulta is open near the people helping you.")
-                        .font(.system(size: 10, design: .monospaced))
-                }
-            }
-
-            // Attention section — entries with degraded or critical coverage + BEK erosion + stale backup
-            if self.filter != .shards, !affected.isEmpty || bekAffected != nil || staleCount > 0 {
+            // Attention section — backup-key erosion + stale backup
+            if self.filter != .custody, bekAffected != nil || staleCount > 0 {
                 Section {
                     // Stale backup rows — one per active staleness reason
                     if let s = stale {
@@ -332,14 +319,9 @@ struct VaultTab: View {
 
                     if let bek = bekAffected {
                         NavigationLink {
-                            VaultShardSetup(mode: .backup)
+                            VaultShardSetup()
                         } label: {
                             VaultBEKAttentionRow(active: bek.active, threshold: bek.threshold)
-                        }
-                    }
-                    ForEach(affected, id: \.entryID) { item in
-                        NavigationLink(value: item.entryID) {
-                            VaultAffectedEntryRow(item: item)
                         }
                     }
                 } header: {
@@ -352,30 +334,31 @@ struct VaultTab: View {
                             .tracking(1.6)
                             .foregroundStyle(attentionColor)
                         Spacer()
-                        Text("\(affected.count + (bekAffected != nil ? 1 : 0) + staleCount)")
+                        Text("\((bekAffected != nil ? 1 : 0) + staleCount)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
                 }
             }
 
-            // Personal entries (excludes entries already shown in attention section)
-            if self.filter != .shards {
+            // Personal entries
+            if self.filter != .custody {
                 Section {
-                    if visibleEntries.isEmpty {
+                    if rows.isEmpty {
                         Text("No entries yet. Tap + to add one.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(normalEntries) { entry in
-                            NavigationLink(value: entry.id) {
-                                VaultEntryRow(entry: entry)
+                        ForEach(rows) { row in
+                            NavigationLink(value: row.id) {
+                                VaultEntryRow(row: row)
                             }
                         }
                         .onDelete { offsets in
+                            self.vault.extendSession()
                             for i in offsets {
-                                _ = try? self.vault.deleteEntry(id: normalEntries[i].id)
+                                try? self.vault.deleteEntry(id: rows[i].id)
                             }
                         }
                     }
@@ -387,31 +370,31 @@ struct VaultTab: View {
                         Text("Personal")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .tracking(1.6)
-                        if !visibleEntries.isEmpty {
+                        if !rows.isEmpty {
                             Spacer()
-                            Text("\(visibleEntries.count)")
+                            Text("\(rows.count)")
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
                     }
                 } footer: {
-                    if !visibleEntries.isEmpty {
-                        Text("\(visibleEntries.count) \(visibleEntries.count == 1 ? "entry" : "entries") · se-bound · this device only")
+                    if !rows.isEmpty {
+                        Text("\(rows.count) \(rows.count == 1 ? "entry" : "entries") · se-bound · this device only")
                             .font(.system(size: 10, design: .monospaced))
                     }
                 }
             }
 
             // Backup recovery row — always visible in personal/all filter
-            if self.filter != .shards {
+            if self.filter != .custody {
                 Section {
                     NavigationLink {
-                        VaultShardSetup(mode: .backup)
+                        VaultShardSetup()
                     } label: {
-                        VaultBackupRow(state: self.vault.bekSetupState)
+                        VaultBackupRow(state: setupState)
                     }
                 } footer: {
-                    if self.vault.bekSetupState == .ready {
+                    if setupState == .ready {
                         Button {
                             self.showExportEducation = true
                         } label: {
@@ -425,13 +408,13 @@ struct VaultTab: View {
 
             if self.filter != .personal {
                 Section {
-                    if self.custodianRows.isEmpty {
-                        Text("Shards appear here once you get one from a contact for custody via .occ.")
+                    if custodianRows.isEmpty {
+                        Text("Pieces of contacts' backup keys that you hold for them appear here.")
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(self.custodianRows, id: \.ownerIdentifier) { row in
+                        ForEach(custodianRows, id: \.ownerIdentifier) { row in
                             HStack(spacing: 12) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 9)
@@ -444,7 +427,7 @@ struct VaultTab: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(row.ownerName)
                                         .font(.system(size: 16, weight: .medium))
-                                    Text("\(row.count) shard\(row.count == 1 ? "" : "s") in custody")
+                                    Text("\(row.count) piece\(row.count == 1 ? "" : "s") held for them")
                                         .font(.system(size: 10, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                 }
@@ -458,7 +441,7 @@ struct VaultTab: View {
                         Circle()
                             .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
                             .frame(width: 7, height: 7)
-                        Text("Custodian Shards")
+                        Text("Held for Others")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .tracking(1.6)
                     }
@@ -526,7 +509,7 @@ struct VaultTab: View {
             DispatchQueue.main.async {
                 self.unlocking = false
                 
-                if success { self.vault.unlock(context: ctx, currentDepth: self.security.currentDepth) }
+                if success { self.vault.unlock(context: ctx) }
             }
         }
     }
@@ -535,21 +518,13 @@ struct VaultTab: View {
 // MARK: - Entry Row
 
 private struct VaultEntryRow: View {
-    let entry: VaultEntry
-    @Environment(VaultManager.self) private var vault
-
-    private var labelPayload: SealedLabelPayload? {
-        try? self.vault.decryptLabelPayload(for: self.entry)
-    }
-
-    private var hasShards: Bool {
-        (try? self.vault.shardDistributionMetadata(for: self.entry.id)) != nil
-    }
+    /// Built once per data change by `VaultManager.entryListRows(for:)`; this view decrypts
+    /// nothing itself.
+    let row: VaultManager.EntryListRow
 
     var body: some View {
-        let payload = self.labelPayload
-        let label     = payload?.label ?? "–"
-        let entryType = payload?.type  ?? .note
+        let label     = self.row.label
+        let entryType = self.row.type
 
         return HStack(spacing: 12) {
             ZStack {
@@ -564,24 +539,13 @@ private struct VaultEntryRow: View {
                 Text(label)
                     .font(.system(size: 16, weight: .medium))
                     .lineLimit(1)
-                Text("\(entryType.displayName) · \(self.entry.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                Text("\(entryType.displayName) · \(self.row.createdAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
             Spacer()
-
-            Text("🔮")
-                .font(.system(size: 13))
-                .grayscale(self.hasShards ? 0 : 1)
-                .opacity(self.hasShards ? 1 : 0.3)
-                .shadow(
-                    color: self.hasShards
-                        ? VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)).opacity(0.55)
-                        : .clear,
-                    radius: 4
-                )
 
             Text("SE")
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -599,14 +563,14 @@ private struct VaultEntryRow: View {
 // MARK: - Backup Recovery Row
 
 private struct VaultBackupRow: View {
-    let state: VaultManager.BEKSetupState
+    let state: VaultManager.Backup.SetupState
 
     private var subtitle: String {
         switch state {
         case .notSetup:
             return "Set up to enable export"
-        case .waitingForConfirmations(let confirmed, let threshold):
-            return "\(confirmed) of \(threshold) trustees confirmed"
+        case .waitingForConfirmations(let confirmed, let total, let threshold):
+            return "\(confirmed) of \(total) trustees confirmed · \(threshold) needed"
         case .ready:
             return "Ready to export"
         }
@@ -639,6 +603,15 @@ private struct VaultBackupRow: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(accentColor)
                     .lineLimit(1)
+                // Group bundles carry no manifest, so confirmations only arrive with a direct
+                // message (`bugs.md` Bug 143).
+                if case .waitingForConfirmations = self.state {
+                    Text("Confirms arrive with direct messages")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer()
@@ -731,50 +704,3 @@ private struct VaultBackupStaleRow: View {
     }
 }
 
-// MARK: - Affected Entry Row
-
-private struct VaultAffectedEntryRow: View {
-    let item: RecoveryHealthSummary.AffectedEntry
-
-    private var accentColor: Color {
-        item.status == .critical ? .red : .occultaWarn
-    }
-
-    private var subtitleText: String {
-        switch item.status {
-        case .critical: "recovery unavailable"
-        case .degraded: "\(item.active) of \(item.threshold) recovery pieces"
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(item.entryType.tileBackground)
-                    .frame(width: 36, height: 36)
-                Text(item.entryType.emoji)
-                    .font(.system(size: 18))
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.label)
-                    .font(.system(size: 16, weight: .medium))
-                    .lineLimit(1)
-                Text(subtitleText)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(accentColor)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Image(systemName: item.status == .critical
-                  ? "exclamationmark.circle.fill"
-                  : "exclamationmark.triangle.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(accentColor)
-        }
-        .padding(.vertical, 3)
-    }
-}

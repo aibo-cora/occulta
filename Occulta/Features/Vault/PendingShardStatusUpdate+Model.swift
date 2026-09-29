@@ -18,13 +18,9 @@
 //  - Cold-disk forensics learns "N status updates are pending" — nothing about
 //    which entries or contacts. Resolving requires the SE-protected custody key.
 //
-//  Lifecycle:
-//  - Inserted by `ShardCustodyManager.handleAcknowledge` / `handleNotFound`
-//    when `updateShardStatus` throws `.locked`.
-//  - Drained by `VaultManager.drainPendingShardStatusUpdates()` inside `unlock()`.
-//  - Deleted on successful application. If `updateShardStatus` fails (e.g.,
-//    entry no longer exists), the row is deleted anyway — retrying an orphaned
-//    status update would never succeed.
+//  Retired with per-entry splitting (`decisions.md`, "Retire per-entry splitting"): nothing
+//  inserts or reads these rows. `VaultManager.retireEntrySplittingIfNeeded` deletes any left
+//  at every unlock; the model stays registered until it leaves the schema next release.
 //
 
 import Foundation

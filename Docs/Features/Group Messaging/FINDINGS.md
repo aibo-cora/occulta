@@ -57,7 +57,7 @@ The group detail mockup shows the compose style toggle (Quick / Thread). In sing
 
 ### F-06 · 32-member cap justified by the wrong precedent
 
-The cap is described as consistent with `AppLayerConfig.maxVerifierCount = 32`, which was chosen to bound the number of PIN layers — a completely unrelated constraint. The cap should stand on its own terms.
+The cap is described as consistent with `AppLayerConfig.maxDepthCount = 32`, which was chosen to bound the number of PIN layers — a completely unrelated constraint. The cap should stand on its own terms.
 
 **Resolution:** Reframe: 32 members is sufficient for personal, family, and small-team use cases within Occulta's threat model (proximity-exchanged contacts, out-of-band delivery). The fixed capacity also directly determines the forensic footprint per group (64 × 64 bytes = 4 KB). If use cases requiring larger groups emerge, the cap can be raised in a future release with a SwiftData migration. The `AppLayerConfig` coincidence is incidental and should be removed from the justification.
 

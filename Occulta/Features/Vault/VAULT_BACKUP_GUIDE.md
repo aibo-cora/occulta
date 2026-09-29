@@ -102,6 +102,10 @@ The BEK trustee picker is pre-populated from the user's Global Trustees with a
 GLOBAL badge on each pre-populated entry. The user can add or remove trustees
 before confirming distribution.
 
+> **Changed 2026-09-29** (`Docs/General/decisions.md`, "Backup recovery lives only in the Vault tab; Global Trustees retired"): Global Trustees are retired. A first
+> distribution starts with nothing selected and no badge; the setup screen is reached only from
+> the Vault tab and shows a locked state when the vault is locked.
+
 ```
 shards = ShamirSecretSharing.split(secret: BEK, threshold: k, shares: n)
 ```
@@ -268,7 +272,7 @@ All three prompts are surfaced in `VaultPostRestoreSheet`, shown automatically o
 the first vault unlock after a successful restore. The sheet persists across app
 restarts (backed by a `UserDefaults` flag) until the user taps **Done**. Tapping
 "Set up backup recovery" from the sheet dismisses it and pushes
-`VaultShardSetup(mode: .backup)` directly onto the vault `NavigationStack`.
+`VaultShardSetup()` directly onto the vault `NavigationStack`.
 
 ---
 
@@ -375,8 +379,8 @@ presentation complexity. Back button dismisses.
 
 Reuses the existing per-entry shard setup view components:
 
-- **Trustee picker** — same contact list with Global Trustee filter and GLOBAL
-  badge. Pre-populated from Global Trustees.
+- **Trustee picker** — same contact list. (Global Trustee pre-selection and the GLOBAL
+  badge were removed 2026-09-29.)
 - **Threshold stepper** — identical to per-entry setup.
 - **Per-trustee delivery status** — same confirmed / pending indicators.
 
@@ -465,7 +469,8 @@ reconstruction is attempted after every shard arrival; success means done.
 
 ### Implementation status
 
-Implemented as the "Recovery in Progress" section in `Vault+Tab.swift`. Spinner
+**Removed 2026-09-23; see "Changed, 2026-09-23" below.** Until then, it was implemented
+as the "Recovery in Progress" section in `Vault+Tab.swift`. Spinner
 header, static subtitle, footer guidance. Section disappears when
 `pendingRestoreActive` transitions to `false` after successful `attemptBEKRestore`.
 
@@ -478,6 +483,18 @@ same as a real recovery still waiting on trustees it has not met. Dropping the
 count is what makes it safe to render the section at every depth, which in turn
 removes a difference between layers that was readable in one glance. See
 `Docs/Features/Secure Mode/bugs.md`, Bug 93's follow-up.
+
+**Changed, 2026-09-23. See [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) §9.4.**
+This section describes the behavior before that change. Now:
+- The `.occbak` is never held. Opening it runs one reconstruction attempt at the current depth. If that
+  fails, nothing is stored and the user opens the file again later.
+- The "Recovery in Progress" section is removed, along with the automatic attempts after every shard
+  arrival and unlock.
+- Restore has an in-app entry point (built 2026-09-23): "Restore from Backup…" in the Vault tab's `+`
+  menu opens a screen explaining the steps, then a file picker. A failed attempt shows one neutral message.
+- The requirements above not to "require any action between shard collection and vault reconstruction"
+  and to "auto-advance" are reversed. Reopening the file is the action. A "recovery ready" signal to
+  prompt it was considered and rejected (`Docs/General/decisions.md`).
 
 ---
 
@@ -522,7 +539,7 @@ without attempting decryption.
 | BEK generation + vaultKey wrapping → `encryptedBEK` SwiftData singleton | ✅ |
 | BEK SSS split + shard delivery (reuse existing pipeline) | ✅ |
 | Backup row in vault list (graduated appearance, 3 states) | ✅ |
-| BEK shard setup view (`VaultShardSetup(mode: .backup)`) | ✅ |
+| BEK shard setup view (`VaultShardSetup()`) | ✅ |
 | BEK shard collection via auto-handback on contact key re-exchange | ✅ |
 | Pending restore: `backup-import-cache.occbak` + `ReconstructShard` rows + vault-list progress section | ✅ |
 | BEK reconstruction (Shamir.combine + GCM oracle) + re-wrap under new device vaultKey | ✅ |
@@ -531,10 +548,11 @@ without attempting decryption.
 | Export: `UIDocumentPickerViewController` via `BackupPickerPresenter` + `.occbak` UTI | ✅ |
 | Export: section-footer trigger below Backup Recovery row | ✅ |
 | Export educational sheet (mandatory, no persistent dismiss) | ✅ |
+| Trustee education sheet before a depth's first distribution (`BackupTrusteesEducationSheet`, scroll to unlock, no stored flag) | ✅ 2026-09-28 |
 | Export disabled until k BEK shards are `.confirmed` | ✅ |
 | Import: AES-GCM open + fresh PEK regeneration + SwiftData insert | ✅ |
 | BEK erosion warning in Attention section (`VaultBEKAttentionRow`) | ✅ |
-| Post-restore prompts (`VaultPostRestoreSheet`): contacts + BEK redistribution + entry shards | ✅ |
+| Post-restore prompts (`VaultPostRestoreSheet`): contacts + BEK redistribution (entry-shard row removed with per-entry splitting, 2026-09-28) | ✅ |
 | Stale-backup tracking: 3 signals, sealed metadata, rows in Attention section | ✅ |
 | BEK rotation (`rotateBEK()`) | ✅ |
 | Recovery dashboard (count-based; per-trustee status infeasible — see Recovery dashboard section) | ✅ |
@@ -555,6 +573,13 @@ Recording it here because the gap is invisible from inside the feature. Nothing
 above is wrong on its own terms; it simply answers questions that were never asked
 with a duress layer in the room.
 
+**Updated 2026-09-06 — this gap now has an active design answering it.**
+[`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) (the BEK record) and
+[`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) (the restore/shard machinery below) are
+the current design docs for closing this — Bug 102's owner entries. Everything below in this section
+is the diagnosis; those two documents carry the decisions and are being actively maintained as work
+proceeds. Check there before assuming this gap is still fully open.
+
 ### What is not layered today
 
 | Thing | Scope | Consequence |
@@ -564,10 +589,24 @@ with a duress layer in the room.
 | Restore shard buffer | `ReconstructShard` rows, no depth | shards cannot be attributed to a layer before reconstruction |
 | Completion | depth 0 only | completes in one layer and not the other, which is a coercer-triggerable test (Bug 99) |
 
-Restored entries *are* stamped, by `importBackup(_:currentDepth:)`, and vault
+Restored entries *are* stamped with the depth they're restored at (`restoreBackup`), and vault
 entries are exact-match rather than nested — so an entry restored at depth 2 is
 visible only at depth 2. The contents are layered. The key and the machinery around
 them are not.
+
+**Status of the table above, 2026-09-23:**
+- **`BackupEncryptionKey`:** per-depth rows since 2026-09-11
+  (`VAULT_KEY_LAYERING.md` §8 item 14). No longer device-wide.
+- **Pending `.occbak`:** still one device-wide file in shipped code. To be removed; the file is
+  never held (`RECOVERY_BUFFER_LAYERING.md` §9.4).
+- **Restore shard buffer:** now `PendingShamirSecretRestore`, still deliberately depth-blind (§9.3).
+  That is the source of §9.4's hole: a genuine backup could complete in a duress layer.
+- **Completion:** depth 0 only in shipped code. §9.4 moves it to the depth the file is opened at,
+  counting only shards from trustees visible there. That closes the hole for trustees hidden from
+  the duress layer, not for ones left visible.
+
+The acknowledgment paragraph below still applies: under §9.4 the file-open *is* the attempt, so its
+result is the natural thing to report.
 
 ### The constraint every UI decision here runs into
 

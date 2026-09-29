@@ -2,26 +2,21 @@
 //  Vault+ShardSetup.swift
 //  Occulta
 //
-//  V5: status chips, manual revocation, dirty tracking, context-aware CTA.
+//  Backup-key trustee setup: status chips, dirty tracking, context-aware CTA.
+//  Backup-key only since per-entry splitting was retired (`decisions.md`, "Retire
+//  per-entry splitting").
 //
 
 import SwiftUI
 import SwiftData
 
 struct VaultShardSetup: View {
-    enum Mode {
-        case entry(UUID)
-        case backup
-    }
-
-    let mode: Mode
-
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(ContactManager.self) private var contactManager
+    @Environment(Manager.Security.self) private var security
     @Environment(\.dismiss) private var dismiss
 
-    @Query private var vaultEntries: [VaultEntry]
     @Query private var bekRows:      [BackupEncryptionKey]
 
     @State private var selectedIDs: Set<String> = []
@@ -31,19 +26,15 @@ struct VaultShardSetup: View {
     @State private var snapshotIDs: Set<String> = []
     @State private var snapshotThreshold: Int = 2
     @State private var confirmationMessage: String? = nil
-    @State private var revokeTarget: ShardRecord? = nil
+    /// The selection drops a current trustee, so updating replaces the backup key; asked
+    /// before `commitDistribution` runs (`bugs.md` Bug 141).
+    @State private var confirmingKeyReplacement = false
+    /// This depth has no distribution yet, so "Queue for Distribution" shows the trustee
+    /// education sheet first. Decided from existing state, never a stored flag.
+    @State private var showingEducation = false
 
     /// Shards in these two states count toward active recovery coverage.
     private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
-
-    /// Live set of contact IDs in the user's global trustee config, at the current
-    /// depth. Reads `Contact.Profile.globalTrusteeDepth` exact-matches — the single
-    /// mechanism at every depth, including depth 0 (see the shard-custody bug doc,
-    /// item 3). A duress-created entry's suggestions can never leak trustees
-    /// designated at a different depth.
-    private var globalTrusteeIDs: Set<String> {
-        self.contactManager.globalTrusteeIdentifiers()
-    }
 
     private var mlkemContacts: [Contact.Profile] {
         self.contactManager.mlkemEligibleContacts()
@@ -54,11 +45,69 @@ struct VaultShardSetup: View {
     }
 
     var body: some View {
+        // Only while unlocked: everything here is sealed with the vault key, and a locked vault
+        // would otherwise read as "no distribution yet" (`bugs.md` Bug 150).
+        SwiftUI.Group {
+            if self.vault.isUnlocked {
+                self.unlockedContent
+            } else {
+                self.lockedState
+            }
+        }
+        .navigationTitle("Backup Recovery")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Done") { self.dismiss() }
+                    .tint(.occultaAccent)
+            }
+        }
+        .onAppear {
+            self.vault.extendSession()
+            if self.vault.isUnlocked { self.seedInitialState() }
+        }
+        .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
+            guard !isUnlocked else {
+                self.seedInitialState()
+                return
+            }
+            // Locked while this screen is visible: drop everything seeded from the vault-sealed
+            // distribution and show the locked state in place. Face ID is needed to continue.
+            // Staying, rather than dismissing, also works while the education sheet is up,
+            // where a dismiss could be ignored (`bugs.md` Bug 150; replaces Bug 134's navigate-back).
+            self.selectedIDs              = []
+            self.snapshotIDs              = []
+            self.threshold                = 2
+            self.snapshotThreshold        = 2
+            self.confirmationMessage      = nil
+            self.error                    = nil
+            self.marking                  = false
+            self.confirmingKeyReplacement = false
+            self.showingEducation         = false
+        }
+        .sheet(isPresented: self.$showingEducation) {
+            // One contact pass for both numbers: `recipientIDs` fetches and decrypts every contact.
+            let recipientCount = self.recipientIDs.count
+            BackupTrusteesEducationSheet(
+                threshold:    Self.effectiveThreshold(self.threshold, recipients: recipientCount),
+                trusteeCount: recipientCount,
+                onContinue:   { self.commitDistribution() },
+                onCancel:     {}
+            )
+        }
+        .alert("Remove trustee?", isPresented: self.$confirmingKeyReplacement) {
+            Button("Remove and Replace Key", role: .destructive) { self.commitDistribution() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removing a trustee replaces your backup key. Backup files you've already exported will no longer restore — export a new backup afterwards.")
+        }
+    }
+
+    private var unlockedContent: some View {
         let meta       = self.fetchDistributionMeta()
         let contacts   = self.mlkemContacts
-        let trusteeIDs = self.globalTrusteeIDs
         let selected   = contacts.filter { self.selectedIDs.contains($0.identifier) }
-        let k          = max(2, min(self.threshold, max(2, selected.count)))
+        let k          = Self.effectiveThreshold(self.threshold, recipients: selected.count)
         let canMark    = selected.count >= 2
 
         return ScrollView {
@@ -70,7 +119,7 @@ struct VaultShardSetup: View {
                 self.trusteesHeader(contacts: contacts)
                     .padding(.bottom, 6)
 
-                self.trusteesCard(contacts: contacts, meta: meta, trusteeIDs: trusteeIDs)
+                self.trusteesCard(contacts: contacts, meta: meta)
                     .padding(.horizontal, 16)
 
                 Spacer().frame(height: 10)
@@ -82,49 +131,50 @@ struct VaultShardSetup: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
 
-                if let err = self.error {
-                    Text(err)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Color.occultaDanger)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                }
-
                 Spacer().frame(height: 8)
             }
             .padding(.top, 8)
         }
-        .navigationTitle({
-            switch self.mode {
-            case .entry: "Shard Distribution"
-            case .backup: "Backup Recovery"
-            }
-        }())
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Done") { self.dismiss() }
-                    .tint(.occultaAccent)
-            }
-        }
         .safeAreaInset(edge: .bottom) { self.ctaBar(meta: meta, canMark: canMark) }
-        .onAppear { self.seedInitialState() }
-        .confirmationDialog(
-            "Revoke Shard",
-            isPresented: Binding(
-                get: { self.revokeTarget != nil },
-                set: { if !$0 { self.revokeTarget = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Revoke", role: .destructive) {
-                if let target = self.revokeTarget { self.revokeShard(target) }
-                self.revokeTarget = nil
+        .sensoryFeedback(.success, trigger: self.confirmationMessage) { _, new in new != nil }
+        // Ticking a trustee and changing the threshold are vault activity (Bug 136).
+        .onChange(of: self.selectedIDs) { self.vault.extendSession() }
+        .onChange(of: self.threshold) { self.vault.extendSession() }
+    }
+
+    // MARK: - Locked state
+
+    private var lockedState: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text("Vault Locked")
+                .font(.system(size: 18, weight: .semibold))
+            Text("Your trustees and backup key are sealed with your vault key. Unlock to choose trustees and see their pieces.")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                self.vault.whenUnlocked {}
+            } label: {
+                Label("Unlock Vault", systemImage: "faceid")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.occultaAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
             }
-            Button("Cancel", role: .cancel) { self.revokeTarget = nil }
-        } message: {
-            Text("The shard will be remotely erased from the trustee's device on their next interaction.")
+            .buttonStyle(.plain)
+            .padding(.top, 4)
         }
+        .padding(24)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
     }
 
     // MARK: - Summary card
@@ -251,7 +301,7 @@ struct VaultShardSetup: View {
         .padding(.horizontal, 20)
     }
 
-    private func trusteesCard(contacts: [Contact.Profile], meta: ShardDistributionMetadata?, trusteeIDs: Set<String>) -> some View {
+    private func trusteesCard(contacts: [Contact.Profile], meta: ShardDistributionMetadata?) -> some View {
         VStack(spacing: 0) {
             if contacts.isEmpty {
                 Text("No ML-KEM contacts yet. Exchange keys with a contact first.")
@@ -261,7 +311,7 @@ struct VaultShardSetup: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ForEach(Array(contacts.enumerated()), id: \.element.identifier) { idx, contact in
-                    self.trusteeRow(contact, meta: meta, trusteeIDs: trusteeIDs)
+                    self.trusteeRow(contact, meta: meta)
                     if idx < contacts.count - 1 {
                         Divider().padding(.leading, 62)
                     }
@@ -272,7 +322,7 @@ struct VaultShardSetup: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func trusteeRow(_ contact: Contact.Profile, meta: ShardDistributionMetadata?, trusteeIDs: Set<String>) -> some View {
+    private func trusteeRow(_ contact: Contact.Profile, meta: ShardDistributionMetadata?) -> some View {
         let given  = contact.givenName.decrypt()
         let family = contact.familyName.decrypt()
         let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
@@ -307,15 +357,6 @@ struct VaultShardSetup: View {
                             .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
                             .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
                             .clipShape(RoundedRectangle(cornerRadius: 3))
-                        if trusteeIDs.contains(contact.identifier) {
-                            Text("GLOBAL")
-                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.secondary.opacity(0.12))
-                                .foregroundStyle(Color.secondary)
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                        }
                         if let record = record {
                             let style = self.statusChipStyle(for: record.status)
                             Text(style.label)
@@ -352,15 +393,6 @@ struct VaultShardSetup: View {
             .padding(.vertical, 10)
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            if let record = record, Self.activeStatuses.contains(record.status) {
-                Button(role: .destructive) {
-                    self.revokeTarget = record
-                } label: {
-                    Label("Revoke Shard", systemImage: "xmark.circle")
-                }
-            }
-        }
     }
 
     // MARK: - Info note
@@ -373,7 +405,7 @@ struct VaultShardSetup: View {
                 Text("Information-theoretic security")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)))
-                Text("Fewer than \(k) shards reveal zero information. Perfect secrecy over GF(2⁸) — not computational hardness.")
+                Text("Fewer than \(k) pieces reveal nothing about the key. Perfect secrecy over GF(2⁸) — not computational hardness.")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)).opacity(0.85))
                     .lineSpacing(2)
@@ -390,16 +422,8 @@ struct VaultShardSetup: View {
         let amber   = VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66))
         let amberBg = VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00))
 
-        let title: String
-        let body:  String
-        switch self.mode {
-        case .entry:
-            title = "Key recovery only"
-            body  = "Shards protect your encryption key — not the entry content. Export a separate vault backup to recover content after device loss. Any k trustees together can reconstruct your key — pick people who are independent of each other."
-        case .backup:
-            title = "Export gate"
-            body  = "Export becomes available once \(k) trustees confirm receipt. A trustee who hasn't confirmed cannot return their piece during recovery."
-        }
+        let title = "Export gate"
+        let body  = "Export becomes available once \(k) trustees confirm receipt. A trustee confirms with their next direct message to you; group messages don't count. A trustee who hasn't confirmed cannot return their piece during recovery."
 
         return HStack(alignment: .top, spacing: 8) {
             Text("⚠️")
@@ -426,6 +450,14 @@ struct VaultShardSetup: View {
         let dirty = self.isDirty
 
         return VStack(spacing: 6) {
+            // Here, next to the button, not in the scroll view where it can sit below the fold.
+            if let err = self.error {
+                Text(err)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.occultaDanger)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
             if let msg = self.confirmationMessage, !dirty {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
@@ -439,7 +471,7 @@ struct VaultShardSetup: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 let hasExisting = meta != nil
-                let title = !hasExisting ? "Mark for Distribution" : (dirty ? "Update Distribution" : "Up to date")
+                let title = !hasExisting ? "Review" : (dirty ? "Update Distribution" : "Up to date")
                 let enabled = canMark && (!hasExisting || dirty)
 
                 DistributionCTAButton(
@@ -504,7 +536,16 @@ struct VaultShardSetup: View {
     // MARK: - Helpers
 
     private func shardRecord(for contactIdentifier: String, in meta: ShardDistributionMetadata?) -> ShardRecord? {
-        meta?.shards.first { $0.contactIdentifier == contactIdentifier }
+        meta?.shards.first { $0.isHeld(by: contactIdentifier) }
+    }
+
+    /// Contacts listed on this screen whose piece is pending or confirmed. Records hold tags
+    /// (`bugs.md` Bug 145), so they're matched against the listed contacts. A trustee hidden
+    /// here or without ML-KEM keys isn't listed and so can't be selected; leaving them out
+    /// replaces the key (Bug 144).
+    private func activeTrusteeIDs(in meta: ShardDistributionMetadata) -> Set<String> {
+        let active = meta.shards.filter { Self.activeStatuses.contains($0.status) }
+        return Set(self.mlkemContacts.map(\.identifier).filter { id in active.contains { $0.isHeld(by: id) } })
     }
 
     private func statusChipStyle(for status: ShardStatus) -> (label: String, bg: Color, fg: Color) {
@@ -522,123 +563,124 @@ struct VaultShardSetup: View {
         }
     }
 
-    // MARK: - Mode helpers
+    // MARK: - Distribution metadata
 
-    /// Fetches the current shard-distribution metadata for this entry (or BEK).
+    /// Fetches the current depth's backup-key distribution metadata.
     /// Not cached — call once per need (once in `body`, once each in the action
     /// methods below) rather than from a redundantly-read computed property.
-    /// `VaultManager.shardDistributionMetadata(for:)` already derives its own
-    /// vault key once per call internally; the fix here is call frequency, not
-    /// key derivation.
     private func fetchDistributionMeta() -> ShardDistributionMetadata? {
-        switch self.mode {
-        case .entry(let id):
-            _ = self.vaultEntries
-            return try? self.vault.shardDistributionMetadata(for: id)
-        case .backup:
-            _ = self.bekRows
-            return try? self.vault.bekShardMetadata()
-        }
+        _ = self.bekRows
+        return try? self.vault.backupShardMetadata(currentDepth: self.security.currentDepth)
     }
 
     // MARK: - Initial state seeding
 
-    /// Populate working state on first appear.
+    /// Populate working state on appear, and again whenever the vault unlocks. Only called
+    /// while unlocked.
     ///
     /// - Existing distribution: seed selectedIDs and threshold from the persisted
     ///   ShardDistributionMetadata, using only active (.pending/.confirmed) shards.
-    /// - New entry (no distribution): seed selectedIDs from the global trustee config
-    ///   if set; threshold stays at its default of 2.
+    /// - No distribution yet: nothing is selected; threshold stays at its default of 2.
+    ///   (Global Trustees pre-selected here until they were retired, `decisions.md`.)
     private func seedInitialState() {
-        if case .backup = self.mode { try? self.vault.setupBEK() }
+        try? self.vault.setupBackup(currentDepth: self.security.currentDepth)
 
         if let meta = self.fetchDistributionMeta() {
-            let activeIDs = Set(meta.shards
-                .filter { Self.activeStatuses.contains($0.status) }
-                .map { $0.contactIdentifier })
+            let activeIDs = self.activeTrusteeIDs(in: meta)
             self.selectedIDs       = activeIDs
             self.threshold         = meta.threshold
             self.snapshotIDs       = activeIDs
             self.snapshotThreshold = meta.threshold
-        } else if !self.globalTrusteeIDs.isEmpty {
-            self.selectedIDs = self.globalTrusteeIDs
         }
     }
 
     // MARK: - Actions
 
     private func markForDistribution() {
+        self.vault.extendSession()
+        let step = Self.nextStep(
+            isUnlocked:      self.vault.isUnlocked,
+            hasDistribution: self.fetchDistributionMeta() != nil,
+            // The real recipients, not `selectedIDs`: a trustee hidden at this depth or without
+            // ML-KEM material stays selected but can't be sent a piece (Bug 144).
+            dropsTrustee:    self.shardCustodyManager?.distributionDropsTrustee(
+                recipients: self.recipientIDs, currentDepth: self.security.currentDepth, vaultManager: self.vault
+            ) == true
+        )
+        switch step {
+        case .unlock:         self.vault.whenUnlocked {}
+        case .explain:        self.showingEducation = true
+        case .confirmRemoval: self.confirmingKeyReplacement = true
+        case .queue:          self.commitDistribution()
+        }
+    }
+
+    /// What the button does next.
+    enum DistributionStep: Equatable {
+        /// The vault is locked: unlock first, and decide nothing else.
+        case unlock
+        /// This depth has no distribution yet: show the education sheet first.
+        case explain
+        /// The distribution leaves someone out, which replaces the key: confirm first.
+        case confirmRemoval
+        /// Queue the pieces.
+        case queue
+    }
+
+    /// Decides the button's next step. Locked is checked first, and the other two inputs are
+    /// only read after it: a locked vault reads as "no distribution" and would otherwise open
+    /// the education sheet over an existing distribution (`bugs.md` Bug 150).
+    static func nextStep(
+        isUnlocked: Bool, hasDistribution: @autoclosure () -> Bool, dropsTrustee: @autoclosure () -> Bool
+    ) -> DistributionStep {
+        guard isUnlocked else { return .unlock }
+        guard hasDistribution() else { return .explain }
+        return dropsTrustee() ? .confirmRemoval : .queue
+    }
+
+    /// The threshold a distribution uses: at least 2, at most the number of recipients.
+    private static func effectiveThreshold(_ threshold: Int, recipients: Int) -> Int {
+        max(2, min(threshold, max(2, recipients)))
+    }
+
+    /// Who a distribution would actually go to: selected contacts that can be sent a piece
+    /// from this depth.
+    private var recipientIDs: [String] {
+        self.mlkemContacts.filter { self.selectedIDs.contains($0.identifier) }.map(\.identifier)
+    }
+
+    private func commitDistribution() {
+        self.vault.extendSession()
         self.marking = true
         self.error = nil
 
-        let contacts = self.mlkemContacts
-        let selected = contacts.filter { self.selectedIDs.contains($0.identifier) }
-        let k        = max(2, min(self.threshold, max(2, selected.count)))
+        let recipients = self.recipientIDs
+        let k          = Self.effectiveThreshold(self.threshold, recipients: recipients.count)
 
         do {
-            // Capture old attrIDs BEFORE prepareShards overwrites the metadata.
-            // Contacts staying in the distribution get a .replace op; new ones get .distribute.
-            var oldAttrIDs: [String: UUID] = [:]
-
-            if let existingMeta = self.fetchDistributionMeta() {
-                let newIDs  = Set(selected.map(\.identifier))
-                let removed = existingMeta.shards.filter {
-                    !newIDs.contains($0.contactIdentifier)
-                        && $0.status != .revoked
-                        && $0.status != .revokePending
-                        && $0.status != .lost
-                }
-                for shard in removed {
-                    try? self.vault.updateShardStatus(attributeID: shard.attributeID, to: .revoked)
-                }
-                for shard in existingMeta.shards where newIDs.contains(shard.contactIdentifier) {
-                    oldAttrIDs[shard.contactIdentifier] = shard.attributeID
-                }
-            }
-
-            let attributes = try self.performPrepareShards(k: k, recipients: selected)
-            for (contact, attribute) in zip(selected, attributes) {
-                try self.shardCustodyManager?.queueDistribute(
-                    attribute: attribute,
-                    for:       contact.identifier,
-                    replacing: oldAttrIDs[contact.identifier]
-                )
-            }
-            let activeIDs = Set(
-                self.fetchDistributionMeta()?.shards
-                    .filter { Self.activeStatuses.contains($0.status) }
-                    .map { $0.contactIdentifier } ?? []
+            guard let custody = self.shardCustodyManager else { throw ShardCustodyManager.CustodyError.keyDerivationFailed }
+            // Splits a new key if this leaves anyone out (Bugs 141, 144).
+            try custody.distributeBackup(
+                threshold:    k,
+                recipients:   recipients,
+                currentDepth: self.security.currentDepth,
+                vaultManager: self.vault
             )
+            // The screen now shows exactly what was queued, so it reads as up to date and
+            // the confirmation shows.
+            let activeIDs = self.fetchDistributionMeta().map(self.activeTrusteeIDs(in:)) ?? []
+            self.selectedIDs       = activeIDs
+            self.threshold         = k
             self.snapshotIDs       = activeIDs
             self.snapshotThreshold = k
             self.marking           = false
-            self.confirmationMessage = "Shards queued for delivery."
+            self.confirmationMessage = "Pieces queued for delivery."
         } catch VaultManager.VaultError.locked {
             self.error   = "Vault locked — unlock and try again."
             self.marking = false
         } catch {
             self.error   = "Failed: \(error.localizedDescription)"
             self.marking = false
-        }
-    }
-
-    /// Call the correct prepare function for the current mode.
-    private func performPrepareShards(k: Int, recipients: [Contact.Profile]) throws -> [SignedAttribute] {
-        switch self.mode {
-        case .entry(let id): return try self.vault.prepareShards(for: id, threshold: k, recipients: recipients)
-        case .backup:        return try self.vault.prepareBEKShards(threshold: k, recipients: recipients)
-        }
-    }
-
-    private func revokeShard(_ record: ShardRecord) {
-        do {
-            try self.vault.updateShardStatus(attributeID: record.attributeID, to: .revoked)
-            // Remove from selection so the UI reflects the change.
-            self.selectedIDs.remove(record.contactIdentifier)
-            self.snapshotIDs.remove(record.contactIdentifier)
-            self.confirmationMessage = nil
-        } catch {
-            self.error = "Revoke failed: \(error.localizedDescription)"
         }
     }
 }
@@ -674,7 +716,7 @@ private struct DistributionCTAButton: View {
             .disabled(!self.enabled || self.isMarking)
 
             if self.canMark {
-                Text("Shards will be delivered automatically with your next message.")
+                Text("Each trustee's piece goes out with your next message to them.")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Color.secondary.opacity(0.6))
                     .multilineTextAlignment(.center)

@@ -29,14 +29,6 @@ struct Settings: View {
                     self.sectionHeader("Contacts", "How your contact list looks and behaves.")
                 }
 
-                Section {
-                    NavigationLink("Vault Recovery") {
-                        VaultRecoverySettings()
-                    }
-                } header: {
-                    self.sectionHeader("Vault & Recovery", "Shard-based backup recovery for your vault and encryption key.")
-                }
-
                 if FeatureFlags.isEnabled(.secureMode) {
                     Section {
                         NavigationLink("Security") {

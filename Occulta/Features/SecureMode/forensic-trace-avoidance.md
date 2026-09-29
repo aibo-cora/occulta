@@ -2,6 +2,23 @@
 
 Documents every measure taken to prevent a forensic examiner from detecting Secure Mode activation, recovering sensitive contact data, or observing behavioural tells — even with physical device access and raw filesystem/database tools.
 
+**Retired, 2026-09-10 — the blob and local-DB-key-rotation mechanism this document was largely
+built around is gone.** `Manager.LayerStore` (the sensitive-contact blob), the staged-key rotation
+`activateSecureMode`/`deactivateSecureMode` used to drive, and every re-encryption pass built on top
+of it were deleted whole (Removal Stages 0-4, `plan.md`). The reason: this session's own security
+analysis (`plan.md`'s Stage 0 decision, `PASSPHRASE_LAYER_KEYS.md`'s honest framing) established that
+against the realistic threat model — AFU forensic extraction, code execution on an unlocked device —
+an examiner derives the local-DB key and the blob key with equal ease, neither gated by biometrics.
+Rotating the key and sealing a blob under a sibling key bought no confidentiality against that
+attacker; it only ever protected against a weaker one (a *locked*-device extraction, which the
+device's own file-protection classes — S3/S4 below — already cover independently). The **Blob File
+Forensics** section and S1 below are retired in full; S5-S7, S9, and K3 are updated to describe what
+actually happens now: Secure Mode is UI-only depth filtering, and the file-protection/PRAGMA/timing
+measures elsewhere in this document (S2, S3, S4, and everything outside the SQLite section) are
+unaffected and remain the document's real protection against raw extraction. Sections retired or
+substantively changed are marked inline; original text is kept below each as a historical record,
+matching this feature's own convention in `bugs.md`.
+
 **Severity scale**
 - **Critical** — directly exposes sensitive contacts or makes Secure Mode activation detectable without any key material
 - **High** — activation timing derivable, sensitive data recoverable with device-level access, or coercion scenario broken
@@ -10,19 +27,24 @@ Documents every measure taken to prevent a forensic examiner from detecting Secu
 
 ---
 
-## Blob File Forensics
+## Blob File Forensics — retired, 2026-09-10
 
-Measures that prevent the `.occbak` file from being identified as a Secure Mode artefact.
+**There is no blob.** `Manager.LayerStore`, the `.occbak` sensitive-contact store, and every
+measure below that defended it were deleted in full (Removal Stage 2, `plan.md`) — see the notice
+at the top of this document for why. Nothing in this section describes shipped code any more. Kept
+below verbatim as a historical record of what the blob's own forensic-cover design looked like.
+
+Measures that prevented the `.occbak` file from being identified as a Secure Mode artefact.
 
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
-| B1 | No-op blob exists from first launch | High | ✅ |
-| B2 | Last-Modified timestamp normalised to app activity | High | ✅ |
-| B3 | Fixed 32-slot file — constant size regardless of payload | Medium | ✅ |
-| B4 | UUID filename + `.occbak` extension, no header | Medium | ✅ |
-| B5 | SE key created at first launch, not at activation | High | ✅ |
-| B6 | Random nonce per write | Low | ✅ |
-| B7 | `isExcludedFromBackup = true` | Medium | ✅ |
+| B1 | No-op blob exists from first launch | High | Retired 2026-09-10 |
+| B2 | Last-Modified timestamp normalised to app activity | High | Retired 2026-09-10 |
+| B3 | Fixed 32-slot file — constant size regardless of payload | Medium | Retired 2026-09-10 |
+| B4 | UUID filename + `.occbak` extension, no header | Medium | Retired 2026-09-10 |
+| B5 | SE key created at first launch, not at activation | High | Retired 2026-09-10 |
+| B6 | Random nonce per write | Low | Retired 2026-09-10 |
+| B7 | `isExcludedFromBackup = true` | Medium | Retired 2026-09-10 |
 
 ### B1 — No-op blob from first launch
 `maintainNoOpBlob()` runs in `OccultaApp.init()` on every install. A `.occbak` file is written before Secure Mode is ever configured. The file's creation timestamp predates activation by however long the app has been installed. A forensic examiner cannot use the blob's existence or creation date to infer that Secure Mode was activated, or when.
@@ -53,18 +75,40 @@ Measures that prevent recovery of deleted or sensitive data from the raw databas
 
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
-| S1 | DB key rotation on activation (cryptographic erasure) | Critical | ✅ |
+| S1 | DB key rotation on activation (cryptographic erasure) | Critical | Retired 2026-09-10 |
 | S2 | `PRAGMA secure_delete = ON` | High | ✅ |
 | S3 | `.completeFileProtection` on SQLite + WAL + SHM | Critical | ✅ |
 | S4 | `.completeFileProtection` re-applied on every save | Medium | ✅ |
-| S5 | Sensitive contacts depth-filtered at UI (Design A — accepted forensic gap); page slack covered by S1 + S2 | Medium | ✅ Design decision |
-| S6 | `visibleThroughDepth` watermark erased on deactivation | Medium | ✅ Bug 12 fixed |
-| S7 | All vault entries stamped hidden under staged key during activation | High | ✅ Bugs 26 & 27 fixed |
+| S5 | Sensitive contacts depth-filtered at UI (accepted forensic gap); page slack covered by S2 | Medium | ✅ Design decision |
+| S6 | `visibleThroughDepth` watermark erased on deactivation | Medium | ✅ Bug 12 fixed; see 2026-09-10 update |
+| S7 | Vault entries stamped hidden by explicit classification, not by activation | High | ✅ Bugs 26 & 27 fixed; see 2026-09-10 update |
 | S8 | Vault entry row count and empty-vault UI visible during biometric-coerced duress — accepted gap (content cryptographically protected) | Medium | ✅ Design decision |
 | S9 | `globalTrusteeDepth` always non-nil; sole trustee mechanism, `GlobalShardConfig` orphaned | Medium | ✅ |
 
-### S1 — DB key rotation on activation (cryptographic erasure)
-The local DB key is `ECDH(ourSEKey_localDB, G)` — device-bound and accessible when the device is unlocked. In duress mode the device is unlocked, so the current DB key is derivable. Without rotation, an examiner who extracts the raw SQLite file could use the current DB key to decrypt page-slack still containing deleted sensitive contacts. After rotation, deleted pages are encrypted under the old key, which is deleted after commit — the current DB key decrypts nothing from those pages. This is the core reason the DB key rotates on activation.
+### S1 — DB key rotation on activation (cryptographic erasure) — retired, 2026-09-10
+
+**There is no more key rotation.** `activateSecureMode`/`deactivateSecureMode` no longer touch the
+local DB key at all — no staged key, no commit, no superseded-key deletion (Removal Stages 0-3,
+`plan.md`). The page-slack protection this measure describes is genuinely gone, not merely
+unneeded: a deleted contact's page slack, once cryptographically erased by a rotation, is no longer
+re-erased by anything. What remains covering deleted-row residue is S2 (`secure_delete = ON`, which
+zeroes freed pages at delete time regardless of any key) — a real but different guarantee, since it
+protects at the moment of deletion rather than retroactively re-encrypting everything each
+activation.
+
+**Why this was removed rather than kept.** The rotation's actual protective value was already
+reassessed, independently of this removal, against the realistic threat model: an AFU-capable
+examiner derives the local DB key from an unlocked device with no biometric gate, identically before
+and after any rotation — there was never a key the rotation put out of that attacker's reach. See
+the notice at the top of this document and `plan.md`'s Stage 0 entry for the full reasoning. Kept
+below verbatim as a historical record of what the measure did while it existed.
+
+**Original text (historical):** The local DB key is `ECDH(ourSEKey_localDB, G)` — device-bound and
+accessible when the device is unlocked. In duress mode the device is unlocked, so the current DB key
+is derivable. Without rotation, an examiner who extracts the raw SQLite file could use the current
+DB key to decrypt page-slack still containing deleted sensitive contacts. After rotation, deleted
+pages are encrypted under the old key, which is deleted after commit — the current DB key decrypts
+nothing from those pages. This is the core reason the DB key rotates on activation.
 
 ### S2 — `PRAGMA secure_delete = ON`
 Without this, SQLite leaves old ciphertext in free-list pages when rows are deleted or updated. That residue survives WAL checkpoints and is visible in raw disk images. With `secure_delete = ON`, SQLite zeroes freed pages before releasing them, eliminating ciphertext residue entirely. Set at init via a helper SQLite connection; stored in the database header and persists across all future connections, including SwiftData's own.
@@ -75,41 +119,85 @@ The main `.sqlite`, `-wal`, and `-shm` files are stamped with `FileProtectionTyp
 ### S4 — File protection re-applied on every save
 SwiftData can recreate `-wal` and `-shm` sidecar files after WAL merges, schema migrations, and conflict resolution. Newly created sidecar files receive iOS default protection (`completeUnlessOpen`), not `complete`. `OccultaApp` listens to `NSManagedObjectContext.didSaveObjectIDsNotification` and re-stamps all three files on every save so no sidecar can sit with weaker protection.
 
-### S5 — Sensitive contacts remain in DB; page slack covered by S1 + S2
-**Design A — intentional choice.** Sensitive contacts are not hard-deleted from the SQLite store. They remain in the DB re-encrypted under the new canonical key (same pass as safe contacts) with `visibleThroughDepth` set to a value that hides them at duress depth. The UI enforces this: at depth 0 (normal PIN) they are shown; at depth 1 (duress PIN) they are hidden by the contact list filter.
+### S5 — Sensitive contacts remain in DB; UI-only depth filtering
 
-**Residual forensic gap:** a raw SQLite examination during a duress exposure can find these rows and decrypt them using the canonical key (derivable on an unlocked device). This is an **explicitly accepted trade-off** for Phase 1.
+**Updated, 2026-09-10.** Sensitive contacts were never hard-deleted from the SQLite store (that was
+Bug 13's own finding, closed as a design decision below this entry). What changed is *why* they
+remain readable: there is no more re-encryption pass at all — `activateSecureMode`/
+`deactivateSecureMode` do not touch `Contact.Profile` fields (Removal Stages 0-3, `plan.md`). A
+contact's `visibleThroughDepth` is set once, by the same explicit classification action
+(`ContactManager.setVisibility`/`saveClassification`) whether or not Secure Mode has ever been
+activated, and stays exactly as written until the user changes it again. The UI enforces visibility
+the same way it always did: at depth 0 (normal PIN) a contact classified sensitive is shown; beyond
+its ceiling, it is hidden by the contact list filter.
 
-**Design B considered and deferred.** The alternative design leaves sensitive contacts as unreadable shells in the DB (fields encrypted under the deleted old key), with the blob as the sole readable copy. On normal PIN entry, contacts are loaded from the blob into memory and wiped on lock. An examiner in duress mode finds only unreadable shells — no canonical-key access helps. Design B provides a genuine cryptographic guarantee that Design A does not. It was deferred for Phase 1 in favour of implementation simplicity. The blob infrastructure already supports it; upgrading requires: (1) re-encrypting only safe contacts in activation step 8, (2) loading `inMemorySensitiveContacts` from the blob on normal unlock, (3) wiping that array on lock, (4) merging DB + in-memory contacts in the contact list view. Design B is the correct upgrade path if the threat model is elevated beyond mid-tier adversaries.
+**Residual forensic gap, unchanged in shape:** a raw SQLite examination during a duress exposure can
+find these rows and decrypt them using the canonical key (derivable on an unlocked device, no
+biometric gate). This was already an **explicitly accepted trade-off** before this removal — the
+removal did not create this gap, it removed a rotation step that this session's own security analysis
+established was not meaningfully closing it either (see the notice at the top of this document).
 
-**Blob role under Design A.** The blob is sealed at activation with a snapshot of sensitive contacts. Because both the blob key and the DB canonical key derive from SE keys with identical access controls (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, no biometric gate), the blob provides no cryptographic advantage over the DB during a live duress exposure. Its roles are: (1) reliable restoration source during deactivation — deactivation re-encrypts contacts from blob plaintext under the staged key; (2) forensic cover object — present from first launch regardless of Secure Mode state (B1).
+**Design B is not a future upgrade path any more — the machinery it would have required is gone.**
+The alternative design this entry used to describe (sensitive contacts as unreadable DB shells, the
+blob as sole readable copy, contacts loaded into memory on unlock and wiped on lock) depended entirely
+on `Manager.LayerStore` and the staged-key rotation, both deleted. Building it again would mean
+re-building the blob mechanism from nothing, against the same security analysis that concluded it
+wasn't buying real protection against the realistic threat model. Bug 108, which found Design B's own
+missing fifth step (no mechanism to persist a mid-session edit), is closed as moot for the same
+reason — nothing is asking that question any more.
 
-Page-slack protection from *pre-activation* rows is handled by S1 (DB key rotation — old key deleted) and S2 (`PRAGMA secure_delete = ON` — freed pages zeroed). Rows that persist across activation are encrypted under the new canonical key and are not residue in the forensic sense.
+Page-slack protection from any deleted row is handled by S2 (`PRAGMA secure_delete = ON` — freed
+pages zeroed at deletion time) alone now; S1's rotation-based re-erasure is retired, see above.
 
-### S6 — `visibleThroughDepth` always non-nil; deactivation preserves it
-Before Bug 12's fix, deactivation re-encrypted every contact's `visibleThroughDepth` rather than clearing or preserving it correctly, leaving a permanent non-null field on contacts that existed at activation time. An examiner could identify which contacts predated activation without decrypting anything.
+### S6 — `visibleThroughDepth` always non-nil
 
-Bug 12's original fix made deactivation set `visibleThroughDepth = nil` for all safe contacts, reasoning that nil matched "a contact that never went through Secure Mode." A later fix (May 22) made contact and vault-entry *creation* always stamp a non-nil value (`Int.max` for safe contacts, the real depth otherwise) — closing a related creation-time tell but silently invalidating Bug 12's assumption: after that change, a contact that never touched Secure Mode is also never nil. Bug 12's deactivation reset was carried forward unchanged during the later cascade-deactivation fix (July 30, which correctly stopped flattening genuinely classified contacts to nil but preserved the Int.max→nil branch "for forensic neutrality" — a rationale that no longer held).
+**Updated, 2026-09-10.** The migration and creation-time invariant this entry describes are
+unaffected by the removal — `visibleThroughDepth` is still always non-nil from creation onward
+(`Int.max` for safe contacts, the real depth otherwise), and `DatabaseMigration.
+migrateSafeContactVisibilityBackfill` still backfills any legacy nil rows on every launch. What no
+longer applies is the *deactivation* half of this entry's history: there is no more "deactivation
+re-seals safe contacts to `Int.max` under the staged key" step, because deactivation does not touch
+`Contact.Profile` at all now. The invariant this entry protects (no contact is ever observably nil in
+steady state) is maintained entirely by the creation-time stamp and the launch migration — it no
+longer has a second enforcement point at deactivation, because there is nothing left for deactivation
+to re-seal or accidentally regress.
 
-Net effect until this fix: deactivation produced a minority of nil rows standing out against a majority-`Int.max` baseline — the opposite of blending in. **Current behavior:** deactivation re-seals safe contacts to `Int.max` under the staged key instead of clearing to nil, matching the same non-nil invariant every contact has carried since creation. A one-time migration (`DatabaseMigration.migrateSafeContactVisibilityBackfill`, run unconditionally on every launch) backfills any legacy nil rows predating the May 22 creation-time fix to `Int.max`. `visibleThroughDepth` is nil only for contacts not yet reached by that backfill; steady-state, no contact should ever be nil.
+Vault entries: see S7 below, substantially rewritten — the "deactivation always preserves the real
+value" claim this paragraph used to make about them no longer holds the way it used to.
 
-Vault entries are unaffected by this fix — `VaultEntry.visibleThroughDepth` deactivation (S7) already always preserves the real value and never manufactures nil, so it never had this regression. Its own legacy-nil population (entries predating `addEntry`'s depth stamp) is a separate, smaller, accepted gap: `VaultEntry` uses exact-match depth semantics, not a ceiling, so there is no non-nil value that reproduces nil's "visible at every depth" meaning without a dedicated sentinel — deferred pending a decision on introducing one.
+### S7 — Vault entry visibility: creation-time stamp only, no lifecycle reset
 
-### S7 — All vault entries stamped hidden under staged key during activation
-`activateSecureMode` Step 8 re-encrypts every `VaultEntry.visibleThroughDepth` under the staged key, guaranteeing no entry leaks into duress mode. Three cases are handled without exception:
+**Rewritten, 2026-09-10 — this entry used to describe activation/deactivation actively managing every
+vault entry's visibility on every cycle. That no longer happens, and the difference is not purely
+cosmetic — see the note at the end.**
 
-- **Non-nil, readable** — existing depth value re-encrypted under staged key verbatim.
-- **Nil** (Bug 26 — entries predating `addEntry`'s depth stamp) — stamped `encode(0)` under staged key: hidden at all duress depths, visible at depth 0. Consistent with `addEntry`'s own convention for normal-mode entries.
-- **Non-nil, unreadable** (Bug 27 — corrupt or wrong-key ciphertext) — treated as `encode(0)` under staged key. Fail-safe to hidden: an entry that is invisible in duress mode is a UX inconvenience; one that is visible is a security failure.
+`VaultEntry.visibleThroughDepth` is stamped exactly once, at creation, with `currentDepth`
+(`Vault+Manager.swift:253`, `Vault+Manager+Backup.swift:280`), and compared by **exact match**
+(`value == depth`, not a ceiling — `Vault+Model.swift:267`'s own doc comment explains why: a ceiling
+would let an entry created at a duress depth leak upward into every shallower depth, including the
+real depth-0 vault). Nothing else writes this field any more. The three historical cases this entry
+used to describe activation handling (Bugs 26 and 27, both about what happens to a nil or unreadable
+stamp) are moot as *activation-time* concerns — activation runs no loop over vault entries at all —
+but their underlying fail-safe answer is unchanged at the one remaining read site:
+`Manager.Security.isEntryVisible` passes `whenUnclassified: false`, so a nil or undecryptable stamp
+still resolves to hidden while restricted, regardless of how it got that way.
 
-Deactivation Step 6 sets `entry.visibleThroughDepth = nil` unconditionally, restoring the pre-activation default for all entries.
+**What actually changed, and why it matters:** activation's old bulk re-stamp and deactivation's old
+bulk reset (`entry.visibleThroughDepth = nil` on every deactivation) together guaranteed that a stale
+depth stamp from one duress session could never survive into a later, unrelated one — depth *numbers*
+are reused across duress sessions (a fresh activation always walks back up through 1, 2, 3... the same
+way), so without a reset, an entry created during one duress session can resurface in a later,
+unrelated session that happens to reach the same depth number. Filed as **`bugs.md` Bug 110** — low
+severity (it resurfaces content at the same restriction level it was already exposed to, not a leak
+into a safer view; S7's core exact-match protection against upward leakage into the real vault is
+unaffected), open, not fixed in this removal effort.
 
 ### S8 — Vault entry row count and empty-vault UI: accepted gap
 `VaultEntry.id` (UUID) and `createdAt` (Date) are plaintext SwiftData columns. A raw SQLite dump without any key material reveals how many vault entries exist and when they were created. This count is not depth-gated — it is the same whether read at depth 0 or depth N.
 
 **UI mismatch tell.** A coercer who can also force biometric unlock (Face ID) sees the vault UI show 0 entries ("No entries yet") while the raw database contains N rows. That mismatch is a direct tell, structurally identical to the S5 contact-row gap.
 
-**Why this is less severe than S5.** Vault entry *content* (`encryptedLabel`, `encryptedContent`, `encryptedEntryKey`) is sealed under a dedicated SE key that requires a fresh biometric evaluation — entirely independent of the local DB key that rotates during activation. A duress examiner who only holds the duress PIN cannot unlock the vault at all; they see "Vault Locked" with no UI evidence of hidden entries. The mismatch only materialises under the conjunction of duress PIN *and* forced biometric auth — a more demanding attack than PIN-only coercion.
+**Why this is less severe than S5.** Vault entry *content* (`encryptedLabel`, `encryptedContent`, `encryptedEntryKey`) is sealed under a dedicated SE key that requires a fresh biometric evaluation — entirely independent of the local DB key (which no longer rotates at all — see S1). A duress examiner who only holds the duress PIN cannot unlock the vault at all; they see "Vault Locked" with no UI evidence of hidden entries. The mismatch only materialises under the conjunction of duress PIN *and* forced biometric auth — a more demanding attack than PIN-only coercion.
 
 **`visibleThroughDepth` at depth 0.** `addEntry` stamps every new entry with `visibleThroughDepth = encrypt(currentDepth)` even before Secure Mode is configured, so a non-nil value is not itself a Secure Mode tell. However, decrypting the field (canonical DB key, device unlocked) and finding `0` reveals the entry is hidden at all duress depths — confirming that the entry was deliberately excluded from the duress view.
 
@@ -121,11 +209,18 @@ Deactivation Step 6 sets `entry.visibleThroughDepth = nil` unconditionally, rest
 Shamir shard distribution, at a specific depth (exact-match, mirroring
 `VaultEntry.visibleThroughDepth`: -1 = not a trustee, N = trustee at exactly depth N).
 Designed alongside S6's fix, so it never repeats the nil-as-default mistake: the field
-is stamped at contact creation (`Contact+Manager.swift`), preserved through
-activation/deactivation re-keying (including the blob round-trip via
-`LayerContact.globalTrusteeDepth`), and backfilled for pre-existing contacts
-(`DatabaseMigration.migrateGlobalTrusteeDepthBackfill`) — nil is never a valid steady
-state, same invariant as `visibleThroughDepth`.
+is stamped at contact creation (`Contact+Manager.swift`) and updated only by the explicit
+trustee-designation action (`ContactManager+Classification.swift`) — a deliberate,
+depth-level policy choice, not a byproduct of Secure Mode's lifecycle. **Updated,
+2026-09-10:** the "preserved through activation/deactivation re-keying" this entry used
+to describe no longer applies — activation/deactivation touch no `Contact.Profile` field
+at all now (Removal Stages 0-3, `plan.md`), so this field is simply never touched by
+either, the same way S6 describes for `visibleThroughDepth`. It is unaffected by the
+`VaultEntry` depth-reuse gap (`bugs.md` Bug 110) for the same reason `originDepth` is:
+a global-trustee designation is a deliberate per-depth-severity policy meant to apply
+consistently to any future session reaching that depth, not a session-specific accident.
+Backfilled for pre-existing contacts (`DatabaseMigration.migrateGlobalTrusteeDepthBackfill`)
+— nil is never a valid steady state, same invariant as `visibleThroughDepth`.
 
 **Sole mechanism at every depth, including 0.** `globalTrusteeDepth` is the only global-
 trustee storage `Vault+ShardSetup.swift` and `VaultGlobalTrustees.swift` read or write,
@@ -157,7 +252,7 @@ Measures that prevent detection via Keychain metadata or the persisted config ro
 |---|---------|----------|--------|
 | K1 | `persistedDepth` + `pinEnabledPerDepth` encoding — gate state opaque | Medium | ✅ |
 | K2 | `persistedDepth` and `pinEnabledPerDepth` always populated from first PIN write | Low | ✅ |
-| K3 | Blob key HKDF-domain-separated from PIN verifier keys | Medium | ✅ |
+| K3 | Blob key HKDF-domain-separated from PIN verifier keys | Medium | Retired 2026-09-10 |
 
 ### K1 — `persistedDepth` + `pinEnabledPerDepth` encoding
 The lock state is stored as two independent encrypted structures on `AppLayerConfig`:
@@ -169,8 +264,10 @@ No plaintext boolean flags. A raw `AppLayerConfig` row is all opaque `Data` — 
 ### K2 — `persistedDepth` and `pinEnabledPerDepth` always populated from first PIN write
 `configurePIN` calls `writePersistedDepth(0)` and initialises all 32 `pinEnabledPerDepth` entries to encrypted `1` immediately, so both structures are present from the moment any PIN is set. Without this, field absence vs. presence would distinguish no-PIN from PIN-only or Secure Mode states without any keys. Both structures are always present and always opaque.
 
-### K3 — Blob key HKDF domain separation
-Blob key: `HKDF(seKey_secureMode, info: "blob-key")`. PIN verifier keys: `HKDF(seKey_secureMode, info: label ∥ pin)`. Different `info` strings guarantee independent key streams. A blob compromise — requiring SE access but not biometrics — yields nothing about the PIN. A PIN verifier compromise yields nothing about blob content.
+### K3 — Blob key HKDF domain separation — retired, 2026-09-10
+**There is no blob key.** The blob it was separated from was deleted along with the rest of `Manager.LayerStore` (Removal Stage 2, `plan.md`) — see the notice at the top of this document. Kept below verbatim as a historical record.
+
+**Original text (historical):** Blob key: `HKDF(seKey_secureMode, info: "blob-key")`. PIN verifier keys: `HKDF(seKey_secureMode, info: label ∥ pin)`. Different `info` strings guarantee independent key streams. A blob compromise — requiring SE access but not biometrics — yields nothing about the PIN. A PIN verifier compromise yields nothing about blob content.
 
 ---
 
@@ -300,10 +397,14 @@ shareable — at depth 0, and only there.
 ## OS-Level Artifacts Outside the Container
 
 Added 2026-08-15. Every other section of this document covers artifacts *this app writes*, where
-key rotation (S1) and file protection (S3) apply. These two are different in kind: iOS writes them,
-they live outside the app container, and **cryptographic erasure cannot reach them** — a full
-deactivation and key rotation leaves both untouched. That makes them the weakest link in the
-document, and they were absent from it until now.
+file protection (S3) applies. These two are different in kind: iOS writes them, they live outside
+the app container, and **this app's own file-protection measures cannot reach them** — nothing this
+app does, deactivation included, touches either. That makes them the weakest link in the document,
+and they were absent from it until now. (**Historical note, 2026-09-10:** this paragraph originally
+also named key rotation, S1, alongside file protection as a measure that couldn't reach these
+artifacts. S1 itself is now retired — see the notice at the top of this document — so the point
+simplifies rather than changes: file protection was always the one that mattered for artifacts
+outside the container, since rotation never touched anything outside it either.)
 
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|

@@ -170,7 +170,7 @@ Group membership uses two independent fixed-capacity arrays — one per layer �
 
 Each array always contains exactly 32 entries. Real member slots hold `AES-GCM(padded contactIdentifier)` — identifiers are zero-padded to 128 bytes before encryption, producing a fixed 156-byte ciphertext (12-byte nonce + 128-byte data + 16-byte tag). Unused slots hold 156 cryptographically random bytes, indistinguishable from real entries in size and appearance.
 
-**Hard cap: 32 members per layer.** This is sufficient for personal, family, and small-team use cases within Occulta's threat model (proximity-exchanged contacts, out-of-band delivery). The fixed capacity directly determines the forensic footprint per group (2 × 32 × 156 bytes ≈ 10 KB). The coincidence with `AppLayerConfig.maxVerifierCount` is incidental.
+**Hard cap: 32 members per layer.** This is sufficient for personal, family, and small-team use cases within Occulta's threat model (proximity-exchanged contacts, out-of-band delivery). The fixed capacity directly determines the forensic footprint per group (2 × 32 × 156 bytes ≈ 10 KB). The coincidence with `AppLayerConfig.maxDepthCount` is incidental.
 
 **Write behaviour:** on every add or remove, both arrays are fully recomputed with fresh nonces. A database diff between any two snapshots shows all 64 entries changed — no slot position, no modified entry, no touched array is identifiable.
 

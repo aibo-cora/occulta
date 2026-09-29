@@ -17,7 +17,6 @@ struct ComposableMessage: View {
     @Query private var groups:   [Group]
     @Environment(ContactManager.self) private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
-    @Environment(VaultManager.self) private var vaultManager: VaultManager?
 
     @State private var showMediaPicker  = false
     @State private var showFileImporter = false
@@ -158,8 +157,7 @@ struct ComposableMessage: View {
     private func encryptAction() {
         let cm  = self.contactManager
         let scm = self.shardCustodyManager
-        let vlt = self.vaultManager
-        Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
+        Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm) }
     }
 }
 
