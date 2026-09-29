@@ -335,22 +335,15 @@ struct OccultaBundle: Codable {
         let attribute: SignedAttribute?
         /// A single shard ID. Non-nil for `.replace` (old shard to delete).
         let attributeID: UUID?
-        /// Trustee's vouching signature, category `.attestation`. Only ever set on
-        /// `.handback`, and only when the trustee's own check against a retained
-        /// old owner key succeeded — see Bug 94 remedy 2. `nil` means "verify
-        /// `attribute` directly against the owner's current identity" (Branch A).
-        let attestation: SignedAttribute?
 
         init(
             kind: Kind,
             attribute: SignedAttribute? = nil,
-            attributeID: UUID? = nil,
-            attestation: SignedAttribute? = nil
+            attributeID: UUID? = nil
         ) {
             self.kind        = kind
             self.attribute   = attribute
             self.attributeID = attributeID
-            self.attestation = attestation
         }
     }
 
@@ -408,11 +401,6 @@ struct OccultaBundle: Codable {
         /// Trustee → owner direction only. Added in v1.7.0.
         let custodyManifest: [UUID]?
 
-        /// IDs the owner expects this trustee to hold. Absence of an ID is an implicit
-        /// revoke signal for same-fingerprint shards. `nil` = old build (no-op).
-        /// Owner → trustee direction only. Added in v1.7.0.
-        let expectedShards: [UUID]?
-
         /// Sender's app version string (e.g. `"1.8.2"`). Receivers derive the contact's
         /// `maxBundleVersion` from this and store it encrypted on the contact record.
         /// `nil` means the sender is on a build older than 1.8.2. Added in v1.8.2.
@@ -440,7 +428,6 @@ struct OccultaBundle: Codable {
             identityChallenge: IdentityChallengeEnvelope? = nil,
             shardOperations: [ShardOperation]? = nil,
             custodyManifest: [UUID]? = nil,
-            expectedShards: [UUID]? = nil,
             appVersion: String? = nil,
             senderProof: Data? = nil,
             groupID: UUID? = nil
@@ -450,7 +437,6 @@ struct OccultaBundle: Codable {
             self.identityChallenge = identityChallenge
             self.shardOperations   = shardOperations
             self.custodyManifest   = custodyManifest
-            self.expectedShards    = expectedShards
             self.appVersion        = appVersion
             self.senderProof       = senderProof
             self.groupID           = groupID
@@ -567,15 +553,19 @@ struct OccultaBundle: Codable {
     /// Plaintext sealed inside each `Recipient.wrappedPayload`.
     /// Only the intended recipient can derive `wrappingKey` to open it.
     ///
-    /// The five shard-related fields are always populated by a `.groupShardCapable`
+    /// The shard-related fields are always populated by a `.groupShardCapable`
     /// sender, padded to a fixed per-bundle tier (`ShardPadding.tier(for:)`) so every
     /// recipient's encoded payload is the same length regardless of whether they
     /// carry real shard content — otherwise ciphertext length alone would reveal
     /// which group member is an SSS trustee (`GroupEnvelope`/`wrappedPayload` travel
     /// as a cleartext JSON TLV block; see `WireHandle.encode(_:)`). Filler
     /// `shardOperations` entries carry `kind == .unsupported` (already ignored by
-    /// `ShardCustodyManager.handleInbound`'s dispatch); filler `custodyManifest`/
-    /// `expectedShards` entries are random UUIDs beyond the real count fields.
+    /// `ShardCustodyManager.handleInbound`'s dispatch); filler `custodyManifest`
+    /// entries are random UUIDs beyond the real count field.
+    ///
+    /// `expectedShards`/`expectedShardsCount` were removed with implicit revoke
+    /// (`bugs.md` Bug 141). A payload from an older sender still carries them; the
+    /// keyed decoder below ignores them.
     nonisolated
     struct RecipientPayload: Codable {
         /// 32-byte random session key that decrypts the shared outer ciphertext.
@@ -591,26 +581,27 @@ struct OccultaBundle: Codable {
         /// `custodyManifestCount` entries are real shard IDs.
         let custodyManifest: [UUID]
         let custodyManifestCount: Int
-        /// Fixed-size (tier-padded), always present. Only the first
-        /// `expectedShardsCount` entries are real shard IDs.
-        let expectedShards: [UUID]
-        let expectedShardsCount: Int
-        /// Whether the sender actually attempted to build `custodyManifest` and
-        /// `expectedShards` for this recipient — always both together, never one
-        /// without the other (see `ContactManager.encryptGroupBundle`).
+        /// Whether the sender actually attempted to build `custodyManifest` (and, before
+        /// Bug 141, `expectedShards`) for this recipient.
         ///
-        /// Needed because `custodyManifestCount`/`expectedShardsCount == 0` is
+        /// **This build always sends `false`** (`ContactManager.encryptGroupBundle`). A
+        /// `v1.10.3` receiver reads `true` as "an expected-shards list is present", and a
+        /// missing list decodes as `[]`, which it treats as "delete every piece you hold
+        /// from me" (`bugs.md` Bug 141). The field is still read, so a manifest from an
+        /// older sender is processed.
+        ///
+        /// Needed because `custodyManifestCount == 0` is
         /// genuinely ambiguous on its own: it means either "sender attempted this
         /// and found nothing" (a real, meaningful signal — e.g. "I hold zero of
-        /// your shards", or an intentional revoke-all) or "sender never attempted
+        /// your shards") or "sender never attempted
         /// this at all" (ineligible member, or a locked vault at send time — no
         /// signal was intended). Those two cases must be told apart: a real empty
-        /// list has to reach `ShardCustodyManager.processInboundManifest`/
-        /// `processExpectedShards` (the receive side reads a `nil` array as "skip
+        /// list has to reach `ShardCustodyManager.processInboundManifest`
+        /// (the receive side reads a `nil` array as "skip
         /// verification" and a real, possibly-empty array as "process it" — see
         /// `ContactManager.openGroup`), while a not-attempted list must not.
         /// Without this flag both cases decode to the same `count == 0`, so the
-        /// receiver would silently skip real revoke-all/loss-detection signals
+        /// receiver would silently skip real loss-detection signals
         /// exactly as often as it correctly skips irrelevant ones.
         let shardMetadataAttempted: Bool
 
@@ -631,8 +622,6 @@ struct OccultaBundle: Codable {
             shardOperations: [ShardOperation] = [],
             custodyManifest: [UUID] = [],
             custodyManifestCount: Int = 0,
-            expectedShards: [UUID] = [],
-            expectedShardsCount: Int = 0,
             shardMetadataAttempted: Bool = false,
             senderEphemeralSignature: Data? = nil
         ) {
@@ -641,8 +630,6 @@ struct OccultaBundle: Codable {
             self.shardOperations          = shardOperations
             self.custodyManifest          = custodyManifest
             self.custodyManifestCount     = custodyManifestCount
-            self.expectedShards           = expectedShards
-            self.expectedShardsCount      = expectedShardsCount
             self.shardMetadataAttempted   = shardMetadataAttempted
             self.senderEphemeralSignature = senderEphemeralSignature
         }
@@ -654,7 +641,7 @@ struct OccultaBundle: Codable {
         // shardMetadataAttempted defaults to false for the same reason — a sender
         // old enough not to know about it never attempted anything.
         enum CodingKeys: String, CodingKey {
-            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, expectedShards, expectedShardsCount, shardMetadataAttempted, senderEphemeralSignature
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature
         }
 
         init(from decoder: Decoder) throws {
@@ -664,8 +651,6 @@ struct OccultaBundle: Codable {
             self.shardOperations          = try c.decodeIfPresent([ShardOperation].self, forKey: .shardOperations) ?? []
             self.custodyManifest          = try c.decodeIfPresent([UUID].self, forKey: .custodyManifest) ?? []
             self.custodyManifestCount     = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
-            self.expectedShards           = try c.decodeIfPresent([UUID].self, forKey: .expectedShards) ?? []
-            self.expectedShardsCount      = try c.decodeIfPresent(Int.self, forKey: .expectedShardsCount) ?? 0
             self.shardMetadataAttempted   = try c.decodeIfPresent(Bool.self, forKey: .shardMetadataAttempted) ?? false
             self.senderEphemeralSignature = try c.decodeIfPresent(Data.self, forKey: .senderEphemeralSignature)
         }

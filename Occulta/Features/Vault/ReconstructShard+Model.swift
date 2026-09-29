@@ -2,39 +2,29 @@
 //  ReconstructShard+Model.swift
 //  Occulta
 //
-//  Transient SwiftData buffer for shards Alice's device collects during
-//  per-entry PEK reconstruction. One row per `.respond` bundle absorbed;
-//  deleted in bulk once a per-entry threshold is reached and reconstruction
-//  succeeds.
+//  RETIRED, 2026-09-21 — RECOVERY_BUFFER_LAYERING.md §9.3. This was the live
+//  reconstruction buffer for both per-entry PEK reconstruction and BEK restore;
+//  `PendingShamirSecretRestore` (`Vault+Model.swift`) replaced it, keyed by the
+//  secret's own identity instead of this model's shared, sender-keyed pool.
 //
-//  Scope: this model handles per-entry PEK recovery. BEK restore shards that
-//  arrive during device recovery are stored in a separate encrypted file
-//  (backup-import-cache-shards.dat) to isolate their lifecycle from per-entry
-//  cleanup. See VAULT_BACKUP_GUIDE.md and Vault+Manager+Backup.swift.
+//  Kept permanently, migration-only — deliberately, not an oversight. Unlike the
+//  BEK array's own retirement (a plain file, readable by hand-decoding raw bytes
+//  without needing its old Swift type to survive), rows of this type live inside
+//  the SwiftData-backed store itself: fetching and decoding them requires the
+//  `@Model` type and `OccultaApp.schema` entry to still exist. Deleting either
+//  would strand any device that upgrades straight into a build past this one with
+//  a genuine in-flight restore still sitting in `ReconstructShard` rows. Nothing writes
+//  to this model anymore; `VaultManager.migrateReconstructShardsIfNeeded()` (called
+//  from `unlock()`) is the only remaining reader, and it deletes every row it
+//  touches — so the live population only ever shrinks, never grows, from here on.
 //
-//  Privacy model — encryption at rest:
+//  Privacy model — encryption at rest (historical, while any rows remain):
 //  - The target entryID, the SignedAttribute.id (`attrID`), and the full
 //    SignedAttribute live inside `encryptedPayload`, sealed under the recovery
 //    buffer key with AAD = aad().
-//  - Cold-disk forensics learns "Alice has N rows in the reconstruct buffer".
-//    No entry identifiers, no shard counts per entry, no signature material.
-//  - Querying "shards for entry X" requires decrypting every row. The buffer is
-//    transient and small (active recoveries only), so the cost is negligible.
-//
-//  Lifecycle:
-//  - Inserted on each `.respond` ShardOperation routed by ShardCustodyManager.
-//  - Bulk-deleted after VaultManager runs reconstruction for the matching
-//    entryID and re-wraps the recovered PEK under the current vault key.
-//  - User-cancelled recovery: bulk-delete by walking and matching entryID.
-//  - Stale rows (e.g. > 30 days, never reaching threshold) — periodic prune in a
-//    future pass; not part of this scaffolding.
-//
-//  Why a separate model from CustodyShard:
-//  - Different encryption keys (recovery buffer vs. shard custody) — the type
-//    system enforces "you can't decrypt one with the other".
-//  - Different lifecycles (transient queue vs. long-lived custody store).
-//  - Different sealed payloads (reconstruct must carry entryID + attrID; custody
-//    only carries the owner fingerprint + the signed attribute).
+//  - Cold-disk forensics learns "N rows remain in the retired reconstruct
+//    buffer" — no entry identifiers, no shard counts per entry, no signature
+//    material, without the restore vault key.
 //
 
 import Foundation
@@ -49,7 +39,7 @@ final class ReconstructShard {
     var id: UUID = UUID()
 
     /// Sealed `Payload`: nonce(12B) ∥ ciphertext ∥ tag(16B) — CryptoKit .combined.
-    /// AAD = aad(). Key = `KeyManagerProtocol.deriveRecoveryBufferKey()`.
+    /// AAD = aad(). Key = `KeyManagerProtocol.deriveRestoreVaultKey()`.
     var encryptedPayload: Data = Data()
 
     // MARK: Init
@@ -77,9 +67,12 @@ final class ReconstructShard {
     /// `entryID` is needed to group shards toward the correct entry's threshold.
     /// `attrID` lets us deduplicate within an entry's group (one shard per
     /// trustee, identified by the SignedAttribute.id from the original split).
-    /// `senderIdentifier`/`attestation` are Bug 94 remedy 2: at most one stored
-    /// row per (entryID, senderIdentifier) is kept, so a threshold-reaching group
-    /// requires distinct senders, not just distinct attrIDs.
+    /// `senderIdentifier` is Bug 94 remedy 2: at most one stored row per
+    /// (entryID, senderIdentifier) is kept, so a threshold-reaching group requires
+    /// distinct senders, not just distinct attrIDs. No longer carries an
+    /// `attestation` — `bugs.md` Bug 125 removed it from the wire format entirely;
+    /// it never verified content authenticity, only sender identity, which the
+    /// bundle's own transport already establishes.
     ///
     /// Unlike the BEK path, a per-entry group *does* reach the entry's real threshold:
     /// the entry is one this device split itself, so its `shardDistributionEncrypted`
@@ -90,6 +83,30 @@ final class ReconstructShard {
         let attrID:  UUID
         let signedAttribute:  SignedAttribute
         let senderIdentifier: String
-        let attestation:      SignedAttribute?
+        /// BEK-restore rows only (`entryID` resolves to no real `VaultEntry`) — which
+        /// depth's restore this shard belongs to, `DepthCodec`-encoded (2 bytes, never a
+        /// raw `Int`: see `RECOVERY_BUFFER_LAYERING.md` §6 item 9.1 for why a raw `Int`
+        /// would make ciphertext length correlate with the depth's value). `nil` for
+        /// per-entry PEK-reconstruction rows, which aren't depth-partitioned.
+        let depth: Data?
+
+        /// Explicit init, not the synthesized memberwise one — a `let` property with a
+        /// declaration-site default (`= nil`) is fixed forever and never actually settable
+        /// (Swift excludes it from Codable decoding too), which is the opposite of what a
+        /// per-row value needs. A default *parameter* here gives every existing call site
+        /// (which never mentions `depth`) the same free `nil` without that trap.
+        init(
+            entryID:          UUID,
+            attrID:           UUID,
+            signedAttribute:  SignedAttribute,
+            senderIdentifier: String,
+            depth:            Data? = nil
+        ) {
+            self.entryID          = entryID
+            self.attrID           = attrID
+            self.signedAttribute  = signedAttribute
+            self.senderIdentifier = senderIdentifier
+            self.depth            = depth
+        }
     }
 }

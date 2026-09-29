@@ -87,14 +87,12 @@ extension Contact {
         /// migration — nil is not a valid steady state; see forensic-trace-avoidance.md S6.
         var visibleThroughDepth: Data? = nil
 
-        /// Encrypted global-trustee depth stamp (encrypted JSON Int), exact-match — not a
-        /// ceiling, unlike visibleThroughDepth:
-        ///   -1 — not a global trustee at the current depth (default for all new contacts)
-        ///   N  — marked a global trustee at exactly depth N; not surfaced at any other depth
-        /// Exact-match (mirroring VaultEntry.visibleThroughDepth) so a trustee designation
-        /// made under duress can never leak into the real depth-0 suggestion list or vice
-        /// versa. Always non-nil after creation or the backfill migration — nil is not a
-        /// valid steady state, same invariant as visibleThroughDepth.
+        /// Retired with Global Trustees (`decisions.md`, "Backup recovery lives only in the
+        /// Vault tab; Global Trustees retired"). Always an encrypted -1: written at creation
+        /// and deletion, and every live row reset to it by
+        /// `DatabaseMigration.migrateRetireGlobalTrustees`, because a trustee's value was the
+        /// depth it was marked at, readable without Face ID (`bugs.md` Bug 149). Nothing reads
+        /// it; it leaves the schema next release.
         var globalTrusteeDepth: Data? = nil
 
         /// Encrypted UInt8 — maximum bundle version this contact's app can decode.
@@ -232,16 +230,6 @@ extension Contact.Profile {
               let value = DepthCodec.decode(decrypted)
         else { return false }
         return value >= depth
-    }
-
-    /// Marked a global trustee at exactly `depth` — exact match, not a ceiling. Decrypts
-    /// with an already-derived key; mirrors `ContactManager.isGlobalTrustee(_:)`.
-    func isGlobalTrustee(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
-        guard let data      = self.globalTrusteeDepth,
-              let decrypted = data.decrypt(using: key),
-              let value     = DepthCodec.decode(decrypted)
-        else { return false }
-        return value == depth
     }
 }
 

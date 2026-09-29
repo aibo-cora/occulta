@@ -1,5 +1,24 @@
 # Secure Mode — Implementation Plan
 
+**2026-09-10 — decision made to simplify: drop the blob mechanism (`Manager.LayerStore`) and the
+staged local-DB-key rotation entirely, reverting Secure Mode to pure UI-layer filtering.** Motivated by
+a direct assessment of what either mechanism actually buys against an AFU-capable (After-First-Unlock
+forensic extraction) adversary: nothing, since both the local-DB key and the blob key derive with equal
+ease under that access level (no biometric gate on either), and the one piece that did add a real
+guarantee — Design B item 1's key-record shelling, shipped and then found to leak its own occurrence,
+`bugs.md` Bug 109 — cost more in forensic tells than it protected. Staged removal plan agreed in
+conversation, not yet written up here; six stages (design decision → shrink `activate`/`deactivate` →
+delete blob code → delete rotation code → rework tests → docs), each independently buildable and
+committable. Not yet started as of this note. Once landed, this document's Steps 3+ (blob/rotation
+build history below) describe removed machinery, kept for the record, not a live design.
+
+**Proposed replacement for what this removal gives up — [`PASSPHRASE_LAYER_KEYS.md`](PASSPHRASE_LAYER_KEYS.md), filed for a future v2.0.0, not v1.11.0.**
+Replaces the numeric PIN with a 6–7 word diceware phrase that's an actual key-derivation input (Argon2id
++ per-depth SE component via HKDF) rather than a pure UI-routing verifier — closes the AFU gap with a
+human secret absent from the device, at the cost of a real UX/recovery tradeoff and a structural
+tell-avoidance problem (§2 of that doc) comparable in shape to what's being removed here. Not started;
+sequenced after this removal.
+
 ## Feature Flag
 
 Secure Mode is governed by the `secureMode` key in `features.plist` (default `true`).
@@ -90,7 +109,7 @@ SE key prevents all off-device attacks. PBKDF2 was removed: it added ~1s of main
 
 The scalar `sealedNormalVerifier` / `sealedDuressVerifier` fields are legacy migration sources; `sealedNormalVerifiers[0]` / `sealedDuressVerifiers[0]` are canonical. Migration runs in `Manager.Security.init()` on first launch after the multi-layer upgrade.
 
-**[security]** Both verifier arrays are padded to 32 entries (`maxVerifierCount == LayerStore.slotCount`) with random filler of exactly `verifierFillerSize` (53) bytes — identical to real verifier size. `verify()` ignores entries that fail to open. A forensic examiner always sees exactly 32 blobs per array regardless of actual depth. The `pinEnabledPerDepth` array is also always 32 entries, each an encrypted `UInt8` (`1` for active, `0` for suppressed) — equal-length sealed boxes in all cases (Bool encoding would differ by one byte; see Bug 51).
+**[security]** Both verifier arrays are padded to 32 entries (`maxDepthCount == LayerStore.slotCount`) with random filler of exactly `verifierFillerSize` (53) bytes — identical to real verifier size. `verify()` ignores entries that fail to open. A forensic examiner always sees exactly 32 blobs per array regardless of actual depth. The `pinEnabledPerDepth` array is also always 32 entries, each an encrypted `UInt8` (`1` for active, `0` for suppressed) — equal-length sealed boxes in all cases (Bool encoding would differ by one byte; see Bug 51).
 
 `persistedDepth` stores the full `currentDepth` integer via `writePersistedDepth(_:)` / `readPersistedDepth()`. Widened from the two-case `RoutingDepth` enum (Bug 50) to carry depths > 1 from multi-layer coercion stacks.
 `pinEnabledPerDepth[N]` stores the gate state for depth N via `writePinEnabled(_:at:)` / `readPinEnabled(at:)`. Falls back to `true` on any decode failure — always demand a PIN rather than silently opening the app.
@@ -396,11 +415,54 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
 
 **What Design B requires before it can be implemented:**
 
-1. **Skip sensitive contacts in activation Step 8's re-encryption loop.** Under Design A, all contacts (including sensitive) are re-encrypted to K_staged. Under Design B, sensitive contacts must be left with their key records under the old canonical key so they become genuinely unreadable after the key is deleted. Only text fields for sensitive contacts may be re-encrypted (so the shell is syntactically valid but cryptographically inaccessible).
+**Items 1 and 3 built and shipped, 2026-09-10 — key records only, not the rest of Design B.**
+Activation now genuinely leaves a sensitive contact's key records unreadable once the old
+canonical key is deleted, and deactivation genuinely recovers them from the blob — a real,
+live behavior change, not a dormant addition. This is *not* "Design B is now active": text
+fields are still fully re-encrypted and DB-readable exactly as under Design A (Step 8's
+`reencryptAllFields` call is untouched), there is still no `inMemorySensitiveContacts`
+array, no merged contact-list view, and no mid-session resync — a raw SQLite read on an
+unlocked device still sees every sensitive contact's name/phone/etc. regardless of depth,
+same residual gap `forensic-trace-avoidance.md` S5 already documents. What changed is
+narrower and self-contained: a sensitive contact's *messaging key material* specifically
+now has the cryptographic guarantee Design B was proposed for, closing the concrete data-loss
+risk that motivated Bug 108 in the first place (item 1 without item 3 would have made this
+harm live on the very first activation). Verified by `SensitiveContactKeyRecordTests`
+(`OccultaTests/SecureMode/SecureModeActivationTests.swift`) — the activation skip, the
+deactivation rebuild's content-correctness, and Bug 108's own residual gap (a key rotation
+received mid-session is still discarded by the rebuild — pinned as a known-gap regression
+test, not fixed here) all have explicit coverage.
+
+1. [x] **Skip sensitive contacts in activation Step 8's re-encryption loop.** Under Design A, all contacts (including sensitive) are re-encrypted to K_staged. Sensitive contacts' key records are now left under the old canonical key so they become genuinely unreadable after the key is deleted (`Manager+Security.swift`, Step 8 — `sensitiveIdentifiers`, derived from `blobContacts`). Text fields for sensitive contacts are still re-encrypted normally (so the shell stays syntactically valid) — only `reencryptKeyRecords` is skipped.
+
+   **Found 2026-09-10, not yet fixed — `bugs.md` Bug 109: leaving the old ciphertext in place is itself a tell.** A row where every other field decrypts under the current canonical key and this one field category consistently fails `AES.GCM.open` is unmistakable, no-heuristic evidence that content was deliberately withheld — a structural leak Design A's uniform-decrypt-everywhere shape never had. Proposed remedy (not built): reseal those fields as random filler under the staged key instead of leaving them stale, mirroring `Manager.LayerStore`'s own `sealRandom` treatment of unused slots — see Bug 109 for the full tradeoff.
 
 2. [x] **Fix `convertToMutableCopy` to carry `quantumKeyMaterialEncrypted` through to the draft.** `Contact+Manager.swift` now decrypts and JSON-decodes `record.quantumKeyMaterialEncrypted` and passes it as `quantumKeyMaterial` when constructing `Contact.Draft.Key`. This makes the blob complete under both designs — Design A ignores it (key records are never rebuilt from the blob); Design B depends on it.
 
-3. **Restore the `hasUnreadableKeys` rebuild path in deactivation Step 5b.** Under Design B, sensitive contacts' key records are left under the deleted activation key; `reEncryptKeyRecords` cannot decrypt them; the rebuild path is the correct recovery. The rebuild code that was removed from `deactivateSecureMode` belongs here. It must now also re-encrypt the `quantumKeyMaterialEncrypted` field from the blob draft's `key.quantumKeyMaterial` (point 2 above must be fixed first, or the rebuilt records will have nil quantum material).
+3. [x] **Restore the `hasUnreadableKeys` rebuild path in deactivation Step 5b.** `ContactManager.restoreContact` (`ContactManager+Classification.swift`) now checks `hasUnreadableKeys` and, when true, rebuilds `contactPublicKeys` from the blob record's own `draft.contactPublicKeys` — the only surviving plaintext, captured before Step 11 deletes the old key — sealing each field (including `quantumKeyMaterialEncrypted`, via point 2) under the deactivation's own staged key via a new `rebuildKeyRecord` helper.
+
+4. **No mechanism exists to persist an edit made mid-session, once the DB row is a dead shell — found 2026-09-09, checking whether it was already known.** Every `layerStore.push()` call site in the codebase was checked directly, not assumed: there are exactly two — activation's Step 6 (`Manager+Security.swift:643`, a one-time snapshot) and `pushDummyBlobSlot` (`Manager+Security.swift:1709-1720`, an empty decoy write on PIN collision, unrelated to real content). `rewrite()` (called at deactivation and force-recovery) doesn't refresh the real payload either — `writeNoOpFile()` overwrites all 32 slots with random junk, a wipe, not a content-preserving reseal. So under Design A this is harmless: the DB row stays the live, authoritative, editable copy for the whole session, and the blob is just a periodic snapshot taken once per activation. Under Design B it isn't harmless, because the DB row stops being able to hold anything readable the moment activation shells it — there is no other described path back to persistent storage. The four steps above cover activation (shell + snapshot), unlock (load blob into `inMemorySensitiveContacts`), and lock (wipe that array) — none of them says what writes an edit made *during* the unlocked session back to the blob before that wipe happens, or before a background kill skips the graceful-lock path entirely. As written, a sensitive contact edited mid-session and never re-sealed is lost the moment the process dies or backgrounds, not just hidden. **Needs a fifth step — reseal the blob (or the touched slot) whenever `inMemorySensitiveContacts` changes, not only at activation — designed and reasoned through before Design B is built, not discovered after.** `VAULT_KEY_LAYERING.md`'s S8 build stage inherits the identical gap if it copies these same four steps for vault entries; see its own item 12. Filed as `bugs.md` Bug 108.
+
+5. **The fifth step Bug 108 asked for — designed 2026-09-09: reuse `push()` itself, not new machinery, and reuse the on-record sequence number rather than regenerating one.** Any mutation to `inMemorySensitiveContacts` — add, edit, delete, or a reclassification into/out of it — resyncs the blob synchronously, as part of the same operation that commits the mutation, before the caller can treat it as saved:
+
+   1. Rebuild the full `LayerPayload.contacts` array from the *current* in-memory state — the same `LayerContact` construction activation's Step 6 already uses (strip images, etc.).
+   2. Read this depth's `slotIndex` and `sequenceNumber` back from `AppLayerConfig` (`readBlobSlot(at:using:)`, `readSequenceNumber(at:using:)`) — both already written once at activation, unchanged by an edit, so reused as-is.
+   3. Call `layerStore.push(payload, key: layerKey, slotIndex: slotIndex)` — the exact, already-shipped, already-tested function. Reseals all 32 slots with fresh nonces, the same cost `LayerStore` already pays for every classification change today (~1MB) — not a new cost category, since contact edits are occasional, not the "constantly" frequency `VAULT_KEY_LAYERING.md` item 11 weighed for vault entries.
+   4. If `push()` throws, the mutation must not be reported as saved — mirroring how a normal contact save already requires `modelContext.save()` to succeed. An edit that lives only in memory must never look durable to the user.
+
+   **Why the sequence number must be reused, not regenerated — checked directly, not assumed, before proposing this.** `pop()` validates `payload.sequenceNumber == expectedSequenceNumber`, where `expectedSequenceNumber` is whatever `AppLayerConfig` recorded once at activation (`writeSequenceNumber`, called from activation Step 6's own flow). A naive "just push again" design that generated a fresh random sequence number on every edit — matching how activation and `pushDummyBlobSlot` both call `Self.randomSequenceNumber()` — would make the *first* edit-triggered resync silently break every later `pop()` at deactivation with `sequenceNumberMismatch`, losing every edited contact. Reusing the on-record value avoids this. Random sequence numbers stay exactly what they already are — one per activation, not one per write — this step doesn't touch that.
+
+   **Co-requisite this surfaces, fixed 2026-09-09: step 2 didn't have a sanctioned production read.** Step 2 needs a *repeatable, non-destructive* load on every unlock, but `pop()` is destructive — it erases the touched slot and reseals the rest — and the only non-destructive alternative, `readPayload(key:slotIndex:)` (`SecureMode+LayerStore.swift:244`), was explicitly commented *"Use for diagnostics and tests. Production code should use pop()."* Checked its actual body before promoting it, not just its comment: `readPayload` called `decodeSlot` directly, which only decrypts and JSON-decodes — neither of `pop()`'s two integrity checks (`sequenceNumber`, `slotIndex`) ran. Promoting it as-is would have silently accepted a stale blob from an older activation cycle, exactly what those checks exist to catch at deactivation. **Fixed:** `readPayload` now takes a required `expectedSequenceNumber` and runs both checks, throwing the same `Error.sequenceNumberMismatch`/`Error.slotIndexMismatch` cases `pop()` already defines — validated, non-destructive, the same shape minus the erasure. One call site (a test helper in `SecureModeActivationTests.swift`) updated; four new tests in `LayerStoreReadPayloadTests.swift` pin the round trip, both rejection paths, and repeatability across multiple reads. `LayerPayload.sequenceNumber`'s doc comment was also wrong — said "strictly increasing," actually a fresh random value per activation (`LayerStore.md`'s own "Sequence numbers" section confirms it deliberately isn't incrementing) — corrected in passing.
+
+   **The mechanism itself is built, 2026-09-09 — `resyncSensitiveContactsBlob()` and
+   `inMemorySensitiveContacts`, `Manager+Security.swift`, right before "Emergency recovery."
+   Not wired to anything yet, and not independently meaningfully testable yet** —
+   `inMemorySensitiveContacts` is `private(set)` with no writer, since steps 1-4 (which would
+   populate it) aren't built, so there's no real content to push in a test beyond an empty
+   array. Added `SecurityError.blobMetadataMissing` for the "no slot/sequence number on
+   record" branches, replacing the `invalidStateTransition` misfit flagged when this was
+   first designed. Blocked on steps 1, 3, and 4 above before it has a caller or a meaningful
+   test.
 
 - [x] **[bug]** Fix `isVisible(_:atDepth:)` fallback: `visibleThroughDepth` non-nil + decrypt failure → `return false`. Defense-in-depth — should not trigger in normal operation under Design A since all contacts are re-encrypted at activation and remain readable.
 - [x] **[security]** `pinCollision` during activation silently dismissed — dedicated `catch Manager.Security.SecurityError.pinCollision` arm in `SummaryView` calls `onDone()` (same as `invalidStateTransition`), removing the binary oracle signal. A dummy blob slot (`pushDummyBlobSlot`) is written on collision to match the filesystem footprint of a real activation — same ciphertext size as a real blob slot write. Contact DB and `AppLayerConfig` are unmodified. (Bug 62, Gap 1 applied)
@@ -545,3 +607,596 @@ A deliberate, hard-to-trigger destruction mechanism for scenarios where deniabil
 - Is UIKit event interception acceptable in a SwiftUI lifecycle app on iOS 16+?
 - Should the trigger also post a silent iCloud note or AirDrop beacon so a remote party knows destruction succeeded? (Adds network dependency — conflicts with offline-first.)
 - Should the destroy sequence be available before first Secure Mode activation (e.g., to destroy the app entirely before a border crossing)?
+
+**Note, 2026-09-10:** step 3 of this sketch calls `LayerStore.deleteFile()`, which won't exist once the
+removal below lands. This proposal was never built, so nothing to migrate — just don't resurrect that
+call if this gets picked up later.
+
+---
+
+## Removal — Stage 0: design decision
+
+**2026-09-10.** Settles what `activateSecureMode`/`deactivateSecureMode`/`purgeDraftsNotSafeAtCurrentDepth`
+actually do once the blob mechanism and staged-key rotation are gone, so Stage 1 has something concrete
+to implement against rather than deriving it while also deleting code. No code changes in this stage.
+See the top-of-file note for why (AFU derivability, Bug 109) and `PASSPHRASE_LAYER_KEYS.md` for the
+proposed v2.0.0 replacement.
+
+### `activateSecureMode` — new shape
+
+Signature changes: drops `contactManager`/`vaultManager` params (nothing left to re-key or classify —
+see below) and drops `async` (nothing left that needs it; every remaining step is synchronous SE/Keychain
+work and a `ModelContext.save()`). Stays `throws`.
+
+1. Guard: `requiresPIN` true, and either `isRestricted` (nested activation, depth > 0) or
+   `!isSecureModeActive` (fresh activation) — else `.invalidStateTransition`. Unchanged from today.
+2. Verify `confirmingEntryPIN` against `sealedNormalVerifiers[currentDepth]`. Unchanged. No longer also
+   derives `oldKey` up front — nothing downstream re-encrypts anything, so there's no key to derive.
+3. Reject if `duressPIN` collides with any existing verifier at any depth — throw `.pinCollision`.
+   **`pushDummyBlobSlot` is gone.** It existed to make a rejected collision leave the same filesystem
+   footprint as a real activation; with no blob file at all, there's no footprint to match. The
+   user-visible behavior this protected — `SummaryView`'s quiet `.pinCollision`/`.invalidStateTransition`
+   dismissal, no oracle — is unaffected, since that's UI-level handling, not this internal side effect.
+4. Build the new depth's duress verifier and a fresh normal verifier for depth+1 (`PINManager.buildVerifier`,
+   unchanged mechanism).
+5. Write both to `AppLayerConfig` (`writeDuressVerifier`, `writeNormalVerifier`), `writeCoercerBaseDepth(depth)`
+   if `depth > 0`.
+6. `modelContext.save()`, `resetCounters()`.
+
+**Gone entirely, not just reordered:** `slotIndex`/`sequenceNumber` selection (blob-slot assignment —
+no blob), `createStagedLocalDBKey()`, the Step-4-style contact classification pass (`blobContacts`/
+`safeProfiles` split — nothing to classify *for*, since nothing gets sealed away or re-keyed; a
+contact's `visibleThroughDepth` was set independently by the user via `setVisibility` and activation
+never needs to touch it), `layerStore.push(...)`, the `reencryptAllFields`/`reencryptKeyRecords` loop
+over every contact, vault-entry/`Message.Draft`/`Group`/`AppLayerConfig` re-keying, `commitStagedLocalDBKey()`,
+the WAL checkpoint, `deleteSupersededLocalDBArtefacts()`, and the `catch`/rollback block — there is
+nothing staged and nothing destructive, so nothing to roll back. A crash mid-function just means the
+verifier write never landed; safely retryable, no partial state to reason about.
+
+### `deactivateSecureMode` — new shape
+
+Same signature changes as activation: drops `contactManager`/`vaultManager`, drops `async`, stays `throws`.
+
+1. Guard: `sealedDuressVerifier != nil`.
+2. Verify `confirmingEntryPIN` against `sealedNormalVerifiers[depth]`.
+3. `config.clearVerifiers(from: max(1, depth))` — **the existing cascade logic, unchanged**: full
+   deactivation (`sealedDuressVerifier = nil`, `setState(0, ...)`) if `depth <= 1`, otherwise a partial
+   cascade (`setState(1, ...)`) leaving a shallower duress layer intact. This was always pure
+   `AppLayerConfig` state, not rotation — it survives as-is.
+4. `writeCoercerBaseDepth(0)`, `modelContext.save()`, `resetCounters()`.
+
+**Gone entirely:** `layerStore.pop(...)` and its empty-payload fallback, `createStagedLocalDBKey()`,
+the Step-4-style re-encryption loop over every contact (including the `restoreContact` calls for
+blob-popped records), vault-entry/`Message.Draft`/`Group`/`AppLayerConfig` re-keying,
+`commitStagedLocalDBKey()`, the WAL checkpoint, `deleteSupersededLocalDBArtefacts()`, the rollback
+`catch`, `clearAllBlobMetadata()`/`clearBlobSlot`/`clearSequenceNumber`, and the async
+`layerStore.rewrite()` on full deactivation.
+
+**Also gone: the entire "preserve the real classification value across the cascade" problem.** Bug 23
+and the extensive "never flatten to nil, preserve the real depth" commentary throughout the current
+`Manager+Security.swift` exist because the old re-encryption loop touched every contact's
+`visibleThroughDepth` on every cycle, and `restoreContact` had to put back the exact pre-existing value
+for anyone tied to the departing layer. With activation/deactivation never touching that field, there is
+nothing to preserve — it's a standing property of the row, decoupled from the PIN lifecycle entirely.
+
+### `purgeDraftsNotSafeAtCurrentDepth` — needs a real (small) replacement, not a deletion
+
+**Verified directly against `Manager+Security.swift:1414-1429`, not assumed.** Called from
+`applyVerifyState` on every entry to a duress depth (not just activation) — the "defense in depth
+alongside `reKeyOrPurgeAll` at activation" pass, since a contact classified sensitive *after* a layer
+already existed could otherwise keep an old draft across any number of later duress-PIN entries. Current
+body: fetch all `Contact.Profile` rows, compute `safeIdentifiers` via
+`profile.isVisible(atDepth: currentDepth, usingKey: key)` (the hardcoded real-SE key, same
+`Manager.Key().createHybridLocalEncryptionKey()` path every other classification check already uses —
+nothing here goes through `Manager.Security`'s own injected `keyManager`), likewise
+`allGroupIdentifiers`, then calls `Message.Draft.reKeyOrPurgeAll(safeContactIdentifiers:allGroupIdentifiers:oldKey:newKey:in:)`
+with `oldKey == newKey` purely for its survive/purge semantics — surviving drafts get re-sealed under an
+identical key with a fresh nonce, a no-op in effect. Finishes with `self.checkpointStore()` — **keep
+this call**, it's not rotation-tied: the doc comment on `checkpointStore()` explains `PRAGMA secure_delete
+= ON` only zeroes a freed page's content for the write that frees it, so an un-checkpointed WAL frame
+from before the purge can still hold recoverable ciphertext under whatever key is still live. Still
+needed once drafts are simply being deleted, no rotation involved.
+
+**What Stage 1 replaces:** the identifier computation (`safeIdentifiers`/`allGroupIdentifiers` via
+`isVisible(atDepth:usingKey:)`) stays exactly as-is — already SE-key-based and unrelated to rotation.
+Only the `reKeyOrPurgeAll` call needs a lighter replacement that performs just its purge half (delete
+whichever `Message.Draft` rows aren't tied to a safe contact/group) without the reseal-survivors half,
+once `reKeyOrPurgeAll`'s rotation core is deleted in Stage 3.
+
+**Still flagged, not resolved here:** `Message.Draft.reKeyOrPurgeAll`'s own internal purge logic (which
+field(s) it reads to decide "not visible," whether it hard-deletes) wasn't read as part of this design
+pass — Stage 1 should check `Message+Draft.swift` directly before writing the replacement, the same way
+this section's own claims were checked against `Manager+Security.swift` rather than assumed.
+
+### Call-site impact (cross-cutting, handled across Stages 1 and 4)
+
+Every caller of `activateSecureMode`/`deactivateSecureMode` — `SecureModeSetupFlow`,
+`SecureModeDeactivateFlow`, and every test that drives them — needs updating for the new signature
+(fewer params, no longer `async`/`await`). Noted here so it isn't rediscovered mid-Stage-1; not scoped
+in detail until that stage, since the mechanical fixups follow directly from the signature change above.
+
+### What does not change
+
+PIN verification and building (`PINManager`), the verifier arrays and cascade-clearing logic on
+`AppLayerConfig`, `persistedDepth`/`pinEnabled(PerDepth)`/`coercerBaseDepth`/lockout fields and their
+r/w helpers, `configurePIN`/`deactivatePIN` (the PIN-only, non-Secure-Mode-activation functions),
+`Contact.Profile.isVisible(atDepth:)`/`VaultEntry.isVisible`, and everything in
+`ContactManager+Classification.swift` except `restoreContact`'s key-rebuild block (which Stage 2 deletes
+along with the rest of the blob machinery).
+
+## Removal — Stage 1: done, 2026-09-10
+
+`activateSecureMode`/`deactivateSecureMode` rewritten to exactly the Stage 0 shape — both now
+`func ... throws` (no `async`, no `contactManager`/`vaultManager` params). `purgeDraftsNotSafeAtCurrentDepth`
+now calls a new `Message.Draft.purgeUnsafe(safeContactIdentifiers:allGroupIdentifiers:using:in:)`
+(`Message+Draft.swift`) — the purge-only half of `reKeyOrPurgeAll`, added rather than modifying
+`reKeyOrPurgeAll` itself, which Stage 3 still deletes whole. `checkpointStore()` kept, per Stage 0's
+own note.
+
+**Confirmed safe to drop activation's own draft purge** (this was the one open question Stage 0 didn't
+settle): checked directly that `Message.Draft` carries no `visibleThroughDepth`/`isVisible` field at
+all — purging is its *only* mechanism for staying out of view, no UI-level filter backs it up. But its
+one display surface (`ContactsListV2`'s "Draft" badge) is keyed off `contactIdentifiersWithDrafts`
+matched only against contacts that already passed depth filtering, so an unpurged draft attached to a
+hidden contact was never independently discoverable there regardless. Combined with
+`purgeDraftsNotSafeAtCurrentDepth` still running on every duress-depth entry — including the first one
+right after a fresh activation, before any UI renders — dropping activation's separate purge is safe.
+Documented in the function's own doc comment, not just here.
+
+**Deviation from the six-stage sketch, forced rather than chosen:** `DraftKeyRotationTests.swift`
+called `deactivateSecureMode` with the old rotation-driving signature directly — its entire premise
+(does key rotation preserve drafts) no longer has anything to test once deactivation doesn't rotate
+any key, so it couldn't be patched to compile, only deleted. Deleted now rather than deferred to
+Stage 3, since the test target has to compile as a whole. The other "fully dead" test files identified
+in the scope map (`RotationRegistryTests`, `StagedKeyTests`, etc.) don't call activate/deactivate
+directly, so they still compile for now and stay until Stage 3 as originally planned.
+
+**Exit state, verified, not assumed:** app target and test target both build with zero errors.
+`PINManagerTests.swift` (part of the "untouched" bucket) additionally cleaned of every stray
+`await`/unused-binding warning the signature change produced, since it won't be revisited later.
+`SecureModeActivationTests.swift`'s equivalent warnings were left as-is — that file gets substantially
+rewritten in Stage 4 regardless, so cleaning warnings there now would mean touching most lines twice.
+Full suite: 28 failures, all confined to `SecureModeActivationTests.swift` (blob lifecycle, WAL
+persistence, cascade-depth-preservation, and `SensitiveContactKeyRecordTests` — all asserting on
+behavior that no longer exists, exactly as scoped), 6 skips (unchanged `KeychainMigrationSETests`
+baseline), every other suite green.
+
+## Removal — Stage 2: done, 2026-09-10
+
+Deleted the blob mechanism whole. `Occulta/Features/SecureMode/SecureMode+LayerStore.swift`
+(`Manager.LayerStore`, `LayerContact`, `LayerPayload`) and `LayerArrayCodec.swift` removed outright.
+`Manager+Security.swift` lost the `layerStore` property/init param, "Layer store maintenance"
+(`maintainLayerStore`, `migrateBlobMetadataArrays`, `rewriteLayerStore`), "Design B: mid-session blob
+resync" (`inMemorySensitiveContacts`, `resyncSensitiveContactsBlob`), `migrateBlobMetadataKeyIfNeeded`,
+`protectedBlobSlots`/`pushDummyBlobSlot`/`randomSequenceNumber`, `StagedCryptoManager`, and
+`SecurityError.blobMetadataMissing`; `forceDeactivateForRecovery` stripped of its blob lines and its
+doc comment corrected to describe what it actually does now. `AppLayerConfig+Model.swift` lost
+`sealedBlobSlots`/`layerSequenceNumbers` and every accessor/migration/filler method built around
+them (`readBlobSlot`/`writeBlobSlot`/`clearBlobSlot`, the sequence-number trio, `clearAllBlobMetadata`,
+`blobMetadataKey(from:)`, `migrateBlobMetadata`, `fillerSize`/`randomFiller`/`blobArrayFiller`/
+`randomFillerArray`) — `ensurePadded()` now only pads `pinEnabledPerDepth`. `OccultaApp.swift` lost
+the `maintainLayerStore()` launch call, `migrateBlobMetadataKeyIfNeeded()`, and the 30-second-debounced
+`rewriteLayerStore()` view modifier. `ContactManager+Classification.swift` lost the whole
+"Deactivation restore" section (`restoreContact`, `hasUnreadableKeys`, `rebuildKeyRecord`) — Design B
+item 3, now vestigial since item 1's activation-side skip it paired with only mattered while
+key-rotation-driven deletion of the superseded key was still a thing (removed in full by Stage 3, but
+already unreachable in practice once Stage 1 stopped routing contacts through activation at all).
+
+**Two pre-existing defects found and fixed while in this code, not caused by this removal:** a
+dangling doc comment at the end of `Manager+Security.swift` describing a "re-encrypts every field of
+every `Contact.Profile.Key` child" helper that had no function attached at all — confirmed via
+`git show 880b980:...` to predate this entire session. And a bug introduced by this session's own
+Stage 1: a stale duplicate old doc comment left above `activateSecureMode`'s new one instead of being
+replaced — found on re-read, fixed.
+
+**Deviations from the six-stage sketch, both forced by the same pattern as `DraftKeyRotationTests.swift`
+in Stage 1 — a file slated for a later stage that already calls a symbol this stage deletes:**
+- `AppLayerConfigRotationTests.swift` (Stage 3's bucket — rotation) had one test,
+  `blobMetadataUnaffectedByRotation`, calling the deleted `writeBlobSlot`/`writeSequenceNumber`/
+  `readBlobSlot`/`readSequenceNumber` directly. Mixed file, not wholly dead — removed that one test
+  and its header's blob-orphaning sentence, kept the five scalar/gate-rotation tests (`reencrypt`
+  itself is untouched until Stage 3).
+- `SecureModeActivationTests.swift` needed the same treatment at larger scale: `ActivationComponents`/
+  `makeComponents()` lost their `backend`/`layerStore` fields; the `readActivationPayload` helper and
+  the whole `SecureModeBlobLifecycleTests` suite were deleted (wholly blob-dependent); two of three
+  tests in `SecureModeClassificationTests` and one in `OriginDepthPreservationTests` that called
+  `readActivationPayload` were deleted, keeping the one test in each suite that didn't touch it; the
+  two `restoreContact`/`LayerContact`-based tests in `SensitiveContactKeyRecordTests` were deleted
+  along with the now-unused `StubCrypto` helper, keeping the two tests covering item 1's activation-side
+  skip itself. What's left in the file still compiles against the new PIN-only activate/deactivate but
+  largely asserts on contact/vault-entry mutation that no longer happens — that's Stage 4's rework, not
+  addressed here, exactly as Stage 1's own note anticipated.
+- `EncryptedFieldCoverageTests.swift`'s `unprobedFields` still classified `sealedBlobSlots`/
+  `layerSequenceNumbers`, now-deleted fields — its own tripwire (`appLayerConfigPropertiesReviewed`)
+  caught this at runtime, not compile time, since dictionary literals don't reference the model's
+  actual properties. Removed both entries.
+
+**Exit state, verified, not assumed:** app target and test target build with zero errors. Full suite:
+22 failures, all confined to `SecureModeActivationTests.swift` (`CascadeDeactivationDepthTests`,
+`DepthMigrationRotationCompositionTests`, `GlobalTrusteeDepthPreservationTests`,
+`OriginDepthPreservationTests`, `SecureModeRotationKeyGuardTests`, `SecureModeWALPersistenceTests`,
+`SensitiveContactKeyRecordTests.safeContactKeyMaterial_reencryptedByActivation`,
+`StrandedCeilingRotationTests`) — all asserting that activation/deactivation mutate contacts or vault
+entries, which stopped being true in Stage 1, not anything this stage broke. 6 skips (unchanged
+`KeychainMigrationSETests` baseline), every other suite green — including
+`EncryptedFieldCoverageTests` and `AppLayerConfigRotationTests` after their fixes above.
+
+## Removal — Stage 3: done, 2026-09-10
+
+Deleted the rotation machinery whole, mapped by direct grep/read against the live tree rather than
+trusting the original six-stage sketch — the sketch's own dead-test-file list turned out to be
+partly wrong (see deviations below), the second time this removal effort has caught a scope-mapping
+error by verifying directly instead of trusting a prior summary.
+
+`Occulta/Data Models/Contact+Model+Reencrypt.swift` (`reencryptAllFields`, `reencryptKeyRecords`,
+their private helpers) deleted outright — no production caller since Stage 1. `Group+Model.swift`
+lost only its public `reencrypt(from:to:)` entry point and doc comment; the private
+`reencryptAllDepths(usingKey:content:)` engine it shared with `purgeMembersFromDuressDepths`,
+`refreshCiphertext`, and `purgeMember` stays, since those three have nothing to do with Secure Mode
+key rotation. `AppLayerConfig+Model.swift` lost its "Key rotation" section (`reencrypt(from:to:)` and
+the private `reseal` helper it alone used). `Occulta/Data Models/Message+Draft.swift` lost
+`reKeyOrPurgeAll` — the rotation-driving function Stage 1's `purgeUnsafe` was added beside rather than
+written in place of, exactly as that stage's `plan.md` entry flagged as deferred here.
+`Occulta/Features/SecureMode/RotationRegistry.swift` deleted outright: a type-level classification
+table with no purpose once nothing rotates.
+
+`KeyManagerProtocol.swift` lost the protocol's four staged-key methods, `TestKeyManager`'s
+`stagedLocalDBPrivateKey`/`stagedLocalDBPublicKeyData`/`stagedRandomComponent` and their
+implementation section, and `simulatesHybridKeyUnavailable` (Bug 78's fault-injection flag — no
+longer has any effect on the new PIN-only activate/deactivate, since neither calls
+`createHybridLocalEncryptionKey()` at all). `localDBPrivateKey`/`localDBPublicKeyData`/
+`randomComponent` changed `var` → `let`: `commitStagedLocalDBKey()` was their only mutator.
+`Key+Manager.swift` lost `StagedKeyError` and the entire "Staged DB key (activation / deactivation
+key rotation)" section including its private helpers (`retrieveExistingLocalDBPrivateKey`,
+`generateAndStoreRandomComponent(account:)`, `retrieveRandomComponent(account:)`,
+`deriveHybridKey(seTag:randomData:)`) — none shared with the canonical-key path, confirmed by grep
+before deletion. `createLocalDBSEKey(tag:)` stays (still used by the canonical-key path), doc comment
+corrected to drop its now-false "used for both the canonical key and the staged key" claim.
+
+**Caught by the compiler, not the upfront map — `Manager.Key.deleteAllKeys()`** (the full-wipe
+function) called `deleteSupersededLocalDBArtefacts()`/`rollbackStagedLocalDBKey()` directly to sweep
+transient rotation artefacts in case a wipe fired mid-rotation. Missed in the initial grep because it
+was checked by MARK-comment boundary rather than by searching the whole file for every call site of
+the methods being deleted. Fixed by removing those two lines — nothing rotates any more, so there is
+never a transient artefact to sweep. *(Wrong for upgraded devices, 2026-09-26: a device that interrupted a
+v1.10.3 rotation already holds `…staged` / `…superseded` items, and now nothing ever deletes them, not
+even "Erase all data". `bugs.md` Bug 139. Fixed the same day: `deleteAllKeys()` deletes them again,
+through `deleteLegacyRotationArtefacts()`.)*
+
+**Deviations from the original dead-test-file list, both caught by direct verification before
+deleting anything (the list itself, written before this stage, was checked against the live tree
+first — unlike Stage 1/2's mid-execution catches):**
+- `GroupOrphanPurgeTests.swift` was named as dead in the original sketch. It is not: it covers
+  `ContactManager.purgeUnreadableGroups`, the *historical-damage repair* pass for groups stranded by
+  a rotation that already happened — a live function, still called from `OccultaApp.swift`, with
+  nothing to do with whether rotation exists going forward. It used `Group.reencrypt` only as a
+  same-file test helper (`strand(_:from:)`) to manufacture a stranded group. Rewrote the helper to
+  overwrite `encryptedID` with literal undecryptable bytes instead of rotating to a discarded key —
+  same end state, no dependency on the deleted function. All 4 tests pass unchanged otherwise.
+- `AppLayerConfigRotationTests.swift` was NOT in the original dead list (Stage 2 had already trimmed
+  it to 5 scalar/gate-rotation tests, explicitly deferring full deletion to this stage per that
+  entry's own note) — and turned out to be wholly dead now, since all 5 remaining tests call
+  `AppLayerConfig.reencrypt` directly. Deleted outright.
+- `SecureModeActivationTests.swift`'s `SecureModeRotationKeyGuardTests` (Bug 78, 2 tests) depended on
+  `simulatesHybridKeyUnavailable`, which this stage deletes — forced the same treatment. Both tests
+  already asserted on the old rotation-driven abort behavior, so nothing is lost that Stage 4 needed.
+
+**`EncryptedFieldCoverageTests.swift` trimmed, not deleted, despite being named as fully dead in the
+original sketch:** most of the file (the `FieldProbe` infrastructure, both models' `probes`/
+`unprobedFields` tables, `AppLayerConfigFieldCoverageTests`, most of `EncryptedFieldTripwireTests`,
+most of `EncryptedFieldRotationTests`) existed solely to guard the bug class of "a field silently
+escapes the rotation" — which cannot happen once there is no rotation, so all of that is gone. One
+test survives on different grounds: `readabilitySeparatesStrandedFromAbsent` doesn't call any deleted
+function — it tests `ContactManager.hasReadableBundleVersion`'s three-state read directly, which
+stays load-bearing forever for installs that went through a rotation before this removal shipped (the
+stranding is permanent, historical damage, not an ongoing risk). File rewritten down to that one test
+plus its fixtures; header rewritten to explain the reduced scope. Also dropped `sealString`, a
+fixture helper with zero callers even before this stage's changes — flagging rather than silently
+losing it, per the standing "mention pre-existing dead code" rule, since it did not survive the
+rewrite.
+
+**Flagged, not fixed — out of this stage's scope:** `KeyManagerProtocol.swift`'s
+`simulatesSecureModeKeyUnavailable` flag is now completely unreferenced anywhere in the codebase
+(confirmed by grep). Its own doc comment says it existed for Bug 86's migration guard
+(`migrateBlobMetadataArrays`), which Stage 2 deleted — this is a Stage 2 orphan, not one this stage's
+changes created, so left in place rather than removed under Stage 3's separate scope.
+
+**Exit state, verified, not assumed:** app target and test target build with zero errors. Full suite:
+20 failures, the same set Stage 2 left minus the 2 now-deleted `SecureModeRotationKeyGuardTests`, all
+still confined to `SecureModeActivationTests.swift` and still asserting on contact/vault-entry
+mutation that stopped happening in Stage 1 — nothing this stage's own changes broke. 6 skips
+(unchanged `KeychainMigrationSETests` baseline). `GroupOrphanPurgeTests` (all 4) and the trimmed
+`EncryptedFieldCoverageTests` (`readabilitySeparatesStrandedFromAbsent`) confirmed passing
+individually, not just absent from the failure list.
+
+## Removal — Stage 4: done, 2026-09-10
+
+Rewrote `SecureModeActivationTests.swift` end to end rather than continuing to patch it —
+everything Stage 2/3 left behind (`SecureModeWALPersistenceTests`, `CascadeDeactivationDepthTests`,
+`GlobalTrusteeDepthPreservationTests`, `OriginDepthPreservationTests`,
+`DepthMigrationRotationCompositionTests`'s two rotation-composition tests, `StrandedCeilingRotationTests`,
+`SensitiveContactKeyRecordTests`'s two remaining tests, and `SecureModeClassificationTests`'s one
+remaining test) asserted, in one form or another, that `activateSecureMode`/`deactivateSecureMode`
+mutate `Contact.Profile`/`VaultEntry` fields — which stopped being true in Stage 1. There was nothing
+left to patch; the file needed new content matching what the functions actually do now.
+
+**What the new file covers, and why these three things specifically.** `activateSecureMode`/
+`deactivateSecureMode`'s entire remaining job is PIN verification plus `AppLayerConfig` verifier
+writes — so the file now tests exactly that surface, nothing broader:
+- `SecureModeNonInterferenceTests` (4 tests) — the direct regression guard for the removal itself.
+  A contact's depth fields and key material, and a vault entry's visibility ceiling, must be
+  byte-identical before and after an activate/deactivate cycle — including a nested two-layer one,
+  covering what `CascadeDeactivationDepthTests` used to check from the opposite (now-false)
+  assumption — and regardless of whether the bytes are real ciphertext or garbage nothing can
+  decrypt (`undecryptableBytesSurviveUnchanged`, replacing `StrandedCeilingRotationTests`'s concern
+  with a simpler fact: unreadable bytes are no longer a special case at all, since nothing reads
+  them). If a future change reintroduces data-touching in either function, this fails loudly.
+- `SecureModeVerifierPersistenceTests` (2 tests) — a Bug-37-shaped check for the PIN-only shape,
+  not a resurrection of the old one: the old regression was `contactManager.modelContext.save()`
+  being skipped during a rotation that no longer exists; what's left to skip now is
+  `Manager.Security`'s own `modelContext.save()` after its `AppLayerConfig` verifier writes. Fetches
+  from a brand-new `ModelContext` after activation and after deactivation, confirming each reaches
+  the persistent store rather than just the in-memory `AppLayerConfig` every other test in the file
+  reads through `c.security` directly. No prior test anywhere verified this for the new shape —
+  `SecurityStateTests` in `PINManagerTests.swift` checks `security.currentDepth`/`isSecureModeActive`
+  in-memory, never a fresh-context fetch.
+- `DepthMigrationInertnessTests` (1 test, `migrationIsInertAgainstForeignKeyRows`, carried over
+  unchanged) — `DatabaseMigration.migrateDepthFieldsToFixedWidth` runs independently of Secure Mode
+  entirely; its one piece of coverage that belonged in this file (a row sealed under an
+  undecryptable key must be left alone, not resolved to a default) doesn't depend on activation at
+  all and needed no rework, just a header and suite name no longer describing "composed with
+  rotation" — a concept that no longer exists.
+
+**Deliberately not added, and why:** `Message.Draft` purging (`purgeDraftsNotSafeAtCurrentDepth` /
+`Message.Draft.purgeUnsafe`) has zero test coverage anywhere in the suite — confirmed by grep,
+zero hits for either name outside their own definitions. This was a real gap left by Stage 1
+(`DraftKeyRotationTests.swift` was deleted there with nothing added in its place), but it is not
+this stage's gap to fill: `purgeDraftsNotSafeAtCurrentDepth` is called from `applyVerifyState`
+(`Manager+Security.swift:643`), not from `activateSecureMode`/`deactivateSecureMode` at all — a
+completely different code path this file was never about. Coverage for it belongs in
+`PINManagerTests.swift`, which already exercises `applyVerifyState`/`verify()` extensively, not
+here. Flagged for the user as a separate follow-up rather than pulled into this stage's scope.
+
+**A structural side effect worth noting, not a deliberate design goal:** every test in the
+rewritten file is SE-independent even though all are still gated `.enabled(if:
+secureEnclaveAvailable())` for consistency with the rest of the Secure Mode suite. The old file's
+gate existed because the old activation/deactivation touched `Contact.Profile` fields through the
+**ambient** real `Manager.Key()`, forcing real Secure Enclave availability regardless of the
+injected `TestKeyManager`. That coupling is gone along with the rotation it existed for — nothing
+in the new file's call path touches the real key manager — but the gate was kept rather than
+removed, matching the same convention `PINManagerTests.swift` uses for its own activate/deactivate
+tests even though the same reasoning would apply there too. Not re-litigated here; out of scope.
+
+**Exit state, verified, not assumed:** app target and test target build with zero errors and zero
+warnings in the rewritten file (the stray `await`s on the now-synchronous `activateSecureMode`/
+`deactivateSecureMode` that Stage 1 explicitly left for this stage are gone along with the code that
+had them). Full suite: **`** TEST SUCCEEDED **`**, zero failures — the first fully green run since
+this removal effort began. 6 skips (unchanged `KeychainMigrationSETests` baseline). All 7 new tests
+(`SecureModeNonInterferenceTests` ×4, `SecureModeVerifierPersistenceTests` ×2,
+`DepthMigrationInertnessTests` ×1) confirmed passing individually by name, not just inferred from a
+clean overall result.
+
+## Removal — Stage 5: done, 2026-09-10
+
+Docs pass, no code changes — the four items from the original stage sketch plus doc debt found while
+verifying against the live tree, following this feature's own standing rule (`bugs.md`, `plan.md`) to
+document decisions in place rather than leave them implicit.
+
+**`bugs.md`:** Bugs 106, 107, 108, 109 closed as moot, each with a **Status** update explaining why
+(the exact mechanism each describes — `Manager.LayerStore`, its AAD fix, Design B, the sensitive-
+contact key-record skip — was deleted whole in Stages 0-4) and the original text kept below verbatim,
+matching this doc's existing "Closed (design decision — X removed)" convention (Bug 13). **A fifth
+entry, Bug 110, was filed, not closed** — found while updating `forensic-trace-avoidance.md`'s S7:
+`VaultEntry.visibleThroughDepth` is stamped once at creation and never reset, so a vault entry created
+during one duress session can resurface in a later, unrelated session that reaches the same depth
+number, since Stage 1 removed both the old bulk re-stamp (activation) and bulk reset (deactivation)
+that used to prevent this. Surfaced to the user directly before writing anything, including a
+correction of my own first-pass severity read (initially framed as a confidentiality leak; actually a
+same-restriction-level stale-state issue, since anything stamped at a duress depth was already shown
+to whoever reached that depth) — filed as Low severity, open, not fixed in this pass, per the user's
+explicit choice to log it rather than fix it now.
+
+**`forensic-trace-avoidance.md`:** the most substantial rewrite of this stage — its security model
+rested on blob + DB-key-rotation, both gone. Added a top-of-document notice explaining the removal and
+its reasoning (AFU threat model derives both keys equally, established earlier this session and
+recorded in `plan.md`'s Stage 0 entry and `PASSPHRASE_LAYER_KEYS.md`). Retired in full, original text
+kept as historical record: the entire **Blob File Forensics** section (B1-B7), **S1** (DB key
+rotation), **K3** (blob key domain separation). Rewritten to describe current behavior rather than
+retired outright, since the underlying invariant or field is unchanged and only the mechanism
+maintaining it changed: **S5** (Design B is not a future upgrade path any more — the machinery it
+depended on is gone, not merely deferred), **S6** (the invariant holds via creation-time stamping and
+the launch migration alone now, not a second enforcement point at deactivation), **S7** (rewritten
+around Bug 110's finding — this is the entry where writing the "what changed" section surfaced the
+bug), **S9** (`globalTrusteeDepth` is simply never touched by Secure Mode's lifecycle now, and is
+unaffected by Bug 110 for a stated reason: it is a deliberate depth-severity policy, not an accidental
+session artifact, the same distinction that exempts `originDepth`). Minor stale-phrase fixes: S8's
+"local DB key that rotates during activation," the OS-Level-Artifacts section's opening paragraph
+naming S1 alongside file protection.
+
+**Stale doc-comment references fixed in code**, found while doing the above and flagged during
+Stages 2-4 rather than fixed inline at the time: `DepthCodec.swift` (two comments describing
+"staged" vs. "canonical" keys and `commitStagedLocalDBKey()`, neither of which exist), `Contact+
+Manager.swift` (the injectable-crypto `save` overload's doc comment claiming Secure Mode activation
+as its user — it never had another one now that Stage 1 shipped), `Contact+Manager+Groups.swift`
+(a dead pointer to `reencryptAllFields`'s deleted inline note, redirected to
+`EncryptedFieldRotationTests.readabilitySeparatesStrandedFromAbsent`), `OccultaApp.swift` (the
+`schema` array's doc comment claiming `RotationRegistryTests` as its reason for existing, which is
+also gone). Two comments in `Group+FormV3.swift` and `OccultaApp.swift` that name `reencryptAllFields`
+were deliberately left alone — they describe a specific historical version range (installs that
+activated Secure Mode on 1.10.0/1.10.1), accurate as history, not implying the function exists today.
+
+**Three dedicated docs retired with a top-of-file notice, original content kept as historical
+record, not otherwise rewritten:** `ROTATION_COVERAGE.md` (never built — no code was ever written
+against it), `SecureMode+RotationContract.md` (its mandatory-checklist framing corrected explicitly,
+since "must pass through this before merge" would otherwise mislead a future contributor; one
+invariant, I7 — `AppLayerConfig` must always exist — flagged as still true and pointed to where it's
+now documented), `LayerStore.md` (entirely about the deleted mechanism, no mixed content).
+`scenarios.md` got a file-level notice rather than per-scenario edits — dozens of its ~15 sections
+describe the removed rotation/blob behavior verbatim, and annotating each individually was judged out
+of proportion to a docs-cleanup pass; scenarios about PIN state, depth routing, lockout, and unrelated
+UI tells are unaffected and still accurate.
+
+**Explicitly out of scope, flagged rather than touched:** `VAULT_KEY_LAYERING.md`
+(`Occulta/Features/Vault/`) references `Manager.LayerStore` extensively as design precedent for the
+still-live, actively-developed `BEKArray` work — this is this branch's actual primary feature, not
+part of the Secure Mode removal, and rewriting a live spec document belongs to whoever continues that
+work, not to this pass. `secure-mode-architecture.html`, an interactive architecture diagram with
+`Manager.LayerStore` as a graph node, was left untouched — editing diagram data is a different kind of
+work than the prose changes in this stage, and wasn't named in the original stage sketch.
+
+**Exit state:** app target and test target build with zero errors (verified — the stage touched a
+handful of `.swift` doc comments alongside the `.md` files, so this wasn't purely a markdown-only
+change). No test suite run: nothing in this stage changed runtime behavior, only documentation and
+comments.
+
+## Removal — Stage 6: done, 2026-09-10 — final verification
+
+**A final sweep caught three more stale doc-comment references Stage 5 missed** — all stated as
+*current* fact rather than history, unlike the ones Stage 5 correctly judged safe to leave:
+`SecureMode+LayerStoreBackend.swift`'s header claimed `Manager.LayerStore` as an active co-consumer of
+the shared backend protocol (it is deleted; `VaultManager.Backup.LayerStore` is the sole remaining
+one — the file itself stays, only its header was wrong), `Vault+Manager.swift` claimed
+`Manager.Security` "mirrors... holding a `layerStore: Manager.LayerStore`" (that property no longer
+exists), and `InMemoryLayerStoreBackend.swift` claimed it was "injected via
+`Manager.LayerStore(backend:)`" (nothing constructs one any more — `VaultManager.Backup.LayerStore` is
+its only real caller, confirmed by `BEKArrayTests.swift`'s actual usage). Found via a repo-wide grep
+for every deleted symbol name (`Manager.LayerStore`, `LayerContact`, `LayerPayload`,
+`StagedKeyError`, the four staged-key methods, `reencryptAllFields`, `reencryptKeyRecords`,
+`RotationRegistry`, `reKeyOrPurgeAll`, `sealedBlobSlots`, `layerSequenceNumbers`,
+`blobMetadataMissing`/`blobMetadataKey`, `migrateBlobMetadata`, `inMemorySensitiveContacts`,
+`resyncSensitiveContactsBlob`, `restoreContact`, `hasUnreadableKeys`, `rebuildKeyRecord`,
+`pushDummyBlobSlot`, `maintainLayerStore`, `rewriteLayerStore`) across `Occulta/` and `OccultaTests/`,
+checked one by one against whether each was a live compile-relevant reference (none were — everything
+remaining was either these three stale doc comments or accurate historical/precedent citations,
+matching the pattern Stage 5 already established for `Group+FormV3.swift`/`OccultaApp.swift`'s
+version-specific historical mentions). `Occulta/Features/Vault/`'s own design docs and code
+(`BEKArray.swift`, `Vault+Manager+Backup.swift`, `VAULT_KEY_LAYERING.md`) cite `Manager.LayerStore`
+extensively as the precedent `VaultManager.Backup.LayerStore` was deliberately shaped after — left
+untouched, same reasoning as Stage 5: accurate as design history for a still-live feature, not this
+removal's scope to rewrite.
+
+**Full local run, the actual exit criteria this project's own `CLAUDE.md` states:** 834 tests
+executed, **`** TEST SUCCEEDED **`**, zero failures, exactly 6 skips — all `KeychainMigrationSETests`,
+the documented device-only baseline. No other suite skipped, confirming a real Secure Enclave was
+available for this run and the green result isn't hiding an unavailable-Enclave false pass.
+
+**Cumulative diff for the whole effort** (`git diff --shortstat` from the last pre-removal commit,
+`2ea7df3`, to this stage's `HEAD`, `Occulta/` and `OccultaTests/` only): **39 files changed, 1,062
+insertions(+), 6,546 deletions(-)**. Net: the blob mechanism, the staged-key rotation protocol, and
+every re-encryption pass built on top of either are gone; `activateSecureMode`/`deactivateSecureMode`
+are PIN-verification-and-verifier-writes only, exactly the Stage 0 design decision, now built,
+tested, and documented end to end.
+
+**What this removal effort settled, for anyone picking this back up later:**
+- Secure Mode's confidentiality guarantee against the realistic threat model (AFU extraction, no
+  biometric gate) was never the blob or the rotation — it was always the file-protection/PRAGMA
+  measures in `forensic-trace-avoidance.md`'s S2-S4, unaffected by any of this. The blob and rotation
+  bought deniability-adjacent forensic cover (B1-B7, K3) and a *historical* page-slack erasure (S1)
+  against a weaker, locked-device attacker — real, but not the one this app's own threat model
+  centers on, and not worth the complexity once looked at directly.
+- Design B (unreadable DB shells, blob as sole readable copy) is not a deferred future upgrade any
+  more — it would need rebuilding from nothing, against the same analysis that concluded it wasn't
+  buying real protection either.
+- One open item from this effort, not closed here: `bugs.md` Bug 110 (`VaultEntry` depth-stamp reuse
+  across unrelated duress sessions) — low severity, logged, not fixed, per the user's explicit choice
+  in Stage 5.
+- One real testing gap from Stage 1, not filled here: `Message.Draft` purging
+  (`purgeDraftsNotSafeAtCurrentDepth`/`purgeUnsafe`) has zero test coverage anywhere, flagged in
+  Stage 4's entry — belongs in `PINManagerTests.swift`, since the purge runs from `applyVerifyState`,
+  not `activateSecureMode`/`deactivateSecureMode`.
+- `PASSPHRASE_LAYER_KEYS.md` (v2.0.0 proposal, replacing numeric PINs with diceware phrases) remains
+  filed and not started — explicitly out of scope for this removal, which was about deleting
+  complexity, not adding a new layer.
+
+Six stages, six commits (`880b980` through this one), each independently reviewable and revertable,
+none skipped, none reordered from the original sketch except the two forced deviations Stage 1 and
+Stage 3 each documented at the time they happened.
+
+## Post-removal fix: `deactivateSecureMode` now pops one depth at a time (Bug 111)
+
+Found immediately after Stage 6 closed, during a user conversation walking through what
+`activateSecureMode`/`deactivateSecureMode` do now — unrelated to the removal itself, a pre-existing
+state-machine defect dating to the first multi-layer commit (`22762fb`, 2026-06-03), never caught
+because the only prior multi-layer test used a 2-layer stack, which can't distinguish "always land at
+depth 1" from a genuine one-level LIFO pop (both give the same number there).
+
+**Fixed:** cascade deactivation used to jump straight to depth 1 regardless of starting depth;
+`deactivateSecureMode` now computes `newDepth = max(0, depth - 1)` and lands there, popping exactly
+one layer per call — matching the stack model activation already uses (one layer pushed per call).
+`coercerBaseDepth` now becomes `newDepth` instead of unconditionally resetting to `0`, so "Deactivate
+Protection" stays reachable at each intermediate depth immediately, without a re-verify between pops.
+Full writeup, root cause, and fix detail: `bugs.md` Bug 111 (Closed, Fixed).
+
+Two new tests in `PINManagerTests.swift`'s `SecurityMultiLayerTests` build an actual 3-layer stack to
+exercise this (`deactivation_fromDepth3_popsOneLevelToDepth2`,
+`deactivation_threeLayerStack_popsOneLevelPerCall`); the existing 2-layer test's `state` assertion was
+corrected from `.duress` to `.normal` to match the `coercerBaseDepth` change. Full suite: 0 failures,
+6 skips (baseline), confirmed after the fix.
+
+## Post-removal fix: VaultEntry orphaning closes the Bug 110 depth-reuse gap
+
+Bug 110 (`bugs.md`, filed during the same post-Stage-6 conversation as Bug 111, unrelated to it):
+`VaultEntry.visibleThroughDepth` is stamped once at creation and never reset, so an entry created in
+one duress session stayed exact-match-visible to a later, unrelated session reaching the same depth
+number — depth numbers are reused since Stage 1 stopped activation/deactivation touching application
+data, and nothing replaced the old bulk re-stamp/reset that used to prevent this.
+
+**Design, settled after exploring the shard-custody machinery together rather than guessing:** a new
+`VaultEntry.deletionToken` field, mirroring `Contact.Profile.deletionToken` exactly — encrypted, fixed
+sentinel content, physically kept rather than hard-deleted (the same forensic reasoning `bugs.md`
+Bug 13 already established for contacts), capped at 50 with oldest-first eviction.
+`VaultManager.fetchAllEntries()` — the single central read every consumer goes through — now filters
+`deletionToken == nil`, making orphaning a real, one-change exclusion from every functional path:
+shard custody, backup export, the return buffer, the UI list, not just the display layer. Caught in
+the same pass: `deleteAllEntries()` (panic wipe) would have silently stopped erasing orphaned rows had
+it kept routing through the now-filtered `fetchAllEntries()` — fixed to fetch unfiltered.
+
+`Manager.Security.orphanVaultEntries(freedFrom:)` runs from `deactivateSecureMode` and
+`forceDeactivateForRecovery`, orphaning any entry whose stamp names a depth the call just freed.
+`visibleThroughDepth` itself is left untouched — a historical record now moot for every functional
+purpose, since exclusion makes it unreachable regardless of its value.
+
+**The shard-revocation side was traced end to end before concluding anything needed building for
+it, and none did:** `ShardCustodyManager.buildExpectedShards` → `VaultManager.shardRecordsForTrustee`
+already reads through `fetchAllEntries()`, so an orphaned entry's shards simply stop appearing in the
+`expectedShards` list sent to a trustee on the next bundle — the trustee's existing
+`processExpectedShards` already deletes anything absent from that list (a real implicit-revoke
+mechanism documented in `SHARD_PROTOCOL_CASES.md`, initially and incorrectly assumed not to exist at
+all before checking). Full writeup, including the rejected sentinel-on-`visibleThroughDepth`
+alternative and why it was wrong: `bugs.md` Bug 110 (Closed, Fixed).
+
+Three new tests in `VaultEntryOrphaningTests` (`SecureModeActivationTests.swift`) cover the core
+resurfacing fix, a shallower-layer survival case, and cap eviction — the last of which caught a real
+ordering bug in the first implementation pass (`toOrphan` needed sorting before processing, not just
+`alreadyOrphaned`, for eviction to be reliably oldest-first within a single multi-entry batch). Full
+suite: 0 failures, 6 skips (baseline), confirmed after the fix.
+
+## Post-removal refinement: `VaultEntry.deletionToken` becomes always-populated, not nil-based
+
+Raised in the same conversation, immediately after the fix above shipped: nil-vs-non-nil is itself a
+free, zero-decryption signal (SQLite tracks column nullability independent of any encryption on the
+value), so `deletionToken`'s original design — mirroring `Contact.Profile.deletionToken`'s nil/non-nil
+pattern exactly — still let a `SELECT COUNT(*) WHERE deletionToken IS NOT NULL` answer "how many are
+orphaned" with no key at all.
+
+**Fixed by making the field always non-nil**, content instead of presence carrying the meaning —
+`VaultEntry.liveToken`/`orphanedToken`, two fixed-width one-byte sentinels that encrypt to the same
+ciphertext length, the identical principle `AppLayerConfig.pinEnabledPerDepth` already uses (Bug 51,
+"no plaintext boolean flags"). `isOrphaned(usingKey:)` replaces every nil check, failing safe on
+anything ambiguous. Stamped live at creation by `addEntry` and the backup-restore path.
+`fetchAllEntries()` loses its free SQL predicate as a result — decrypting a column can't be pushed
+into a `WHERE` clause, so it now fetches every row and filters in Swift with one derived key reused
+across all of them. `deleteAllEntries()` (panic wipe) already fetched unfiltered and needed no
+further change.
+
+**Deliberately not extended to `Contact.Profile.deletionToken`**, discussed and declined in the same
+conversation: it's shipped (a real migration, not a lightweight default), touches far more hot-path
+call sites over a much larger row count, and — found while checking the full usage surface before
+proposing anything — `PQmigration.swift`'s `migrateScrubDeletedDepthStamps` already uses its
+nil/non-nil status as a readability oracle for rows stranded by an old key rotation; changing the
+field's shape would mean redesigning that oracle, not just its predicates. Same marginal benefit,
+much higher cost — left as-is.
+
+All three `VaultEntryOrphaningTests` updated in place (same tests, assertions moved from `== nil`/
+`!= nil` to `isOrphaned(usingKey:)`) and reconfirmed passing. Full suite: 0 failures, 6 skips
+(baseline). Full writeup: `bugs.md` Bug 110's "Refined the same day" note.

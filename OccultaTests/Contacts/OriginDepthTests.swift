@@ -4,9 +4,8 @@
 //
 //  Coverage for Contact.Profile.originDepth: floor-semantics visibility for
 //  duress-origin contacts, sensitivity classification being a deliberate no-op for
-//  them, creation-time stamping, and the backfill migration. Mirrors
-//  GlobalTrusteeDepthTests.swift's structure. Encrypted round-trips require the
-//  Secure Enclave and guard on secureEnclaveAvailable(), same pattern.
+//  them, creation-time stamping, and the backfill migration. Encrypted round-trips
+//  require the Secure Enclave and guard on secureEnclaveAvailable().
 //
 
 import Testing
@@ -252,5 +251,34 @@ struct OriginDepthBackfillTests {
             .map(\.originDepth)
 
         #expect(afterFirst == afterSecond)
+    }
+}
+
+// MARK: - visibleContactIdentifiers
+
+/// The set `VaultManager.restoreBackup` counts banked restore shards against: only shards from
+/// these contacts count at the depth (`RECOVERY_BUFFER_LAYERING.md` §9.4).
+@MainActor
+@Suite("ContactManager.visibleContactIdentifiers — which restore shards count at a depth",
+       .serialized, .enabled(if: secureEnclaveAvailable()))
+struct VisibleContactIdentifiersTests {
+
+    @Test func matchesVisibilityAtEachDepth() throws {
+        let (cm, _) = try makeContactManager()
+        try insertPlainProfile(identifier: "everywhere", in: cm)
+        try insertPlainProfile(identifier: "hidden-trustee", visibleThroughDepth: DepthCodec.encode(0).encrypt(), in: cm)
+        try insertPlainProfile(identifier: "coercer", originDepth: DepthCodec.encode(2).encrypt(), in: cm)
+
+        let deleted = Contact.Profile(
+            identifier: "deleted", givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        deleted.deletionToken = Data([0x01])
+        try cm.insertProfile(deleted)
+
+        #expect(cm.visibleContactIdentifiers(atDepth: 0) == ["everywhere", "hidden-trustee"],
+                "a coercer's contact, created in his layer, must not count at depth 0")
+        #expect(cm.visibleContactIdentifiers(atDepth: 2) == ["everywhere", "coercer"],
+                "a trustee the owner hid from the duress layer must not count there")
     }
 }

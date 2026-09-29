@@ -192,7 +192,7 @@ struct DeletedRowBackfillExclusionTests {
 
     private func runAllBackfills(_ context: ModelContext) throws {
         try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context)
-        try DatabaseMigration.migrateGlobalTrusteeDepthBackfill(modelContext: context)
+        try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: context)
         try DatabaseMigration.migrateOriginDepthBackfill(modelContext: context)
     }
 

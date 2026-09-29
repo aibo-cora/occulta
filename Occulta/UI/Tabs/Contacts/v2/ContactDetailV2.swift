@@ -342,7 +342,6 @@ private struct ComposeHeroV2: View {
 
     @Environment(ContactManager.self) private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
-    @Environment(VaultManager.self) private var vaultManager: VaultManager?
 
     @Query private var contacts: [Contact.Profile]
 
@@ -501,8 +500,7 @@ private struct ComposeHeroV2: View {
     private func encryptAction() {
         let cm  = self.contactManager
         let scm = self.shardCustodyManager
-        let vlt = self.vaultManager
-        Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
+        Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm) }
     }
 }
 

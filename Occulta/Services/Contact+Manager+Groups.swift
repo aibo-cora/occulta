@@ -133,7 +133,9 @@ extension ContactManager {
     ///
     /// Deliberately distinct from `resolveTargetVersion`, which collapses "never seen" and
     /// "stranded" into `.v3fs`. Keeping that distinction available is what Bug 80's fix depends
-    /// on; see `reencryptAllFields`'s note on why the value is preserved rather than cleared.
+    /// on — see `EncryptedFieldRotationTests.readabilitySeparatesStrandedFromAbsent`
+    /// (`SecureModeActivationTests.swift`) for why a stranded value must stay distinguishable
+    /// from one that was never set at all.
     static func hasReadableBundleVersion(
         _ contact: Contact.Profile,
         using crypto: Manager.Crypto = Manager.Crypto()

@@ -7,10 +7,14 @@
 //  Two roles, one router:
 //    - Trustee path: accept .distribute / .replace from the owner; store as encrypted
 //      CustodyShard rows; return mismatch-fingerprint shards as .handback on every
-//      outbound bundle; delete same-fingerprint shards absent from owner's expectedShards.
+//      outbound bundle.
 //    - Owner path: receive .handback from trustees; include custodyManifest (IDs held)
-//      in every outbound bundle; include expectedShards (IDs expected) in every
-//      outbound bundle to trigger implicit revoke.
+//      in every outbound 1:1 bundle; keep each depth's backup-key pieces delivered
+//      (`distributeBackup`, `reconcileBackupPieces`).
+//
+//  No implicit revoke: the owner's `expectedShards` list, and the trustee deleting what
+//  it didn't name, were removed (`bugs.md` Bug 141). A removed trustee's piece is revoked
+//  by splitting a new backup key instead.
 //
 //  Manifest reconciliation replaces the old Pending{Revoke,Acknowledge,Return,
 //  ReturnAcknowledge,NotFound} models. State is a complete snapshot re-sent on every
@@ -56,17 +60,14 @@ final class ShardCustodyManager {
     func handleInbound(
         shardOperations:  [OccultaBundle.ShardOperation]?,
         custodyManifest:  [UUID]?,
-        expectedShards:   [UUID]?,
         senderPublicKey:  Data,
         senderIdentifier: String,
-        vaultManager:     VaultManager,
-        currentDepth:     Int
+        vaultManager:     VaultManager
     ) -> Bool {
         let hasOps      = (shardOperations?.isEmpty == false)
         let hasManifest = custodyManifest != nil
-        let hasExpected = expectedShards  != nil
 
-        guard hasOps || hasManifest || hasExpected else { return false }
+        guard hasOps || hasManifest else { return false }
 
         for op in shardOperations ?? [] {
             do {
@@ -76,7 +77,7 @@ final class ShardCustodyManager {
                 case .replace:
                     try self.handleReplace(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
                 case .handback:
-                    try self.handleHandback(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier, vaultManager: vaultManager, currentDepth: currentDepth)
+                    try self.handleHandback(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier, vaultManager: vaultManager)
                 case .unsupported:
                     break
                 }
@@ -88,18 +89,10 @@ final class ShardCustodyManager {
         }
 
         if let manifest = custodyManifest {
-            do { try self.processInboundManifest(manifest, from: senderIdentifier, vaultManager: vaultManager) }
+            do { try self.processInboundManifest(manifest, from: senderIdentifier) }
             catch {
                 #if DEBUG
                 debugPrint("ShardCustodyManager processInboundManifest failed: \(error)")
-                #endif
-            }
-        }
-        if let expected = expectedShards {
-            do { try self.processExpectedShards(expected, from: senderIdentifier, senderPublicKey: senderPublicKey) }
-            catch {
-                #if DEBUG
-                debugPrint("ShardCustodyManager processExpectedShards failed: \(error)")
                 #endif
             }
         }
@@ -139,7 +132,7 @@ final class ShardCustodyManager {
         let combined = try self.sealRow(payload, using: custodyKey, id: rowID)
         self.modelContext.insert(CustodyShard(id: rowID, encryptedPayload: combined))
 
-        try self.deleteMismatchShards(for: senderIdentifier, newFingerprint: newFP)
+        try self.deleteMismatchShards(for: senderIdentifier, newFingerprint: newFP, using: custodyKey)
         try self.modelContext.save()
     }
 
@@ -169,88 +162,112 @@ final class ShardCustodyManager {
         let combined = try self.sealRow(payload, using: custodyKey, id: rowID)
         self.modelContext.insert(CustodyShard(id: rowID, encryptedPayload: combined))
 
-        let allShards = try self.decryptAllCustodyShards()
-        for decoded in allShards
-            where decoded.payload.signedAttribute.id == oldID
-               && decoded.payload.ownerContactIdentifier == senderIdentifier {
-            self.modelContext.delete(decoded.row)
+        // One pass: the replaced shard, plus any of this owner's shards under an old key.
+        try self.deleteCustodyShards(using: custodyKey) { payload in
+            payload.ownerContactIdentifier == senderIdentifier
+                && (payload.signedAttribute.id == oldID || payload.ownerKeyFingerprint != newFP)
         }
-        try self.deleteMismatchShards(for: senderIdentifier, newFingerprint: newFP)
         try self.modelContext.save()
     }
 
     /// Delete all CustodyShard rows for `contactIdentifier` whose fingerprint ≠ `newFingerprint`.
-    private func deleteMismatchShards(for contactIdentifier: String, newFingerprint: Data) throws {
-        for decoded in try self.decryptAllCustodyShards()
-            where decoded.payload.ownerContactIdentifier == contactIdentifier
-               && decoded.payload.ownerKeyFingerprint != newFingerprint {
-            self.modelContext.delete(decoded.row)
+    private func deleteMismatchShards(for contactIdentifier: String, newFingerprint: Data, using custodyKey: SymmetricKey) throws {
+        try self.deleteCustodyShards(using: custodyKey) { payload in
+            payload.ownerContactIdentifier == contactIdentifier && payload.ownerKeyFingerprint != newFingerprint
         }
+    }
+
+    /// Deletes every custody row whose payload matches `shouldDelete` and, when anything was
+    /// deleted, re-seals every other readable row with a fresh nonce and the same content.
+    /// Without the re-seal, two snapshots taken across a deletion show exactly which row went
+    /// while every other row stays byte-identical (`bugs.md` Bug 130). Rows that don't decrypt
+    /// are left alone: not deleted, not re-sealed. Doesn't save; the caller does.
+    ///
+    /// Every other path that deletes custody rows goes through here, so they can't drift apart
+    /// again. `purgeCustody` keeps its own loop because it re-seals on every purge, even one
+    /// that deletes nothing.
+    @discardableResult
+    private func deleteCustodyShards(
+        using custodyKey: SymmetricKey,
+        where shouldDelete: (CustodyShard.Payload) -> Bool
+    ) throws -> Bool {
+        let decoded = try self.decryptAllCustodyShards(using: custodyKey)
+        guard decoded.contains(where: { shouldDelete($0.payload) }) else { return false }
+
+        for shard in decoded {
+            if shouldDelete(shard.payload) {
+                self.modelContext.delete(shard.row)
+            } else {
+                shard.row.encryptedPayload = try self.sealRow(shard.payload, using: custodyKey, id: shard.row.id)
+            }
+        }
+        return true
     }
 
     // MARK: - Owner path: inbound
 
-    /// `.handback` — trustee returned one of our shards after detecting a fingerprint mismatch.
+    /// `.handback` — trustee returned one of our shards, either after a same-key
+    /// re-pairing or after detecting a fingerprint mismatch (identity rotation).
     ///
-    /// Two ways to accept (Bug 94 remedy 2):
+    /// Branch A — direct verify — still runs, and still means something when it
+    /// succeeds: `attribute` verifying against our own current identity key proves
+    /// content authenticity, that this exact value is genuinely what we signed at
+    /// distribution. That's real and worth checking; transport authentication
+    /// cannot substitute for it.
     ///
-    ///   **Branch A — direct verify.** `attribute` verifies against our own current
-    ///   identity key. Unrotated case: same-device reinstall, or a device that never
-    ///   lost its Enclave key. Can only ever be genuine — forging it means breaking
-    ///   ECDSA or stealing the SE key — so no further check is needed.
+    /// **Branch B (trustee attestation) is gone — `bugs.md` Bug 125, 2026-09-19.**
+    /// It never verified content authenticity either; the attester controlled both
+    /// the shard value and the attestation hashed over it, so it could only ever
+    /// prove "a recognized identity vouches for this" — sender authenticity, which
+    /// the bundle's own transport (a 1:1 exchange, session key derivable only by
+    /// the two real parties, `senderProof`-authenticated) already establishes
+    /// before this function is ever called. Once Branch A fails — which happens
+    /// for every genuine trustee too, the moment the owner's identity rotates,
+    /// since the key that signed the original shard no longer exists anywhere —
+    /// there was never a way to recover content authenticity, with or without an
+    /// attestation. So Branch A failing now means accept, not "try a second,
+    /// no-stronger check."
     ///
-    ///   **Branch B — trustee attestation.** Direct verification fails (rotated
-    ///   identity — a genuinely new or erased device can't verify a signature made
-    ///   by a key that no longer exists), but `op.attestation` verifies against
-    ///   `senderPublicKey` and hashes to exactly `attribute.signingPayload()`. The
-    ///   trustee checked `attribute` against their own retained copy of our old key
-    ///   (something only a genuine trustee could ever have) and vouched for it with
-    ///   their current identity, which we can verify because we just re-paired with
-    ///   them over UWB regardless.
+    /// Nothing checks that `attribute.entryID` names a real, live distribution: for a
+    /// backup-key restore it can't, since the restoring phone is usually new and the
+    /// record of what was distributed was on the lost one. `acceptReturnedShard` banks a
+    /// shard under any `entryID`. What scopes this instead (`bugs.md` Bug 125, 2026-09-26
+    /// note):
+    /// - one slot per `(entryID, sender)`, with the sender resolved from the transport,
+    ///   so no single contact can supply a threshold alone (Bug 94 remedy 2);
+    /// - `restoreBackup` counts only senders visible at the current depth, and refuses a
+    ///   depth that already has a backup key (Bug 94 remedy 1);
+    /// - a reconstructed key counts only if it opens the `.occbak` the owner chose to
+    ///   open, so shards alone restore nothing;
+    /// - a per-entry key is only finalised for an entry this device split, against that
+    ///   entry's own stored ciphertext.
     ///
-    /// Neither branch is gated on `isRestorePending` here — that used to be the
-    /// escape hatch for the rotated case, and it accepted *any* unverified shard
-    /// whenever a restore happened to be pending, from anyone. Acceptance is now
-    /// itself the authentication; what's still pending-gated is what happens next,
-    /// inside `acceptReturnedShard` (BEK storage) and its own per-entry check
-    /// (distribution-metadata storage) — deliberately two different gates, not one
-    /// loosened uniformly, since a fresh device can't know the expected BEK
-    /// `distributionID` any more precisely than "is a restore armed."
+    /// Acceptance is not gated on any restore being under way; a BEK restore
+    /// shard is only banked here. `restoreBackup` decides, when the owner opens the
+    /// `.occbak`, which banked shards count: only those from contacts visible at that
+    /// depth (`RECOVERY_BUFFER_LAYERING.md` §9.4).
     private func handleHandback(
         op: OccultaBundle.ShardOperation,
         senderPublicKey: Data,
         senderIdentifier: String,
-        vaultManager: VaultManager,
-        currentDepth: Int
+        vaultManager: VaultManager
     ) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
         }
 
-        // Only a Branch B attestation is carried forward. Every op now ships an attestation —
-        // filler where there is no real one, so the field's presence cannot partition a group
-        // send by size — and `op.attestation` is therefore no longer evidence of anything on
-        // its own. Persisting it unconditionally would store random bytes on every Branch A
-        // shard.
-        let verifiedAttestation: SignedAttribute?
-
-        if let ownKey = try? self.keyManager.retrieveIdentity(), attribute.verify(against: ownKey) {
-            verifiedAttestation = nil                                   // Branch A.
-        } else if let attestation = op.attestation,
-                  attestation.category == .attestation,
-                  attestation.entryID == attribute.entryID,
-                  attestation.verify(against: senderPublicKey),
-                  attestation.value == Data(SHA256.hash(data: attribute.signingPayload())) {
-            verifiedAttestation = attestation                           // Branch B.
-        } else {
-            throw CustodyError.signatureRejected
+        // Branch A's own result no longer gates acceptance — see the doc comment
+        // above. Still attempted for the real, non-redundant thing it proves when
+        // it succeeds (content authenticity), even though nothing downstream
+        // currently distinguishes "verified" from "accepted on trust" — that
+        // distinction is available to build on later without re-deriving it.
+        if let ownKey = try? self.keyManager.retrieveIdentity() {
+            _ = attribute.verify(against: ownKey)
         }
 
         try vaultManager.acceptReturnedShard(
             attribute,
-            attestation: verifiedAttestation,
-            senderIdentifier: senderIdentifier,
-            currentDepth: currentDepth
+            senderIdentifier: senderIdentifier
         )
     }
 
@@ -258,15 +275,14 @@ final class ShardCustodyManager {
 
     /// Process trustee's `custodyManifest` — the IDs of all shards they currently hold.
     ///
-    /// Confirm in-flight shards whose IDs appear in the manifest (direct vault update
-    /// if unlocked, queued via PendingShardStatusUpdate if locked). Insert a
-    /// PotentiallyLostShard row for each newly confirmed shard so future absence
-    /// can be detected at vault unlock.
+    /// For each queued piece the manifest lists: insert a `PotentiallyLostShard` watch
+    /// row (present) and drop the queued row. Then set `isAbsent` on this contact's watch
+    /// rows — true when absent from this manifest, false when present.
     ///
-    /// Update the isAbsent flag on all existing PotentiallyLostShard rows for this
-    /// contact — true when absent from this manifest, false when present. VaultManager
-    /// processes absent rows and marks them .lost the next time the vault unlocks.
-    func processInboundManifest(_ manifest: [UUID], from senderIdentifier: String, vaultManager: VaultManager) throws {
+    /// Statuses aren't touched here: this runs at whatever depth is current, with the
+    /// vault maybe locked, and a piece belongs to one depth's record. Each depth reads the
+    /// watch rows in its own `reconcileBackupPieces` (`bugs.md` Bug 141).
+    func processInboundManifest(_ manifest: [UUID], from senderIdentifier: String) throws {
         let manifestSet = Set(manifest)
 
         guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return }
@@ -278,15 +294,8 @@ final class ShardCustodyManager {
             return payload.signedAttribute.id
         })
 
-        // Confirm in-flight shards that appear in the manifest.
+        // Delivered: watch the piece from now on, and stop sending it.
         for inFlightId in inFlightIDs where manifestSet.contains(inFlightId) {
-            do {
-                try vaultManager.updateShardStatus(attributeID: inFlightId, to: .confirmed)
-            } catch VaultManager.VaultError.locked {
-                try? self.queueShardStatusUpdate(attributeID: inFlightId, newStatus: .confirmed)
-            } catch {}
-
-            // Record delivery so future absence can be caught at vault unlock.
             let rowID = UUID()
             if let combined = try? self.sealRow(
                 PotentiallyLostShard.Payload(attributeID: inFlightId, contactIdentifier: senderIdentifier, isAbsent: false),
@@ -312,26 +321,6 @@ final class ShardCustodyManager {
             }
         }
         if changed { try? self.modelContext.save() }
-    }
-
-    /// Process owner's `expectedShards` — IDs the owner expects this trustee to hold.
-    ///
-    /// Deletes same-fingerprint shards absent from the list (implicit revoke).
-    /// Mismatch-fingerprint shards are immune — only cleared by a new `.distribute`
-    /// with the owner's updated fingerprint (Invariant 1 from SHARD_PROTOCOL_CASES.md).
-    func processExpectedShards(_ expectedIDs: [UUID], from ownerIdentifier: String, senderPublicKey: Data) throws {
-        let expectedSet   = Set(expectedIDs)
-        let currentFP     = Self.fingerprint(of: senderPublicKey)
-        var deletedAny    = false
-
-        for decoded in try self.decryptAllCustodyShards()
-            where decoded.payload.ownerContactIdentifier == ownerIdentifier
-               && decoded.payload.ownerKeyFingerprint == currentFP
-               && !expectedSet.contains(decoded.payload.signedAttribute.id) {
-            self.modelContext.delete(decoded.row)
-            deletedAny = true
-        }
-        if deletedAny { try self.modelContext.save() }
     }
 
     // MARK: - Outbound: build shard operations
@@ -365,11 +354,7 @@ final class ShardCustodyManager {
             return OccultaBundle.ShardOperation(
                 kind:        payload.oldAttributeID != nil ? .replace : .distribute,
                 attribute:   payload.signedAttribute,
-                attributeID: payload.oldAttributeID,
-                // Filler, never read: `handleDistribute`/`handleReplace` don't look at
-                // `attestation`. It is here so the field's presence is constant across every
-                // op on the wire — see `attestationFiller`.
-                attestation: Self.attestationFiller(entryID: payload.signedAttribute.entryID)
+                attributeID: payload.oldAttributeID
             )
         }
     }
@@ -378,130 +363,25 @@ final class ShardCustodyManager {
     ///
     /// Included on every outbound bundle to the owner until they redistribute with
     /// a new fingerprint, which triggers `deleteMismatchShards` in `handleDistribute`.
-    /// Each op carries an attestation when this device can produce one (Bug 94
-    /// remedy 2) — `attestation(for:)` returns nil on any failure, which is the
-    /// safe default: the op still goes out, just without a Branch B path.
+    /// No attestation attached — `bugs.md` Bug 125 removed that mechanism; the owner
+    /// accepts a mismatch-fingerprint handback on the strength of the bundle's own
+    /// transport authentication now, not a second signature this device used to build.
     private func mismatchHandbackOps(for contactIdentifier: String, currentFP: Data, usingKey custodyKey: SymmetricKey) throws -> [OccultaBundle.ShardOperation] {
         let candidates = try self.decryptAllCustodyShards(using: custodyKey)
             .filter { $0.payload.ownerContactIdentifier == contactIdentifier && $0.payload.ownerKeyFingerprint != currentFP }
         guard !candidates.isEmpty else { return [] }
 
-        // Every candidate above shares this same owner, so their retained public keys are
-        // resolved once here — by fingerprint, since buffered shards can span more than one
-        // past rotation — instead of attestation(for:) re-fetching the owner and re-decrypting
-        // its keys on every call (was once per shard; a trustee holding shards across many
-        // entries redid the identical Enclave-backed lookup for each one).
-        let retainedKeysByFingerprint = self.retainedKeysByFingerprint(forOwner: contactIdentifier)
-
-        return candidates.map { OccultaBundle.ShardOperation(
-            kind:        .handback,
-            attribute:   $0.payload.signedAttribute,
-            // Filler when this device cannot produce a real one, never nil. A real
-            // attestation and a missing one are ~260 encoded bytes apart, so leaving it
-            // nil would let a bundle be partitioned by which recipient is genuinely mid-
-            // recovery — see `attestationFiller`. Filler fails Branch B exactly as nil
-            // did, so the receive path is unchanged.
-            attestation: self.attestation(for: $0.payload, retainedKeysByFingerprint: retainedKeysByFingerprint)
-                         ?? Self.attestationFiller(entryID: $0.payload.signedAttribute.entryID)
-        ) }
-    }
-
-    /// Every one of `ownerIdentifier`'s retained public keys, decrypted once and keyed by
-    /// fingerprint. See `mismatchHandbackOps`, the only caller — resolving this per owner
-    /// instead of per shard is the whole point.
-    private func retainedKeysByFingerprint(forOwner ownerIdentifier: String) -> [Data: Data] {
-        let contacts = (try? self.modelContext.fetch(
-            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.identifier == ownerIdentifier })
-        )) ?? []
-        guard let owner = contacts.first else { return [:] }
-
-        let crypto = Manager.Crypto(keyManager: self.keyManager)
-        var result: [Data: Data] = [:]
-        for record in owner.contactPublicKeys ?? [] {
-            guard let material = try? crypto.decrypt(data: record.material) else { continue }
-            result[Self.fingerprint(of: material)] = material
-        }
-        return result
-    }
-
-    /// A random attribute shaped like a real `.attestation`, for ops that have no real one.
-    ///
-    /// Same reasoning as `wrapRecipient`'s `randomEphemeralSignatureFiller`, and the same
-    /// pattern as `verifierFillerArray`/`pinEnabledFillerArray`/shard tier-padding: a field
-    /// whose *presence* varies between recipients partitions a group send by
-    /// `Recipient.wrappedPayload.count` alone, which is cleartext in the bundle. Tier padding
-    /// equalises the op *count* per recipient; it does not equalise their encoded size, so an
-    /// optional 260-byte member has to be filled rather than omitted.
-    ///
-    /// Sizes track the real thing: a 32-byte SHA256 `value`, a 72-byte DER-shaped `signature`,
-    /// the same fixed label, and a non-nil `entryID`.
-    private static func attestationFiller(entryID: UUID?) -> SignedAttribute {
-        SignedAttribute(
-            label:     "shard-attestation",
-            value:     Data.randomBytes(32),
-            category:  .attestation,
-            signature: Data.randomBytes(72),
-            entryID:   entryID ?? UUID()
-        )
-    }
-
-    /// Vouch for `payload.signedAttribute` with this device's *current* identity key,
-    /// but only after independently verifying it against the owner's *retained old*
-    /// key — the check the owner's own new device structurally cannot perform, since
-    /// SE identity keys are non-exportable and die with the device they were created
-    /// on. Returns nil (no attestation, not a throw) whenever any step fails: no
-    /// matching key on file, the retained key doesn't decrypt, or the original
-    /// signature doesn't verify against it. A missing attestation just means this
-    /// op falls back to Branch A only — never a reason to treat the shard as invalid
-    /// here, since Branch A remains valid whenever the owner's identity hasn't
-    /// rotated at all.
-    ///
-    /// `retainedKeysByFingerprint` is resolved once per owner by `mismatchHandbackOps`,
-    /// not per shard — see its doc comment.
-    private func attestation(
-        for payload: CustodyShard.Payload,
-        retainedKeysByFingerprint: [Data: Data]
-    ) -> SignedAttribute? {
-        guard let retainedOldKey = retainedKeysByFingerprint[payload.ownerKeyFingerprint] else { return nil }
-        guard payload.signedAttribute.verify(against: retainedOldKey) else { return nil }
-
-        let hash      = Data(SHA256.hash(data: payload.signedAttribute.signingPayload()))
-        let attrID    = UUID()
-        let createdAt = Date()
-        let signingPayload = SignedAttribute.signingPayload(
-            id: attrID, category: .attestation, value: hash,
-            entryID: payload.signedAttribute.entryID, createdAt: createdAt
-        )
-        guard let signature = try? self.keyManager.signData(signingPayload) else { return nil }
-
-        return SignedAttribute(
-            id: attrID, label: "shard-attestation", value: hash, category: .attestation,
-            signature: signature, createdAt: createdAt, entryID: payload.signedAttribute.entryID
-        )
+        return candidates.map { OccultaBundle.ShardOperation(kind: .handback, attribute: $0.payload.signedAttribute) }
     }
 
     // MARK: - Outbound: build manifest fields
 
-    /// IDs of all shards currently held for `ownerIdentifier`. Sent in every outbound bundle.
+    /// IDs of all shards currently held for `ownerIdentifier`. Sent in every outbound 1:1
+    /// bundle; group bundles carry none (`RecipientPayload.shardMetadataAttempted`).
     func buildCustodyManifest(for ownerIdentifier: String) throws -> [UUID] {
         return try self.decryptAllCustodyShards()
             .filter { $0.payload.ownerContactIdentifier == ownerIdentifier }
             .map    { $0.payload.signedAttribute.id }
-    }
-
-    /// IDs the owner expects `trusteeIdentifier` to hold. Sent in every outbound bundle.
-    ///
-    /// Throws `CustodyError.keyDerivationFailed` when the vault is locked. Callers use
-    /// `try?` so the field is omitted (nil) from the bundle — an empty array would signal
-    /// "expect nothing" and cause the trustee to delete all shards they hold.
-    ///
-    /// Includes `.pending` and `.confirmed` shards only — `.lost` and `.revoked` are
-    /// already terminal and must not be re-sent (they would un-revoke on the trustee).
-    func buildExpectedShards(for trusteeIdentifier: String, vaultManager: VaultManager) throws -> [UUID] {
-        guard vaultManager.isUnlocked else { throw CustodyError.keyDerivationFailed }
-        return vaultManager.shardRecordsForTrustee(trusteeIdentifier)
-            .filter { $0.status == .pending || $0.status == .confirmed }
-            .map    { $0.attributeID }
     }
 
     // MARK: - Trustee display
@@ -548,23 +428,178 @@ final class ShardCustodyManager {
         try self.modelContext.save()
     }
 
-    // MARK: - Global shard config (read-only — orphaned as of item 3's consolidation)
+    // MARK: - Backup-key distribution (owner, one depth)
 
-    /// Read-only, and only for `DatabaseMigration.migrateGlobalShardConfigToPerContact`
-    /// — the one-time migration onto `Contact.Profile.globalTrusteeDepth`, the single
-    /// trustee mechanism at every depth. No app code writes `GlobalShardConfig` anymore;
-    /// once that migration has run for a given store, this always returns nil.
-    func globalShardConfig() throws -> GlobalShardConfig.Payload? {
+    /// Whether distributing to `recipients` leaves out anyone in `currentDepth`'s current
+    /// backup-key record, whatever their piece's status. A left-out trustee may still hold a
+    /// piece of the current key, so the split must use a new key (`bugs.md` Bugs 141, 144).
+    ///
+    /// The one place that decides it: `distributeBackup` applies it, and the setup screen
+    /// asks it whether to warn before a distribution replaces the key.
+    func distributionDropsTrustee(recipients: [String], currentDepth: Int, vaultManager: VaultManager) -> Bool {
+        let current = (try? vaultManager.backupShardMetadata(currentDepth: currentDepth))?.shards ?? []
+        return Self.dropsTrustee(current, recipients: recipients)
+    }
+
+    private static func dropsTrustee(_ records: [ShardRecord], recipients: [String]) -> Bool {
+        let tags = Set(recipients.map(TrusteeTag.init(identifier:)))
+        return records.contains { !tags.contains($0.trustee) }
+    }
+
+    /// Re-split `currentDepth`'s backup key for `recipients` and queue one piece each:
+    /// `.replace` for a trustee who held one, `.distribute` otherwise.
+    ///
+    /// Splits a freshly generated key instead when the distribution leaves out anyone in the
+    /// current record (`distributionDropsTrustee`): only a new secret stops a left-out
+    /// trustee's piece from working with k−1 others of the old split (`bugs.md` Bugs 141, 144).
+    ///
+    /// In this order, so a failure at any step heals at the next reconcile:
+    /// 1. the previous split's queued and watch rows are deleted and saved (`bugs.md` Bug 142),
+    ///    found by the piece IDs in this depth's own record — a removed trustee never receives
+    ///    a stale piece, even if a later step fails;
+    /// 2. the new split is persisted;
+    /// 3. its pieces are queued in one save.
+    ///
+    /// A failure after step 1 leaves pending pieces with nothing queued, which
+    /// `reconcileBackupPieces` re-sends. Reads and writes only this depth's row.
+    func distributeBackup(threshold: Int, recipients: [String], currentDepth: Int, vaultManager: VaultManager) throws {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-        let rows = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
-        for row in rows {
-            if let payload = try? self.openRow(row.encryptedPayload, as: GlobalShardConfig.Payload.self, using: custodyKey, id: row.id) {
-                return payload
+        let previous    = try vaultManager.backupShardMetadata(currentDepth: currentDepth)?.shards ?? []
+        let previousIDs = Dictionary(previous.map { ($0.trustee, $0.attributeID) }, uniquingKeysWith: { $1 })
+        let newKey      = Self.dropsTrustee(previous, recipients: recipients)
+
+        try self.deleteQueuedAndWatchRows(forAttributeIDs: Set(previous.map(\.attributeID)), using: custodyKey)
+
+        let attributes = try vaultManager.prepareBackupShards(
+            threshold: threshold, recipients: recipients, newKey: newKey, currentDepth: currentDepth
+        )
+
+        for (recipient, attribute) in zip(recipients, attributes) {
+            let rowID    = UUID()
+            let combined = try self.sealRow(
+                PendingShardDistribute.Payload(
+                    contactIdentifier: recipient, signedAttribute: attribute,
+                    oldAttributeID: previousIDs[TrusteeTag(identifier: recipient)]
+                ),
+                using: custodyKey, id: rowID
+            )
+            self.modelContext.insert(PendingShardDistribute(id: rowID, encryptedPayload: combined))
+        }
+        try self.modelContext.save()
+    }
+
+    /// Bring `currentDepth`'s backup-key piece statuses up to date with what trustees have
+    /// reported, and re-send when a trustee no longer has a piece. Does nothing while the
+    /// vault is locked.
+    ///
+    /// Per pending or confirmed piece in this depth's own record:
+    /// - trustee's contact deleted (not in `liveContacts`) → `.lost`;
+    /// - trustee is `changedContact` (their identity key just changed) → re-send;
+    /// - watch row says the trustee holds it, status pending → `.confirmed`;
+    /// - watch row says it's missing, not queued → re-send;
+    /// - confirmed with no watch row (confirmed before watch rows persisted) → add one;
+    /// - pending with neither a queued row nor a watch row (an interrupted
+    ///   distribution) → re-send.
+    ///
+    /// A re-send re-splits the **same** key for the same trustees at the same threshold
+    /// (`distributeBackup`); the owner keeps no split coefficients, so one trustee's piece
+    /// can't be re-created alone. Skipped while any trustee in the record is lost or no
+    /// longer a contact: leaving them out would have to split a new key, which breaks every
+    /// exported backup, so that is the owner's call from the setup screen (`bugs.md` Bug 144).
+    /// The erosion warning shows meanwhile.
+    ///
+    /// Reads and writes only this depth's backup-key row (`bugs.md` Bug 141). Watch and
+    /// queued rows are depth-blind; this matches them by the piece IDs this depth's own
+    /// record holds, and leaves every other row alone.
+    func reconcileBackupPieces(
+        currentDepth: Int, keyChangedFor changedContact: String? = nil, liveContacts: Set<String>, vaultManager: VaultManager
+    ) {
+        guard vaultManager.isUnlocked,
+              let meta       = try? vaultManager.backupShardMetadata(currentDepth: currentDepth),
+              let custodyKey = try? self.keyManager.deriveShardCustodyKey()
+        else { return }
+
+        let queuedIDs: Set<UUID> = Set(((try? self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())) ?? []).compactMap {
+            (try? self.openRow($0.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: $0.id))?.signedAttribute.id
+        })
+        var watchAbsent: [UUID: Bool] = [:]
+        for row in (try? self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())) ?? [] {
+            guard let payload = try? self.openRow(row.encryptedPayload, as: PotentiallyLostShard.Payload.self, using: custodyKey, id: row.id)
+            else { continue }
+            watchAbsent[payload.attributeID] = payload.isAbsent
+        }
+
+        // Records hold tags, not identifiers (`bugs.md` Bug 145); map back through the contacts.
+        let liveByTag  = Dictionary(liveContacts.map { (TrusteeTag(identifier: $0), $0) }, uniquingKeysWith: { first, _ in first })
+        let changedTag = changedContact.map(TrusteeTag.init(identifier:))
+
+        var statusChanges: [UUID: ShardStatus] = [:]
+        var resend = false
+        var insertedWatch = false
+
+        for record in meta.shards where record.status == .pending || record.status == .confirmed {
+            let id = record.attributeID
+            guard let identifier = liveByTag[record.trustee] else {
+                statusChanges[id] = .lost
+                continue
+            }
+            if record.trustee == changedTag {
+                resend = true
+                continue
+            }
+            switch (record.status, watchAbsent[id]) {
+            case (.pending, false?):
+                statusChanges[id] = .confirmed
+            case (_, true?) where !queuedIDs.contains(id):
+                resend = true
+            case (.confirmed, nil):
+                let rowID = UUID()
+                if let combined = try? self.sealRow(
+                    PotentiallyLostShard.Payload(attributeID: id, contactIdentifier: identifier, isAbsent: false),
+                    using: custodyKey, id: rowID
+                ) {
+                    self.modelContext.insert(PotentiallyLostShard(id: rowID, encryptedPayload: combined))
+                    insertedWatch = true
+                }
+            case (.pending, nil) where !queuedIDs.contains(id):
+                resend = true
+            default:
+                break
             }
         }
-        return nil
+
+        if insertedWatch { try? self.modelContext.save() }
+        try? vaultManager.setBackupShardStatuses(statusChanges, currentDepth: currentDepth)
+
+        let recipients = meta.shards.compactMap { record -> String? in
+            guard record.status == .pending || record.status == .confirmed else { return nil }
+            return liveByTag[record.trustee]
+        }
+        guard resend, recipients.count == meta.shards.count else { return }
+        try? self.distributeBackup(
+            threshold: meta.threshold, recipients: recipients, currentDepth: currentDepth, vaultManager: vaultManager
+        )
+    }
+
+    /// Deletes every queued distribution and watch row whose piece is in `attributeIDs`.
+    private func deleteQueuedAndWatchRows(forAttributeIDs attributeIDs: Set<UUID>, using custodyKey: SymmetricKey) throws {
+        guard !attributeIDs.isEmpty else { return }
+        var deletedAny = false
+        for row in try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>()) {
+            guard let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id),
+                  attributeIDs.contains(payload.signedAttribute.id) else { continue }
+            self.modelContext.delete(row)
+            deletedAny = true
+        }
+        for row in try self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>()) {
+            guard let payload = try? self.openRow(row.encryptedPayload, as: PotentiallyLostShard.Payload.self, using: custodyKey, id: row.id),
+                  attributeIDs.contains(payload.attributeID) else { continue }
+            self.modelContext.delete(row)
+            deletedAny = true
+        }
+        if deletedAny { try self.modelContext.save() }
     }
 
     // MARK: - Contact deletion cleanup
@@ -573,12 +608,6 @@ final class ShardCustodyManager {
     /// `CustodyShard` this device holds on their behalf, any `PendingShardDistribute`
     /// still owed to them, and any `PotentiallyLostShard` watch row for them. Called
     /// from `ContactManager.deleteContact`.
-    ///
-    /// Global-trustee status (`Contact.Profile.globalTrusteeDepth`) needs no purge step
-    /// here — it lives on the contact's own row, which is soft-deleted (not hard-
-    /// deleted) by `deleteContact`, and every read of `globalTrusteeDepth` already
-    /// excludes rows with a non-nil `deletionToken`. The designation becomes
-    /// unreachable the moment the contact is deleted, with nothing separate to purge.
     ///
     /// Unconditional, not depth-gated: unlike `Group`'s duress-depth membership,
     /// nothing here holds separate per-depth decoy content. A deleted contact is
@@ -698,17 +727,6 @@ final class ShardCustodyManager {
             deletedAny = true
         }
         if deletedAny { try self.modelContext.save() }
-    }
-
-    private func queueShardStatusUpdate(attributeID: UUID, newStatus: ShardStatus) throws {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rowID    = UUID()
-        let combined = try self.sealRow(PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus), using: custodyKey, id: rowID)
-        self.modelContext.insert(PendingShardStatusUpdate(id: rowID, encryptedPayload: combined))
-        
-        try self.modelContext.save()
     }
 
     private static func fingerprint(of publicKey: Data) -> Data {

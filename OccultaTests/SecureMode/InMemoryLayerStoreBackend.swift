@@ -10,7 +10,13 @@ import Foundation
 @testable import Occulta
 
 /// In-memory backend for unit tests only. Not thread-safe.
-/// Injected via `Manager.LayerStore(backend: InMemoryLayerStoreBackend())`.
+///
+/// Currently has **no consumer** — `VaultManager.Backup.LayerStore`, its last one, was
+/// itself deleted when the BEK moved off the 32-slot array onto ordinary SwiftData rows
+/// (`VAULT_KEY_LAYERING.md`, same change `Manager.LayerStore` — this type's original
+/// consumer — was deleted in, Removal Stage 2, `plan.md`). Kept, not deleted, per explicit
+/// instruction: `RECOVERY_BUFFER_LAYERING.md`'s own future per-depth restore-state
+/// container was planned to reuse `LayerStoreBackend`, and this is its test double.
 final class InMemoryLayerStoreBackend: LayerStoreBackend {
     private var stored: Data?
 
@@ -19,7 +25,7 @@ final class InMemoryLayerStoreBackend: LayerStoreBackend {
     }
 
     func read() throws -> Data {
-        guard let stored else { throw Manager.LayerStore.Error.notFound }
+        guard let stored else { throw LayerStoreBackendError.notFound }
         return stored
     }
 

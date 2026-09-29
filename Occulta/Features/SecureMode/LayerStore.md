@@ -1,10 +1,20 @@
 # LayerStore — Design & Declarations
 
+**Retired, moot, 2026-09-10 — `Manager.LayerStore` was deleted whole (Removal Stage 2, `plan.md`).**
+There is no blob, no push/pop, no store file, and no cryptographic container any more — Secure Mode
+is UI-only depth filtering now. Every section below describes deleted code. Kept as a historical
+record of the design; see `forensic-trace-avoidance.md`'s retirement notice at its top for the
+security reasoning behind removing it (the blob key and the local DB key were equally derivable by
+the realistic AFU threat model, so the blob bought no confidentiality it didn't already have another
+way).
+
+**Original framing (historical, no longer in force):**
+
 `Manager.Security.LayerStore` is the cryptographic container for the plausible-deniability
 layer stack. It owns all file I/O and AES-GCM operations for storing and restoring sensitive
 contact data across activation and deactivation cycles.
 
-See `plan.md` Step 4 for the full activation and deactivation sequences that drive this store.
+See `plan.md` Step 4 for the full activation and deactivation sequences that drove this store.
 
 ---
 
@@ -101,7 +111,7 @@ extension Manager {
             // MARK: - Constants
 
             /// Number of fixed slots in the store file.
-            /// Must equal AppLayerConfig.maxVerifierCount so neither the file size
+            /// Must equal AppLayerConfig.maxDepthCount so neither the file size
             /// nor the verifier array length leaks more information than the other.
             static let slotCount: Int = 32
 
@@ -279,9 +289,26 @@ SE binding prevents all off-device attacks — the key is inaccessible without t
 and biometrics/passcode. No PBKDF2: on-device code execution defeats any KDF regardless of
 iteration count, and PBKDF2 added ~1 s of main-thread blocking for no real gain.
 
-All 32 slots use the same `layerKey`. This is what enables full regeneration in `push`/`pop`
-— the store can attempt decryption of every slot and distinguish real payloads (authentication
-succeeds) from padding (authentication fails, tag mismatch).
+All 32 slots use the same `layerKey`. This is what enables full regeneration in `push`/`pop` — the
+store can decrypt every slot under this one key and re-seal it with a fresh nonce, real or padding
+alike.
+
+**Correction, 2026-09-08: padding does not fail authentication.** The line above previously said
+padding is distinguished from real payloads by "authentication fails, tag mismatch" — wrong, and worth
+fixing precisely because Bug 107 depends on the actual behavior: padding is genuinely-sealed random
+plaintext under the same `layerKey`, so `AES.GCM.open` succeeds for it exactly as it does for real
+content. There is no structural way to tell real from padding at this layer at all — both open
+successfully; distinguishing them (if it happens anywhere) is a decision made from the decrypted
+plaintext's own content one level up, not from whether decryption itself succeeded.
+
+**The flip side of the shared key, named 2026-09-07: no cryptographic barrier stops a session at one
+depth from opening or resealing another depth's slot** — protection here is code discipline (the app's
+own call sites always pass `currentDepth`), the same shape of gap Bug 92 names for the BEK. See Bug 106.
+
+**A second consequence of the shared key and the "open should always succeed" property above, found
+2026-09-08: an actual open failure is never legitimate here, and `push()`/`pop()` treat it as if it
+were.** See Bug 107 — a slot that fails to open (corruption, a partial write, a bug) is indistinguishable
+in the code from one that was always empty, and gets silently overwritten with fresh filler either way.
 
 ---
 
@@ -324,3 +351,17 @@ var sealedBlobSlots: [Data]
 /// One value per depth, parallel to sealedBlobSlots.
 var layerSequenceNumbers: [Data]
 ```
+
+---
+
+## Known bugs
+
+Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical for full reasoning.
+
+| Bug | What | Status |
+|---|---|---|
+| 38 | `AppGroupLayerStoreBackend.write()` deleted the old file before writing the new one | fixed |
+| 39 | `maintainLayerStore()` blocked the main thread on launch | fixed |
+| 43 | `rewrite()` in `deactivateSecureMode` ran synchronously; `LayerStore.Error` codes were unstable | fixed |
+| 106 | No cryptographic cross-depth isolation — all 32 slots share one key, protection is code discipline only | open, severity not yet assessed |
+| 107 | `push()`/`pop()` silently replace an unreadable slot with fresh filler — real content and a corrupted slot look identical | open, severity not yet assessed |

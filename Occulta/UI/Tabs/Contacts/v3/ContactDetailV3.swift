@@ -16,7 +16,6 @@ struct ContactDetailV3: View {
 
     @Environment(ContactManager.self)      private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
-    @Environment(VaultManager.self)        private var vaultManager: VaultManager?
     @Environment(\.dismiss)               private var dismiss
     @Environment(\.scenePhase)            private var scenePhase
 
@@ -95,13 +94,12 @@ struct ContactDetailV3: View {
                     } else {
                         let cm  = self.contactManager
                         let scm = self.shardCustodyManager
-                        let vlt = self.vaultManager
                         ComposeHeroV3(
                             vm:              self.composeVM,
                             headerRight:     "→ TO \(self.givenName.uppercased())",
                             encryptLabel:    "Encrypt",
                             isForwardSecret: self.profile?.hasPrekeyAvailable,
-                            onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
+                            onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm) }
                         )
                         #if DEBUG
                         .onAppear { self.profile?.debugLogPrekeyStateAtCompose("V3 onAppear") }
