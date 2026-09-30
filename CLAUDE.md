@@ -66,15 +66,9 @@ For multi-step tasks, state a brief plan:
 ## Build & Test
 
 A native Xcode project with **no** package dependencies — no SPM, CocoaPods, or Carthage. All
-crypto is CryptoKit and Security.framework, ML-KEM included.
-
-The one SPM dependency (`apple/swift-crypto` 4.2.0, pulling `apple/swift-asn1`) was removed on
-`release/v1.10.3`, 2026-08-14. Nothing imported it: on Apple platforms swift-crypto's `Crypto`
-module compiles to nothing but `@_exported import CryptoKit`, so the single `import Crypto` was an
-alias for a framework the file already imported. The five vendored BoringSSL resource bundles came
-from the `CryptoExtras`/`_CryptoExtras` products, which were linked to the app target and imported
-by zero files. A re-archive confirms zero bundles and zero BoringSSL symbols; see §7 of
-`Docs/Audit/SECURITY_CHECKLIST.md`.
+crypto is CryptoKit and Security.framework, ML-KEM included. Don't add one — in particular not
+`apple/swift-crypto`, which on Apple platforms only re-exports CryptoKit but ships BoringSSL
+bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
 
 - **Open:** `open Occulta.xcodeproj`
 - **Build/Run:** Cmd+R in Xcode, targeting a physical iPhone 11+ (U1 chip required for NearbyInteraction)
@@ -99,21 +93,16 @@ by zero files. A re-archive confirms zero bundles and zero BoringSSL symbols; se
   detail does not reach stdout. Read it from the `.xcresult` the run prints at the end, or split
   the assertion into its own `@Test` and bisect — often faster than fighting `xcresulttool`.
 
-**Requirements:** `IPHONEOS_DEPLOYMENT_TARGET` is **18.6** across all ten build configurations;
-Xcode 26.2 / iOS SDK 26.2 at the last release. Physical device needed for NearbyInteraction.
+**Requirements:** `IPHONEOS_DEPLOYMENT_TARGET` is **18.6** across all ten build configurations.
+Physical device needed for NearbyInteraction.
 
 Note the deployment target and the availability gates are different things: ML-KEM is behind
 `#available(iOS 26, *)` in `PQProvider`, so the post-quantum path is live only on iOS 26+ and the
 classical-only modes exist for everything between 18.6 and that.
 
-**Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; **270
-of 806** need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store
-go through `Manager.Key()` directly with no injection seam. (Both re-measured 2026-08-16: gated by
-counting `@Test` declarations carrying `secureEnclaveAvailable()` directly or by their enclosing
-suite, total by counting unique test cases in a full local run — 771 `@Test` plus 36 XCTest cases
-declared. Re-measure rather than trusting either; they have drifted every time. The gated figure
-once read "roughly 146" against a real 260, and the total sat at 742 while the suite had grown
-past 770.) Those carry
+**Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; about a
+third need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store go
+through `Manager.Key()` directly with no injection seam. Those carry
 `.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
 notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
 have Enclave access and runs the full suite.
@@ -121,7 +110,7 @@ have Enclave access and runs the full suite.
 **With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
 stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
 Simulator *does* create SE keys there — the tempting "just gate it on `secureEnclaveAvailable()`"
-was tried on 2026-08-15 and reverted — but `SecItemUpdate` cannot add `kSecAttrAccessGroup` to an
+was tried and reverted — but `SecItemUpdate` cannot add `kSecAttrAccessGroup` to an
 SE-protected key in the Simulator, returning `-25303 errSecNoSuchAttr`, and that update is the
 entire subject of the suite. A runtime gate turns six honest skips into two failures announcing
 that the keychain migration strategy is unviable. Enclave availability is not the predicate;
@@ -133,10 +122,10 @@ with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so `Manager.Key` is implicitly
 and its `deinit` hops executors; releasing one from that context crashes the test process
 (`swift_task_deinitOnExecutorImpl` → malloc "pointer being freed was not allocated"). The failure is
 disguised: xcodebuild relaunches per test and reports a green **"Executed 0 tests"**, so a suite can
-stop running entirely and still look fine. The 23 Swift Testing files that call
+stop running entirely and still look fine. The Swift Testing files that call
 `secureEnclaveAvailable()` are unaffected, reaching it from a task context.
 
-**A separate and worse problem: 112 tests still skip the old way** — `print("⚠︎ Skipping"); return`
+**A separate and worse problem: many tests still skip the old way** — `print("⚠︎ Skipping"); return`
 — which reports as **passed**, not skipped. So the suite's green count overstates what actually
 ran, and unlike the gated tests the shortfall is invisible. Prefer injecting a key manager; where
 there is no seam, use `.enabled(if: secureEnclaveAvailable())` so the cost stays visible. Do not
@@ -144,7 +133,7 @@ add more of the legacy form.
 
 So **a green CI run is not a passing test suite**: it verifies the parts that do not touch key
 material. Before tagging a release, run the full suite locally on a host with an Enclave and
-confirm the skip count is zero — see the Testing Gate in `Docs/Audit/SECURITY_CHECKLIST.md`. When
+confirm the only skips are the six above — see the Testing Gate in `Docs/Audit/SECURITY_CHECKLIST.md`. When
 adding a test that needs real key material, prefer injecting a key manager over gating it; gate it
 only where no seam exists.
 
@@ -165,9 +154,4 @@ Unit tests for all implementations
 
 - `develop` — integration branch; PRs target this
 - `release/v*` — release branches
-- Feature branches prefixed `v1.*.0/`
-
-The current release branch was renamed `release/v1.11.0` → `release/v1.10.3` on 2026-08-16, when
-its contents were re-scoped as a patch. References to the old name in commit messages and PR titles
-predate that; the docs were updated to the new name, so a dated entry reading "on
-`release/v1.10.3`, 2026-08-14" is the same branch under its earlier name, not a contradiction.
+- Feature branches prefixed with their target release, e.g. `v2.0.0/`
