@@ -49,6 +49,14 @@ struct Settings: View {
                         Text("\(Bundle.main.appVersion) (\(Bundle.main.buildNumber))")
                             .foregroundStyle(.secondary)
                     }
+                    // Only when this version has notes. Reads the catalog and the bundle
+                    // version, so it is the same at every depth, and it never touches the
+                    // acknowledged stamp that governs the one-time page.
+                    if let release = WhatsNew.notes(for: Bundle.main.appVersion) {
+                        NavigationLink("What's New") {
+                            WhatsNewView(release: release)
+                        }
+                    }
                 } header: {
                     self.sectionHeader("About", "Open-source project details and app version.")
                 }

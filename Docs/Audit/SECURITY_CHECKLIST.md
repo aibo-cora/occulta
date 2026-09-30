@@ -309,9 +309,12 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       the bytes are queued in memory and the function returns early.
 - [x] No sensitive material written to `UserDefaults`, `NSCache`, or temp files without
       protection class
-      — `UserDefaults`/`@AppStorage` holds four booleans only: `showFingerprints`,
-      `showTrustSummary`, `hasCompletedOnboarding`, `vault.postRestoreActionNeeded`. No key
-      material, no identifiers, and no key whose name discloses Secure Mode.
+      — `UserDefaults`/`@AppStorage` holds four booleans and one version string: `showFingerprints`,
+      `showTrustSummary`, `hasCompletedOnboarding`, `vault.postRestoreActionNeeded`, and
+      `whatsNewLastSeenVersion` (the marketing version, which `Info.plist` already carries). No key
+      material, no identifiers, and no key whose name discloses Secure Mode. The What's New copy
+      (`WhatsNew.releases`) is compiled into the binary and shown on an unlocked phone, so each
+      release's entry is read against the same rule before tagging.
 - [x] All writes to `FileManager.temporaryDirectory` use `Data.writeProtected(to:)`
       (`.completeFileProtection`) — no bare `write(to:)` calls
       — **was FAIL, fixed this pass.** `IdentityChallenge+Coordinator.swift:285` wrote the

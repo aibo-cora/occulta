@@ -261,6 +261,10 @@ struct RootView: View {
     @Environment(ShardCustodyManager.self) private var shardCustodyManager
 
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
+    /// Last release notes the user acknowledged. Persisted, not `@State`, so `WhatsNew` stays a
+    /// function of state that is the same at every depth and there is nothing for `endSession()`
+    /// to clear.
+    @AppStorage(WhatsNew.lastSeenKey) private var whatsNewLastSeen = ""
     @Environment(\.scenePhase) private var scenePhase
 
     /// Container with plaintext message or file.
@@ -436,6 +440,16 @@ struct RootView: View {
             SwiftUI.Group {
                 if !self.hasCompleted {
                     OnboardingView()
+                        // A fresh install has nothing new to read. Stamping here, not when
+                        // onboarding finishes, keeps it from looking like an update afterwards.
+                        .onAppear { self.whatsNewLastSeen = Bundle.main.appVersion }
+                } else if let release = WhatsNew.release(for: Bundle.main.appVersion, lastSeen: self.whatsNewLastSeen) {
+                    // In the tree, like onboarding, and not a `.sheet`: a file, share or challenge
+                    // sheet can present at the moment of unlock, and a second modal would be
+                    // dropped, losing whatever it carried. Those present over this instead.
+                    WhatsNewView(release: release) {
+                        self.whatsNewLastSeen = release.version
+                    }
                 } else {
                     self.tabContent
                 }
