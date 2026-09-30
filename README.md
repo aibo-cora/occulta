@@ -50,7 +50,7 @@ On iOS 26 and later, Occulta adds a second layer of encryption on top of the sta
 
 ### Vault
 
-Vault is a secure place to store sensitive notes, credentials, and documents — encrypted the same way your messages are. Each entry can be split among trusted contacts using secret sharing: you choose a threshold (e.g. any 2 of 3 contacts), and Occulta splits the entry's encryption key into shards. If you lose your device, your trustees can return their shards and you recover your vault. No shard holder can read your data alone.
+Vault is a secure place to store sensitive notes, credentials, and documents — encrypted the same way your messages are. Backup Recovery protects against losing your phone: you export an encrypted backup file and choose trustees among your contacts and a threshold (e.g. any 2 of 3). Occulta splits the backup's encryption key into pieces using secret sharing, one per trustee. If you lose your device, your trustees return their pieces when you re-pair in person, and opening the backup file on your new phone restores your vault. The file is useless without the key, and no single trustee holds enough of it.
 
 → [How the Vault and secret sharing work](https://github.com/aibo-cora/occulta/wiki/Vault-and-Secret-Sharing)
 
@@ -62,7 +62,7 @@ Encrypt a file or message for multiple contacts at once and share it as a single
 
 Groups are local: a named list of contacts on your device. No server, no membership notifications. Deliver the bundle over any channel, same as individual messages.
 
-Forward secrecy and post-quantum protection apply per recipient. Occulta's full multi-layer duress model extends to groups — each duress depth shows its own independent member list, with no trace of the real one or of any other depth. Group sends can also distribute Vault recovery shards to eligible trustees alongside the message.
+Forward secrecy and post-quantum protection apply per recipient. Occulta's full multi-layer duress model extends to groups — each duress depth shows its own independent member list, with no trace of the real one or of any other depth. Group sends can also carry Vault backup-recovery pieces to eligible trustees alongside the message.
 
 → [How group messaging works](https://github.com/aibo-cora/occulta/wiki/Group-Messaging)
 
@@ -74,8 +74,8 @@ Secure Mode protects against someone forcing you to unlock your phone. You set t
 
 Additional protections:
 - The "Disable PIN" toggle leaves depth filtering active — disabling the lock doesn't reveal hidden contacts.
-- The app leaves no forensic trace that Secure Mode is in use; the configuration file is written from first launch on every install.
-- Up to 32 nested duress layers are supported.
+- The configuration file is written from first launch on every install, so its presence doesn't reveal Secure Mode. Depth filtering is applied by the app, not by separate keys: it stops someone using the app, not an attacker who extracts data from an unlocked device.
+- Up to 32 layers are supported in total: the real one plus 31 nested duress layers.
 
 → [How Secure Mode works technically](https://github.com/aibo-cora/occulta/wiki/Secure-Mode)
 
@@ -93,7 +93,7 @@ If someone takes over your Signal account or iCloud, they cannot read your Occul
 
 Occulta is not a messaging app and doesn't replace Signal or iMessage. It has no chat interface. It encrypts files and lets you verify identity — delivery is up to you.
 
-Cross-device sync is intentional absent. Keys live on one device. If you lose your iPhone without vault recovery configured, you lose your keys.
+Cross-device sync is intentionally absent. Keys live on one device. If you lose your iPhone, your identity and contact keys are gone and you re-exchange in person; Backup Recovery restores only your Vault, and only from a backup file you exported beforehand.
 
 Android is not supported.
 
@@ -115,7 +115,7 @@ Android is not supported.
 - [Architecture](https://github.com/aibo-cora/occulta/wiki/Architecture)
 - [Group Messaging](https://github.com/aibo-cora/occulta/wiki/Group-Messaging)
 - [Group Messaging — Technical](https://github.com/aibo-cora/occulta/wiki/Group-Messaging-Technical)
-- [Security Analysis (PDF)](https://github.com/user-attachments/files/25865710/occulta_crypto_protocol.docx)
+- [Security Analysis (DOCX)](https://github.com/user-attachments/files/25865710/occulta_crypto_protocol.docx)
 
 ---
 
@@ -135,7 +135,7 @@ cd Occulta
 open Occulta.xcodeproj
 ```
 
-Build and run on a physical device. The Secure Enclave and UWB are not available in the Simulator.
+Build and run on a physical device. UWB is not available in the Simulator, and the Vault can't be unlocked there because its Face ID-protected key isn't supported. The unit tests run in the Simulator (`OccultaTests` scheme).
 
 ---
 
