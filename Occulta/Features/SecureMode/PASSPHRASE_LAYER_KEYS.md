@@ -7,6 +7,10 @@ status). This document assumes that simplification has already landed: no blob, 
 no `Manager.LayerStore`. It proposes a different, independent mechanism to close the gap that removal
 deliberately accepts.
 
+**v2.0.0 release plan, 2026-09-30 — `Docs/v2.0.0/`.** That folder holds this design as steps 1–5 of a
+wider hardening plan: the steps around it, a proposed staged rollout, and a protection assessment. This
+document stays the owner of the cryptographic design, and that folder owns sequencing.
+
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
 shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
 confirmed gone (grepped, zero matches, repeatedly this session). The blocker §5 names is cleared —
@@ -93,6 +97,25 @@ This also removes the current design's dependency on lockout/rate-limiting *for 
 bits of entropy behind a slow KDF, offline brute force is infeasible even with unlimited attempts and no
 rate limit at all. (Lockout can still exist for UX/anti-shoulder-surfing reasons; it stops being the
 thing actually holding the line.)
+
+**Requirement, added 2026-09-29 (threat review): the SE must take part in every guess, not once.** As
+written above, `seComponent_D = ECDH(SE_priv, G)` is a constant. Under AFU the attacker calls the SE once,
+keeps the 32 bytes, and guesses `P_D` offline on a GPU farm — "needs both the device and the phrase" holds
+for one call only, after which the device is irrelevant. This is today's `deriveSecureModeKey()` weakness
+carried forward: that key is also a constant, which is why the current 6-digit verifiers fall in under a
+second under AFU. Fix: feed the stretched phrase *into* the SE operation.
+
+```
+s_D           = KDF(UTF8(P_D), salt_D)                 — PBKDF2/Argon2id, as above
+Q_D           = P256.KeyAgreement.PrivateKey(rawRepresentation: s_D).publicKey
+seComponent_D = ECDH(depth_D_SE_privkey, Q_D)          — one SE call per unlock attempt
+layerKey_D    = HKDF-SHA256(IKM: s_D ‖ seComponent_D, …) — as above
+```
+
+Every guess now needs the seized phone's SE, one at a time, at SE speed; nothing can be moved to a GPU farm
+unless the SEP itself is broken. At 90 bits this is margin rather than the thing holding the line — but it
+is exactly the margin that matters if the SEP does fall, and it costs one SE call per unlock. (`s_D` outside
+the P-256 scalar range fails `rawRepresentation:`; probability ~2⁻³², handle by re-deriving with a counter.)
 
 ---
 
@@ -184,6 +207,13 @@ content-partitioning is actually built, this is where the duress property genuin
 cryptographically rather than by UI convention. Setup flow needs to make clear to the user that each
 layer's phrase is independent and none of them can recover another.
 
+**Requirements, added 2026-09-29 (threat review):**
+- **Every depth's phrase has the same length.** Shortening duress phrases because "they get surrendered
+  anyway" is a tell: an attacker cracks the short ones offline, and the one depth that holds out is the real
+  one. Uniform strength is part of indistinguishability, not a nicety.
+- **Phrases are app-generated and not editable.** User-chosen phrases collapse the entropy the numbers in §4
+  assume. Confirmation in the shape of a BIP-39 seed check (already in §4's Recovery paragraph).
+
 ---
 
 ## 4. Practical constraints
@@ -202,6 +232,21 @@ Two real options, not yet chosen between:
 This tradeoff should be settled deliberately, not defaulted into — it's a straight security-vs-dependency-
 purity call for whoever builds this.
 
+**Sized 2026-09-29 (threat review) — at 7 words, PBKDF2 is enough; at 6 it is not.** 7776-word list, 12.9
+bits/word; PBKDF2-HMAC-SHA256 tuned to ~1 s on the slowest supported device (iPhone 11, A13), assumed ~1M
+iterations — measure, don't trust that constant. Expected time to crack, order of magnitude:
+
+| Attacker | 6 words (77.5 bits) | 7 words (90.5 bits) |
+|---|---|---|
+| 1M RTX-4090-class GPUs | ~400,000 years | ~3 billion years |
+| All of Bitcoin's SHA-256 throughput, hypothetically repurposed (absurd upper bound) | **~3.5 years** | ~27,000 years |
+
+The second row is the one that matters for a state-level threat model: custom SHA-256 hardware exists at
+that scale, and PBKDF2 is not memory-hard. So the choice is **7 words + PBKDF2** (no new dependency) or
+6 words + Argon2id — not 6 words + PBKDF2. §1's "~78–90 bits … infeasible" holds at the top of that range
+only. The SE-per-guess requirement in §1 would keep both rows off-device entirely; the table is the
+fallback if the SEP is broken.
+
 **UX — no more silent derivation.** Today's SE-only key derives automatically, gated only by device
 unlock; nothing prompts the user for anything beyond Face ID. A passphrase-gated key can't work that
 way — Argon2id (or even a well-tuned PBKDF2) is deliberately slow, so it can't run on every field
@@ -209,6 +254,14 @@ decrypt. The derived `layerKey_D` needs to be cached in memory for a session, th
 `VaultManager`'s `LAContext`-gated key already uses, with the same bounded-exposure caveat already
 flagged in this conversation: a live memory-inspection-capable AFU exploit could still catch a cached
 key mid-session, same as it could today.
+
+**Requirement, added 2026-09-29 (threat review): phrase entry must leave no keyboard trace.** Words typed
+into an ordinary text field are learned into the iOS keyboard's dynamic lexicon — a standard forensic
+artifact that survives the app's own data. Seven diceware words there leak the secret itself *and* signal
+that something is being hidden. Entry must go through `isSecureTextEntry` or an in-app word picker built
+from the wordlist, with autocorrect, predictive text, and paste off. Nothing about the phrase may reach the
+pasteboard, logs, or state restoration snapshots. This is a forensic-trace requirement in its own right, and
+it applies whichever way the rest of this document is settled.
 
 **Recovery.** Forgetting `P_D` makes depth `D`'s content permanently unrecoverable — no biometric
 fallback, no Apple ID reset path, nothing. This is a materially different risk profile from the current
@@ -226,3 +279,11 @@ top of the still-present blob/rotation machinery would mean maintaining two para
 concepts at once. Once removal lands, the next real design work is §2: settle whether/how per-row
 multi-key sealing is built, since that decision determines whether this is a moderate feature addition
 or a rebuild of the same scale as what's being removed.
+
+**Proposed staged rollout, 2026-09-30 — `Docs/v2.0.0/ROLLOUT_PLAN.md`. Not decided.** If adopted, it
+replaces the single migration assumed above. The migration splits by data: the vault first, then
+contacts, then the remaining depth-stamped records. It never splits by requirement: each slice gets §1,
+§1's Enclave-per-guess requirement, §2's every-depth sealing, its write-frequency requirement, and the
+row and field AAD, all at once. Every depth on a device migrates in one step. The phrase replaces the
+PIN for every lock user, not only for users with duress depths. §2 remains the blocker. Design it for
+vault and contacts together, even though the vault would ship first.

@@ -10361,6 +10361,21 @@ entry's remedy re-seals these fields under layer keys, the same migration must b
 field** (an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)` already does for the
 content fields). Recorded as a requirement in `PASSPHRASE_LAYER_KEYS.md` §2.
 
+### Threat review, 2026-09-29
+
+Sizing the remedy against a state-level attacker added four requirements to `PASSPHRASE_LAYER_KEYS.md`:
+- **§1:** as drafted, the SE half is a constant (`ECDH(SE_priv, G)`), so AFU extracts it once and guessing
+  moves off-device. The stretched phrase has to go into the SE operation, so every guess needs this phone's SE.
+- **§3:** every depth's phrase is the same length, and phrases are app-generated, not editable. Shorter duress
+  phrases can be cracked offline, and the one that survives is the real one.
+- **§4:** 7 words with PBKDF2, or 6 words with Argon2id. 6 words with PBKDF2 falls within years to
+  SHA-256 hardware on the scale of the Bitcoin network.
+- **§4:** entry must not go through the ordinary keyboard. The keyboard's learned-words cache is a forensic
+  artifact that would hold the phrase and show that something is hidden.
+
+This also records how exposed the current PIN is: `deriveSecureModeKey()` is a constant under AFU, so the
+6-digit verifiers fall in under a second and reveal how many depths exist, whatever the lockout says.
+
 ### Guard
 
 None — not built. Tracked as `PASSPHRASE_LAYER_KEYS.md`'s own §2, unresolved. This entry's job is
