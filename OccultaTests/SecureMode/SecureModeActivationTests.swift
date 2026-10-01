@@ -29,11 +29,9 @@
 //     key records still see no data-touching at all, and a vault entry at a depth that
 //     *wasn't* just freed is exactly as untouched as everything else in this file proves.
 //
-//  SE-availability guard — a helper checks whether `Manager.Key` can derive a key at runtime.
-//  Every test here uses the injected `TestKeyManager` throughout and never the real
-//  `Manager.Key()`, so none of them strictly need it; the gate is kept only for consistency
-//  with the rest of the Secure Mode suite, which does depend on it for reasons unrelated to
-//  what this file tests.
+//  Every test runs under `.ambientTestKeyManager`: `Manager.Security` takes an injected
+//  `TestKeyManager`, and the local DB key some tests read directly comes from
+//  `Manager.Ambient`'s, so none of them needs a Secure Enclave.
 //
 
 import Testing
@@ -85,12 +83,6 @@ private func makeComponents() throws -> ActivationComponents {
         security: security, container: container, contacts: contacts, vault: vault,
         keyManager: keyManager
     )
-}
-
-/// True when this host can derive the real hybrid local DB key. False on the iOS Simulator or a
-/// CI runner with no Secure Enclave.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
 }
 
 // MARK: - Contact helpers
@@ -177,7 +169,7 @@ private func fetchConfig(from container: ModelContainer) throws -> AppLayerConfi
 struct SecureModeNonInterferenceTests {
 
     @Test("A contact's depth fields and key material survive a single activate/deactivate cycle",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func contactSurvivesSingleCycle() throws {
         let c = try makeComponents()
@@ -202,7 +194,7 @@ struct SecureModeNonInterferenceTests {
     }
 
     @Test("A contact survives a nested two-layer activate/deactivate cycle unchanged",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func contactSurvivesNestedCycle() throws {
         let c = try makeComponents()
@@ -230,7 +222,7 @@ struct SecureModeNonInterferenceTests {
     }
 
     @Test("A vault entry's visibility ceiling survives an activate/deactivate cycle",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func vaultEntrySurvivesCycle() throws {
         let c = try makeComponents()
@@ -247,7 +239,7 @@ struct SecureModeNonInterferenceTests {
     }
 
     @Test("Bytes nothing can decrypt survive identically too — there is no decrypt-and-fallback path left",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func undecryptableBytesSurviveUnchanged() throws {
         let c = try makeComponents()
@@ -286,7 +278,7 @@ struct SecureModeNonInterferenceTests {
 @Suite("Secure Mode — session identifier (Bug 140)", .serialized)
 struct SessionIdentifierTests {
 
-    @Test("An in-place depth change starts a new session", .enabled(if: secureEnclaveAvailable()))
+    @Test("An in-place depth change starts a new session", .ambientTestKeyManager)
     @MainActor
     func deactivationChangesSession() throws {
         let c = try makeComponents()
@@ -304,7 +296,7 @@ struct SessionIdentifierTests {
         #expect(c.security.sessionID != before)
     }
 
-    @Test("Setup, activation and PIN verification keep the session", .enabled(if: secureEnclaveAvailable()))
+    @Test("Setup, activation and PIN verification keep the session", .ambientTestKeyManager)
     @MainActor
     func sameDepthKeepsSession() throws {
         let c = try makeComponents()
@@ -324,7 +316,7 @@ struct SessionIdentifierTests {
 struct SecureModeVerifierPersistenceTests {
 
     @Test("activateSecureMode's verifier write is readable from a fresh ModelContext",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func activationPersistsVerifiers() throws {
         let c = try makeComponents()
@@ -338,7 +330,7 @@ struct SecureModeVerifierPersistenceTests {
     }
 
     @Test("deactivateSecureMode's verifier clear is readable from a fresh ModelContext",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func deactivationPersistsClearedVerifiers() throws {
         let c = try makeComponents()
@@ -365,7 +357,7 @@ struct SecureModeVerifierPersistenceTests {
 struct DepthMigrationInertnessTests {
 
     @Test("The migration is a no-op against rows it cannot decrypt",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func migrationIsInertAgainstForeignKeyRows() throws {
         let c  = try makeComponents()
@@ -404,7 +396,7 @@ struct DepthMigrationInertnessTests {
 struct VaultEntryOrphaningTests {
 
     @Test("A vault entry from one duress session does not resurface in a later, unrelated session at the same depth",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func staleSessionEntryDoesNotResurface() throws {
         let c = try makeComponents()
@@ -428,7 +420,7 @@ struct VaultEntryOrphaningTests {
         // The row itself must still physically exist, marked inert — never hard-deleted.
         let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
         #expect(raw != nil, "orphaned row must be hard-kept, not deleted")
-        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         #expect(raw?.isOrphaned(usingKey: key) == true)
 
         // Session B: a completely unrelated duress PIN, also reaching depth 1.
@@ -442,7 +434,7 @@ struct VaultEntryOrphaningTests {
     }
 
     @Test("A vault entry at a shallower, still-live depth survives an unrelated deeper cascade deactivation",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func shallowerEntrySurvivesCascade() throws {
         let c = try makeComponents()
@@ -465,12 +457,12 @@ struct VaultEntryOrphaningTests {
         #expect(entries.map(\.id).contains(entryID),
                 "a shallower, still-live layer's entry must survive an unrelated deeper cascade")
         let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
-        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         #expect(raw?.isOrphaned(usingKey: key) == false, "must not be orphaned — its own depth was never freed")
     }
 
     @Test("Orphaning caps at 50 rows, evicting the oldest first",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func orphanCapEvictsOldest() throws {
         let c = try makeComponents()
@@ -490,7 +482,7 @@ struct VaultEntryOrphaningTests {
         try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
 
         let allRows  = try fetchAllVaultEntries(from: c.container)
-        let key      = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key      = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         let orphaned = allRows.filter { $0.isOrphaned(usingKey: key) }
         #expect(orphaned.count == 50, "cap must hold at 50 orphaned rows")
         #expect(!allRows.map(\.id).contains(ids[0]),

@@ -15,7 +15,11 @@
 import Testing
 @testable import Occulta
 
-struct AmbientTestKeyManagerTrait: TestTrait, TestScoping {
+struct AmbientTestKeyManagerTrait: TestTrait, SuiteTrait, TestScoping {
+    /// On a suite, applies to each test inside it, so every test gets its own override
+    /// and its own leak check rather than sharing one around the whole suite.
+    var isRecursive: Bool { true }
+
     func provideScope(
         for test: Test,
         testCase: Test.Case?,

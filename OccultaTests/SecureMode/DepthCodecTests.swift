@@ -162,10 +162,6 @@ struct DepthCodecTests {
 
 // MARK: - Migration
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 private func makeContainer() throws -> ModelContainer {
     let schema = Schema([
@@ -201,7 +197,7 @@ private func insertContact(
     return profile
 }
 
-@Suite("Depth fields — fixed-width normalisation", .enabled(if: secureEnclaveAvailable()))
+@Suite("Depth fields — fixed-width normalisation", .ambientTestKeyManager)
 @MainActor
 struct DepthFixedWidthMigrationTests {
 
