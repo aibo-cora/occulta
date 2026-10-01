@@ -6,7 +6,7 @@
 
 **Output:** a comment block at the top of the file or immediately above the function that owns the path, in the format under [Recording the review](#recording-the-review). Two exemplars are live in the codebase and are the reference for tone and depth:
 
-- `Occulta/Features/Vault/ShamirSecretSharing.swift:9-48` — SSS Math Path
+- `OccultaCore/Sources/OccultaCore/ShamirSecretSharing.swift:9-48` — SSS Math Path
 - `Occulta/Services/Key+Manager.swift:615-644` — Vault Key Derivation Path (v2)
 
 ---

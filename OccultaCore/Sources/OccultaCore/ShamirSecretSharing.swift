@@ -52,11 +52,11 @@ import Security
 
 // MARK: - ShamirSecretSharing
 
-enum ShamirSecretSharing {
+public enum ShamirSecretSharing {
 
     // MARK: Errors
 
-    enum Error: Swift.Error {
+    public enum Error: Swift.Error {
         /// `k < 2`, `n < k`, or `n > 255`.
         case invalidParameters
         /// Secret must be exactly 32 bytes.
@@ -92,7 +92,7 @@ enum ShamirSecretSharing {
     /// - Returns: Array of `n` shares, each 33 bytes.
     ///
     /// ⚠️ Caller must zero the `secret` buffer after this call returns.
-    static func split(secret: Data, threshold k: Int, shares n: Int) throws -> [[UInt8]] {
+    public static func split(secret: Data, threshold k: Int, shares n: Int) throws -> [[UInt8]] {
         guard k >= 2, n >= k, n <= 255 else { throw Error.invalidParameters }
         guard secret.count == 32       else { throw Error.invalidSecretLength }
 
@@ -131,7 +131,7 @@ enum ShamirSecretSharing {
     /// - Returns: 32-byte secret.
     ///
     /// ⚠️ Caller must zero this buffer after re-encrypting the vault entry.
-    static func reconstruct(shares: [[UInt8]]) throws -> Data {
+    public static func reconstruct(shares: [[UInt8]]) throws -> Data {
         guard shares.count >= 2        else { throw Error.insufficientShares }
         guard shares[0].count == 33    else { throw Error.invalidShareFormat }
         guard shares.allSatisfy({ $0.count == 33 }) else { throw Error.invalidShareFormat }

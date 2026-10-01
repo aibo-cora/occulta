@@ -65,8 +65,14 @@ For multi-step tasks, state a brief plan:
 
 ## Build & Test
 
-A native Xcode project with **no** package dependencies — no SPM, CocoaPods, or Carthage. All
-crypto is CryptoKit and Security.framework, ML-KEM included.
+A native Xcode project with **no** third-party dependencies — no remote SPM packages, CocoaPods, or
+Carthage. All crypto is CryptoKit and Security.framework, ML-KEM included.
+
+The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
+holds the code being extracted for reuse (`ShamirSecretSharing`, `PQProvider` so far) and must stay
+dependency-free: its `Package.swift` declares none, and adding one is the same supply-chain change
+as adding it to the app. It is nonisolated by default, unlike the app's `MainActor`. Its tests stay
+in `OccultaTests` (`@testable import OccultaCore`) so the one test command below still runs them.
 
 The one SPM dependency (`apple/swift-crypto` 4.2.0, pulling `apple/swift-asn1`) was removed on
 `release/v1.10.3`, 2026-08-14. Nothing imported it: on Apple platforms swift-crypto's `Crypto`

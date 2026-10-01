@@ -16,7 +16,7 @@ import CryptoKit
 
 /// Abstracts ML-KEM operations behind a version-agnostic interface.
 /// ExchangeManager and all call sites use this protocol — no ML-KEM types leak out.
-protocol PQProvider {
+public protocol PQProvider {
 
     /// Generate an ML-KEM-1024 key pair.
     ///
@@ -51,11 +51,11 @@ protocol PQProvider {
 
 // MARK: - Factory
 
-enum PQProviderFactory {
+public enum PQProviderFactory {
 
     /// Returns a production PQ provider (SE-backed) if the platform supports ML-KEM.
     /// Returns nil on iOS < 26 — the exchange falls back to classical-only.
-    static func create() -> PQProvider? {
+    public static func create() -> PQProvider? {
         if #available(iOS 26, *) {
             return SecureEnclavePQProvider()
         }
@@ -64,7 +64,7 @@ enum PQProviderFactory {
 
     /// Returns an in-memory PQ provider for unit tests (no Secure Enclave required).
     /// Returns nil on iOS < 26.
-    static func createForTesting() -> PQProvider? {
+    public static func createForTesting() -> PQProvider? {
         if #available(iOS 26, *) {
             return InMemoryPQProvider()
         }

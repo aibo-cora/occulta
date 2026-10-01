@@ -24,6 +24,7 @@
 import Testing
 import Foundation
 @testable import Occulta
+@testable import OccultaCore
 
 // MARK: - GF(2^8) arithmetic
 
