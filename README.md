@@ -18,6 +18,20 @@ Occulta is a contact book where every entry is a cryptographic key you collected
 
 ---
 
+## What It Doesn't Do
+
+Know these limits before you rely on Occulta:
+
+- **It is not a messaging app.** It has no chat interface and doesn't replace Signal or iMessage. It encrypts files and lets you verify identity — delivery is up to you.
+- **It doesn't hide metadata.** The contents of a bundle are protected, but whoever carries it — your email provider, a messaging service, a network observer — can see that you sent something, to whom, when, and roughly how large. That exposure is decided by the channel you choose, not by Occulta.
+- **It can't protect a compromised phone.** If someone controls your unlocked iPhone or has installed spyware on it, they can see what you see in Occulta.
+- **Losing your phone loses your contacts.** Cross-device sync is intentionally absent, and keys live on one device. If you lose your iPhone, your identity and contact keys are gone and you re-exchange in person. Backup Recovery restores only your Vault, and only from a backup file you exported beforehand.
+- **It is iPhone-only.** Android is not supported.
+
+→ [Full threat model](https://github.com/aibo-cora/occulta/wiki/Threat-Model) · [Security properties](https://github.com/aibo-cora/occulta/wiki/Security-Properties)
+
+---
+
 ## Features
 
 ### Key Exchange
@@ -25,6 +39,8 @@ Occulta is a contact book where every entry is a cryptographic key you collected
 To add a contact, both of you open Occulta and bring your phones within 25 cm of each other. The app uses Apple's UWB chip to confirm you're genuinely close, then exchanges your cryptographic keys directly between devices. No server is involved. After the exchange, both of you read a short set of words aloud to verify the keys match — then the contact is saved.
 
 The result: a contact whose identity is guaranteed by physics, not by a server or a username.
+
+Apple's Contact Key Verification brings a similar in-person check to iMessage. It requires an Apple Account on both sides and covers iMessage conversations only. Occulta needs no account of any kind, and the key you collect works for any file you send over any channel.
 
 → [How the exchange works technically](https://github.com/aibo-cora/occulta/wiki/Key-Exchange-Flow)
 
@@ -43,6 +59,8 @@ Each message uses a fresh key that is thrown away after use, so a future device 
 ### Post-Quantum Protection
 
 On iOS 26 and later, Occulta adds a second layer of encryption on top of the standard key exchange using ML-KEM-1024 — a quantum-resistant algorithm standardized by NIST. This protects against adversaries who record your encrypted traffic today hoping to decrypt it years from now when quantum computers become powerful enough to break standard encryption.
+
+Messaging apps that offer post-quantum encryption protect their own transport: it covers a message only while it travels through that app. Occulta's protection is part of the file itself. The same `.occ` bundle stays protected whether it goes by email, AirDrop, a messaging app, or a USB drive, and in a group every recipient's copy of the key is protected separately.
 
 → [How post-quantum protection works](https://github.com/aibo-cora/occulta/wiki/Post-Quantum-Protection)
 
@@ -86,18 +104,6 @@ Additional protections:
 Occulta has no account. Your identity is a key that lives in your iPhone's Secure Enclave — a dedicated hardware chip that never lets the key leave. There is no password to phish, no phone number to SIM-swap, no cloud account to compromise, and no server to subpoena.
 
 If someone takes over your Signal account or iCloud, they cannot read your Occulta messages or impersonate you in Occulta. Your contacts will simply stop receiving valid bundles from "you" — and that silence is the signal.
-
----
-
-## What It Doesn't Do
-
-Occulta is not a messaging app and doesn't replace Signal or iMessage. It has no chat interface. It encrypts files and lets you verify identity — delivery is up to you.
-
-Cross-device sync is intentionally absent. Keys live on one device. If you lose your iPhone, your identity and contact keys are gone and you re-exchange in person; Backup Recovery restores only your Vault, and only from a backup file you exported beforehand.
-
-Android is not supported.
-
-→ [Full threat model](https://github.com/aibo-cora/occulta/wiki/Threat-Model) · [Security properties](https://github.com/aibo-cora/occulta/wiki/Security-Properties)
 
 ---
 
