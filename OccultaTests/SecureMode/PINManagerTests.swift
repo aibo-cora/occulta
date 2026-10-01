@@ -9,13 +9,6 @@ import SwiftData
 
 @testable import Occulta
 
-/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
-/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
-/// rather than silently passing, so the size of the untested surface stays visible.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 
 // MARK: - Helpers
 
@@ -66,13 +59,13 @@ struct SecurityStateTests {
         }
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func configurePIN_transitionsToPinOnly() throws {
+    @Test(.ambientTestKeyManager) func configurePIN_transitionsToPinOnly() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func configurePIN_insertsExactlyOneConfig() throws {
+    @Test(.ambientTestKeyManager) func configurePIN_insertsExactlyOneConfig() throws {
         let container = try makeContainer()
         let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         try s.configurePIN("123456")
@@ -81,7 +74,7 @@ struct SecurityStateTests {
         #expect(configs.count == 1)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func configurePIN_twice_replacesExistingConfig() throws {
+    @Test(.ambientTestKeyManager) func configurePIN_twice_replacesExistingConfig() throws {
         let container = try makeContainer()
         let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         try s.configurePIN("111111")
@@ -91,14 +84,14 @@ struct SecurityStateTests {
         #expect(configs.count == 1)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivatePIN_fromPinOnly_transitionsToNoPIN() throws {
+    @Test(.ambientTestKeyManager) func deactivatePIN_fromPinOnly_transitionsToNoPIN() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         try s.deactivatePIN(confirmingNormalPIN: "123456")
         #expect(!s.requiresPIN)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivatePIN_wrongPIN_throwsIncorrectPIN() throws {
+    @Test(.ambientTestKeyManager) func deactivatePIN_wrongPIN_throwsIncorrectPIN() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
@@ -106,7 +99,7 @@ struct SecurityStateTests {
         }
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivatePIN_fromActive_throwsInvalidStateTransition() async throws {
+    @Test(.ambientTestKeyManager) func deactivatePIN_fromActive_throwsInvalidStateTransition() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -122,7 +115,7 @@ struct SecurityStateTests {
         }
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func activateSecureMode_wrongNormalPIN_throwsIncorrectPIN() async throws {
+    @Test(.ambientTestKeyManager) func activateSecureMode_wrongNormalPIN_throwsIncorrectPIN() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
@@ -130,14 +123,14 @@ struct SecurityStateTests {
         }
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func activateSecureMode_fromPinOnly_transitionsToActive() async throws {
+    @Test(.ambientTestKeyManager) func activateSecureMode_fromPinOnly_transitionsToActive() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         #expect(s.isSecureModeActive && s.state == .normal)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivateSecureMode_fromDepth0_transitionsToPinOnly() async throws {
+    @Test(.ambientTestKeyManager) func deactivateSecureMode_fromDepth0_transitionsToPinOnly() async throws {
         // Owner at depth 0 (real app) deactivates using master PIN.
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
@@ -147,7 +140,7 @@ struct SecurityStateTests {
         #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivateSecureMode_fromDepth1_transitionsToPinOnly() async throws {
+    @Test(.ambientTestKeyManager) func deactivateSecureMode_fromDepth1_transitionsToPinOnly() async throws {
         // Coercer at depth 1 (decoy view, via routing alias) deactivates using duress PIN.
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
@@ -160,7 +153,7 @@ struct SecurityStateTests {
         #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivateSecureMode_fromPinOnly_throwsInvalidStateTransition() async throws {
+    @Test(.ambientTestKeyManager) func deactivateSecureMode_fromPinOnly_throwsInvalidStateTransition() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
@@ -175,19 +168,19 @@ struct SecurityStateTests {
 @Suite("Security — Verify (pinOnly)")
 struct SecurityVerifyPinOnlyTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func correctNormal_returnsNormal() throws {
+    @Test(.ambientTestKeyManager) func correctNormal_returnsNormal() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         #expect(try s.verify("123456") == .normal(depth: 0))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func wrongPIN_returnsWrong() throws {
+    @Test(.ambientTestKeyManager) func wrongPIN_returnsWrong() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         #expect(try s.verify("000000") == .wrong)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func threeWrongPINs_returnsWrong_noWipe() throws {
+    @Test(.ambientTestKeyManager) func threeWrongPINs_returnsWrong_noWipe() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         _ = try s.verify("000000")
@@ -203,14 +196,14 @@ struct SecurityVerifyPinOnlyTests {
 @Suite("Security — Verify (active/duress)")
 struct SecurityVerifyActiveTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func active_correctNormal_returnsNormal() async throws {
+    @Test(.ambientTestKeyManager) func active_correctNormal_returnsNormal() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         #expect(try s.verify("123456") == .normal(depth: 0))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func active_duressPIN_routesToDepth1() async throws {
+    @Test(.ambientTestKeyManager) func active_duressPIN_routesToDepth1() async throws {
         // With routing aliases, entering the duress PIN hits sealedNormalVerifiers[1]
         // in step 1 of verify() and returns .normal(depth: 1) — not .duress.
         // The decoy view is reached at depth 1 in .duress state (not .normal — the
@@ -226,7 +219,7 @@ struct SecurityVerifyActiveTests {
         #expect(s.isRestricted)  // depth > 0 → decoy filter active
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func active_threeWrongPINs_returnsWrong() async throws {
+    @Test(.ambientTestKeyManager) func active_threeWrongPINs_returnsWrong() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -235,7 +228,7 @@ struct SecurityVerifyActiveTests {
         #expect(try s.verify("000000") == .wrong)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func depth1_masterPIN_routesToDepth0() async throws {
+    @Test(.ambientTestKeyManager) func depth1_masterPIN_routesToDepth0() async throws {
         // From depth 1 (decoy), entering master PIN routes directly back to depth 0.
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
@@ -246,7 +239,7 @@ struct SecurityVerifyActiveTests {
         #expect(s.isSecureModeActive && s.state == .normal)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func depth1_duressPIN_routesToDepth1() async throws {
+    @Test(.ambientTestKeyManager) func depth1_duressPIN_routesToDepth1() async throws {
         // Entering duress PIN always routes to depth 1 (routing alias in normalVerifiers[1]).
         // Does NOT accumulate a duress counter — step 1 match resets all counters.
         let (s, _, _, _) = try makeSecurityAndManagers()
@@ -256,7 +249,7 @@ struct SecurityVerifyActiveTests {
         #expect(try s.verify("999999") == .normal(depth: 1))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func depth1_wrongPIN_returnsWrong() async throws {
+    @Test(.ambientTestKeyManager) func depth1_wrongPIN_returnsWrong() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -272,7 +265,7 @@ struct SecurityVerifyActiveTests {
 @Suite("Security — Counter cross-reset")
 struct SecurityCounterTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func normalPIN_resetsWrongCounter() async throws {
+    @Test(.ambientTestKeyManager) func normalPIN_resetsWrongCounter() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -285,7 +278,7 @@ struct SecurityCounterTests {
         #expect(try s.verify("000000") == .wrong)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func duressPIN_resetsWrongCounter() async throws {
+    @Test(.ambientTestKeyManager) func duressPIN_resetsWrongCounter() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -297,7 +290,7 @@ struct SecurityCounterTests {
         #expect(try s.verify("000000") == .wrong)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func duressPINViaRoutingAlias_resetsWrongCounter() async throws {
+    @Test(.ambientTestKeyManager) func duressPINViaRoutingAlias_resetsWrongCounter() async throws {
         // Entering the duress PIN hits the routing alias via step 1 → .normal(depth:1),
         // which calls resetCounters(). This verifies wrong counter is cleared.
         let (s, _, _, _) = try makeSecurityAndManagers()
@@ -326,7 +319,7 @@ struct SecuritySafeContactTests {
         context.insert(contact)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func updateAndFetch_roundTrip() throws {
+    @Test(.ambientTestKeyManager) func updateAndFetch_roundTrip() throws {
         let container = try makeContainer()
         let s  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm = ContactManager(modelContainer: container, security: s)
@@ -358,7 +351,7 @@ struct SecuritySafeContactTests {
         #expect(cm.isSafeContact("xyz") == false)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func isSafeContact_markedSensitive_hiddenAtDepth1() throws {
+    @Test(.ambientTestKeyManager) func isSafeContact_markedSensitive_hiddenAtDepth1() throws {
         let container = try makeContainer()
         let s  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm = ContactManager(modelContainer: container, security: s)
@@ -398,7 +391,7 @@ struct SecuritySafeContactTests {
 @Suite("Security — Depth > 1 (multi-layer)", .serialized)
 struct SecurityMultiLayerTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func secondActivation_fromDepth1_succeeds() async throws {
+    @Test(.ambientTestKeyManager) func secondActivation_fromDepth1_succeeds() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -412,7 +405,7 @@ struct SecurityMultiLayerTests {
         #expect(s.isSecureModeActive)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func thirdDuressPIN_routesToDepth2() async throws {
+    @Test(.ambientTestKeyManager) func thirdDuressPIN_routesToDepth2() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -427,7 +420,7 @@ struct SecurityMultiLayerTests {
         #expect(s.isRestricted)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_fromDepth2_popsOneLevelToDepth1() async throws {
+    @Test(.ambientTestKeyManager) func deactivation_fromDepth2_popsOneLevelToDepth1() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -449,7 +442,7 @@ struct SecurityMultiLayerTests {
         #expect(s.isSecureModeActive, "depth 0→1 layer must still be active")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_depth2_thenDepth1_reachesPinOnly() async throws {
+    @Test(.ambientTestKeyManager) func deactivation_depth2_thenDepth1_reachesPinOnly() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -470,7 +463,7 @@ struct SecurityMultiLayerTests {
     /// so nothing before this test could tell "always land at depth 1" apart from a
     /// genuine LIFO pop. A 3-layer stack can — deactivating from depth 3 must land at
     /// depth 2, not jump straight to depth 1.
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_fromDepth3_popsOneLevelToDepth2() async throws {
+    @Test(.ambientTestKeyManager) func deactivation_fromDepth3_popsOneLevelToDepth2() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -497,7 +490,7 @@ struct SecurityMultiLayerTests {
 
     /// Full LIFO teardown: three activations, three deactivations, one level at a
     /// time, verifying `currentDepth` and `isSecureModeActive` after every step.
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_threeLayerStack_popsOneLevelPerCall() async throws {
+    @Test(.ambientTestKeyManager) func deactivation_threeLayerStack_popsOneLevelPerCall() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -521,7 +514,7 @@ struct SecurityMultiLayerTests {
         #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func allThreePINs_routeToCorrectDepths() async throws {
+    @Test(.ambientTestKeyManager) func allThreePINs_routeToCorrectDepths() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -534,7 +527,7 @@ struct SecurityMultiLayerTests {
         #expect(try s.verify("777777") == .normal(depth: 2))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pinCollision_rejected_acrossAllDepths() async throws {
+    @Test(.ambientTestKeyManager) func pinCollision_rejected_acrossAllDepths() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -552,7 +545,7 @@ struct SecurityMultiLayerTests {
     // MARK: - Multi-layer contact classification
 
     /// At depth 1, saveClassification must stamp non-safe contacts with vtd=1 (not vtd=0).
-    @Test(.enabled(if: secureEnclaveAvailable())) func updateSafeContacts_atDepth1_stampsCurrentDepthNotZero() throws {
+    @Test(.ambientTestKeyManager) func updateSafeContacts_atDepth1_stampsCurrentDepthNotZero() throws {
         let container = try makeContainer()
         let s  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm = ContactManager(modelContainer: container, security: s)
@@ -595,7 +588,7 @@ struct SecurityMultiLayerTests {
 
     /// At depth 1, saveClassification must not touch contacts already hidden
     /// below the current depth (vtd < currentDepth).
-    @Test(.enabled(if: secureEnclaveAvailable())) func updateSafeContacts_atDepth1_skipsAlreadyHiddenContacts() throws {
+    @Test(.ambientTestKeyManager) func updateSafeContacts_atDepth1_skipsAlreadyHiddenContacts() throws {
         let container = try makeContainer()
         let s  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm = ContactManager(modelContainer: container, security: s)
@@ -620,7 +613,7 @@ struct SecurityMultiLayerTests {
 
     /// isSensitive at depth 1 should recognise vtd=1 contacts as sensitive,
     /// not vtd=0 contacts (those belong to the depth-0 classification).
-    @Test(.enabled(if: secureEnclaveAvailable())) func isSensitive_atDepth1_checksCurrentDepthValue() throws {
+    @Test(.ambientTestKeyManager) func isSensitive_atDepth1_checksCurrentDepthValue() throws {
         let container = try makeContainer()
         let s  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm = ContactManager(modelContainer: container, security: s)
@@ -656,7 +649,7 @@ struct SecurityMultiLayerTests {
 @Suite("Security — Coercion gate (disable/re-enable PIN)", .serialized)
 struct SecurityCoercionGateTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func disablePIN_wrongConfirmation_throws() async throws {
+    @Test(.ambientTestKeyManager) func disablePIN_wrongConfirmation_throws() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -665,7 +658,7 @@ struct SecurityCoercionGateTests {
         }
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func disablePIN_atDepth0_withMasterPIN_lowersGate() async throws {
+    @Test(.ambientTestKeyManager) func disablePIN_atDepth0_withMasterPIN_lowersGate() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -676,7 +669,7 @@ struct SecurityCoercionGateTests {
         #expect(s.currentDepth == 0)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func disablePIN_atDepth1_withDuressPIN_lowersGate() async throws {
+    @Test(.ambientTestKeyManager) func disablePIN_atDepth1_withDuressPIN_lowersGate() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -690,7 +683,7 @@ struct SecurityCoercionGateTests {
         #expect(s.currentDepth == 1)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func reEnablePIN_masterPIN_restoresDepth0() async throws {
+    @Test(.ambientTestKeyManager) func reEnablePIN_masterPIN_restoresDepth0() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -704,7 +697,7 @@ struct SecurityCoercionGateTests {
         #expect(s.state == .normal)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func reEnablePIN_duressPIN_restoresDepth1() async throws {
+    @Test(.ambientTestKeyManager) func reEnablePIN_duressPIN_restoresDepth1() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -717,7 +710,7 @@ struct SecurityCoercionGateTests {
         #expect(s.currentDepth == 1)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func reEnablePIN_wrongPIN_returnsFalse() async throws {
+    @Test(.ambientTestKeyManager) func reEnablePIN_wrongPIN_returnsFalse() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -734,21 +727,21 @@ struct SecurityCoercionGateTests {
 @Suite("Security — PIN check helpers (no side effects)", .serialized)
 struct SecurityPINCheckTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func checkNormalPIN_correctMasterPIN_returnsTrue() async throws {
+    @Test(.ambientTestKeyManager) func checkNormalPIN_correctMasterPIN_returnsTrue() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
         #expect(s.checkNormalPIN("111111"))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func checkNormalPIN_wrongPIN_returnsFalse() async throws {
+    @Test(.ambientTestKeyManager) func checkNormalPIN_wrongPIN_returnsFalse() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
         #expect(!s.checkNormalPIN("000000"))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func checkNormalPIN_doesNotIncrementWrongCounter() async throws {
+    @Test(.ambientTestKeyManager) func checkNormalPIN_doesNotIncrementWrongCounter() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -761,7 +754,7 @@ struct SecurityPINCheckTests {
         #expect(try s.verify("000000") == .wrong)  // count = 3; below lockout threshold (6)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func checkCurrentLayerPIN_atDepth0_matchesMasterPIN() async throws {
+    @Test(.ambientTestKeyManager) func checkCurrentLayerPIN_atDepth0_matchesMasterPIN() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -769,7 +762,7 @@ struct SecurityPINCheckTests {
         #expect(!s.checkCurrentLayerPIN("999999"))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func checkCurrentLayerPIN_atDepth1_matchesDuressPIN() async throws {
+    @Test(.ambientTestKeyManager) func checkCurrentLayerPIN_atDepth1_matchesDuressPIN() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -780,7 +773,7 @@ struct SecurityPINCheckTests {
         #expect(!s.checkCurrentLayerPIN("111111"))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func checkCurrentLayerPIN_atDepth1_fallsBackToDuressVerifierWhenRoutingAliasMissing() async throws {
+    @Test(.ambientTestKeyManager) func checkCurrentLayerPIN_atDepth1_fallsBackToDuressVerifierWhenRoutingAliasMissing() async throws {
         let (s, container, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -797,7 +790,7 @@ struct SecurityPINCheckTests {
         #expect(!s.checkCurrentLayerPIN("111111"))
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func checkCurrentLayerPIN_doesNotIncrementWrongCounter() async throws {
+    @Test(.ambientTestKeyManager) func checkCurrentLayerPIN_doesNotIncrementWrongCounter() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -826,7 +819,7 @@ struct VerifierArrayPaddingTests {
         #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func afterConfigurePIN_normalVerifiers_still32() throws {
+    @Test(.ambientTestKeyManager) func afterConfigurePIN_normalVerifiers_still32() throws {
         let container = try makeContainer()
         let s         = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         try s.configurePIN("111111")
@@ -837,7 +830,7 @@ struct VerifierArrayPaddingTests {
         #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func afterActivation_arrays_still32() async throws {
+    @Test(.ambientTestKeyManager) func afterActivation_arrays_still32() async throws {
         let (s, container, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -848,7 +841,7 @@ struct VerifierArrayPaddingTests {
         #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func afterDeactivation_arrays_still32() async throws {
+    @Test(.ambientTestKeyManager) func afterDeactivation_arrays_still32() async throws {
         let (s, container, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -871,7 +864,7 @@ struct VerifierArrayPaddingTests {
 @Suite("Security — Lockout counter")
 struct LockoutCounterTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func fiveWrongPINs_noLockout() async throws {
+    @Test(.ambientTestKeyManager) func fiveWrongPINs_noLockout() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -879,7 +872,7 @@ struct LockoutCounterTests {
         #expect(try s.verify("000000") == .wrong)  // 6th attempt triggers lockout on NEXT call
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func sixthWrongPIN_triggersLockout() async throws {
+    @Test(.ambientTestKeyManager) func sixthWrongPIN_triggersLockout() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -889,7 +882,7 @@ struct LockoutCounterTests {
         if case .locked = result { } else { Issue.record("Expected .locked, got \(result)") }
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func correctPIN_resetsLockoutCounter() async throws {
+    @Test(.ambientTestKeyManager) func correctPIN_resetsLockoutCounter() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
@@ -909,7 +902,7 @@ struct LockoutCounterTests {
         #expect(Manager.Security.lockoutDelay(for: 99) == 86_400)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func lockoutExpiry_survivesAppKill() async throws {
+    @Test(.ambientTestKeyManager) func lockoutExpiry_survivesAppKill() async throws {
         let (s, container, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
