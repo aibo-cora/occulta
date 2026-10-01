@@ -118,6 +118,17 @@ past 770.) Those carry
 notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
 have Enclave access and runs the full suite.
 
+**The shared local DB key now has a seam: `Manager.Ambient`** (`Services/Manager+Ambient.swift`).
+Every read of keys the whole app must agree on goes through it — the local DB key above all, and
+`Manager.Crypto()`'s default key manager — never through an injected `keyManager`, for the reason
+`VaultManager.Backup`'s doc comment gives. In Debug a test can bind a `TestKeyManager` with
+`@Test(.ambientTestKeyManager)` (`OccultaTests/AmbientTestKeyManagerTrait.swift`); Release has no
+override at all. Use that trait instead of `.enabled(if: secureEnclaveAvailable())` wherever the
+local DB key is the only reason for the gate. The trait fails the test if a real `Manager.Key` is
+built while it is bound, because that path would pass here and fail on CI. It cannot see code that
+calls the Keychain or Enclave directly — `PrekeyManager` does — so CI remains the final word.
+Converted so far: `GroupModelTests`.
+
 **With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
 stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
 Simulator *does* create SE keys there — the tempting "just gate it on `secureEnclaveAvailable()`"
@@ -138,9 +149,10 @@ stop running entirely and still look fine. The 23 Swift Testing files that call
 
 **A separate and worse problem: 112 tests still skip the old way** — `print("⚠︎ Skipping"); return`
 — which reports as **passed**, not skipped. So the suite's green count overstates what actually
-ran, and unlike the gated tests the shortfall is invisible. Prefer injecting a key manager; where
-there is no seam, use `.enabled(if: secureEnclaveAvailable())` so the cost stays visible. Do not
-add more of the legacy form.
+ran, and unlike the gated tests the shortfall is invisible. Prefer injecting a key manager, or
+`.ambientTestKeyManager` where the local DB key is the reason; where neither reaches, use
+`.enabled(if: secureEnclaveAvailable())` so the cost stays visible. Do not add more of the legacy
+form.
 
 So **a green CI run is not a passing test suite**: it verifies the parts that do not touch key
 material. Before tagging a release, run the full suite locally on a host with an Enclave and

@@ -225,7 +225,7 @@ extension VaultManager {
     /// forwards its caller's live `currentDepth`, whatever that is). A single fixed value
     /// can't get both right — see Bug 113's identical reasoning on the display side.
     private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw VaultError.keyDerivationFailed
         }
         return try self.fetchAllEntries().filter {
@@ -952,7 +952,7 @@ extension VaultManager {
     ///
     /// **Local-key derivation trap, worth restating on every method that hits it**:
     /// `depth`/`deletionToken` are sealed under the local DB key, ambiently derived via
-    /// `Manager.Key().createHybridLocalEncryptionKey()` — never via `self.keyManager`.
+    /// `Manager.Ambient.keyManager.createHybridLocalEncryptionKey()` — never via `self.keyManager`.
     /// `Manager.Security.orphanBackupKeys` (the deactivation-time orphaning this design
     /// exists to enable) derives its local key the same ambient way, un-injected. If
     /// this class instead read `self.keyManager` for local-key derivation, its writes
@@ -980,7 +980,7 @@ extension VaultManager {
         /// Derives the local DB key ambiently — see the class doc comment for why this
         /// must never go through `self.keyManager`.
         private func localKey() throws -> SymmetricKey {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else {
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
                 throw BackupError.decryptionFailed
             }
             return key

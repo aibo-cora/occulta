@@ -128,7 +128,7 @@ final class VaultManager {
 
     init(
         modelContainer: ModelContainer,
-        keyManager: any KeyManagerProtocol = Manager.Key(),
+        keyManager: any KeyManagerProtocol = Manager.Ambient.keyManager,
         inactivityTimeout: TimeInterval = 5 * 60
     ) {
         self.modelExecutor     = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
@@ -339,7 +339,7 @@ final class VaultManager {
     func fetchAllEntries() throws -> [VaultEntry] {
         let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
         let all = try self.modelContext.fetch(descriptor)
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw VaultError.keyDerivationFailed
         }
         return all.filter { !$0.isOrphaned(usingKey: key) }

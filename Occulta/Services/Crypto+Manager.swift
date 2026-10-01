@@ -17,7 +17,7 @@ enum Manager { }
 /// Crypto manager that uses the v1 key path for decryptLegacy.
 /// Used only during migration. Not stored or used after migration completes.
 final class LegacyCryptoManager: CryptoProtocol {
-    private let keyManager = Manager.Key()
+    private let keyManager = Manager.Ambient.keyManager
 
     func decryptLegacy(data: Data?) throws -> Data? {
         guard let data, let key = try self.keyManager.createLocalEncryptionKey() else { return nil }
@@ -40,7 +40,7 @@ extension Manager {
         let keyManager: any KeyManagerProtocol
 
         init() {
-            self.keyManager = Manager.Key() as any KeyManagerProtocol
+            self.keyManager = Manager.Ambient.keyManager
         }
 
         init(keyManager: any KeyManagerProtocol) {

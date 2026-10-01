@@ -145,7 +145,7 @@ struct DatabaseMigration {
             FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
         )
         guard !contacts.isEmpty,
-              let key = try Manager.Key().createHybridLocalEncryptionKey()
+              let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
         else { return }
 
         var didChange = false

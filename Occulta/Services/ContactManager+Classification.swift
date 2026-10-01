@@ -65,7 +65,7 @@ extension ContactManager {
     /// local-DB key once and reuses it across every contact: the dominant cost is the
     /// Keychain/Secure Enclave round trip inside key derivation, not the AES operation.
     func mlkemEligibleContacts() -> [Contact.Profile] {
-        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
         return self.mlkemEligibleContacts(usingKey: key)
     }
 
@@ -179,7 +179,7 @@ extension ContactManager {
         // Failure must abort the whole pass rather than proceed with a missing key:
         // silently skipping the mandatory ciphertext refresh on some or all groups would
         // itself be a forensic tell (see the doc comment below).
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw GroupError.keyUnavailable
         }
 

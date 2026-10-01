@@ -417,7 +417,7 @@ class ContactManager {
     /// inbound bundle's sender resolves to. `VaultManager.restoreBackup` counts only banked
     /// shards whose sender is in this set (`RECOVERY_BUFFER_LAYERING.md` §9.4).
     func visibleContactIdentifiers(atDepth depth: Int) -> Set<String> {
-        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
         return Set(((try? self.fetchAllContacts()) ?? [])
             .filter { $0.isVisible(atDepth: depth, usingKey: key) }
             .map(\.identifier))
@@ -507,7 +507,7 @@ class ContactManager {
         // Derived once and reused across every group in the pass below, instead of once
         // per group — see `ContactManager.cleanUpGroupDuressMembership`, which applies
         // the same fix for the identical cost on the classification path.
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw GroupError.keyUnavailable
         }
         try self.forEachGroup { try $0.purgeMember(identifier, usingKey: key) }
