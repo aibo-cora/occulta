@@ -823,3 +823,48 @@ depth; a locked screen that can't be mistaken for an empty one.
 **Consequences:** no pre-selected trustees; a duress layer has no separate suggestion list either. Not unit-tested:
 the locked state and the Vault tab hint are view code, on the device-check list.
 
+---
+
+## Onboarding redesign: the key exchange's look, a Secure Mode page, nothing stored
+
+**Status:** Decided and built 2026-10-01 (`v2.0.0/onboarding-redesign`). The owner chose the direction (the
+"Instrument" mockup, one of three), asked for a Secure Mode page, and approved the result after a walkthrough in the
+Simulator.
+
+**Context:** The old onboarding used colours outside the app's tokens and one card layout on all five screens, and
+its copy was wrong in places. It said Apache 2.0 (the licence is AGPL-3.0). It showed "Quantum Protection" on iOS
+18.6–25, where ML-KEM doesn't run. It claimed "No metadata exposed", though the carrying app sees who sent a file to
+whom, and when. It said keys go "via UWB", but UWB only measures distance and MultipeerConnectivity carries the keys.
+It also named a legal process twice ("subpoena"; "No legal process can retrieve what was never stored"), the class
+`LanguageRiskReview2026-08-01` covers, in strings it never read: its scope was Markdown.
+
+**Decision:**
+- Five dark pages over `ParticleFieldView`, in the exchange screen's language: Welcome, Meet, Send anywhere, Secure
+  Mode, Vault. Continue on each, Get started on the last.
+- No Skip, as before (`USER_ENGAGEMENT_FRICTION.md` M3). The Vault page stays, last: it is the no-contacts signpost
+  (C1) and carries the Restore pointer ("Restore discoverability").
+- The Secure Mode page shows only with the `secureMode` flag on, since it points to Settings › Security.
+- The page explains and points to Settings; it doesn't start setup.
+- It states the limit, in the README's own terms: "It stops someone using the app, not someone copying data off the
+  phone."
+- The post-quantum line names its condition (both phones on iOS 26 or later) and shows on every iOS version, instead
+  of being hidden below 26.
+
+**Why:**
+- Nothing new is stored: `hasCompletedOnboarding` is still the only write, and no choice made in the flow is
+  recorded.
+- Naming Secure Mode is safe here, unlike in What's New, which can show at any depth. The onboarding shows only
+  before `hasCompletedOnboarding` is set, before any PIN or depth exists, and nothing resets the flag. Settings and
+  the README already name the feature; deniability rests on which PIN was entered, not on the feature being unknown.
+- Starting setup from the page would need a PIN first, then a contact classification step with no contacts to
+  classify. It would also put a second modal in the unlocked tree, where `RootView` keeps its own sheets (an inbound
+  file can present at first launch).
+
+**Consequences:** setting up Secure Mode at first launch takes a trip to Settings. The onboarding is dark in light
+mode too, like the exchange screen. If it is ever made replayable from Settings, the What's New rule applies to it.
+The limit sentence needs revisiting if per-layer keys ship (`Docs/v2.0.0`). Reusing `ParticleCanvas` exposed a leak on
+every key exchange, fixed here (`bugs.md` Bug 153).
+
+**Full reasoning:** this entry. `OnboardingTests` pins the page order, the Restore pointer, and a tripwire on
+authority names and overclaiming words; the drawing is view code, on the device-check list.
+

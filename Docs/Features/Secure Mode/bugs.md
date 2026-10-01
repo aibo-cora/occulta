@@ -12799,3 +12799,28 @@ prekeys has the full batch after opening a piece-carrying bundle. Both fail with
 Still to do on a device: the stalled owner sends one more message; the trustee's next reply should show forward
 secrecy and the piece should confirm.
 
+## Bug 153 — Every key exchange leaves its particle canvas running at 60 Hz after the screen closes
+
+**Status:** Fixed 2026-10-01. Found reusing `ParticleCanvas` behind the redesigned onboarding (`decisions.md`,
+"Onboarding redesign").
+
+**Target:** `v2.0.0`.
+
+### Severity: Low (CPU and battery; nothing exposed)
+
+### What happens
+
+`ParticleCanvas` created its `CADisplayLink` in `init` and invalidated it only in `deinit`. A display link retains
+its target, so `deinit` never ran: each key exchange left its canvas alive, updating 80 particles every frame, until
+the app was terminated. Each exchange added one more.
+
+### Fix
+
+The link runs only while the canvas is in a window (`didMoveToWindow`): created on entering one, invalidated on
+leaving it, which releases the canvas. The `deinit` is gone, having nothing left to do.
+
+### Guard
+
+`ParticleCanvasTests`: a canvas removed from its window, and one never put in a window, are both released. Both fail
+with the old `init` and `deinit` restored.
+
