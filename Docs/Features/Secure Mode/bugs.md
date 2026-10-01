@@ -12824,3 +12824,33 @@ leaving it, which releases the canvas. The `deinit` is gone, having nothing left
 `ParticleCanvasTests`: a canvas removed from its window, and one never put in a window, are both released. Both fail
 with the old `init` and `deinit` restored.
 
+## Bug 154 — Six internal design docs ship inside `Occulta.app`, regressing the 1.10.2 bundle-contents fix
+
+**Status:** Fixed 2026-10-01, the day it was found, in a Release archive of `develop` at `3319fd7`. Full record:
+`Docs/Bugs/v1.11.1/Internal-Design-Docs-Shipped-In-App-Bundle.md`. Audit: `Docs/Audit/SECURITY_CHECKLIST.md` §6.
+
+**Target:** `v2.0.0`.
+
+**Shipped in:** `v1.11.1` and `v1.11.0` (all six); `v1.10.3` (`BEK_LAYERING_REFACTOR.md` only, then the full 26 KB
+design).
+
+### Severity: High (forensic: the app hands an examiner its at-rest layering and duress-depth key design)
+
+### What happens
+
+`Occulta/` is a file-system-synchronized root group, so every non-source file under it is copied into the bundle
+unless it is listed in the Occulta target's `membershipExceptions`. Six docs added between 2026-08-28 and
+2026-09-10 were never listed: `SecureMode/AT_REST_LAYERING.md` and `SecureMode/PASSPHRASE_LAYER_KEYS.md`, plus
+`Vault/BEK_LAYERING_REFACTOR.md`, `Vault/RECOVERY_BUFFER_LAYERING.md`, `Vault/STORAGE_LAYERING.md` and
+`Vault/VAULT_KEY_LAYERING.md`. The bundle is the same on every install, so the files reveal nothing about this
+user's configuration. They do reveal the design.
+
+### Fix
+
+All six are added to the exception set. A sweep found no other `.md`/`.html` under `Occulta/` missing from it.
+
+### Guard
+
+`BundleContentsTests` (`OccultaTests/BundleContentsTests.swift`, no Enclave needed). It runs hosted in `Occulta.app`,
+fails on any `.md` or `.html` in the bundle or its appexes, and checks that the host is the app with both appexes
+embedded. With the exclusions reverted it fails and names exactly the six.

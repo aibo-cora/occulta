@@ -476,6 +476,27 @@ sign-off block, not against project settings alone.
       of those being §7.2, deliberately left in place for this release. (Those five are gone as
       of `release/v1.10.3`; the sentence records the 1.10.2 archive as inspected. See §7.)
 
+      **Regressed, found 2026-10-01; fixed the same day (Bug 154).** A Release archive of
+      `develop` at `3319fd7` had six more docs at the top level of `Occulta.app/`, none of them
+      excluded: `AT_REST_LAYERING.md` and `PASSPHRASE_LAYER_KEYS.md` from `SecureMode/`, plus
+      `BEK_LAYERING_REFACTOR.md`, `RECOVERY_BUFFER_LAYERING.md`, `STORAGE_LAYERING.md` and
+      `VAULT_KEY_LAYERING.md` from `Vault/`. The two largest are about 140 KB and 104 KB. They
+      were added between 2026-08-28 and 2026-09-10. **`v1.11.1` and `v1.11.0` shipped all six.**
+      `v1.10.3` shipped `BEK_LAYERING_REFACTOR.md` alone, which at that tag was the full 26 KB
+      BEK/recovery layering design. (Tags were checked by reading their trees, not by
+      re-archiving them.)
+
+      The cause is the one above. The exclusion list fixed the docs that existed, and nothing
+      failed when a new one arrived. **Fix:** all six are added to `membershipExceptions`, and a
+      sweep found no other `.md`/`.html` under `Occulta/` missing from the list. **Guard:**
+      `OccultaTests/BundleContentsTests.swift` runs hosted in `Occulta.app` and fails on any
+      `.md` or `.html` in the bundle or its appexes. It also asserts that the host is the app
+      with both appexes embedded, so it cannot pass on an empty tree. With the exclusions
+      reverted it fails and names exactly the six. It needs no Enclave, so CI runs it on every
+      PR. **Re-verified** by re-archiving: zero `.md` and zero `.html` anywhere in the archive,
+      including both appexes. Full record:
+      `Docs/Bugs/v1.11.1/Internal-Design-Docs-Shipped-In-App-Bundle.md`.
+
 ## 7. Dependency & Supply Chain
 
 - [x] No third-party dependencies (confirmed: no CocoaPods, SPM, Carthage)
