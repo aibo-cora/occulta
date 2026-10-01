@@ -26,13 +26,6 @@ import Security
 
 @testable import Occulta
 
-/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
-/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
-/// rather than silently passing, so the size of the untested surface stays visible.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 
 // MARK: - Shared helpers
 
@@ -88,7 +81,7 @@ private func makeBatch(
 @Suite("ForwardSecrecyModel — configureForwardSecrecy")
 struct ConfigureForwardSecrecyTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func configure_populatesForwardSecrecyBlob() throws {
+    @Test(.ambientTestKeyManager) func configure_populatesForwardSecrecyBlob() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -98,7 +91,7 @@ struct ConfigureForwardSecrecyTests {
         #expect(contact.forwardSecrecyEncrypted != nil)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func configure_isIdempotent() throws {
+    @Test(.ambientTestKeyManager) func configure_isIdempotent() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -113,7 +106,7 @@ struct ConfigureForwardSecrecyTests {
         #expect(first == second)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func configure_newContact_hasPendingBatch_isFalse() throws {
+    @Test(.ambientTestKeyManager) func configure_newContact_hasPendingBatch_isFalse() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -122,7 +115,7 @@ struct ConfigureForwardSecrecyTests {
         #expect(contact.hasPendingBatch == false)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func configure_newContact_noPrekeysAvailable() throws {
+    @Test(.ambientTestKeyManager) func configure_newContact_noPrekeysAvailable() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -138,7 +131,7 @@ struct ConfigureForwardSecrecyTests {
 @Suite("ForwardSecrecyModel — popOldestPrekeyData")
 struct PopOldestPrekeyDataTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pop_returnsFIFO() throws {
+    @Test(.ambientTestKeyManager) func pop_returnsFIFO() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -156,7 +149,7 @@ struct PopOldestPrekeyDataTests {
         #expect(r3 == b3)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pop_returnsNil_whenStoreEmpty() throws {
+    @Test(.ambientTestKeyManager) func pop_returnsNil_whenStoreEmpty() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -165,7 +158,7 @@ struct PopOldestPrekeyDataTests {
         #expect(try contact.popOldestPrekeyData() == nil)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pop_decrementsCount() throws {
+    @Test(.ambientTestKeyManager) func pop_decrementsCount() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -184,7 +177,7 @@ struct PopOldestPrekeyDataTests {
         #expect(contact.availableInboundPrekeyCount == 0)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pop_hasPrekeyAvailable_falseAfterExhaustion() throws {
+    @Test(.ambientTestKeyManager) func pop_hasPrekeyAvailable_falseAfterExhaustion() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -197,7 +190,7 @@ struct PopOldestPrekeyDataTests {
         #expect(contact.hasPrekeyAvailable == false)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pop_returnsNilAfterExhaustion_nocrash() throws {
+    @Test(.ambientTestKeyManager) func pop_returnsNilAfterExhaustion_nocrash() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -216,7 +209,7 @@ struct PopOldestPrekeyDataTests {
 @Suite("ForwardSecrecyModel — syncInboundPrekeys")
 struct SyncInboundPrekeysTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func sync_acceptsNewerDate() throws {
+    @Test(.ambientTestKeyManager) func sync_acceptsNewerDate() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -235,7 +228,7 @@ struct SyncInboundPrekeysTests {
                 "A newer date must cause the batch to be accepted")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func sync_rejectsOlderDate() throws {
+    @Test(.ambientTestKeyManager) func sync_rejectsOlderDate() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -253,7 +246,7 @@ struct SyncInboundPrekeysTests {
         #expect(contact.availableInboundPrekeyCount == 1, "Older-dated batch must be rejected")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func sync_rejectsEqualDate_noDuplicates() throws {
+    @Test(.ambientTestKeyManager) func sync_rejectsEqualDate_noDuplicates() throws {
         // The guard is `date > latestPrekeysGeneratedAt` (strictly greater).
         // Equal date means duplicate delivery — must be rejected.
         let container = try makeContainer()
@@ -271,7 +264,7 @@ struct SyncInboundPrekeysTests {
                 "Equal-dated batch is a duplicate and must be rejected")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func sync_storesBlobsCorrectly() throws {
+    @Test(.ambientTestKeyManager) func sync_storesBlobsCorrectly() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -283,7 +276,7 @@ struct SyncInboundPrekeysTests {
         #expect(contact.availableInboundPrekeyCount == 2)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func sync_updatesLatestPrekeysGeneratedAt() throws {
+    @Test(.ambientTestKeyManager) func sync_updatesLatestPrekeysGeneratedAt() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -304,7 +297,7 @@ struct SyncInboundPrekeysTests {
 @Suite("ForwardSecrecyModel — Pending batch")
 struct PendingBatchTests {
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pendingBatch_nilOnFreshContact() throws {
+    @Test(.ambientTestKeyManager) func pendingBatch_nilOnFreshContact() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -314,7 +307,7 @@ struct PendingBatchTests {
         #expect(contact.hasPendingBatch == false)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pendingBatch_storeAndLoad_roundtrip() throws {
+    @Test(.ambientTestKeyManager) func pendingBatch_storeAndLoad_roundtrip() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -329,7 +322,7 @@ struct PendingBatchTests {
         #expect(abs(loaded!.generatedAt.timeIntervalSince(batch.generatedAt)) < 0.001)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pendingBatch_hasPendingBatch_trueAfterStore() throws {
+    @Test(.ambientTestKeyManager) func pendingBatch_hasPendingBatch_trueAfterStore() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -339,7 +332,7 @@ struct PendingBatchTests {
         #expect(contact.hasPendingBatch == true)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pendingBatch_clearSetsBatchToNil() throws {
+    @Test(.ambientTestKeyManager) func pendingBatch_clearSetsBatchToNil() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -353,7 +346,7 @@ struct PendingBatchTests {
         #expect(try contact.loadPendingBatch() == nil)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pendingBatch_loadReturnsTheSameBatch_everyTime() throws {
+    @Test(.ambientTestKeyManager) func pendingBatch_loadReturnsTheSameBatch_everyTime() throws {
         // The pending batch must be identical on every load — it must not regenerate.
         let container = try makeContainer()
         let context   = ModelContext(container)
@@ -373,7 +366,7 @@ struct PendingBatchTests {
         #expect(diff < 0.001, "Every load must return the same batch unchanged")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pendingBatch_storeReplacesExisting() throws {
+    @Test(.ambientTestKeyManager) func pendingBatch_storeReplacesExisting() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -389,7 +382,7 @@ struct PendingBatchTests {
         #expect(loaded?.prekeys.count == 5, "Second store must overwrite first")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func pendingBatch_clearThenStore_works() throws {
+    @Test(.ambientTestKeyManager) func pendingBatch_clearThenStore_works() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -412,7 +405,7 @@ struct ExhaustionCycleTests {
 
     /// Simulates the full prekey exhaustion flow at the model layer:
     /// pop all → store empty → sync new batch → batch stored → pending cleared.
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustionCycle_popAllThenSyncNewBatch() throws {
+    @Test(.ambientTestKeyManager) func exhaustionCycle_popAllThenSyncNewBatch() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)
@@ -446,7 +439,7 @@ struct ExhaustionCycleTests {
         #expect(contact.hasPendingBatch == false, "Pending batch cleared on FS receipt")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustionCycle_duplicateBatchDelivery_isIdempotent() throws {
+    @Test(.ambientTestKeyManager) func exhaustionCycle_duplicateBatchDelivery_isIdempotent() throws {
         // Bob's pending batch rides Alice's M1, M3, M7 — all carrying the same date.
         // Alice must process it once and silently ignore duplicates.
         let container = try makeContainer()
@@ -471,7 +464,7 @@ struct ExhaustionCycleTests {
         #expect(contact.availableInboundPrekeyCount == countAfterFirst)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustionCycle_hasPendingBatch_blocksRegeneration() throws {
+    @Test(.ambientTestKeyManager) func exhaustionCycle_hasPendingBatch_blocksRegeneration() throws {
         // If a pending batch already exists, a second fallback must not overwrite it.
         let container = try makeContainer()
         let context   = ModelContext(container)
@@ -493,7 +486,7 @@ struct ExhaustionCycleTests {
         #expect(loaded?.prekeys.count == 3, "First pending batch must be unchanged")
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustionCycle_clearPendingBatch_allowsNextGeneration() throws {
+    @Test(.ambientTestKeyManager) func exhaustionCycle_clearPendingBatch_allowsNextGeneration() throws {
         let container = try makeContainer()
         let context   = ModelContext(container)
         let contact   = try makeContact(in: context)

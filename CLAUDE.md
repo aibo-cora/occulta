@@ -127,9 +127,12 @@ override at all. Use that trait instead of `.enabled(if: secureEnclaveAvailable(
 local DB key is the only reason for the gate. The trait fails the test if a real `Manager.Key` is
 built while it is bound, because that path would pass here and fail on CI. It cannot see code that
 calls the Keychain or Enclave directly — `PrekeyManager` does — so CI remains the final word.
-Converted so far: `GroupModelTests` and all of `OccultaTests/SecureMode/` except
-`LegacyRotationArtefactTests` and `DuressModePrekeyTests`, which exercise the real `Manager.Key`
-and `PrekeyManager` and keep their gates.
+Converted so far: `GroupModelTests`, `ForwardSecrecyModelTests`, and all of
+`OccultaTests/SecureMode/` except `LegacyRotationArtefactTests` and `DuressModePrekeyTests`.
+Those two, `PrekeyManagerTests`, `ForwardSecrecyIntegrationTests` and the two prekey round-trips
+in `VersionCompatibilityTests` keep their gates: they exercise the real `Manager.Key` or create
+prekeys through `PrekeyManager`, whose private keys live in the Enclave, so they genuinely need
+one.
 
 **With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
 stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
