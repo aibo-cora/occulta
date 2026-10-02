@@ -1152,7 +1152,7 @@ struct RootView: View {
 
         do {
             var files = try ShareSession.load(
-                id: sessionID, in: container, keyManager: ShareIndexKeyManager()
+                id: sessionID, in: container, keyManager: ShareStagingKeyManager()
             )
 
             // files holds decrypted attachment content. Zero it on every exit from here on —

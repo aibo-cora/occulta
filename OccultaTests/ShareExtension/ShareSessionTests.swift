@@ -7,8 +7,8 @@
 //  where a missing PIN gate survives review (Bug 84). `ShareSession` takes its container as
 //  a parameter for exactly this reason — every case below runs against a temp directory.
 //
-//  Gated on the share-index SE key rather than the local DB key: this type touches neither
-//  the contact store nor `Manager.Key`.
+//  Gated on the share-staging SE key (`ShareStagingKeyManager`) rather than the local DB key:
+//  this type touches neither the contact store nor `Manager.Key`.
 //
 
 import Testing
@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
 // MARK: - Helpers
 
 private func shareKeyAvailable() -> Bool {
-    (try? ShareIndexKeyManager().encrypt(data: Data([0]))) != nil
+    (try? ShareStagingKeyManager().encrypt(data: Data([0]))) != nil
 }
 
 private func makeContainer() throws -> URL {
@@ -43,7 +43,7 @@ private func stage(
     let dir = ShareSession.directory(for: id, in: container)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-    let keyManager = ShareIndexKeyManager()
+    let keyManager = ShareStagingKeyManager()
     var entries: [ShareManifest.FileEntry] = []
 
     for (index, file) in files.enumerated() {
@@ -143,7 +143,7 @@ struct ShareSessionLoadTests {
             (Data("second".utf8), UTType.pdf.identifier,       "pdf")
         ])
 
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
 
         #expect(files.count == 2)
         #expect(files[0].content == Data("first".utf8))
@@ -162,7 +162,7 @@ struct ShareSessionLoadTests {
         let container = try makeContainer()
         let id = try stage(in: container)
 
-        _ = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        _ = try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
         #expect(exists(id, in: container))
 
         ShareSession.delete(id: id, in: container)
@@ -174,7 +174,7 @@ struct ShareSessionLoadTests {
         let id = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter - 1))
 
         #expect(throws: ShareSession.Errors.stale) {
-            try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+            try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
         }
         #expect(!exists(id, in: container), "A refused session must not leave plaintext on disk")
     }
@@ -183,7 +183,7 @@ struct ShareSessionLoadTests {
         let container = try makeContainer()
         let id = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter + 60))
 
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
         #expect(files.count == 1)
     }
 
@@ -192,7 +192,7 @@ struct ShareSessionLoadTests {
         let id = try stage(in: container, writeManifest: false)
 
         #expect(throws: (any Error).self) {
-            try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+            try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
         }
         #expect(!exists(id, in: container))
     }
@@ -202,7 +202,7 @@ struct ShareSessionLoadTests {
         let id = try stage(in: container, corruptManifest: true)
 
         #expect(throws: (any Error).self) {
-            try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+            try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
         }
         #expect(!exists(id, in: container))
     }
@@ -217,7 +217,7 @@ struct ShareSessionLoadTests {
         let jpeg = try makeJPEGWithEXIF()
 
         let id = try stage(in: container, files: [(jpeg, UTType.jpeg.identifier, "jpg")])
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
 
         let loaded = try #require(files.first?.content)
         #expect(!hasIdentifyingMetadata(loaded))
@@ -232,7 +232,7 @@ struct ShareSessionLoadTests {
         let original = try #require(orientation(of: jpeg))
 
         let id = try stage(in: container, files: [(jpeg, UTType.jpeg.identifier, "jpg")])
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
 
         let loaded = try #require(files.first?.content)
         #expect(orientation(of: loaded) == original)
@@ -243,7 +243,7 @@ struct ShareSessionLoadTests {
         let pdfBytes = Data((0..<256).map { UInt8($0) })
         let id = try stage(in: container, files: [(pdfBytes, UTType.pdf.identifier, "pdf")])
 
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: ShareStagingKeyManager())
         #expect(files.first?.content == pdfBytes)
     }
 }
@@ -257,7 +257,7 @@ struct ShareSessionSweepTests {
         let container = try makeContainer()
         let id = try stage(in: container)
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
         #expect(exists(id, in: container))
     }
 
@@ -265,7 +265,7 @@ struct ShareSessionSweepTests {
         let container = try makeContainer()
         let id = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter - 1))
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
         #expect(!exists(id, in: container))
     }
 
@@ -275,7 +275,7 @@ struct ShareSessionSweepTests {
         let container = try makeContainer()
         let id = try stage(in: container, writeManifest: false)
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
         #expect(!exists(id, in: container))
     }
 
@@ -283,7 +283,7 @@ struct ShareSessionSweepTests {
         let container = try makeContainer()
         let id = try stage(in: container, corruptManifest: true)
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
         #expect(!exists(id, in: container))
     }
 
@@ -292,14 +292,14 @@ struct ShareSessionSweepTests {
         let fresh = try stage(in: container)
         let stale = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter - 1))
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
         #expect(exists(fresh, in: container))
         #expect(!exists(stale, in: container))
     }
 
     @Test func sweep_onMissingPendingDirectory_doesNotThrow() throws {
         let container = try makeContainer()
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
     }
 }
 

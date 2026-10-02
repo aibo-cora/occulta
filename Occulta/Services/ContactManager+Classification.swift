@@ -3,8 +3,8 @@
 //  Occulta
 //
 //  Contact visibility and classification — reads and writes visibleThroughDepth
-//  through ContactManager's own context so activation and the share index both
-//  see the correct values without cross-context identity-map divergence.
+//  through ContactManager's own context so activation and every other reader of that
+//  context see the correct values without cross-context identity-map divergence.
 //
 
 import SwiftData

@@ -1,9 +1,16 @@
 //
-//  ShareIndexKeyManager.swift
+//  ShareStagingKeyManager.swift
 //  Occulta
 //
-//  SE key in shared access group + HKDF derivation + AES-GCM for the share index.
+//  SE key in shared access group + HKDF derivation + AES-GCM for share sessions: the
+//  files and manifest the extension stages in the App Group for the main app to pick up.
 //  Linked by both the main app and the share extension.
+//
+//  Formerly `ShareIndexKeyManager`. It first encrypted the share index, a mirror of the
+//  contact list the extension used to draw its own recipient picker; that index was
+//  deleted on 2026-08-16 and the key kept only this job. The key tag and HKDF label below
+//  still say "share.index" because both are persisted: renaming the tag would orphan the
+//  existing Enclave key, and renaming the label would change the derived key.
 //
 //  This is the ONLY crypto code the extension links. It never touches the identity key,
 //  the local DB key, prekeys, or ML-KEM material.
@@ -12,19 +19,21 @@
 import Foundation
 import CryptoKit
 
-final class ShareIndexKeyManager {
+final class ShareStagingKeyManager {
 
     // MARK: - Constants
 
-    /// Unique SE key tag — never shared with any other key in the app.
+    /// Unique SE key tag — never shared with any other key in the app. Keeps its original
+    /// "share.index" name: the Enclave key is found by this tag, so changing it orphans the key.
     private static let tag = "share.index.se.key.occulta"
 
     /// App Group that both the main app and extension belong to.
     /// The SE key is created IN this group — not migrated.
     private static let accessGroup = "group.com.occulta.shared"
 
-    /// Domain separator for HKDF. Unique to the share index — never reuses
-    /// an existing info string (kLocalDBKeyInfo, kTransportKeyInfo, etc.).
+    /// Domain separator for HKDF. Unique to this key — never reuses an existing info string
+    /// (kLocalDBKeyInfo, kTransportKeyInfo, etc.). Keeps its original "share-index" name: it
+    /// is an input to the derivation, so changing it changes the key.
     private static let hkdfInfo = "Occulta-v1-share-index-2026".data(using: .utf8)!
 
     /// P-256 generator base point G (uncompressed x9.63, 65 bytes).
@@ -110,16 +119,16 @@ final class ShareIndexKeyManager {
 
     // MARK: - Symmetric Key Derivation
 
-    /// Derive the symmetric key for encrypting the contact index.
+    /// Derive the symmetric key for encrypting a share session's staged files and manifest.
     ///
     /// Both the main app and the extension call this and get the same key because
     /// they share access to the same SE private key via the access group.
     ///
     /// ```
-    /// ECDH(shareIndexSEKey, G) → 32 bytes raw shared secret
+    /// ECDH(shareStagingSEKey, G) → 32 bytes raw shared secret
     /// HKDF<SHA256>(
     ///   IKM:  raw ECDH secret (32 bytes)
-    ///   Salt: shareIndexSEKey public key x963 (65 bytes)
+    ///   Salt: shareStagingSEKey public key x963 (65 bytes)
     ///   Info: "Occulta-v1-share-index-2026"
     /// ) → 32 bytes → SymmetricKey (AES-256)
     /// ```

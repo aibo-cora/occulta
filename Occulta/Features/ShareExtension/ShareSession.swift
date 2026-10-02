@@ -61,7 +61,7 @@ enum ShareSession {
     static func load(
         id: String,
         in container: URL,
-        keyManager: ShareIndexKeyManager,
+        keyManager: ShareStagingKeyManager,
         now: Date = .now
     ) throws -> [Occulta.File] {
         let sessionDir = self.directory(for: id, in: container)
@@ -125,7 +125,7 @@ enum ShareSession {
     /// - a manifest older than `staleAfter` → delete
     /// - no manifest (extension killed mid-write) → delete immediately; those files are plaintext
     /// - an unreadable manifest (corrupt or orphaned) → delete immediately
-    static func sweep(in container: URL, keyManager: ShareIndexKeyManager, now: Date = .now) {
+    static func sweep(in container: URL, keyManager: ShareStagingKeyManager, now: Date = .now) {
         let fm = FileManager.default
 
         guard let sessions = try? fm.contentsOfDirectory(

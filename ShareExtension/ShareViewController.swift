@@ -7,7 +7,7 @@
 //
 //  Security boundary: this process NEVER links Manager.Key, Manager.Crypto,
 //  ContactManager, PrekeyManager, PQProvider, or OccultaBundle. The only crypto
-//  it performs is ShareIndexKeyManager's AES-GCM for the staged files and manifest.
+//  it performs is ShareStagingKeyManager's AES-GCM for the staged files and manifest.
 //
 //  It does not choose the recipient. Picking one here meant the app received what looked
 //  like a finished instruction and executed it — the reason the outbound pipeline ran with
@@ -21,7 +21,7 @@ import UniformTypeIdentifiers
 
 class ShareViewController: UIViewController {
 
-    private let shareKeyManager = ShareIndexKeyManager()
+    private let shareKeyManager = ShareStagingKeyManager()
     private var sessionID: String?
 
     // MARK: - Lifecycle
