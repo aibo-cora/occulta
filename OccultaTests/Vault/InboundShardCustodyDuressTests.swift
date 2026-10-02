@@ -22,10 +22,6 @@ import LocalAuthentication
 
 // MARK: - Helpers
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 private func makeRig() throws -> (
     contacts:  ContactManager,
@@ -105,8 +101,7 @@ private func custodyShardCount(in container: ModelContainer) throws -> Int {
 @Suite("Inbound shard custody at a duress depth", .serialized)
 struct InboundShardCustodyDuressTests {
 
-    @Test func safeContactDistribute_atDuressDepth_storesAndStaysVisibleDownToDepthZero() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func safeContactDistribute_atDuressDepth_storesAndStaysVisibleDownToDepthZero() throws {
 
         let (contacts, custody, security, vault, container) = try makeRig()
 
@@ -151,8 +146,7 @@ struct InboundShardCustodyDuressTests {
                 "a safe contact's shard must remain visible back at the real depth 0 too")
     }
 
-    @Test func sensitiveContactDistribute_atDuressDepth_storesButIsHiddenFromDisplay() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func sensitiveContactDistribute_atDuressDepth_storesButIsHiddenFromDisplay() throws {
 
         let (contacts, custody, security, vault, container) = try makeRig()
 

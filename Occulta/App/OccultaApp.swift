@@ -916,7 +916,7 @@ struct RootView: View {
     private func purgeOrphanedGroupsIfAtRealDepth() {
         guard self.appScreen.phase == .unlocked,
               self.security.currentDepth == 0,
-              let key = try? Manager.Key().createHybridLocalEncryptionKey()
+              let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
         else { return }
 
         try? self.contactManager.purgeUnreadableGroups(using: key)
@@ -945,7 +945,7 @@ struct RootView: View {
     ) -> [OccultaBundle.ShardOperation]? {
         guard
             let sender   = try? self.contactManager.fetchContact(by: senderIdentifier),
-            let localKey = try? Manager.Key().createHybridLocalEncryptionKey(),
+            let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey(),
             sender.isVisible(atDepth: self.security.currentDepth, usingKey: localKey)
         else { return nil }
         return ops
@@ -1166,7 +1166,7 @@ struct RootView: View {
 
         do {
             var files = try ShareSession.load(
-                id: sessionID, in: container, keyManager: ShareIndexKeyManager()
+                id: sessionID, in: container, keyManager: ShareStagingKeyManager()
             )
 
             // files holds decrypted attachment content. Zero it on every exit from here on —

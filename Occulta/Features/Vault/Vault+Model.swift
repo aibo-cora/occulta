@@ -74,7 +74,7 @@ final class Vault {
 /// - `id` (plaintext) — random, bound into AAD-like use elsewhere in the codebase; not itself bound
 ///   to anything here since `attributeID`/`deletionToken` are sealed independently (see below).
 /// - `attributeID`, `deletionToken` — sealed under the **local key**
-///   (`Manager.Key().createHybridLocalEncryptionKey()`), not the restore vault key — the same forced
+///   (`Manager.Ambient.keyManager.createHybridLocalEncryptionKey()`), not the restore vault key — the same forced
 ///   split `BackupEncryptionKey.depth`/`.deletionToken` already uses: whatever eventually orphans
 ///   these rows runs from `Manager.Security`, which never derives the restore vault key, only the
 ///   ambient local key.
@@ -801,7 +801,7 @@ final class VaultEntry {
     /// Cap: 50 orphaned rows; when full, the oldest is hard-deleted before a new one is
     /// written — same cap `Contact.Profile.deletionToken` uses.
     ///
-    /// Sealed under the ambient local-DB key (`Manager.Key()`), the same key
+    /// Sealed under the ambient local-DB key (`Manager.Ambient`), the same key
     /// `visibleThroughDepth` uses — deliberately not the vault's biometric-gated key:
     /// `Manager.Security.orphanVaultEntries` must be able to write this on deactivation
     /// without the vault ever being unlocked.

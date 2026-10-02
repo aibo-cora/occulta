@@ -159,7 +159,7 @@ final class Group {
     /// Used by the no-key convenience overloads below (single-edit paths) and by
     /// `setMembers`, which derives its own key once per call rather than per slot.
     private static func requireKey() throws -> SymmetricKey {
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw GroupError.keyUnavailable
         }
         return key

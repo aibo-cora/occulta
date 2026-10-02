@@ -108,7 +108,7 @@ final class DraftStore {
     ) -> (text: String, messages: [Occulta.File], wasThreadMode: Bool)? {
         guard let row = Message.Draft.find(recipientID: recipientID, in: modelContext) else { return nil }
         do {
-            guard let key = try Manager.Key().createHybridLocalEncryptionKey() else { return nil }
+            guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return nil }
             let box     = try AES.GCM.SealedBox(combined: row.encryptedContent)
             let plain   = try AES.GCM.open(box, using: key, authenticating: row.aad(for: .content))
             let payload = try JSONDecoder().decode(Message.Draft.Payload.self, from: plain)
@@ -166,7 +166,7 @@ final class DraftStore {
         )
 
         do {
-            guard let key = try Manager.Key().createHybridLocalEncryptionKey() else { return }
+            guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return }
 
             let existing = Message.Draft.find(recipientID: recipientID, in: modelContext)
 

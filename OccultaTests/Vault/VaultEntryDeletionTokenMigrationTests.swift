@@ -6,8 +6,8 @@
 //  have no token, and `isOrphaned` reads a missing token as orphaned, so upgrading hid every
 //  one of them. `DatabaseMigration.migrateVaultEntryDeletionTokens` gives them a live token.
 //
-//  Gated: the token is sealed under the ambient local key (`Manager.Key()`), as `addEntry`
-//  seals it, and no seam reaches that.
+//  The token is sealed under the ambient local key (`Manager.Ambient`), as `addEntry` seals
+//  it, so the suite runs under `.ambientTestKeyManager`, which supplies that key.
 //
 
 import Testing
@@ -15,10 +15,6 @@ import Foundation
 import CryptoKit
 import SwiftData
 @testable import Occulta
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {
@@ -46,10 +42,10 @@ private func insertEntry(deletionToken: Data?, in context: ModelContext) throws 
 }
 
 private func localKey() throws -> SymmetricKey {
-    try #require(try Manager.Key().createHybridLocalEncryptionKey())
+    try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
 }
 
-@Suite("Bug 133 — entries from before deletionToken existed stay visible", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Bug 133 — entries from before deletionToken existed stay visible", .serialized, .ambientTestKeyManager)
 @MainActor
 struct VaultEntryDeletionTokenMigrationTests {
 

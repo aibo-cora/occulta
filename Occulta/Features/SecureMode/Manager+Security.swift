@@ -157,7 +157,7 @@ extension Manager {
         ///     skips all `AppLayerConfig` reads. `requiresPIN` returns `false`, all
         ///     filtering is inert, and the PIN overlay never appears.
         init(modelContainer: ModelContainer,
-             keyManager: any KeyManagerProtocol = Manager.Key(),
+             keyManager: any KeyManagerProtocol = Manager.Ambient.keyManager,
              storeURL: URL? = nil,
              clock: any LockoutClock = SystemLockoutClock(),
              enabled: Bool = true) {
@@ -542,12 +542,12 @@ extension Manager {
         /// was actually created at.
         ///
         /// Not gated on Secure Mode's own injected key manager — `VaultEntry` fields are
-        /// always sealed under the ambient real key (`Manager.Key()`), the same
+        /// always sealed under the ambient real key (`Manager.Ambient`), the same
         /// key-manager split `purgeDraftsNotSafeAtCurrentDepth` already documents. Derives
         /// that key once and reuses it for every entry checked and orphaned, rather than
         /// paying a Secure Enclave round trip per row.
         private func orphanVaultEntries(freedFrom clearFrom: Int) {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return }
             let allEntries = (try? self.modelContext.fetch(FetchDescriptor<VaultEntry>())) ?? []
 
             var toOrphan: [VaultEntry] = []
@@ -606,7 +606,7 @@ extension Manager {
         /// ones — neither is a live row this depth-freeing event could possibly apply
         /// to.
         private func orphanBackupKeys(freedFrom clearFrom: Int) {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return }
             let allRows = (try? self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())) ?? []
             let sealedOrphanToken = try? BackupEncryptionKey.orphanedToken.encrypt(using: key)
 
@@ -779,7 +779,7 @@ extension Manager {
         /// — the purge-only half of what `reKeyOrPurgeAll` used to do with `oldKey == newKey`
         /// — rather than a no-op reseal of survivors.
         private func purgeDraftsNotSafeAtCurrentDepth() {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return }
             let profiles = (try? self.modelContext.fetch(
                 FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
             )) ?? []
@@ -1039,7 +1039,7 @@ extension Manager {
         /// than paying a Secure Enclave round trip per entry. Fails closed to `[]` on
         /// derivation failure — never falls back to returning `entries` unfiltered.
         func visibleVaultEntries(from entries: [VaultEntry]) -> [VaultEntry] {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
             let depth = self.currentDepth
             return entries.filter {
                 !$0.isOrphaned(usingKey: key) &&

@@ -5,7 +5,7 @@
 //  Coverage for Contact.Profile.originDepth: floor-semantics visibility for
 //  duress-origin contacts, sensitivity classification being a deliberate no-op for
 //  them, creation-time stamping, and the backfill migration. Encrypted round-trips
-//  require the Secure Enclave and guard on secureEnclaveAvailable().
+//  run under `.ambientTestKeyManager`, which supplies the local DB key.
 //
 
 import Testing
@@ -15,10 +15,6 @@ import CryptoKit
 @testable import Occulta
 
 // MARK: - Helpers
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {
@@ -64,8 +60,7 @@ private func insertPlainProfile(
 @Suite("Contact.Profile.isVisible — originDepth floor semantics", .serialized)
 struct OriginDepthFloorTests {
 
-    @Test func bornAtDepth1_visibleAtItsOwnDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func bornAtDepth1_visibleAtItsOwnDepth() throws {
         let (cm, _) = try makeContactManager()
         let profile = try insertPlainProfile(
             identifier: UUID().uuidString,
@@ -75,8 +70,7 @@ struct OriginDepthFloorTests {
         #expect(profile.isVisible(atDepth: 1))
     }
 
-    @Test func bornAtDepth1_visibleAtEveryDeeperNestedLayer() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func bornAtDepth1_visibleAtEveryDeeperNestedLayer() throws {
         let (cm, _) = try makeContactManager()
         let profile = try insertPlainProfile(
             identifier: UUID().uuidString,
@@ -87,8 +81,7 @@ struct OriginDepthFloorTests {
         #expect(profile.isVisible(atDepth: 5))
     }
 
-    @Test func bornAtDepth1_hiddenAtTheRealDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func bornAtDepth1_hiddenAtTheRealDepth() throws {
         let (cm, _) = try makeContactManager()
         let profile = try insertPlainProfile(
             identifier: UUID().uuidString,
@@ -99,8 +92,7 @@ struct OriginDepthFloorTests {
                 "a duress-origin contact must never leak into the real depth-0 view")
     }
 
-    @Test func notDuressOrigin_ceilingLogicUnaffected() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func notDuressOrigin_ceilingLogicUnaffected() throws {
         let (cm, _) = try makeContactManager()
         // originDepth = 0 (the sentinel) — defers entirely to visibleThroughDepth's ceiling.
         let profile = try insertPlainProfile(
@@ -114,8 +106,7 @@ struct OriginDepthFloorTests {
         #expect(!profile.isVisible(atDepth: 2), "ceiling semantics must still apply normally when originDepth is 0")
     }
 
-    @Test func sensitivityClassification_isNoOpForDuressOriginContact() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func sensitivityClassification_isNoOpForDuressOriginContact() throws {
         let (cm, _) = try makeContactManager()
         // Born at depth 1, but ALSO stamped with a ceiling of 1 (as if "marked sensitive"
         // while at depth 1 — the exact scenario that motivated floor-not-exact-match).
@@ -131,8 +122,7 @@ struct OriginDepthFloorTests {
                 "sensitivity classification must never re-hide a duress-origin contact at a deeper nested layer")
     }
 
-    @Test func nilOriginDepth_treatedAsSentinelNotAsUndecryptable() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func nilOriginDepth_treatedAsSentinelNotAsUndecryptable() throws {
         let (cm, _) = try makeContactManager()
         // Legacy row predating the field — nil, not yet backfilled.
         let profile = try insertPlainProfile(
@@ -151,8 +141,7 @@ struct OriginDepthFloorTests {
     /// origin becomes unreadable loses its protection and can leak to depth 0 the
     /// instant its (still-valid) visibleThroughDepth ceiling includes 0, which it
     /// always does for a contact stamped at creation (ceiling >= 0 is always true).
-    @Test func undecryptableOriginDepth_excludesOutright_neverFallsThroughToCeiling() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func undecryptableOriginDepth_excludesOutright_neverFallsThroughToCeiling() throws {
         let (cm, _) = try makeContactManager()
         // Present but garbage — decrypt() will fail. visibleThroughDepth is Int.max,
         // which would make this contact visible everywhere if the check fell through.
@@ -175,8 +164,7 @@ struct OriginDepthFloorTests {
 @Suite("ContactManager — originDepth creation-time stamping", .serialized)
 struct OriginDepthCreationTests {
 
-    @Test func savedAtRealDepth_stampsZeroSentinel() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func savedAtRealDepth_stampsZeroSentinel() throws {
         let (cm, _) = try makeContactManager()
         let draft = Contact.Draft(identifier: UUID().uuidString, givenName: "A", familyName: "B")
         try cm.save(contact: draft, currentDepth: 0)
@@ -187,8 +175,7 @@ struct OriginDepthCreationTests {
         #expect(decoded == 0, "a contact created at the real depth must be stamped with the 0 sentinel")
     }
 
-    @Test func savedAtDuressDepth_stampsThatDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func savedAtDuressDepth_stampsThatDepth() throws {
         let (cm, _) = try makeContactManager()
         let draft = Contact.Draft(identifier: UUID().uuidString, givenName: "A", familyName: "B")
         try cm.save(contact: draft, currentDepth: 2)
@@ -209,8 +196,7 @@ struct OriginDepthCreationTests {
 @Suite("DatabaseMigration — originDepth backfill", .serialized)
 struct OriginDepthBackfillTests {
 
-    @Test func backfillsNilRowsToSentinel_leavesExistingValuesAlone() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func backfillsNilRowsToSentinel_leavesExistingValuesAlone() throws {
         let (cm, container) = try makeContactManager()
         let legacyID  = UUID().uuidString
         let stampedID = UUID().uuidString
@@ -237,8 +223,7 @@ struct OriginDepthBackfillTests {
         )
     }
 
-    @Test func idempotent_secondRunIsNoOp() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func idempotent_secondRunIsNoOp() throws {
         let (cm, container) = try makeContactManager()
         try insertPlainProfile(identifier: UUID().uuidString, originDepth: nil, in: cm)
 
@@ -260,7 +245,7 @@ struct OriginDepthBackfillTests {
 /// these contacts count at the depth (`RECOVERY_BUFFER_LAYERING.md` §9.4).
 @MainActor
 @Suite("ContactManager.visibleContactIdentifiers — which restore shards count at a depth",
-       .serialized, .enabled(if: secureEnclaveAvailable()))
+       .serialized, .ambientTestKeyManager)
 struct VisibleContactIdentifiersTests {
 
     @Test func matchesVisibilityAtEachDepth() throws {

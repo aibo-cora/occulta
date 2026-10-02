@@ -224,8 +224,14 @@ final class TestKeyManager: KeyManagerProtocol {
     /// destroyed at once. Producing the nil is the only way to test that it aborts instead.
     var simulatesSecureModeKeyUnavailable = false
 
+    /// Forces `createHybridLocalEncryptionKey()` to return nil, as the real key manager does
+    /// with no Secure Enclave — so the fail-loud paths for a missing local DB key are testable
+    /// on a host that has one.
+    var simulatesLocalKeyUnavailable = false
+
     /// v2 — hybrid PQ-reinforced local key.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
+        if self.simulatesLocalKeyUnavailable { return nil }
         guard
             let seComponent = self.deriveRawECDH(
                 privateKey: self.localDBPrivateKey,

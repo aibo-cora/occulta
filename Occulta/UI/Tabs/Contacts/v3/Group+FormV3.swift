@@ -260,7 +260,7 @@ extension Group {
         /// row label are evaluated on every body render, and calling into crypto from there
         /// puts Secure Enclave work on the main actor during typing and scrolling.
         private func computeEligibility() {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else {
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
                 // Matches the previous behaviour: without a key `isVisible` treats every
                 // contact as hidden, so the lists were empty in this case before too.
                 self.eligible = []

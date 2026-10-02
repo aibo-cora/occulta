@@ -7,7 +7,7 @@
 //  Docs/Bugs/v1.10.0/Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md.
 //
 //  Simulator-safe — uses TestKeyManager throughout (ShardCustodyManager takes an
-//  injected KeyManagerProtocol, unlike Group/ContactManager's hardcoded Manager.Key()).
+//  injected KeyManagerProtocol, unlike Group/ContactManager's ambient Manager.Ambient key).
 //
 
 import Testing

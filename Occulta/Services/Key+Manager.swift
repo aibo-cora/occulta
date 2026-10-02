@@ -83,8 +83,19 @@ extension Manager {
     class Key {
         let tag: String
 
-        init() { self.tag = Tags.identity.rawValue }
-        init(testingTag tag: String) { self.tag = tag }
+        init() {
+            self.tag = Tags.identity.rawValue
+            #if DEBUG
+            Manager.Ambient.override?.recordRealKeyConstruction()
+            #endif
+        }
+
+        init(testingTag tag: String) {
+            self.tag = tag
+            #if DEBUG
+            Manager.Ambient.override?.recordRealKeyConstruction()
+            #endif
+        }
 
         private enum Tags: String, CaseIterable {
             case identity      = "master.key.privacy.turtles.are.cute"

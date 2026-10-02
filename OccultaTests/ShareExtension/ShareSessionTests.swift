@@ -7,12 +7,15 @@
 //  where a missing PIN gate survives review (Bug 84). `ShareSession` takes its container as
 //  a parameter for exactly this reason — every case below runs against a temp directory.
 //
-//  Gated on the share-index SE key rather than the local DB key: this type touches neither
-//  the contact store nor `Manager.Key`.
+//  The key is a parameter too: these run on `TestShareStagingKey`, an in-memory stand-in for
+//  `ShareStagingKeyManager`, so they need no Secure Enclave. The real key manager keeps its
+//  own small Enclave-gated suite at the end of the file. This type touches neither the
+//  contact store nor `Manager.Key`.
 //
 
 import Testing
 import Foundation
+import CryptoKit
 import ImageIO
 import UniformTypeIdentifiers
 @testable import Occulta
@@ -20,7 +23,23 @@ import UniformTypeIdentifiers
 // MARK: - Helpers
 
 private func shareKeyAvailable() -> Bool {
-    (try? ShareIndexKeyManager().encrypt(data: Data([0]))) != nil
+    (try? ShareStagingKeyManager().encrypt(data: Data([0]))) != nil
+}
+
+/// In-memory stand-in for `ShareStagingKeyManager`. One key per test process, as a device has
+/// one share-staging key that the app and the extension both derive — so a session staged
+/// with one instance opens with another, as it does in production. Same AES-GCM format.
+private struct TestShareStagingKey: ShareSessionDecrypting {
+    private static let key = SymmetricKey(size: .bits256)
+
+    func encrypt(data: Data) throws -> Data {
+        let sealed = try AES.GCM.seal(data, using: Self.key, nonce: AES.GCM.Nonce())
+        return try #require(sealed.combined)
+    }
+
+    func decrypt(data: Data) throws -> Data {
+        try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: Self.key)
+    }
 }
 
 private func makeContainer() throws -> URL {
@@ -43,7 +62,7 @@ private func stage(
     let dir = ShareSession.directory(for: id, in: container)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-    let keyManager = ShareIndexKeyManager()
+    let keyManager = TestShareStagingKey()
     var entries: [ShareManifest.FileEntry] = []
 
     for (index, file) in files.enumerated() {
@@ -133,7 +152,7 @@ private func orientation(of data: Data) -> Int? {
 
 // MARK: - load
 
-@Suite("ShareSession — load", .enabled(if: shareKeyAvailable()))
+@Suite("ShareSession — load")
 struct ShareSessionLoadTests {
 
     @Test func load_returnsDecryptedFiles_inManifestOrder() throws {
@@ -143,7 +162,7 @@ struct ShareSessionLoadTests {
             (Data("second".utf8), UTType.pdf.identifier,       "pdf")
         ])
 
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
 
         #expect(files.count == 2)
         #expect(files[0].content == Data("first".utf8))
@@ -162,7 +181,7 @@ struct ShareSessionLoadTests {
         let container = try makeContainer()
         let id = try stage(in: container)
 
-        _ = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        _ = try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
         #expect(exists(id, in: container))
 
         ShareSession.delete(id: id, in: container)
@@ -174,7 +193,7 @@ struct ShareSessionLoadTests {
         let id = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter - 1))
 
         #expect(throws: ShareSession.Errors.stale) {
-            try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+            try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
         }
         #expect(!exists(id, in: container), "A refused session must not leave plaintext on disk")
     }
@@ -183,7 +202,7 @@ struct ShareSessionLoadTests {
         let container = try makeContainer()
         let id = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter + 60))
 
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
         #expect(files.count == 1)
     }
 
@@ -192,7 +211,7 @@ struct ShareSessionLoadTests {
         let id = try stage(in: container, writeManifest: false)
 
         #expect(throws: (any Error).self) {
-            try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+            try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
         }
         #expect(!exists(id, in: container))
     }
@@ -202,7 +221,7 @@ struct ShareSessionLoadTests {
         let id = try stage(in: container, corruptManifest: true)
 
         #expect(throws: (any Error).self) {
-            try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+            try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
         }
         #expect(!exists(id, in: container))
     }
@@ -217,7 +236,7 @@ struct ShareSessionLoadTests {
         let jpeg = try makeJPEGWithEXIF()
 
         let id = try stage(in: container, files: [(jpeg, UTType.jpeg.identifier, "jpg")])
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
 
         let loaded = try #require(files.first?.content)
         #expect(!hasIdentifyingMetadata(loaded))
@@ -232,7 +251,7 @@ struct ShareSessionLoadTests {
         let original = try #require(orientation(of: jpeg))
 
         let id = try stage(in: container, files: [(jpeg, UTType.jpeg.identifier, "jpg")])
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
 
         let loaded = try #require(files.first?.content)
         #expect(orientation(of: loaded) == original)
@@ -243,21 +262,21 @@ struct ShareSessionLoadTests {
         let pdfBytes = Data((0..<256).map { UInt8($0) })
         let id = try stage(in: container, files: [(pdfBytes, UTType.pdf.identifier, "pdf")])
 
-        let files = try ShareSession.load(id: id, in: container, keyManager: ShareIndexKeyManager())
+        let files = try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
         #expect(files.first?.content == pdfBytes)
     }
 }
 
 // MARK: - sweep
 
-@Suite("ShareSession — sweep", .enabled(if: shareKeyAvailable()))
+@Suite("ShareSession — sweep")
 struct ShareSessionSweepTests {
 
     @Test func sweep_keepsFreshSession() throws {
         let container = try makeContainer()
         let id = try stage(in: container)
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
         #expect(exists(id, in: container))
     }
 
@@ -265,7 +284,7 @@ struct ShareSessionSweepTests {
         let container = try makeContainer()
         let id = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter - 1))
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
         #expect(!exists(id, in: container))
     }
 
@@ -275,7 +294,7 @@ struct ShareSessionSweepTests {
         let container = try makeContainer()
         let id = try stage(in: container, writeManifest: false)
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
         #expect(!exists(id, in: container))
     }
 
@@ -283,7 +302,7 @@ struct ShareSessionSweepTests {
         let container = try makeContainer()
         let id = try stage(in: container, corruptManifest: true)
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
         #expect(!exists(id, in: container))
     }
 
@@ -292,14 +311,14 @@ struct ShareSessionSweepTests {
         let fresh = try stage(in: container)
         let stale = try stage(in: container, createdAt: Date().addingTimeInterval(-ShareSession.staleAfter - 1))
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
         #expect(exists(fresh, in: container))
         #expect(!exists(stale, in: container))
     }
 
     @Test func sweep_onMissingPendingDirectory_doesNotThrow() throws {
         let container = try makeContainer()
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
     }
 }
 
@@ -342,5 +361,29 @@ struct ShareSessionLegacyIndexTests {
 
         ShareSession.removeLegacyContactIndex(in: container)
         #expect(exists(id, in: container))
+    }
+}
+
+// MARK: - The real key manager
+
+/// `ShareStagingKeyManager` itself, which the suites above stand in for. Its key lives in the
+/// Secure Enclave, so this needs one. What the share handoff depends on is that two separate
+/// instances derive the same key: the extension seals with its own and the app opens with
+/// another.
+@Suite("ShareStagingKeyManager — Enclave key", .enabled(if: shareKeyAvailable()))
+struct ShareStagingKeyManagerTests {
+
+    @Test("What one instance seals, another opens")
+    func separateInstancesShareTheKey() throws {
+        let plaintext = Data("staged".utf8)
+        let sealed    = try ShareStagingKeyManager().encrypt(data: plaintext)
+        #expect(try ShareStagingKeyManager().decrypt(data: sealed) == plaintext)
+    }
+
+    @Test("A tampered ciphertext is rejected")
+    func tamperedCiphertextIsRejected() throws {
+        var sealed = try ShareStagingKeyManager().encrypt(data: Data("staged".utf8))
+        sealed[sealed.count - 1] ^= 0x01
+        #expect(throws: (any Error).self) { try ShareStagingKeyManager().decrypt(data: sealed) }
     }
 }

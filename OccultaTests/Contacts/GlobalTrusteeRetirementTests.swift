@@ -8,7 +8,8 @@
 //  every live contact's stamp to a sealed, fixed-width -1, and `migrateDeleteGlobalShardConfig`
 //  deletes the old depth-0 list without stamping anything.
 //
-//  Stamps are sealed under the ambient local key, so these need a Secure Enclave.
+//  Stamps are sealed under the ambient local key, so these run under
+//  `.ambientTestKeyManager`, which supplies it.
 //
 
 import Testing
@@ -16,10 +17,6 @@ import Foundation
 import SwiftData
 import CryptoKit
 @testable import Occulta
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {
@@ -64,7 +61,7 @@ private func sealed(_ value: Int) throws -> Data {
 }
 
 @MainActor
-@Suite("Global Trustees retirement — stamps reset, old list deleted", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Global Trustees retirement — stamps reset, old list deleted", .serialized, .ambientTestKeyManager)
 struct GlobalTrusteeRetirementTests {
 
     private func readsNotATrustee(_ stamp: Data?) -> Bool {

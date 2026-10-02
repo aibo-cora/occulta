@@ -79,8 +79,9 @@ private func syntheticQuantumMaterial() -> QuantumKeyMaterial {
 /// A contact profile whose public key belongs to a live `TestKeyManager` we keep
 /// around, so the test can decrypt `encryptBundle`'s output exactly as the real
 /// recipient device would. `encryptBundle` always seals via the app's own
-/// default `Manager.Crypto()` (the real device identity, `Manager.Key()`), so
-/// only the recipient side needs a controllable key manager here.
+/// default `Manager.Crypto()` (the device identity, from `Manager.Ambient`), so
+/// only the recipient side needs a controllable key manager here. Tests that read
+/// "our" identity take it from `Manager.Ambient` too, so it matches what sealed.
 @MainActor
 private func makeRecipient(
     identifier: String,
@@ -154,12 +155,12 @@ private enum TestSetupError: Error { case seUnavailable }
 @Suite("encryptBundle — shard-protocol fallback gate")
 @MainActor struct EncryptBundleShardFallbackTests {
 
-    @Test("no prekey available: custodyManifest is dropped even with no real shardOperations")
+    @Test("no prekey available: custodyManifest is dropped even with no real shardOperations", .ambientTestKeyManager)
     func fallbackDropsManifestWithoutShardOps() throws {
         let cm = try makeContactManager()
-        guard let (_, recipientKM) = try makeRecipient(
+        let (_, recipientKM) = try #require(try makeRecipient(
             identifier: "alice", contactManager: cm, capability: .groupCapable, hasPrekey: false
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
 
         let encoded = try cm.encryptBundle(
             basket: Basket(files: []),
@@ -171,7 +172,7 @@ private enum TestSetupError: Error { case seUnavailable }
         let bundle = try OccultaBundle.decoded(from: encoded)
         #expect(bundle.group != nil, "1.9.0+ contact must still use the group-envelope format")
 
-        let senderPub        = try Manager.Key().retrieveIdentity()
+        let senderPub        = try Manager.Ambient.keyManager.retrieveIdentity()
         let recipientCrypto  = Manager.Crypto(keyManager: recipientKM)
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
@@ -187,7 +188,7 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(sealed.custodyManifest == nil, "custodyManifest must not ride the fallback (non-FS) path")
     }
 
-    @Test("no prekey available: shardOperations and custodyManifest are dropped together")
+    @Test("no prekey available: shardOperations and custodyManifest are dropped together", .ambientTestKeyManager)
     func fallbackDropsBothShardFields() throws {
         let cm = try makeContactManager()
         // A real .distribute attribute sets isCarryingShard, which sends encryptBundle
@@ -197,10 +198,10 @@ private enum TestSetupError: Error { case seUnavailable }
         // here with syntheticQuantumMaterial() (unlike the FS path, whose one-time
         // prekey private half this fixture does not hold -- see
         // forwardSecretPathPreservesManifest).
-        guard let (_, recipientKM) = try makeRecipient(
+        let (_, recipientKM) = try #require(try makeRecipient(
             identifier: "bob", contactManager: cm, capability: .groupCapable,
             hasPrekey: false, hasQuantumMaterial: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
 
         let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
 
@@ -214,7 +215,7 @@ private enum TestSetupError: Error { case seUnavailable }
         let bundle = try OccultaBundle.decoded(from: encoded)
         #expect(bundle.group != nil, "1.9.0+ contact must still use the group-envelope format")
 
-        let senderPub       = try Manager.Key().retrieveIdentity()
+        let senderPub       = try Manager.Ambient.keyManager.retrieveIdentity()
         let recipientCrypto = Manager.Crypto(keyManager: recipientKM)
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
@@ -231,17 +232,17 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(sealed.custodyManifest == nil, "custodyManifest must not ride the fallback (non-FS) path")
     }
 
-    @Test("prekey available: custodyManifest is NOT stripped (control — fix isn't over-broad)")
+    @Test("prekey available: custodyManifest is NOT stripped (control — fix isn't over-broad)", .ambientTestKeyManager)
     func forwardSecretPathPreservesManifest() throws {
         let cmWithPrekey    = try makeContactManager()
         let cmWithoutPrekey = try makeContactManager()
 
-        guard let (_, _) = try makeRecipient(
+        let (_, _) = try #require(try makeRecipient(
             identifier: "carol", contactManager: cmWithPrekey, capability: .groupCapable, hasPrekey: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
-        guard let (_, _) = try makeRecipient(
+        ))
+        let (_, _) = try #require(try makeRecipient(
             identifier: "carol", contactManager: cmWithoutPrekey, capability: .groupCapable, hasPrekey: false
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
 
         let manifest = [UUID(), UUID(), UUID()]
 
@@ -269,6 +270,9 @@ private enum TestSetupError: Error { case seUnavailable }
 
 // MARK: - 2. Receiver side — ContactManager.openGroup / decryptSealed
 
+// Gated on a real Enclave, not `.ambientTestKeyManager`: receiving a fallback message
+// with no pending batch makes the receive path generate a fresh prekey batch through
+// `PrekeyManager`, whose private keys are created in the Enclave.
 @Suite("openGroup / decryptSealed — receiver strips shard content on fallback slot")
 @MainActor struct ReceiverShardFallbackTests {
 
@@ -378,7 +382,7 @@ private func insertContact(
 @Suite("encryptBundle — the pending prekey batch rides with a piece (Bug 152)")
 @MainActor struct PieceCarriesPrekeyBatchTests {
 
-    @Test("A message carrying a piece also carries the pending batch", .enabled(if: secureEnclaveAvailable()))
+    @Test("A message carrying a piece also carries the pending batch", .ambientTestKeyManager)
     func pieceCarriesBatch() throws {
         let cm = try makeContactManager()
         let recipientKM = TestKeyManager()
@@ -392,7 +396,7 @@ private func insertContact(
         let bundle = try OccultaBundle.decoded(from: encoded)
         let (recipientPayload, _, _) = try Manager.Crypto(keyManager: recipientKM).findAndOpenRecipientSlot(
             in: bundle, blind: try #require(bundle.group).blind,
-            senderContactID: "self", senderPublicKey: try Manager.Key().retrieveIdentity(),
+            senderContactID: "self", senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(),
             quantumMaterial: syntheticQuantumMaterial(), prekeyManager: Manager.PrekeyManager()
         )
 
@@ -401,6 +405,8 @@ private func insertContact(
         #expect(delivered.generatedAt == batch.generatedAt)
     }
 
+    /// Gated on a real Enclave: `openGroup` on the trustee side generates a fresh prekey batch
+    /// through `PrekeyManager`, as `ReceiverShardFallbackTests` explains.
     @Test("The trustee's device stores the batch that came with the piece", .enabled(if: secureEnclaveAvailable()))
     func trusteeStoresBatch() throws {
         // Both ends are this device's own identity: the owner seals to it, and a second

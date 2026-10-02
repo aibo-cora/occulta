@@ -55,7 +55,7 @@ struct LayerArrayUniformityTests {
     /// Needs the Enclave: this path and the array's filler both go through ambient
     /// `encrypt()`.
     @Test("The legacy PIN-gate upgrade writes a readable, correctly-sized entry",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func legacyPinGateUpgradeIsUniformAndReadable() throws {
         let schema = Schema([AppLayerConfig.self])
@@ -91,6 +91,3 @@ struct LayerArrayUniformityTests {
     }
 }
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}

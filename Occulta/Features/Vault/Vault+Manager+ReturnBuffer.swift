@@ -164,7 +164,7 @@ extension VaultManager {
     /// way; disagreeing here would mean writes and reads silently never match under
     /// any injected key manager, which every test uses.
     private static func localKey() throws -> SymmetricKey {
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw VaultError.keyDerivationFailed
         }
         return key

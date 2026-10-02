@@ -18,10 +18,6 @@ import Foundation
 import LocalAuthentication
 @testable import Occulta
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 // MARK: - Helpers shared across suites
 
 /// Alice's in-memory test setup: vault + distribute queue in one container.
@@ -263,11 +259,11 @@ private func distribute(
 
 // MARK: - Case 13: Vault locked when .handback arrives
 
-// Needs a real Secure Enclave — .handback routes through acceptReturnedShard/absorbShard,
-// which seals PendingShamirSecretRestore.attributeID/.deletionToken under the ambient
-// Manager.Key() local key, never the injected key manager (see ShardCustodyTests.swift's
+// Runs under .ambientTestKeyManager — .handback routes through acceptReturnedShard/absorbShard,
+// which seals PendingShamirSecretRestore.attributeID/.deletionToken under the ambient local
+// key (Manager.Ambient), never the injected key manager (see ShardCustodyTests.swift's
 // ReconstructionBufferTests for the fuller trap explanation).
-@Suite("Case 13 — Vault locked when .handback arrives", .enabled(if: secureEnclaveAvailable()))
+@Suite("Case 13 — Vault locked when .handback arrives", .ambientTestKeyManager)
 @MainActor struct Case13_LockedHandback {
 
     @Test(".handback inserts a PendingShamirSecretRestore row even while vault is locked")
