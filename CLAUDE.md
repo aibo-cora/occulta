@@ -65,10 +65,16 @@ For multi-step tasks, state a brief plan:
 
 ## Build & Test
 
-A native Xcode project with **no** package dependencies — no SPM, CocoaPods, or Carthage. All
-crypto is CryptoKit and Security.framework, ML-KEM included. Don't add one — in particular not
-`apple/swift-crypto`, which on Apple platforms only re-exports CryptoKit but ships BoringSSL
-bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
+A native Xcode project with **no** third-party dependencies — no remote SPM packages, CocoaPods, or
+Carthage. All crypto is CryptoKit and Security.framework, ML-KEM included. Don't add one — in
+particular not `apple/swift-crypto`, which on Apple platforms only re-exports CryptoKit but ships
+BoringSSL bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
+
+The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
+holds the code being extracted for reuse (`ShamirSecretSharing`, `PQProvider` so far) and must stay
+dependency-free: its `Package.swift` declares none, and adding one is the same supply-chain change
+as adding it to the app. It is nonisolated by default, unlike the app's `MainActor`. Its tests stay
+in `OccultaTests` (`@testable import OccultaCore`) so the one test command below still runs them.
 
 - **Open:** `open Occulta.xcodeproj`
 - **Build/Run:** Cmd+R in Xcode, targeting a physical iPhone 11+ (U1 chip required for NearbyInteraction)

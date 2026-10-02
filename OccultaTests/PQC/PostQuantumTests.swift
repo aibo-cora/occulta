@@ -10,6 +10,7 @@
 import XCTest
 import CryptoKit
 @testable import Occulta
+import OccultaCore
 
 // MARK: - 1. PQProvider Tests
 

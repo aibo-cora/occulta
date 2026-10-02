@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		DE1C8BEA2F8EC10D00F0E248 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		DEC0DE032F90000000A1B2C3 /* OccultaCore in Frameworks */ = {isa = PBXBuildFile; productRef = DEC0DE022F90000000A1B2C3 /* OccultaCore */; };
 		DEC7D75F2EEF1B9000764947 /* QuickLook.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DEC7D75E2EEF1B9000764947 /* QuickLook.framework */; };
 		DEC7D76B2EEF1B9000764947 /* OccultaPreview.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -192,6 +193,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DEC0DE032F90000000A1B2C3 /* OccultaCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -314,6 +316,9 @@
 				DEFFD8812E9D349700CA60F9 /* Assets */,
 			);
 			name = Occulta;
+			packageProductDependencies = (
+				DEC0DE022F90000000A1B2C3 /* OccultaCore */,
+			);
 			productName = Occulta;
 			productReference = DEFFD8552E9D293500CA60F9 /* Occulta.app */;
 			productType = "com.apple.product-type.application";
@@ -402,6 +407,9 @@
 			);
 			mainGroup = DEFFD84C2E9D293500CA60F9;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				DEC0DE012F90000000A1B2C3 /* XCLocalSwiftPackageReference "OccultaCore" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DEFFD8562E9D293500CA60F9 /* Products */;
 			projectDirPath = "";
@@ -1052,6 +1060,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		DEC0DE012F90000000A1B2C3 /* XCLocalSwiftPackageReference "OccultaCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = OccultaCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DEC0DE022F90000000A1B2C3 /* OccultaCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OccultaCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = DEFFD84D2E9D293500CA60F9 /* Project object */;
 }

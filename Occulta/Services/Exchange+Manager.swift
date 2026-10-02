@@ -25,6 +25,7 @@ import Foundation
 import NearbyInteraction
 import MultipeerConnectivity
 import os
+import OccultaCore
 
 @Observable
 class ExchangeManager: NSObject {
