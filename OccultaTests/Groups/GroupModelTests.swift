@@ -453,8 +453,9 @@ struct GroupStructuralTests {
         return ContactManager(modelContainer: container, security: security)
     }
 
-    /// Returns nil (caller should skip) when SE is unavailable — `material` is
-    /// encrypted via the default (SE-backed) `Manager.Crypto()`, same as production.
+    /// Returns nil when the local DB key is unavailable — `material` is encrypted via the
+    /// default `Manager.Crypto()`, same as production, so callers run under
+    /// `.ambientTestKeyManager` and `#require` the result.
     private func makeProfile(identifier: String, publicKey: Data, using crypto: Manager.Crypto) throws -> Contact.Profile? {
         guard let encrypted = try crypto.encrypt(data: publicKey) else { return nil }
         let profile = Contact.Profile(
@@ -471,20 +472,20 @@ struct GroupStructuralTests {
     // membership and per-contact visibility (visibleThroughDepth) are independent,
     // unsynchronized state, so a member reclassified as sensitive after being added
     // to a group must still be excluded at send time.
-    @Test func excludesSensitiveMember_evenWhenPresentInGroupMemberList() throws {
+    @Test(.ambientTestKeyManager) func excludesSensitiveMember_evenWhenPresentInGroupMemberList() throws {
         let realCrypto = Manager.Crypto()
         let cm = try self.makeContactManager()
 
         let visibleID = UUID().uuidString
-        guard let visibleProfile = try self.makeProfile(
+        let visibleProfile = try #require(try self.makeProfile(
             identifier: visibleID, publicKey: try TestKeyManager().retrieveIdentity(), using: realCrypto
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         try cm.insertProfile(visibleProfile)
 
         let hiddenID = UUID().uuidString
-        guard let hiddenProfile = try self.makeProfile(
+        let hiddenProfile = try #require(try self.makeProfile(
             identifier: hiddenID, publicKey: try TestKeyManager().retrieveIdentity(), using: realCrypto
-        ) else { return }
+        ))
         // Non-decryptable field — isVisible() takes the conservative-exclusion path,
         // hiding this contact at every depth without needing a real classification flow.
         hiddenProfile.visibleThroughDepth = Data([0xFF, 0xFE])
@@ -504,14 +505,14 @@ struct GroupStructuralTests {
     // Sanity check for the same fix: a group made up entirely of sensitive members
     // must fail with groupHasNoMembers rather than silently sending to nobody or
     // falling through to the pre-fix behavior.
-    @Test func allMembersSensitive_throwsGroupHasNoMembers() throws {
+    @Test(.ambientTestKeyManager) func allMembersSensitive_throwsGroupHasNoMembers() throws {
         let realCrypto = Manager.Crypto()
         let cm = try self.makeContactManager()
 
         let hiddenID = UUID().uuidString
-        guard let hiddenProfile = try self.makeProfile(
+        let hiddenProfile = try #require(try self.makeProfile(
             identifier: hiddenID, publicKey: try TestKeyManager().retrieveIdentity(), using: realCrypto
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         hiddenProfile.visibleThroughDepth = Data([0xFF, 0xFE])
         try cm.insertProfile(hiddenProfile)
 
