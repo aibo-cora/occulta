@@ -8,12 +8,22 @@
 //  Every entry point takes the container URL rather than resolving the App Group itself,
 //  so the whole lifecycle can be exercised against a temp directory in tests. The version
 //  of this code that lived as a private method on `RootView` could not be tested at all,
-//  which is why the share path shipped with a missing lock gate (Bug 84) unnoticed.
+//  which is why the share path shipped with a missing lock gate (Bug 84) unnoticed. The key
+//  is a parameter for the same reason: production passes `ShareStagingKeyManager`, whose
+//  key lives in the Secure Enclave; tests pass an in-memory key and run without one.
 //
 
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+
+/// What `ShareSession` needs from the share-staging key: it only ever opens what the
+/// extension sealed.
+protocol ShareSessionDecrypting {
+    func decrypt(data: Data) throws -> Data
+}
+
+extension ShareStagingKeyManager: ShareSessionDecrypting {}
 
 enum ShareSession {
 
@@ -61,7 +71,7 @@ enum ShareSession {
     static func load(
         id: String,
         in container: URL,
-        keyManager: ShareStagingKeyManager,
+        keyManager: any ShareSessionDecrypting,
         now: Date = .now
     ) throws -> [Occulta.File] {
         let sessionDir = self.directory(for: id, in: container)
@@ -125,7 +135,7 @@ enum ShareSession {
     /// - a manifest older than `staleAfter` → delete
     /// - no manifest (extension killed mid-write) → delete immediately; those files are plaintext
     /// - an unreadable manifest (corrupt or orphaned) → delete immediately
-    static func sweep(in container: URL, keyManager: ShareStagingKeyManager, now: Date = .now) {
+    static func sweep(in container: URL, keyManager: any ShareSessionDecrypting, now: Date = .now) {
         let fm = FileManager.default
 
         guard let sessions = try? fm.contentsOfDirectory(
