@@ -383,9 +383,10 @@ one against a `syncShareIndex()` call site. There is no longer a second copy to 
 with the first.
 
 What remains in the App Group: `pending/<session-uuid>/`, holding files the user has explicitly
-chosen to share, sealed under the share-index SE key with `.completeFileProtection`, named
-positionally, swept after an hour. That key keeps its tag and HKDF info string — it still seals
-staged files and manifests, and changing either would strand it.
+chosen to share, sealed under the share-staging SE key (`ShareStagingKeyManager`, formerly
+`ShareIndexKeyManager`) with `.completeFileProtection`, named positionally, swept after an hour.
+That key keeps its `share.index` tag and HKDF info string — it still seals staged files and
+manifests, and changing either would strand it.
 
 One consequence worth recording here rather than only in the bug: the old `max(currentDepth, 1)`
 clamp meant a contact classified as real-only could not be reached from the iOS share sheet at any

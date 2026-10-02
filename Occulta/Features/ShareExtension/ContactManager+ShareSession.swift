@@ -20,7 +20,7 @@ extension ContactManager {
     func cleanupPendingSessions() {
         guard let container = ShareSession.sharedContainer else { return }
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
         ShareSession.removeLegacyContactIndex(in: container)
     }
 }
