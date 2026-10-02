@@ -127,13 +127,14 @@ override at all. Use that trait instead of `.enabled(if: secureEnclaveAvailable(
 local DB key is the only reason for the gate. The trait fails the test if a real `Manager.Key` is
 built while it is bound, because that path would pass here and fail on CI. It cannot see code that
 calls the Keychain or Enclave directly — `PrekeyManager` does — so CI remains the final word.
-Converted so far: Secure Mode, Vault, Contacts, `ContactListFilterTests`, `GroupModelTests` and
-`ForwardSecrecyModelTests`. Still gated, because they genuinely need an Enclave — they exercise
-the real `Manager.Key` or create prekeys through `PrekeyManager`, whose private keys live in it:
-`Key+Manipulation`, `LegacyRotationArtefactTests`, `DuressModePrekeyTests`, `PrekeyManagerTests`,
-`ForwardSecrecyIntegrationTests`, and the two prekey round-trips in `VersionCompatibilityTests`.
-Not yet assessed: `GroupOrphanPurgeTests`, `PrekeyConsumptionOnRejectionTests`,
-`ShardFallbackGatingTests`.
+Every gate on the local DB key alone is converted. Still gated, because they genuinely need an
+Enclave — they exercise the real `Manager.Key` or create prekeys through `PrekeyManager`, whose
+private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
+`DuressModePrekeyTests`, `PrekeyManagerTests`, `ForwardSecrecyIntegrationTests`,
+`PrekeyConsumptionOnRejectionTests`, the two prekey round-trips in `VersionCompatibilityTests`,
+and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
+(`decryptSealed` calls `generateAndStoreFreshBatch` when a fallback message arrives with no
+pending batch). A test that reaches that receive path needs the gate, not the trait.
 
 **With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
 stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
@@ -155,9 +156,11 @@ stop running entirely and still look fine. The Swift Testing files that call
 
 **A separate and worse problem: some tests still skip the old way** — `print("⚠︎ Skipping"); return`
 — which reports as **passed**, not skipped. So the suite's green count overstates what actually
-ran, and unlike the gated tests the shortfall is invisible. On CI, 2026-10-02, 8 such prints
-remain, all in `GroupShardGatingTests` and `ShardFallbackGatingTests`, down from 78; count them
-in CI's `xcodebuild.log`, since each one is a pass that ran nothing. Prefer injecting a key manager, or
+ran, and unlike the gated tests the shortfall is invisible. As of 2026-10-02 none remain in the
+source (78 printed on CI before `Manager.Ambient`); count them in CI's `xcodebuild.log`, since
+each one is a pass that ran nothing. The form is not always `guard secureEnclaveAvailable()` —
+`guard let fixture = try makeX(…) else { print(…); return }` skips just as silently when the
+fixture's encryption returns nil. Use `#require` for a fixture, so a failure fails. Prefer injecting a key manager, or
 `.ambientTestKeyManager` where the local DB key is the reason; where neither reaches, use
 `.enabled(if: secureEnclaveAvailable())` so the cost stays visible. Do not add more of the legacy
 form.
