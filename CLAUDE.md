@@ -135,6 +135,9 @@ private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
 (`decryptSealed` calls `generateAndStoreFreshBatch` when a fallback message arrives with no
 pending batch). A test that reaches that receive path needs the gate, not the trait.
+`ShareSessionTests` is gated on a different Enclave key, `ShareIndexKeyManager`'s share-index key,
+which `Manager.Ambient` does not cover and which has no seam of its own (16 tests). On CI,
+2026-10-02 at `a8f4680`, these account for all 65 skips.
 
 **With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
 stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
