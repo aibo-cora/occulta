@@ -8,13 +8,6 @@
 import Testing
 @testable import Occulta
 
-/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
-/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
-/// rather than silently passing, so the size of the untested surface stays visible.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 import Foundation
 import CryptoKit
 import Contacts
@@ -23,7 +16,7 @@ import Contacts
 struct ContactTests {
     let cryptoOps: CryptoProtocol = Manager.Crypto()
     
-    @Test("Contact creation", .enabled(if: secureEnclaveAvailable()))
+    @Test("Contact creation", .ambientTestKeyManager)
     func createContact() throws {
         let identifier = UUID().uuidString
         let givenName = "John"
