@@ -106,14 +106,14 @@ Note the deployment target and the availability gates are different things: ML-K
 `#available(iOS 26, *)` in `PQProvider`, so the post-quantum path is live only on iOS 26+ and the
 classical-only modes exist for everything between 18.6 and that.
 
-**Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; **270
-of 806** need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store
-go through `Manager.Key()` directly with no injection seam. (Both re-measured 2026-08-16: gated by
-counting `@Test` declarations carrying `secureEnclaveAvailable()` directly or by their enclosing
-suite, total by counting unique test cases in a full local run — 771 `@Test` plus 36 XCTest cases
-declared. Re-measure rather than trusting either; they have drifted every time. The gated figure
-once read "roughly 146" against a real 260, and the total sat at 742 while the suite had grown
-past 770.) Those carry
+**Secure Enclave and the test suite.** Most tests inject `TestKeyManager` or run under
+`.ambientTestKeyManager` and run anywhere; **70 of 931** still skip on a runner without an Enclave,
+mostly because they create prekeys through `PrekeyManager` or exercise the real `Manager.Key`.
+(Re-measured 2026-10-02 from CI's own result bundle on `v2.0.0/ambient-key-seam` — the runner's
+skip count, against 931 run there, which excludes `KeychainMigrationSETests`. Before the
+`Manager.Ambient` seam the same measure read 311 of 922. Re-measure rather than trusting this; it
+has drifted every time, and counting `@Test` declarations by hand undercounted it in the past.)
+Those carry
 `.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
 notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
 have Enclave access and runs the full suite.
@@ -150,12 +150,14 @@ with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so `Manager.Key` is implicitly
 and its `deinit` hops executors; releasing one from that context crashes the test process
 (`swift_task_deinitOnExecutorImpl` → malloc "pointer being freed was not allocated"). The failure is
 disguised: xcodebuild relaunches per test and reports a green **"Executed 0 tests"**, so a suite can
-stop running entirely and still look fine. The 23 Swift Testing files that call
+stop running entirely and still look fine. The Swift Testing files that call
 `secureEnclaveAvailable()` are unaffected, reaching it from a task context.
 
-**A separate and worse problem: 112 tests still skip the old way** — `print("⚠︎ Skipping"); return`
+**A separate and worse problem: some tests still skip the old way** — `print("⚠︎ Skipping"); return`
 — which reports as **passed**, not skipped. So the suite's green count overstates what actually
-ran, and unlike the gated tests the shortfall is invisible. Prefer injecting a key manager, or
+ran, and unlike the gated tests the shortfall is invisible. On CI, 2026-10-02, 8 such prints
+remain, all in `GroupShardGatingTests` and `ShardFallbackGatingTests`, down from 78; count them
+in CI's `xcodebuild.log`, since each one is a pass that ran nothing. Prefer injecting a key manager, or
 `.ambientTestKeyManager` where the local DB key is the reason; where neither reaches, use
 `.enabled(if: secureEnclaveAvailable())` so the cost stays visible. Do not add more of the legacy
 form.
