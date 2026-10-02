@@ -33,10 +33,6 @@ import LocalAuthentication
 
 // MARK: - Shared helpers
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 private func makeContainer() throws -> ModelContainer {
     let schema = Schema([
@@ -91,11 +87,11 @@ struct BackupKeyFillerBaselineTests {
                 "a second construction against an already-filled container must not add more rows")
     }
 
-    @Test("Filler rows report unclaimed and orphaned — never live", .enabled(if: secureEnclaveAvailable()))
+    @Test("Filler rows report unclaimed and orphaned — never live", .ambientTestKeyManager)
     func fillerRowsReportCorrectly() throws {
         let container = try makeContainer()
         _ = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
 
         for row in try fetchAllBackupKeyRows(from: container) {
             #expect(row.isUnclaimed(usingKey: key), "a freshly-created filler row must report unclaimed")
@@ -104,7 +100,7 @@ struct BackupKeyFillerBaselineTests {
     }
 
     @Test("Claiming all 32 filler rows, then setting up backup for a 33rd depth, inserts a genuinely new row",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func overflowPastThirtyTwoInsertsFreshRow() throws {
         let container = try makeContainer()
         let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -131,7 +127,7 @@ struct BackupKeyFillerBaselineTests {
     }
 
     @Test("A second setup call at an already-configured depth does not claim another filler row",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func repeatedSetupClaimsOnlyOneRow() throws {
         let container = try makeContainer()
         let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -174,7 +170,7 @@ struct BackupKeyOrphaningTests {
     }
 
     @Test("A backup key from one duress session does not resurface in a later, unrelated session at the same depth",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func staleSessionBackupKeyDoesNotResurface() throws {
         let c = try self.makeComponents()
@@ -192,7 +188,7 @@ struct BackupKeyOrphaningTests {
         #expect(!c.security.isSecureModeActive)
 
         // The row itself must still physically exist, marked inert — never hard-deleted.
-        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         let depth1Rows = try fetchAllBackupKeyRows(from: c.container).filter { row in
             guard let data = row.depth, let plain = data.decrypt(using: key),
                   let value = DepthCodec.decode(plain)
@@ -224,7 +220,7 @@ struct BackupKeyOrphaningTests {
     }
 
     @Test("A backup key at a shallower, still-live depth survives an unrelated deeper cascade deactivation",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func shallowerBackupKeySurvivesCascade() throws {
         let c = try self.makeComponents()
@@ -249,7 +245,7 @@ struct BackupKeyOrphaningTests {
         let currentBytes  = stillDepth1Key.withUnsafeBytes { Data($0) }
         #expect(originalBytes == currentBytes, "must be the exact same key, not a fresh one")
 
-        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         let depth1Rows = try fetchAllBackupKeyRows(from: c.container).filter { row in
             guard let data = row.depth, let plain = data.decrypt(using: key),
                   let value = DepthCodec.decode(plain)
@@ -261,7 +257,7 @@ struct BackupKeyOrphaningTests {
     }
 
     @Test("setBackupShardStatuses never mutates an orphaned row, even when it targets that row's own shard",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func setBackupShardStatusesIgnoresOrphanedRow() throws {
         let c = try self.makeComponents()
@@ -281,7 +277,7 @@ struct BackupKeyOrphaningTests {
         try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
         #expect(!c.security.isSecureModeActive)
 
-        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         func depth1Row() throws -> BackupEncryptionKey {
             try #require(try fetchAllBackupKeyRows(from: c.container).first { row in
                 guard let data = row.depth, let plain = data.decrypt(using: key),
@@ -345,7 +341,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     }
 
     @Test("Array-only: every real slot is claimed at its own depth, the file is deleted, filler slots are untouched",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func migratesArrayOnly() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -375,7 +371,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     }
 
     @Test("Legacy-row-only: the nil/nil row migrates to depth 0 and is folded into filler, never deleted",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func migratesLegacyRowOnly() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -429,7 +425,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     /// Bug 138: the migration used to fold the legacy row into filler and save before the
     /// key reached its new row, so a row that decrypted but wouldn't decode lost the key.
     @Test("A legacy row that won't decode is left untouched for the next unlock",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func undecodableLegacyRowIsUntouched() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -451,7 +447,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     /// decode from JSON but make `PayloadCodec.encode` throw `tooManyShards` inside `stage`,
     /// after a depth-0 row has been claimed.
     @Test("A failure after staging leaves the legacy row intact and no depth-0 key",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func failureAfterStagingRollsBack() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -480,7 +476,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     /// Bug 146: v1.10.3's JSON records carry real contact identifiers (encrypted base64), and the
     /// record codec threw on anything but a UUID, so a distributed key never migrated.
     @Test("A v1.10.3 key distributed to real contacts migrates, and setupBackup keeps it",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func distributedLegacyKeyMigrates() throws {
         struct LegacyRecord: Codable { let contactIdentifier: String; let attributeID: UUID; let status: ShardStatus }
         struct LegacyMeta: Codable { let threshold: Int; let shards: [LegacyRecord] }
@@ -508,7 +504,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     }
 
     @Test("Both present: array data wins over the legacy row at depth 0, matching the original precedence",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func arrayWinsOverLegacyRowAtDepthZero() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -538,7 +534,7 @@ struct BackupKeyLegacyStorageMigrationTests {
                 "the array's slot-0 payload must win — the legacy row is only consulted if depth 0 is still unclaimed after the array pass")
     }
 
-    @Test("Neither present: migration is a safe no-op", .enabled(if: secureEnclaveAvailable()))
+    @Test("Neither present: migration is a safe no-op", .ambientTestKeyManager)
     func noSourcesIsANoOp() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -552,7 +548,7 @@ struct BackupKeyLegacyStorageMigrationTests {
     }
 
     @Test("Running migration twice is idempotent — the second pass claims nothing new",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func secondPassIsNoOp() throws {
         let container = try makeContainer()
         let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())

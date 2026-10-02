@@ -19,10 +19,6 @@ import LocalAuthentication
 
 // MARK: - Helpers
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 private func makeRig() throws -> (
     vault:     VaultManager,
@@ -73,7 +69,7 @@ private func insertPlainProfile(identifier: String, in cm: ContactManager) throw
 // MARK: - Tests
 
 @MainActor
-@Suite("Backup-key distribution at a duress depth", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Backup-key distribution at a duress depth", .serialized, .ambientTestKeyManager)
 struct DecoyShardDistributionTests {
 
     /// Per-entry splitting was retired (decisions.md, "Retire per-entry splitting"); the

@@ -24,26 +24,12 @@ import LocalAuthentication
 import SwiftData
 @testable import Occulta
 
-/// `VaultManager` takes an injected key manager and the harness below uses one, but that seam
-/// does not reach the depth stamps: `addEntry` writes `visibleThroughDepth` through the bare
-/// `Data.encrypt()` extension, which constructs `Manager.Crypto()` — and therefore
-/// `Manager.Key()` — at the call site. No injection reaches it, so these are gated rather than
-/// rewritten.
-///
-/// The failure is quiet in one respect and loud in another. `addEntry`'s depth stamp goes
-/// through the bare `Data.encrypt()` extension (uninjectable); when no real key is available it
-/// returns nil rather than throwing, so `addEntry` still succeeds and simply stamps a nil
-/// ceiling — `entriesVisible(atDepth:whenUnclassified:)` treats that as included (a "never
-/// classified" row, not a gap), so this part stays quiet. But `entriesVisible` also derives the
-/// local DB key directly via the same uninjectable path, once, up front — on CI that derivation
-/// itself fails and `entriesVisible` throws, which `exportBackup` doesn't swallow. So any test
-/// that calls `exportBackup` at all fails loudly with a thrown error on CI, not just ones
-/// asserting on counts or content. Tests that never call `exportBackup` (e.g. only checking a
-/// pre-existing file's sealing) don't hit either path and keep running — hence the gating is
-/// per test, not per suite.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
+// `VaultManager` takes an injected key manager and the harness below uses one, but that seam
+// does not reach the depth stamps: `addEntry` writes `visibleThroughDepth` through the bare
+// `Data.encrypt()` extension, and `entriesVisible` (which `exportBackup` calls) derives the
+// local DB key itself. Both go through `Manager.Ambient`, so the tests that touch them run
+// under `.ambientTestKeyManager`. Without a working local key the stamp is quietly nil, but
+// `entriesVisible` throws — so a test that exports fails loudly rather than passing wrongly.
 
 // MARK: - Harness
 
@@ -139,7 +125,7 @@ struct VaultBackupRoundTripTests {
     // MARK: - What works today, and must keep working through a format change
 
     @Test("Entries survive export → import with id, timestamp, label and content intact",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func roundTripPreservesEntries() throws {
         let (vault, _, shards) = try makeBackupReadyVault()
         let note = try vault.addEntry(label: "note-label", content: Data("note-body".utf8), type: .note)
@@ -156,7 +142,7 @@ struct VaultBackupRoundTripTests {
         }
     }
 
-    @Test("A backup is unreadable without the BEK", .enabled(if: secureEnclaveAvailable()))
+    @Test("A backup is unreadable without the BEK", .ambientTestKeyManager)
     func backupIsSealed() throws {
         let (vault, _, _) = try makeBackupReadyVault()
         _ = try vault.addEntry(label: "secret-label", content: Data("secret-body".utf8), type: .note)
@@ -175,7 +161,7 @@ struct VaultBackupRoundTripTests {
     /// exact-match, not a ceiling"). An export taken from a duress depth must therefore
     /// contain only that depth's entries, never the real layer's.
     @Test("Export excludes entries hidden at the current depth",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func exportExcludesHiddenEntries() throws {
         let (vault, _, _) = try makeBackupReadyVault()
         // Visible at the duress depth this export is taken from.
@@ -227,7 +213,7 @@ struct VaultBackupRoundTripTests {
     /// that predates duress depths existing at all, and must not be swept into a backup
     /// exported from one.
     @Test("Export excludes a legacy nil-depth entry when taken from a duress depth",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func exportExcludesLegacyNilDepthEntryAtDuressDepth() throws {
         let (vault, container, _) = try makeBackupReadyVault()
         _ = try makeLegacyEntry(via: vault, in: container)
@@ -249,7 +235,7 @@ struct VaultBackupRoundTripTests {
     /// this codebase shipped specifically to stop it silently vanishing from ordinary,
     /// non-duress backups.
     @Test("Export still includes a legacy nil-depth entry at the real depth 0",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func exportIncludesLegacyNilDepthEntryAtRealDepth0() throws {
         let (vault, container, shards) = try makeBackupReadyVault()
         _ = try makeLegacyEntry(via: vault, in: container)
@@ -269,7 +255,7 @@ struct VaultBackupRoundTripTests {
     /// is simply whichever depth the restore is running at — here, the same depth 0 the
     /// backup was exported from.
     @Test("Import restores the depth ceiling rather than defaulting to always-visible",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func importRestoresDepthCeiling() throws {
         let (vault, _, shards) = try makeBackupReadyVault()
         _ = try vault.addEntry(label: "hidden", content: Data("hidden".utf8), type: .note, currentDepth: 0)
@@ -294,7 +280,7 @@ struct VaultBackupRoundTripTests {
     /// the test that makes that indexing an enforced property rather than an assumption:
     /// a new entry at one depth must never surface as staleness at another.
     @Test("Staleness for one depth is never derived from another depth's export or entries",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func stalenessIsIsolatedPerDepth() throws {
         let (vault, container, _) = try makeBackupReadyVault()
 
@@ -336,7 +322,7 @@ struct VaultBackupRoundTripTests {
     /// that the fallback path is exercised — the two prior tests never actually put an
     /// old-format file on disk.
     @Test("An old single-record export-meta file degrades to nil, not a crash",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func oldFormatFileDegradesGracefully() throws {
         let (vault, _, _) = try makeBackupReadyVault()
         let vaultKey = try vault.currentKey()
@@ -369,7 +355,7 @@ struct VaultBackupRoundTripTests {
     // MARK: - Key changes and staleness (Bug 141)
 
     @Test("A redistribution that keeps the key does not report it rotated",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func redistributionIsNotRotation() throws {
         let (vault, _, _) = try makeBackupReadyVault()
         _ = try vault.exportBackup(currentDepth: 0)
@@ -382,7 +368,7 @@ struct VaultBackupRoundTripTests {
     }
 
     @Test("A new key reports the key rotated, and an earlier backup no longer opens",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func newKeyIsRotation() throws {
         let (vault, _, _) = try makeBackupReadyVault()
         let earlier = try vault.exportBackup(currentDepth: 0)
@@ -403,7 +389,7 @@ struct VaultBackupRoundTripTests {
     /// Before Bug 141 the export record held the `distributionID`; one that still matches
     /// means nothing has changed since that export.
     @Test("An export record from before the fix, holding the current distributionID, is not a rotation",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func legacyRecordMatchingDistributionIsNotRotation() throws {
         let (vault, _, shards) = try makeBackupReadyVault()
         let distributionID = try #require(shards.first?.entryID)
@@ -422,7 +408,7 @@ struct VaultBackupRoundTripTests {
     /// `updateShardStatus` used to search every depth's row for the ID; now a depth
     /// writes only its own row, and an ID another depth owns is ignored.
     @Test("A backup-key status change touches only the current depth's row",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func shardConfirmationAppliesToOwningDepthOnly() throws {
         let (vault, _, _) = try makeBackupReadyVault() // depth 0: both shards pre-confirmed
 
@@ -451,7 +437,7 @@ struct VaultBackupRoundTripTests {
     /// Lives in this serialized suite because it deletes the export-metadata file the
     /// staleness tests above read.
     @Test("Wiping the vault deletes the backup and restore files",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func wipeDeletesBackupFiles() throws {
         let schema = Schema([
             VaultEntry.self, BackupEncryptionKey.self, CustodyShard.self, PendingShardDistribute.self,

@@ -8,11 +8,10 @@
 //  `distributionID` on every `prepareShards` call (`Vault+Manager+Backup.swift`);
 //  `bekBytes` stays untouched, so already-exported `.occbak` files are unaffected.
 //
-//  Needs the real Secure Enclave — `Backup.persist`'s filler-row claim and its
-//  `depth`/`deletionToken` fields derive the local key ambiently via `Manager.Key()`,
+//  Runs under `.ambientTestKeyManager` — `Backup.persist`'s filler-row claim and its
+//  `depth`/`deletionToken` fields derive the local key ambiently via `Manager.Ambient`,
 //  never through the injected `TestKeyManager`, regardless of which key manager the
-//  vault itself was constructed with (same trap `BackupKeyFillerBaselineTests` gates
-//  around).
+//  vault itself was constructed with (same trap as `BackupEncryptionKeyStorageTests`).
 //
 
 import Testing
@@ -21,10 +20,6 @@ import CryptoKit
 import LocalAuthentication
 import SwiftData
 @testable import Occulta
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 /// `exportBackup` writes `backup-export-meta.dat` under Application Support — must exist
 /// before the first export, same requirement `VaultRestoreTrustTests` works around.
@@ -86,7 +81,7 @@ private func bekBytes(of vault: VaultManager) throws -> Data {
 struct BackupTrusteeRotationTests {
 
     @Test("Redistributing to a different trustee set mints a new distributionID",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func redistributionMintsNewDistributionID() throws {
         let vault = try makeVaultWithBackup()
 
@@ -123,7 +118,7 @@ struct BackupTrusteeRotationTests {
     /// test instead checks the one thing that fix could plausibly have broken: that a
     /// clean restore, using only the current round's shares, still works.
     @Test("Redistributing still allows a clean restore using only the current round's shares",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func cleanRestoreStillSucceedsAfterRedistribution() throws {
         let vault = try makeVaultWithBackup()
 

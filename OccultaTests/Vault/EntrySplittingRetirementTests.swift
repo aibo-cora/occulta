@@ -7,8 +7,8 @@
 //  entries' distribution records, status-update rows, queued per-entry pieces and banked
 //  per-entry pieces. Backup-key state must come through untouched.
 //
-//  The restore buffer's rows are sealed under the ambient `Manager.Key()` local key, so
-//  these need a Secure Enclave.
+//  The restore buffer's rows are sealed under the ambient local key (`Manager.Ambient`), so
+//  these run under `.ambientTestKeyManager`, which supplies it.
 //
 
 import Testing
@@ -17,10 +17,6 @@ import CryptoKit
 import LocalAuthentication
 import SwiftData
 @testable import Occulta
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private struct Device {
@@ -78,7 +74,7 @@ private struct Device {
     }
 }
 
-@Suite("Retired per-entry splitting — one-time clean-up", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Retired per-entry splitting — one-time clean-up", .serialized, .ambientTestKeyManager)
 @MainActor
 struct EntrySplittingRetirementTests {
 

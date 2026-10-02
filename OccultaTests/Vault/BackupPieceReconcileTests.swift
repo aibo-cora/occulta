@@ -9,8 +9,8 @@
 //  re-sends one a trustee no longer has. Everything reads and writes only the current
 //  depth's backup-key row.
 //
-//  Backup-key rows are found through the ambient `Manager.Key()` local key, so every test
-//  needs a Secure Enclave.
+//  Backup-key rows are found through the ambient local key (`Manager.Ambient`), so every test
+//  runs under `.ambientTestKeyManager`, which supplies it.
 //
 
 import Testing
@@ -19,10 +19,6 @@ import CryptoKit
 import LocalAuthentication
 import SwiftData
 @testable import Occulta
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private struct Owner {
@@ -96,7 +92,7 @@ private struct Owner {
 
     /// The sealed bytes of `depth`'s backup-key row.
     func rowBytes(depth: Int) throws -> Data {
-        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         let row = try #require(try ModelContext(self.container).fetch(FetchDescriptor<BackupEncryptionKey>()).first { row in
             guard !row.isOrphaned(usingKey: key), !row.isUnclaimed(usingKey: key),
                   let data = row.depth, let plain = data.decrypt(using: key) else { return false }
@@ -114,7 +110,7 @@ private func trustees(_ n: Int) -> [String] { (0..<n).map { _ in realFormatConta
 @MainActor
 struct BackupDistributionTests {
 
-    @Test("Dropping a trustee splits a new key; adding one keeps it", .enabled(if: secureEnclaveAvailable()))
+    @Test("Dropping a trustee splits a new key; adding one keeps it", .ambientTestKeyManager)
     func removalRotatesAdditionKeeps() throws {
         let owner = try Owner()
         let t = trustees(4)
@@ -130,7 +126,7 @@ struct BackupDistributionTests {
     }
 
     /// Bug 142's reproduction: A, B, C, then A, B, D before anything was delivered.
-    @Test("A new split replaces the previous split's queued pieces", .enabled(if: secureEnclaveAvailable()))
+    @Test("A new split replaces the previous split's queued pieces", .ambientTestKeyManager)
     func newSplitReplacesQueue() throws {
         let owner = try Owner()
         let t = trustees(4)
@@ -153,7 +149,7 @@ struct BackupDistributionTests {
         #expect(forD.count == 1 && forD.first?.kind == .distribute)
     }
 
-    @Test("A new split deletes the previous split's watch rows", .enabled(if: secureEnclaveAvailable()))
+    @Test("A new split deletes the previous split's watch rows", .ambientTestKeyManager)
     func newSplitDeletesWatchRows() throws {
         let owner = try Owner()
         let t = trustees(3)
@@ -173,7 +169,7 @@ struct BackupDistributionTests {
 @MainActor
 struct BackupDropRuleTests {
 
-    @Test("Leaving out a trustee whose piece is still pending splits a new key", .enabled(if: secureEnclaveAvailable()))
+    @Test("Leaving out a trustee whose piece is still pending splits a new key", .ambientTestKeyManager)
     func droppingPendingRotates() throws {
         let owner = try Owner()
         let t = trustees(3)
@@ -185,7 +181,7 @@ struct BackupDropRuleTests {
         #expect(try owner.bek() != key, "the piece may already be on the trustee's phone")
     }
 
-    @Test("Leaving out a deleted (lost) trustee splits a new key", .enabled(if: secureEnclaveAvailable()))
+    @Test("Leaving out a deleted (lost) trustee splits a new key", .ambientTestKeyManager)
     func droppingLostRotates() throws {
         let owner = try Owner()
         let t = trustees(3)
@@ -199,7 +195,7 @@ struct BackupDropRuleTests {
         #expect(try owner.bek() != key, "a deleted contact still holds their piece")
     }
 
-    @Test("Changing only the threshold keeps the key", .enabled(if: secureEnclaveAvailable()))
+    @Test("Changing only the threshold keeps the key", .ambientTestKeyManager)
     func thresholdOnlyKeepsKey() throws {
         let owner = try Owner()
         let t = trustees(3)
@@ -213,7 +209,7 @@ struct BackupDropRuleTests {
 
     /// What the setup screen asks before warning; it passes the real recipients, so a
     /// trustee hidden at the depth counts as left out.
-    @Test("distributionDropsTrustee is true exactly when someone in the record is left out", .enabled(if: secureEnclaveAvailable()))
+    @Test("distributionDropsTrustee is true exactly when someone in the record is left out", .ambientTestKeyManager)
     func dropsTrusteeCheck() throws {
         let owner = try Owner()
         let t = trustees(4)
@@ -234,7 +230,7 @@ struct BackupDropRuleTests {
 @MainActor
 struct BackupReconcileTests {
 
-    @Test("A piece the trustee reports holding is confirmed", .enabled(if: secureEnclaveAvailable()))
+    @Test("A piece the trustee reports holding is confirmed", .ambientTestKeyManager)
     func manifestConfirms() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -250,7 +246,7 @@ struct BackupReconcileTests {
         #expect(try owner.queued(for: t[0]).isEmpty, "the confirmed piece left the queue")
     }
 
-    @Test("A confirmed piece missing from a manifest is re-sent with the same key", .enabled(if: secureEnclaveAvailable()))
+    @Test("A confirmed piece missing from a manifest is re-sent with the same key", .ambientTestKeyManager)
     func missingPieceResent() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -271,7 +267,7 @@ struct BackupReconcileTests {
 
     /// Watch rows used to be deleted at every vault unlock, so a piece was only watched
     /// until the next one.
-    @Test("A piece is still watched after the vault unlocks again", .enabled(if: secureEnclaveAvailable()))
+    @Test("A piece is still watched after the vault unlocks again", .ambientTestKeyManager)
     func watchSurvivesUnlock() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -286,7 +282,7 @@ struct BackupReconcileTests {
         #expect(try owner.queued(for: t[1]).count == 1)
     }
 
-    @Test("A trustee's identity key change re-sends at once", .enabled(if: secureEnclaveAvailable()))
+    @Test("A trustee's identity key change re-sends at once", .ambientTestKeyManager)
     func keyChangeResends() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -298,7 +294,7 @@ struct BackupReconcileTests {
         #expect(try owner.queued(for: t[1]).count == 1)
     }
 
-    @Test("A deleted trustee's piece is lost, and nothing is re-sent below the threshold", .enabled(if: secureEnclaveAvailable()))
+    @Test("A deleted trustee's piece is lost, and nothing is re-sent below the threshold", .ambientTestKeyManager)
     func deletedTrusteeLost() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -314,7 +310,7 @@ struct BackupReconcileTests {
 
     /// A re-send leaving the deleted trustee out would have to split a new key, breaking
     /// exported backups without the owner's say (Bug 144).
-    @Test("Nothing is re-sent while a trustee is lost", .enabled(if: secureEnclaveAvailable()))
+    @Test("Nothing is re-sent while a trustee is lost", .ambientTestKeyManager)
     func noResendWhileLost() throws {
         let owner = try Owner()
         let t = trustees(3)
@@ -329,7 +325,7 @@ struct BackupReconcileTests {
         #expect(try owner.bek() == key)
     }
 
-    @Test("A pending piece that was never queued is re-sent", .enabled(if: secureEnclaveAvailable()))
+    @Test("A pending piece that was never queued is re-sent", .ambientTestKeyManager)
     func interruptedDistributionResent() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -341,7 +337,7 @@ struct BackupReconcileTests {
         #expect(try owner.queued(for: t[1]).count == 1)
     }
 
-    @Test("A confirmed piece with no watch row gets one, and is not re-sent", .enabled(if: secureEnclaveAvailable()))
+    @Test("A confirmed piece with no watch row gets one, and is not re-sent", .ambientTestKeyManager)
     func confirmedWithoutWatchRowGetsOne() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -355,7 +351,7 @@ struct BackupReconcileTests {
         #expect(try owner.queued(for: t[0]).isEmpty)
     }
 
-    @Test("Reconciling one depth leaves another depth's row untouched", .enabled(if: secureEnclaveAvailable()))
+    @Test("Reconciling one depth leaves another depth's row untouched", .ambientTestKeyManager)
     func otherDepthUntouched() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -373,7 +369,7 @@ struct BackupReconcileTests {
         #expect(try t.map { try owner.pieceID(of: $0, depth: 1) } == depthOnePieces)
     }
 
-    @Test("A locked vault reconciles nothing", .enabled(if: secureEnclaveAvailable()))
+    @Test("A locked vault reconciles nothing", .ambientTestKeyManager)
     func lockedDoesNothing() throws {
         let owner = try Owner()
         let t = trustees(2)
@@ -392,7 +388,7 @@ struct BackupReconcileTests {
 @MainActor
 struct BackupSetupStateTests {
 
-    @Test("Three trustees, threshold two: counts all three, needs two", .enabled(if: secureEnclaveAvailable()))
+    @Test("Three trustees, threshold two: counts all three, needs two", .ambientTestKeyManager)
     func countsEveryTrustee() throws {
         let owner = try Owner()
         let t = trustees(3)
@@ -406,7 +402,7 @@ struct BackupSetupStateTests {
         #expect(owner.vault.backupSetupState(currentDepth: 0) == .ready)
     }
 
-    @Test("A lost piece leaves the total", .enabled(if: secureEnclaveAvailable()))
+    @Test("A lost piece leaves the total", .ambientTestKeyManager)
     func lostPieceLeavesTotal() throws {
         let owner = try Owner()
         let t = trustees(3)

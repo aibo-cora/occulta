@@ -22,10 +22,6 @@ import LocalAuthentication
 
 // MARK: - Helpers
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 private func makeAlice(
     inactivityTimeout: TimeInterval = 5 * 60
@@ -384,12 +380,12 @@ private func distribute(
 
 // MARK: - Handback and the restore buffer
 
-// Needs a real Secure Enclave: PendingShamirSecretRestore.attributeID/.deletionToken are
-// sealed under the ambient Manager.Key() local key (never the injected key manager) —
+// Runs under .ambientTestKeyManager: PendingShamirSecretRestore.attributeID/.deletionToken
+// are sealed under the ambient local key (Manager.Ambient, never the injected key manager) —
 // the same forced split BackupEncryptionKey.depth/.deletionToken already uses, and every
-// test here goes through acceptReturnedShard, which touches that field. No seam reaches
-// it, so unlike this file's other suites this one cannot run on TestKeyManager alone.
-@Suite("Restore buffer — handed-back pieces", .enabled(if: secureEnclaveAvailable()))
+// test here goes through acceptReturnedShard, which touches that field. So unlike this
+// file's other suites, the injected TestKeyManager alone doesn't cover it.
+@Suite("Restore buffer — handed-back pieces", .ambientTestKeyManager)
 @MainActor struct ReconstructionBufferTests {
 
     @Test("acceptReturnedShard banks a backup-key piece in a row that decrypts under the restore vault key")
@@ -404,7 +400,7 @@ private func distribute(
 
         // The row's attributeID decrypts (under the ambient local key) to the piece's
         // distribution ID, and its shards decode to the one banked piece.
-        let localKey = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let localKey = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         let row = try #require(ModelContext(container).fetch(FetchDescriptor<PendingShamirSecretRestore>()).first)
         let idBytes = try #require(row.attributeID?.decrypt(using: localKey))
         #expect(idBytes == withUnsafeBytes(of: distributionID.uuid) { Data($0) })

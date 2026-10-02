@@ -4,9 +4,9 @@
 //
 //  Stage 5 of the RECOVERY_BUFFER_LAYERING.md §9.3 restore-refactor plan —
 //  migrateReconstructShardsIfNeeded() moves any leftover ReconstructShard rows (the
-//  retired pre-§9.3 mechanism) into PendingShamirSecretRestore. Needs a real Secure
-//  Enclave: absorbShard seals PendingShamirSecretRestore.attributeID/.deletionToken
-//  under the ambient Manager.Key() local key, never the injected key manager — see
+//  retired pre-§9.3 mechanism) into PendingShamirSecretRestore. Runs under
+//  `.ambientTestKeyManager`: absorbShard seals PendingShamirSecretRestore.attributeID/
+//  .deletionToken under the ambient local key, never the injected key manager — see
 //  ShardCustodyTests.swift's ReconstructionBufferTests for the fuller trap explanation.
 //
 
@@ -16,10 +16,6 @@ import SwiftData
 import Foundation
 import LocalAuthentication
 @testable import Occulta
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeVault() throws -> (vault: VaultManager, km: TestKeyManager, container: ModelContainer) {
@@ -94,7 +90,7 @@ private func legacyRowCount(in container: ModelContainer) throws -> Int {
     try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>()).count
 }
 
-@Suite("ReconstructShard → PendingShamirSecretRestore migration", .enabled(if: secureEnclaveAvailable()))
+@Suite("ReconstructShard → PendingShamirSecretRestore migration", .ambientTestKeyManager)
 @MainActor
 struct ReconstructShardMigrationTests {
 

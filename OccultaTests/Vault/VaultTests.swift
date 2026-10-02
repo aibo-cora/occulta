@@ -357,8 +357,8 @@ private func makeContainer() throws -> ModelContainer {
     }
 
     /// `fetchAllEntries` filters orphans with the ambient local key (Bug 110), so this and the
-    /// next test need a Secure Enclave.
-    @Test("fetchAllEntries returns inserted entries", .enabled(if: secureEnclaveAvailable()))
+    /// next test run under `.ambientTestKeyManager`, which supplies it.
+    @Test("fetchAllEntries returns inserted entries", .ambientTestKeyManager)
     func fetchAll() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
@@ -370,7 +370,7 @@ private func makeContainer() throws -> ModelContainer {
         #expect(entries.count == 2)
     }
 
-    @Test("deleteEntry removes the entry", .enabled(if: secureEnclaveAvailable()))
+    @Test("deleteEntry removes the entry", .ambientTestKeyManager)
     func deleteEntry() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
@@ -405,17 +405,12 @@ private func makeContainer() throws -> ModelContainer {
 //
 // visibleThroughDepth is sealed under the global local-DB key (same as
 // Contact.Profile's field of the same name), not VaultManager's injected key
-// manager, so these need real Secure Enclave — guarded like the Group tests.
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
+// manager, so these run under `.ambientTestKeyManager`, like the Group tests.
 
 @Suite("VaultEntry — depth-aware visibility")
 @MainActor struct VaultEntryDepthVisibilityTests {
 
-    @Test func addEntry_stampsGivenDepth_readableBack() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addEntry_stampsGivenDepth_readableBack() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
 
@@ -428,8 +423,7 @@ private func secureEnclaveAvailable() -> Bool {
         #expect(value == 2)
     }
 
-    @Test func addEntry_defaultsToDepth0_whenNotSpecified() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addEntry_defaultsToDepth0_whenNotSpecified() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
 
@@ -456,8 +450,7 @@ private func secureEnclaveAvailable() -> Bool {
     // SwiftUI call site never invoked it at depth 0, so none of this coverage ever
     // reached production. Testing the shared function both suites call closes that gap.
 
-    @Test func visibleVaultEntries_stampedDepth0_onlyVisibleAtDepth0() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func visibleVaultEntries_stampedDepth0_onlyVisibleAtDepth0() throws {
         let (vm, _)  = try makeVaultManager()
         vm.unlock(context: LAContext())
         let entry    = try vm.addEntry(label: "entry", content: Data(), type: .note, currentDepth: 0)
@@ -472,8 +465,7 @@ private func secureEnclaveAvailable() -> Bool {
         #expect(security.visibleVaultEntries(from: [entry]).isEmpty)
     }
 
-    @Test func visibleVaultEntries_stampedDepthN_onlyVisibleAtN_hiddenElsewhere() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func visibleVaultEntries_stampedDepthN_onlyVisibleAtN_hiddenElsewhere() throws {
         let (vm, _)  = try makeVaultManager()
         vm.unlock(context: LAContext())
         let entry    = try vm.addEntry(label: "entry", content: Data(), type: .note, currentDepth: 2)
@@ -511,8 +503,7 @@ private func secureEnclaveAvailable() -> Bool {
     /// The other half of the case above, and the specific behavior Bug 113 adds: at the
     /// real depth 0, a legacy nil entry must stay visible — only the restricted-depth side
     /// needed to change.
-    @Test func visibleVaultEntries_legacyNilVisibleThroughDepth_visibleAtRealDepth0() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func visibleVaultEntries_legacyNilVisibleThroughDepth_visibleAtRealDepth0() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
         let entry   = try vm.addEntry(label: "pre-existing", content: Data(), type: .note)
@@ -527,8 +518,7 @@ private func secureEnclaveAvailable() -> Bool {
     /// Bug 113's second harm: an entry orphaned by `orphanVaultEntries` (Secure Mode
     /// deactivation's eviction sweep) must never reappear, even at the depth its
     /// (untouched) `visibleThroughDepth` stamp still names — orphan status wins.
-    @Test func visibleVaultEntries_excludesOrphanedEntries() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func visibleVaultEntries_excludesOrphanedEntries() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
         let entry   = try vm.addEntry(label: "orphaned", content: Data(), type: .note, currentDepth: 0)
@@ -540,8 +530,7 @@ private func secureEnclaveAvailable() -> Bool {
                 "an orphaned entry must not show even at the depth it was originally stamped with")
     }
 
-    @Test func visibleVaultEntries_endToEnd_exactMatchOnly() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func visibleVaultEntries_endToEnd_exactMatchOnly() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
 

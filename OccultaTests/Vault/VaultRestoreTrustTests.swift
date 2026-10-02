@@ -23,10 +23,6 @@ import LocalAuthentication
 import SwiftData
 @testable import Occulta
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 // MARK: - Harness
 
 /// Duplicated from `Vault+Manager+Backup.swift`, where it is `private static`. If it
@@ -143,10 +139,11 @@ private func labels(in vault: VaultManager, _ container: ModelContainer, atDepth
 // MARK: - Bug 94
 
 // Every test in this suite goes through makeBackupReadyVault()/exportBackup()/addEntry(),
-// which stamp visibleThroughDepth through the bare, uninjectable Data.encrypt() extension
-// (Manager.Key(), not TestKeyManager) — no seam reaches it. Gated at the suite level rather
-// than per test since there is no test here that doesn't depend on this.
-@Suite("Bug 94 — restore must not trust attacker-supplied material", .serialized, .enabled(if: secureEnclaveAvailable()))
+// which stamp visibleThroughDepth through the bare Data.encrypt() extension — the ambient
+// local key (Manager.Ambient), not the vault's injected TestKeyManager. The suite runs under
+// .ambientTestKeyManager rather than per test since there is no test here that doesn't
+// depend on this.
+@Suite("Bug 94 — restore must not trust attacker-supplied material", .serialized, .ambientTestKeyManager)
 @MainActor
 struct VaultRestoreTrustTests {
 
@@ -320,7 +317,7 @@ private func restoreWithPoison(
 
 /// A hostile trustee who hands back a wrong piece can do no more than one who withholds theirs.
 // Same Enclave dependency as the suites around it: makeBackupReadyVault()/exportBackup().
-@Suite("Bug 95 — a poisoned piece doesn't block recovery", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Bug 95 — a poisoned piece doesn't block recovery", .serialized, .ambientTestKeyManager)
 @MainActor
 struct PoisonedShardTests {
 
@@ -385,8 +382,8 @@ struct PoisonedShardTests {
 /// completion to depth 0: that pin was the oracle Bug 99 describes, since a coercer's own,
 /// self-sufficient restore never completing in duress told him where he was.
 // Same reason as VaultRestoreTrustTests above — every test here goes through
-// makeBackupReadyVault()/exportBackup() and absorbShard, which need the real Manager.Key().
-@Suite("Bug 99 — a restore completes at the depth its file is opened at", .serialized, .enabled(if: secureEnclaveAvailable()))
+// makeBackupReadyVault()/exportBackup() and absorbShard, which need the ambient local key.
+@Suite("Bug 99 — a restore completes at the depth its file is opened at", .serialized, .ambientTestKeyManager)
 @MainActor
 struct VaultRestoreDepthTests {
 
@@ -488,14 +485,13 @@ struct VaultRestoreDepthTests {
 
 // MARK: - Bug 96
 
-// Needs a real Secure Enclave for two independent reasons: outOfRangeEntryTypeThrows/
+// Needs the ambient local key for two independent reasons: outOfRangeEntryTypeThrows/
 // preEpochCreatedAtThrows go through makeBackupReadyVault()/exportBackup(), which stamp
-// visibleThroughDepth through the bare, uninjectable Data.encrypt() extension (same
-// reason VaultRestoreTrustTests above is gated); restoreShardBufferIsUnbounded goes
-// through absorbShard, which seals PendingShamirSecretRestore.attributeID/.deletionToken
-// under the ambient Manager.Key() local key. Previously ungated — a pre-existing gap for
-// the first two tests, surfaced while adding the gate this file's third test now needs.
-@Suite("Bug 96 — restore path robustness", .serialized, .enabled(if: secureEnclaveAvailable()))
+// visibleThroughDepth through the bare Data.encrypt() extension (same reason as
+// VaultRestoreTrustTests above); restoreShardBufferIsUnbounded goes through absorbShard,
+// which seals PendingShamirSecretRestore.attributeID/.deletionToken under the ambient
+// local key. `.ambientTestKeyManager` supplies it for all three.
+@Suite("Bug 96 — restore path robustness", .serialized, .ambientTestKeyManager)
 @MainActor
 struct VaultRestoreRobustnessTests {
 
@@ -638,7 +634,7 @@ struct VaultRestoreRobustnessTests {
 /// the passcode prompt `.completeFileProtection` depends on. The pending `.occbak` this suite
 /// used to cover is never written any more (`RECOVERY_BUFFER_LAYERING.md` §9.4); what's left of
 /// it is the legacy cleanup below.
-@Suite("Bug 100/127 — backup and restore files on disk", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Bug 100/127 — backup and restore files on disk", .serialized, .ambientTestKeyManager)
 @MainActor
 struct RestoreArtifactBackupExclusionTests {
 
