@@ -107,11 +107,11 @@ Note the deployment target and the availability gates are different things: ML-K
 classical-only modes exist for everything between 18.6 and that.
 
 **Secure Enclave and the test suite.** Most tests inject `TestKeyManager` or run under
-`.ambientTestKeyManager` and run anywhere; **70 of 931** still skip on a runner without an Enclave,
-mostly because they create prekeys through `PrekeyManager` or exercise the real `Manager.Key`.
-(Re-measured 2026-10-02 from CI's own result bundle on `v2.0.0/ambient-key-seam` — the runner's
-skip count, against 931 run there, which excludes `KeychainMigrationSETests`. Before the
-`Manager.Ambient` seam the same measure read 311 of 922. Re-measure rather than trusting this; it
+`.ambientTestKeyManager` and run anywhere; **51 of 933** still skip on a runner without an Enclave,
+because they create prekeys through `PrekeyManager` or exercise a real Enclave key directly.
+(Re-measured 2026-10-02 from CI's own result bundle on `v2.0.0/ambient-key-seam` at `de012a8` —
+the runner's skip count, against 933 run there, which excludes `KeychainMigrationSETests`. Before
+the `Manager.Ambient` and share-staging seams the same measure read 311 of 922. Re-measure rather than trusting this; it
 has drifted every time, and counting `@Test` declarations by hand undercounted it in the past.)
 Those carry
 `.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
