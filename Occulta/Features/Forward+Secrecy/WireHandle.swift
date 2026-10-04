@@ -161,8 +161,14 @@ struct WireHandle {
         w.data(bundle.ciphertext)
 
         // TLV section 0x01 — group envelope (§4.4). Written only for group bundles.
+        //
+        // Sorted keys: this JSON travels in cleartext, and a default JSONEncoder orders keys by
+        // a hash seeded per process, so the order changed with every app launch — a signal an
+        // observer could use to group bundles by sender session, against what `blind` is for.
+        // Nothing authenticates these bytes and every receiver parses any order, so this is
+        // compatible in both directions.
         if let group = bundle.group {
-            let groupJSON = try JSONEncoder().encode(group)
+            let groupJSON = try Self.sortedEncoder.encode(group)
             w.uint8(0x01)
             w.uint32BE(UInt32(groupJSON.count))
             w.data(groupJSON)

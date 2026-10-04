@@ -703,7 +703,9 @@ struct OccultaBundle: Codable {
         case .v4, .groupCapable, .groupShardCapable:
             return try WireHandle.encode(self)
         default:
-            return try JSONEncoder().encode(self)
+            // Sorted keys: the legacy JSON bundle is cleartext, and a default JSONEncoder's key
+            // order changes with every app launch (see `WireHandle.encode`'s group envelope).
+            return try Self.encoder.encode(self)
         }
     }
 

@@ -221,7 +221,12 @@ extension Manager.Crypto {
             shardMetadataAttempted:   false,
             senderEphemeralSignature: senderEphemeralSignature
         )
-        let encodedPayload = try JSONEncoder().encode(payload)
+        // Sorted keys, so the same payload always encodes to the same bytes. It is sealed, so
+        // the order was never observable, but a default JSONEncoder's order changes with every
+        // app launch and can't be pinned by the interop vectors.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let encodedPayload = try encoder.encode(payload)
 
         guard let wrappedPayload = try AES.GCM.seal(
             encodedPayload, using: wrappingKey, nonce: AES.GCM.Nonce(), authenticating: blind
