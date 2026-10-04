@@ -5737,7 +5737,7 @@ So `Draft`'s omissions are load-bearing. The first version of this entry recomme
 
 Checked 2026-08-20: **nothing in production writes a `.contacts` file.** `format: .contacts` is
 constructed only inside `#Preview` blocks. The app can receive shared-contacts files and never sends
-one — the read side, the `Format` case in `Transfers.swift` and the whole import UI exist, but the
+one — the read side, the `Format` case in `Transfers.swift` (now `OccultaCore`'s `Basket.swift`) and the whole import UI exist, but the
 write side was never implemented.
 
 That is why this is filed rather than fixed, and why it is worth filing at all: the rule needs to be
@@ -10920,7 +10920,7 @@ once you check the surrounding transport:
    (`attestation.verify(against: senderPublicKey)`) ever proved. Checked whether the transport layer
    already proves the same thing, rather than assuming: `shardOperations` (carrying both `attribute` and
    `attestation`) is a field inside `OccultaBundle.SealedPayload`
-   ([OccultaBundle.swift:394-424](Occulta/Features/Forward+Secrecy/OccultaBundle.swift:394)), sealed as one
+   ([OccultaBundle.swift:395-428](OccultaCore/Sources/OccultaCore/OccultaBundle.swift:395)), sealed as one
    GCM-authenticated blob. `senderProof`'s own doc comment states plainly what that buys: *"only the
    actual sender can produce this value."* For a 1:1 exchange — which handback always is, trustee to
    owner, never a group — the session key itself is derivable only by the two parties involved, so a
@@ -10988,7 +10988,7 @@ repeated the claim, is corrected to match.
   attestation-signature/hash mismatch rejection — and kept/reworked the ones that don't: Branch A
   acceptance, unconditional acceptance on Branch A failure, and distinct-sender enforcement, which is the
   property actually doing security work now. `Vault+Manager+ReturnBuffer.swift`, `ReconstructShard+Model
-  .swift`, `SignedAttribute.swift`'s `AttestedShard`, and `Contact+Manager.swift`'s
+  .swift`, `SignedAttribute.swift`'s `AttestedShard` (now in its own `AttestedShard.swift`), and `Contact+Manager.swift`'s
   `fillerShardOperation`/tier-padding all lost their `attestation` parameter or field to match.
   `GroupShardGatingTests.swift`'s padding-parity suite (`ShardOperationPaddingTests`) updated to compare a
   filler op against a plain `.handback` instead of an attested one — see Bug 94a's own moot-as-of-today

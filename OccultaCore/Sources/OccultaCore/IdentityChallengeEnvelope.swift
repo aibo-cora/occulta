@@ -1,5 +1,5 @@
 //
-//  IdentityChallenge+Envelope.swift
+//  IdentityChallengeEnvelope.swift
 //  Occulta
 //
 //  Groups the three identity-challenge wire fields — phase discriminator,

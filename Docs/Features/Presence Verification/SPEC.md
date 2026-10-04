@@ -82,7 +82,7 @@ New optional sibling field on `OccultaBundle.SealedPayload`:
 let presence: PresenceEnvelope?
 ```
 
-Per the guidance documented in `IdentityChallenge+Envelope.swift`, per-feature envelopes
+Per the guidance documented in `IdentityChallengeEnvelope.swift`, per-feature envelopes
 are separate optional fields, **not** new `Kind` cases on `IdentityChallengeEnvelope` —
 an unknown enum raw value would fail the whole `SealedPayload` decode on old builds,
 killing the fallback-message degradation path. With a sibling field, old builds ignore
