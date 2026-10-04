@@ -20,6 +20,7 @@
 
 import Testing
 import Foundation
+import CryptoKit
 @testable import Occulta
 
 @MainActor
@@ -39,6 +40,32 @@ struct InteropVectorTests {
         }
         #expect(!vector.expected.isEmpty, "\(vector.name) has no recorded bytes")
         #expect(actual == vector.expected, "\(vector.name) changed")
+    }
+
+    /// The `fsKey` vectors pin the sender's side. Decryption runs the same two functions with
+    /// the roles swapped — the recipient's prekey private key against the sender's ephemeral
+    /// public key, and the ML-KEM secrets the other way round — and must land on the same bytes.
+    @Test("The recipient derives the same forward-secret key as the sender",
+          arguments: try loadVectors().filter { $0.kind == "fsKey" })
+    func recipientDerivesSameKey(_ vector: Vector) throws {
+        let prekey    = try Vector.privateKey(vector.recipientScalar)
+        let ephemeral = try Vector.publicMaterial(vector.ephemeralScalar)
+        let key: SymmetricKey?
+        if let encapsulated = vector.encapsulatedSecret {
+            key = Manager.Key().createHybridFSSharedSecret(
+                ephemeralPrivateKey: prekey,
+                recipientMaterial:   ephemeral,
+                quantumMaterial: QuantumKeyMaterial(
+                    encapsulatedSecret: try #require(Data(hex: vector.decapsulatedSecret ?? "")),
+                    decapsulatedSecret: try #require(Data(hex: encapsulated)),
+                    ourCiphertext: Data(), peerCiphertext: Data()
+                )
+            )
+        } else {
+            key = Manager.Key().createSharedSecret(ephemeralPrivateKey: prekey, recipientMaterial: ephemeral)
+        }
+        let recipientSide = try #require(key).withUnsafeBytes { Data($0) }
+        #expect(recipientSide == (try vector.compute()), "\(vector.name): the two sides disagree")
     }
 
     @Test("Vector names are unique")
@@ -113,6 +140,69 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     // depth
     let value: Int?
 
+    // payload (identity challenge, shard operations), recipientPayload
+    let identityChallenge: ChallengeInput?
+    let shardOperations: [ShardOperationInput]?
+
+    // fsKey
+    let ephemeralScalar: String?
+    let recipientScalar: String?
+    let encapsulatedSecret: String?
+    let decapsulatedSecret: String?
+
+    // gcm
+    let key: String?
+    let plaintext: String?
+
+    // groupEnvelope
+    let group: GroupInput?
+
+    // recipientPayload
+    let sessionKey: String?
+    let custodyManifestCount: Int?
+    let shardMetadataAttempted: Bool?
+    let senderEphemeralSignature: String?
+
+    // signingPayload
+    let attribute: AttributeInput?
+
+    struct ChallengeInput: Decodable, Sendable {
+        let kind: String
+        let payload: String
+        let contextNote: String?
+    }
+
+    struct ShardOperationInput: Decodable, Sendable {
+        let kind: String
+        let attribute: AttributeInput?
+        let attributeID: String?
+    }
+
+    struct AttributeInput: Decodable, Sendable {
+        let id: String
+        let label: String
+        let value: String
+        let category: String
+        let signature: String
+        let createdAt: Double
+        let expiresAt: Double?
+        let entryID: String?
+    }
+
+    struct GroupInput: Decodable, Sendable {
+        let version: UInt8
+        let blind: String
+        let blindNonce: String
+        let recipients: [RecipientInput]
+    }
+
+    struct RecipientInput: Decodable, Sendable {
+        let mode: String
+        let ephemeralPublicKey: String
+        let prekeyID: String?
+        let wrappedPayload: String
+    }
+
     struct Batch: Decodable, Sendable {
         let generatedAt: Double
         let prekeys: [WirePrekeyInput]
@@ -162,23 +252,112 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             return try WireHandle.encode(bundle)
 
         case "payload":
-            let batch = try self.prekeyBatch.map { batch in
-                OccultaBundle.SealedPayload.PrekeySyncBatch(
-                    generatedAt: Date(timeIntervalSinceReferenceDate: batch.generatedAt),
-                    prekeys: try batch.prekeys.map {
-                        OccultaBundle.WirePrekey(id: $0.id, publicKey: try Self.bytes($0.publicKey))
-                    }
-                )
-            }
             let payload = OccultaBundle.SealedPayload(
-                message:         try Self.bytes(self.message),
-                prekeyBatch:     batch,
-                custodyManifest: try self.custodyManifest?.map(Self.uuid),
-                appVersion:      self.appVersion,
-                senderProof:     try self.senderProof.map(Self.bytes),
-                groupID:         try self.groupID.map(Self.uuid)
+                message:           try Self.bytes(self.message),
+                prekeyBatch:       try self.prekeyBatch.map(Self.batch),
+                identityChallenge: try self.identityChallenge.map(Self.challenge),
+                shardOperations:   try self.shardOperations?.map(Self.shardOperation),
+                custodyManifest:   try self.custodyManifest?.map(Self.uuid),
+                appVersion:        self.appVersion,
+                senderProof:       try self.senderProof.map(Self.bytes),
+                groupID:           try self.groupID.map(Self.uuid)
             )
             return try WireHandle.encode(payload: payload)
+
+        case "fsKey":
+            // The sender's side of the forward-secret derivation, in Manager.Key itself — both
+            // functions take the ephemeral private key as a parameter and never touch the Enclave.
+            let ephemeral = try Self.privateKey(self.ephemeralScalar)
+            let recipient = try Self.publicMaterial(self.recipientScalar)
+            let key: SymmetricKey?
+            if let encapsulated = self.encapsulatedSecret {
+                key = Manager.Key().createHybridFSSharedSecret(
+                    ephemeralPrivateKey: ephemeral,
+                    recipientMaterial:   recipient,
+                    quantumMaterial:     try self.quantumMaterial(encapsulated)
+                )
+            } else {
+                key = Manager.Key().createSharedSecret(ephemeralPrivateKey: ephemeral, recipientMaterial: recipient)
+            }
+            return try #require(key).withUnsafeBytes { Data($0) }
+
+        case "gcm":
+            // AES-GCM is standard, so CryptoKit seals with a fixed nonce; what the vector pins is
+            // the combined layout and the AAD it binds. Production `open` must then accept it.
+            let key       = SymmetricKey(data: try Self.bytes(self.key))
+            let plaintext = try Self.bytes(self.plaintext)
+            let version   = try Self.version(self.version)
+            let secrecy   = try self.secrecy()
+            let sealed = try AES.GCM.seal(
+                plaintext,
+                using: key,
+                nonce: try AES.GCM.Nonce(data: try Self.bytes(self.nonce)),
+                authenticating: try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
+            )
+            let combined = try #require(sealed.combined)
+            let bundle = OccultaBundle(
+                version: version, secrecy: secrecy, ciphertext: combined,
+                fingerprintNonce: Data(count: 16), senderFingerprint: Data(count: 32)
+            )
+            #expect(try Manager.Crypto(keyManager: TestKeyManager()).open(bundle, using: key) == plaintext,
+                    "\(self.name): production open rejected the sealed bytes")
+            return combined
+
+        case "legacyBundle":
+            // The JSON bundle still sent to contacts below v4 (`encoded(version:)`'s default path).
+            let bundle = OccultaBundle(
+                version:           try Self.version(self.version),
+                secrecy:           try self.secrecy(),
+                ciphertext:        try Self.bytes(self.ciphertext),
+                fingerprintNonce:  try Self.bytes(self.fingerprintNonce),
+                senderFingerprint: try Self.bytes(self.senderFingerprint)
+            )
+            return try bundle.encoded(version: try Self.version(self.version))
+
+        case "groupEnvelope":
+            let group = try #require(self.group)
+            let bundle = OccultaBundle(
+                version:           try Self.version(self.version),
+                secrecy:           try self.secrecy(),
+                ciphertext:        try Self.bytes(self.ciphertext),
+                fingerprintNonce:  try Self.bytes(self.fingerprintNonce),
+                senderFingerprint: try Self.bytes(self.senderFingerprint),
+                group: OccultaBundle.GroupEnvelope(
+                    version:    group.version,
+                    blind:      try Self.bytes(group.blind),
+                    blindNonce: try Self.bytes(group.blindNonce),
+                    recipients: try group.recipients.map {
+                        OccultaBundle.Recipient(
+                            secrecyContext: OccultaBundle.SecrecyContext(
+                                mode:               try #require(OccultaBundle.Mode(rawValue: $0.mode)),
+                                ephemeralPublicKey: try Self.bytes($0.ephemeralPublicKey),
+                                prekeyID:           $0.prekeyID
+                            ),
+                            wrappedPayload: try Self.bytes($0.wrappedPayload)
+                        )
+                    }
+                )
+            )
+            return try WireHandle.encode(bundle)
+
+        case "recipientPayload":
+            let payload = OccultaBundle.RecipientPayload(
+                sessionKey:               try Self.bytes(self.sessionKey),
+                prekeyBatch:              try self.prekeyBatch.map(Self.batch),
+                shardOperations:          try (self.shardOperations ?? []).map(Self.shardOperation),
+                custodyManifest:          try (self.custodyManifest ?? []).map(Self.uuid),
+                custodyManifestCount:     self.custodyManifestCount ?? 0,
+                shardMetadataAttempted:   self.shardMetadataAttempted ?? false,
+                senderEphemeralSignature: try self.senderEphemeralSignature.map(Self.bytes)
+            )
+            // Mirrors `wrapRecipient` (Crypto+Manager+GroupEncrypt.swift), which encodes the
+            // payload with a sorted-keys JSONEncoder before wrapping it. Keep the two in step.
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .sortedKeys
+            return try encoder.encode(payload)
+
+        case "signingPayload":
+            return try Self.attribute(try #require(self.attribute)).signingPayload()
 
         case "basket":
             let basket = Basket(
@@ -216,6 +395,71 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
 
     private static func uuid(_ string: String?) throws -> UUID {
         try #require(UUID(uuidString: string ?? ""))
+    }
+
+    private func quantumMaterial(_ encapsulated: String) throws -> QuantumKeyMaterial {
+        QuantumKeyMaterial(
+            encapsulatedSecret: try Self.bytes(encapsulated),
+            decapsulatedSecret: try Self.bytes(self.decapsulatedSecret),
+            ourCiphertext:      Data(),
+            peerCiphertext:     Data()
+        )
+    }
+
+    /// A P-256 private key for `scalar` (32 bytes, big-endian), as a software `SecKey` —
+    /// the same type an ephemeral key has in production.
+    static func privateKey(_ scalar: String?) throws -> SecKey {
+        let key = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Self.bytes(scalar))
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String:      kSecAttrKeyClassPrivate,
+            kSecAttrKeySizeInBits as String: 256,
+        ]
+        var error: Unmanaged<CFError>?
+        return try #require(SecKeyCreateWithData(key.x963Representation as CFData, attributes as CFDictionary, &error))
+    }
+
+    /// The x963 public key (65 bytes) for `scalar`: scalar · G.
+    static func publicMaterial(_ scalar: String?) throws -> Data {
+        try P256.KeyAgreement.PrivateKey(rawRepresentation: try Self.bytes(scalar)).publicKey.x963Representation
+    }
+
+    private static func batch(_ input: Batch) throws -> OccultaBundle.SealedPayload.PrekeySyncBatch {
+        OccultaBundle.SealedPayload.PrekeySyncBatch(
+            generatedAt: Date(timeIntervalSinceReferenceDate: input.generatedAt),
+            prekeys: try input.prekeys.map {
+                OccultaBundle.WirePrekey(id: $0.id, publicKey: try Self.bytes($0.publicKey))
+            }
+        )
+    }
+
+    private static func challenge(_ input: ChallengeInput) throws -> IdentityChallengeEnvelope {
+        IdentityChallengeEnvelope(
+            kind:        try #require(IdentityChallengeEnvelope.Kind(rawValue: input.kind)),
+            payload:     try Self.bytes(input.payload),
+            contextNote: input.contextNote
+        )
+    }
+
+    private static func shardOperation(_ input: ShardOperationInput) throws -> OccultaBundle.ShardOperation {
+        OccultaBundle.ShardOperation(
+            kind:        try #require(OccultaBundle.ShardOperation.Kind(rawValue: input.kind)),
+            attribute:   try input.attribute.map(Self.attribute),
+            attributeID: try input.attributeID.map(Self.uuid)
+        )
+    }
+
+    private static func attribute(_ input: AttributeInput) throws -> SignedAttribute {
+        SignedAttribute(
+            id:        try Self.uuid(input.id),
+            label:     input.label,
+            value:     try Self.bytes(input.value),
+            category:  try #require(SignedAttribute.Category(rawValue: input.category)),
+            signature: try Self.bytes(input.signature),
+            createdAt: Date(timeIntervalSinceReferenceDate: input.createdAt),
+            expiresAt: input.expiresAt.map(Date.init(timeIntervalSinceReferenceDate:)),
+            entryID:   try input.entryID.map(Self.uuid)
+        )
     }
 
     private static func file(_ input: FileInput) throws -> File {
