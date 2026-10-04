@@ -18,6 +18,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
+import OccultaCore
 
 // MARK: - Vault
 

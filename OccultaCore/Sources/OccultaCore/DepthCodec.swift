@@ -38,7 +38,7 @@ import Foundation
 ///
 /// **Encryption stays at the call sites.** This type maps `Int` ↔ plaintext `Data` and
 /// nothing else — sealing is the caller's job, not this type's.
-enum DepthCodec {
+public enum DepthCodec {
 
     private static let tag:           UInt8 = 0xFF
     private static let alwaysVisible: UInt8 = 0xFF   // Int.max
@@ -51,12 +51,12 @@ enum DepthCodec {
     /// is exactly how `AppLayerConfig.fillerSize = 30` drifted from encodings producing 29
     /// and 37–38 (Bug 86). Bug 89's scrub of soft-deleted rows is a filler size for these
     /// fields, so it takes it from here rather than from a number observed in a log.
-    static let sealedSize = 1 + 1 + 28
+    public static let sealedSize = 1 + 1 + 28
 
     /// Largest depth the payload byte carries literally. Far above
     /// `AppLayerConfig.maxDepthCount` (32), which is the real structural limit on
     /// nesting — this is only the encoding's ceiling, deliberately not the domain's.
-    static let maxEncodableDepth = 0xFD
+    public static let maxEncodableDepth = 0xFD
 
     /// Encodes a depth value to plaintext, ready to seal. Always two bytes.
     ///
@@ -72,7 +72,7 @@ enum DepthCodec {
     /// Clamping is fail-closed: a ceiling above `maxEncodableDepth` becomes
     /// `maxEncodableDepth`, hiding the contact deeper rather than exposing it. Values
     /// that large are unreachable in practice; the clamp exists so the function is total.
-    static func encode(_ value: Int) -> Data {
+    public static func encode(_ value: Int) -> Data {
         switch value {
         case Int.max:
             return Data([Self.tag, Self.alwaysVisible])
@@ -96,7 +96,7 @@ enum DepthCodec {
     /// stamp, `false` for a visibility check), and those choices are load-bearing
     /// security decisions belonging to the call sites, not to the format. Bug 87 is what
     /// happens when one of them resolves an unknown in the permissive direction.
-    static func decode(_ plain: Data) -> Int? {
+    public static func decode(_ plain: Data) -> Int? {
         guard plain.count == 2, plain[0] == Self.tag else {
             return try? JSONDecoder().decode(Int.self, from: plain)   // legacy row
         }

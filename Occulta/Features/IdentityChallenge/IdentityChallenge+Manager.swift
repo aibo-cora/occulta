@@ -21,6 +21,7 @@
 import Foundation
 import CryptoKit
 import Security
+import OccultaCore
 
 extension IdentityChallenge {
 

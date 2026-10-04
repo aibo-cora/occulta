@@ -28,6 +28,7 @@ import Security
 import SwiftData
 
 @testable import Occulta
+@testable import OccultaCore
 
 /// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
 /// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*

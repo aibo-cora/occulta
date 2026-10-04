@@ -22,6 +22,7 @@ import CryptoKit
 import LocalAuthentication
 import SwiftData
 @testable import Occulta
+@testable import OccultaCore
 
 // MARK: - Harness
 

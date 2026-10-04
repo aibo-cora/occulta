@@ -4,6 +4,7 @@ import PhotosUI
 import Photos
 import AVFoundation
 import UniformTypeIdentifiers
+import OccultaCore
 
 // MARK: - PendingImport
 
@@ -33,7 +34,7 @@ final class ComposeViewModel {
 
     let recipient: Recipient
 
-    var messages:       [Occulta.File]  = []
+    var messages:       [OccultaCore.File]  = []
     var draftText:      String          = ""
     var pendingImports: [PendingImport] = []
     var thumbnails:     [URL: UIImage]  = [:]
@@ -80,7 +81,7 @@ final class ComposeViewModel {
     func addText() {
         let trimmed = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        self.messages.append(Occulta.File(content: trimmed.data(using: .utf8), format: .text, date: Date()))
+        self.messages.append(OccultaCore.File(content: trimmed.data(using: .utf8), format: .text, date: Date()))
         self.draftText = ""
     }
 
@@ -131,7 +132,7 @@ final class ComposeViewModel {
                 withTransaction(Transaction(animation: nil)) {
                     self.pendingImports.removeAll { $0.id == pending.id }
                     if let img = thumb { self.thumbnails[url] = img }
-                    var file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
+                    var file = OccultaCore.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
                     file.id = pending.id
                     self.messages.append(file)
                 }
@@ -151,7 +152,7 @@ final class ComposeViewModel {
                 }.value
                 await MainActor.run {
                     self.pendingImports.removeAll { $0.id == pending.id }
-                    var file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
+                    var file = OccultaCore.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
                     file.id = pending.id
                     self.messages.append(file)
                 }
@@ -202,7 +203,7 @@ final class ComposeViewModel {
 
                 await MainActor.run {
                     self.pendingImports.removeAll { $0.id == pending.id }
-                    var file = Occulta.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date())
+                    var file = OccultaCore.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date())
                     file.id = pending.id
                     self.messages.append(file)
                 }
@@ -249,11 +250,11 @@ final class ComposeViewModel {
             var allFiles = self.messages
             let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
-                allFiles.append(Occulta.File(content: text.data(using: .utf8), format: .text, date: Date()))
+                allFiles.append(OccultaCore.File(content: text.data(using: .utf8), format: .text, date: Date()))
             }
 
             let manager = self.attachmentManager
-            let processed: [Occulta.File] = try await withThrowingTaskGroup(of: Occulta.File.self) { group in
+            let processed: [OccultaCore.File] = try await withThrowingTaskGroup(of: OccultaCore.File.self) { group in
                 for file in allFiles {
                     if let fileURL = file.url {
                         group.addTask {
@@ -263,14 +264,14 @@ final class ComposeViewModel {
                             } else {
                                 (data, _) = try await URLSession.shared.data(from: fileURL)
                             }
-                            return Occulta.File(content: data, format: file.format, date: file.date)
+                            return OccultaCore.File(content: data, format: file.format, date: file.date)
                         }
                     } else {
                         let captured = file
                         group.addTask { captured }
                     }
                 }
-                var results: [Occulta.File] = []
+                var results: [OccultaCore.File] = []
                 for try await file in group { results.append(file) }
                 return results.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
             }
@@ -327,22 +328,22 @@ final class ComposeViewModel {
             
             let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
-                allFiles.append(Occulta.File(content: text.data(using: .utf8), format: .text, date: Date()))
+                allFiles.append(OccultaCore.File(content: text.data(using: .utf8), format: .text, date: Date()))
             }
 
-            let processed: [Occulta.File] = try await withThrowingTaskGroup(of: Occulta.File.self) { group in
+            let processed: [OccultaCore.File] = try await withThrowingTaskGroup(of: OccultaCore.File.self) { group in
                 for file in allFiles {
                     if let fileURL = file.url {
                         group.addTask {
                             let (data, _) = try await URLSession.shared.data(from: fileURL)
-                            return Occulta.File(content: data, format: file.format, date: file.date)
+                            return OccultaCore.File(content: data, format: file.format, date: file.date)
                         }
                     } else {
                         let captured = file
                         group.addTask { captured }
                     }
                 }
-                var results: [Occulta.File] = []
+                var results: [OccultaCore.File] = []
                 for try await file in group { results.append(file) }
                 return results.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
             }
@@ -380,7 +381,7 @@ final class ComposeViewModel {
 
     // MARK: Lifecycle
 
-    func deleteMessage(_ file: Occulta.File) {
+    func deleteMessage(_ file: OccultaCore.File) {
         if let url = file.url { try? FileManager.default.removeItem(at: url) }
         self.messages.removeAll { $0.id == file.id }
     }

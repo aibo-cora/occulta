@@ -22,6 +22,7 @@ import Testing
 import Foundation
 import CryptoKit
 @testable import Occulta
+@testable import OccultaCore
 
 @MainActor
 @Suite("Interop vectors — wire and at-rest formats")
