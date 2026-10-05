@@ -5,6 +5,7 @@
 
 import Foundation
 import CryptoKit
+import OccultaCore
 
 // MARK: - Group decrypt errors
 

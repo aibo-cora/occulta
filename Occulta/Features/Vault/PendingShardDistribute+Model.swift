@@ -37,6 +37,7 @@
 
 import Foundation
 import SwiftData
+import OccultaCore
 
 @Model
 final class PendingShardDistribute {

@@ -25,6 +25,7 @@ import Foundation
 import Security
 
 @testable import Occulta
+@testable import OccultaCore
 
 
 // MARK: - Shared helpers

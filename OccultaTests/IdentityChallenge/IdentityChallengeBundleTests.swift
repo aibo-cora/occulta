@@ -10,6 +10,7 @@ import Testing
 import CryptoKit
 import Foundation
 @testable import Occulta
+@testable import OccultaCore
 
 @Suite("OccultaBundle — SealedPayload content routing")
 struct IdentityChallengeBundleTests {

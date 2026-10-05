@@ -280,7 +280,7 @@ extension Manager {
         /// Uses identical parameters to the existing `createSharedSecret(using:)`:
         /// - Algorithm: `.ecdhKeyExchangeCofactorX963SHA256`
         /// - Salt: XOR(peerPublicKey, ourPublicKey) — 65 bytes
-        /// - Info: `"Occulta-v1-encryption-key-2025"` (UTF-8)
+        /// - Info: `SaltInfo.kTransportKeyInfo` (`"Occulta-v1-transport-2025"`, UTF-8)
         /// - Output: 32 bytes
         ///
         /// - Parameters:

@@ -10,6 +10,7 @@
 import SwiftData
 import CryptoKit
 import Foundation
+import OccultaCore
 
 extension ContactManager {
 

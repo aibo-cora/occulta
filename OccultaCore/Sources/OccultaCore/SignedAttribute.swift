@@ -35,7 +35,7 @@ import Security
 
 // MARK: - SignedAttribute
 
-struct SignedAttribute: Codable, Identifiable {
+public struct SignedAttribute: Codable, Identifiable {
 
     // MARK: Category
 
@@ -43,7 +43,7 @@ struct SignedAttribute: Codable, Identifiable {
     ///
     /// Raw string values are stable wire identifiers — never rename or reorder
     /// without a migration plan.
-    enum Category: String, Codable {
+    public enum Category: String, Codable {
         case financial
         case identity
         case medical
@@ -67,33 +67,33 @@ struct SignedAttribute: Codable, Identifiable {
     /// The label every backup-key piece carries. Nothing but the handback path reads it
     /// (`VaultManager.acceptReturnedShard`); it isn't signed. Older apps require a label on
     /// every piece, so it can't be dropped.
-    static let backupKeyPieceLabel = "vault-bek-shard"
+    public static let backupKeyPieceLabel = "vault-bek-shard"
 
-    let id: UUID
+    public let id: UUID
     /// Human-readable label. Plaintext in this struct; the containing layer
     /// encrypts before writing to SwiftData.
-    let label: String
+    public let label: String
     /// The sensitive value being attested. For `.shard`, these are the raw
     /// GF(2^8) shard bytes from ShamirSecretSharing.split().
     ///
     /// ⚠️ For `.shard` attributes: these bytes are plaintext key material.
     /// Encrypt this struct (via JSONEncoder + AES-GCM) to the recipient's public
     /// key immediately — never queue it in plaintext or persist it unencrypted.
-    let value: Data
-    let category: Category
+    public let value: Data
+    public let category: Category
     /// DER-encoded ECDSA-P256 signature over signingPayload(id:category:value:entryID:).
-    let signature: Data
-    let createdAt: Date
+    public let signature: Data
+    public let createdAt: Date
     /// Optional expiry. nil means the attribute never expires.
-    let expiresAt: Date?
+    public let expiresAt: Date?
     /// For `.shard` category: the VaultEntry.id this shard belongs to.
     /// Included in the signing payload, binding the shard to a specific key
     /// generation. nil for all other categories.
-    let entryID: UUID?
+    public let entryID: UUID?
 
     // MARK: Init
 
-    init(
+    public init(
         id: UUID = UUID(),
         label: String,
         value: Data,
@@ -132,7 +132,7 @@ struct SignedAttribute: Codable, Identifiable {
     ///   - entryID:   Pass the VaultEntry.id for `.shard` attributes; nil otherwise.
     ///   - createdAt: The attribute's creation timestamp (from the stored field).
     ///   - expiresAt: The attribute's expiry (from the stored field); nil if none.
-    static func signingPayload(
+    public static func signingPayload(
         id:        UUID,
         category:  Category,
         value:     Data,
@@ -168,7 +168,7 @@ struct SignedAttribute: Codable, Identifiable {
     }
 
     /// Convenience wrapper over the static form. Uses all stored fields automatically.
-    func signingPayload() -> Data {
+    public func signingPayload() -> Data {
         SignedAttribute.signingPayload(
             id:        id,
             category:  category,
@@ -188,7 +188,7 @@ struct SignedAttribute: Codable, Identifiable {
     /// and never surface the value to the user.
     ///
     /// - Parameter publicKeyData: x963-uncompressed P-256 public key (65 bytes).
-    func verify(against publicKeyData: Data) -> Bool {
+    public func verify(against publicKeyData: Data) -> Bool {
         guard publicKeyData.count == 65 else { return false }
 
         // Expiry check before crypto — fast-path rejection, no SE access.
@@ -211,45 +211,4 @@ struct SignedAttribute: Codable, Identifiable {
             &error
         )
     }
-}
-
-// MARK: - AttestedShard
-
-/// A `.shard` attribute together with who delivered it.
-///
-/// Named for a mechanism this type no longer carries — it used to also hold a
-/// trustee's attestation for the rotated-identity path; `bugs.md` Bug 125 removed
-/// that field entirely, since it never verified content authenticity, only
-/// sender identity, which the bundle's own transport already establishes.
-/// Kept the name rather than renaming it as part of that change — a purely
-/// cosmetic follow-up, not done here.
-///
-/// Threading `senderIdentifier` through storage is the load-bearing piece of
-/// Bug 94 remedy 2: reconstruction counts *distinct senders*, not distinct
-/// `SignedAttribute.id`s, so one identity cannot self-attest a whole group of
-/// fabricated shares.
-///
-/// **This raises the floor to two senders, not to `threshold`.** The BEK restore
-/// path cannot do better, and the reason is worth keeping: on the device that
-/// needs it — one with no BEK of its own — the owner's chosen `threshold` does
-/// not survive anywhere. It lives in the BEK payload's `ShardDistributionMetadata`,
-/// which that device does not have, and it is not part of what a trustee is given,
-/// so it cannot be recovered from them either. Reading it out of the `.occbak`
-/// would be reading it from whoever authored the file. So the only floor left is
-/// `ShamirSecretSharing.reconstruct`'s own `shares.count >= 2`. What actually gates
-/// an unsolicited restore is the depth-0 confirmation in `OccultaApp`, not this
-/// count. Do not build on this as if it were `threshold`-strength.
-/// See `Docs/Features/Secure Mode/bugs.md`, Bug 94.
-struct AttestedShard: Codable {
-    /// The owner-signed shard. Verifies directly against the owner's current
-    /// identity when unrotated (Branch A) — accepted either way once that check
-    /// fails, `bugs.md` Bug 125.
-    let attribute: SignedAttribute
-    /// Who this shard arrived from, as resolved by the *receiving* device's own lookup —
-    /// never sender-asserted. See `ShardCustodyManager.handleInbound`'s callers in
-    /// `OccultaApp.swift`, where the sender identifier comes from
-    /// `contactManager.openGroup(...)` resolving the decrypting key against the
-    /// receiver's own contacts, not from anything the bundle's payload claims. Held as a
-    /// tag of that identifier (`TrusteeTag`, `bugs.md` Bug 147).
-    let sender: TrusteeTag
 }

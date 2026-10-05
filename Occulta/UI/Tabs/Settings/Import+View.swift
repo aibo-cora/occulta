@@ -7,6 +7,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import OccultaCore
 
 struct Import: View {
     let imported: OwnedBasket

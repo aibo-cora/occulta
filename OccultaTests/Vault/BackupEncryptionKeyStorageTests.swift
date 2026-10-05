@@ -30,6 +30,7 @@ import CryptoKit
 import SwiftData
 import LocalAuthentication
 @testable import Occulta
+@testable import OccultaCore
 
 // MARK: - Shared helpers
 

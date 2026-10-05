@@ -6,6 +6,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import OccultaCore
 
 // MARK: - Compose Hero
 
@@ -170,7 +171,7 @@ struct SecrecyIndicator: View {
 // MARK: - Attachment Chip
 
 private struct AttachmentChipV3: View {
-    let file:     Occulta.File
+    let file:     OccultaCore.File
     let onRemove: () -> Void
 
     private var isText: Bool {
