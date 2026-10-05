@@ -154,6 +154,7 @@ struct ContactsV2: View {
                 }
             }
             .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: self.showGroups ? "Find a group…" : "Find a contact…")
+            .autocorrectionDisabled()
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {

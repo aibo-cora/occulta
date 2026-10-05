@@ -105,6 +105,7 @@ struct ShareRecipientPicker: View {
             .scrollIndicators(.hidden)
             .listStyle(.insetGrouped)
             .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a recipient…")
+            .autocorrectionDisabled()
             .navigationTitle("Encrypt for")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

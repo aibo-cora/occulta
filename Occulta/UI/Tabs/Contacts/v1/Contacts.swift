@@ -74,6 +74,7 @@ struct Contacts: View {
                     .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
                     .padding()
                     .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact...")
+                    .autocorrectionDisabled()
                 } else {
                     EmptyView()
                 }

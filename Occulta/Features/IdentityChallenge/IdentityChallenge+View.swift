@@ -173,6 +173,7 @@ extension IdentityChallenge {
                             axis: .vertical
                         )
                         .lineLimit(4...10)
+                        .autocorrectionDisabled()
                     } header: {
                         Text("Your question")
                     } footer: {
@@ -233,7 +234,6 @@ extension IdentityChallenge {
                             Text(verbatim: note)
                                 .font(.callout)
                                 .italic()
-                                .textSelection(.enabled)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()

@@ -73,13 +73,17 @@ extension Contact {
                     
                     VStack(spacing: 15) {
                         TextField("Street address", text: self.$address.street)
+                            .autocorrectionDisabled()
                         
                         TextField("City", text: self.$address.city)
+                            .autocorrectionDisabled()
                         
                         TextField("State", text: self.$address.state)
+                            .autocorrectionDisabled()
                         
                         TextField("Postal Code", text: self.$address.postalCode)
                             .keyboardType(.numberPad)
+                            .autocorrectionDisabled()
                     }
                     
                     Menu {

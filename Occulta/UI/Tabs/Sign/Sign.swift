@@ -47,6 +47,7 @@ struct Sign: View {
                             .frame(height: 200)
                             .border(Color.gray, width: 1)
                             .padding()
+                            .autocorrectionDisabled()
                         
                         VStack(spacing: 20) {
                             HStack {

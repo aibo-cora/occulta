@@ -167,6 +167,23 @@ None of the APIs in the third bullet is used today, and the check keeps it that 
 
 **Tracked:** F1 names the lint as "still worth doing"; the wider scope is new.
 
+**Status: built 2026-10-05**, `OccultaTests/OSTraceTests.swift`, on `v2.0.0/os-trace-ci-check`. It runs
+inside the existing `OccultaTests` command, so CI needs no new step. Planted violations of each kind
+fail, which meets Stage 0's done-condition for this step.
+- **What the first run found.** 27 inputs had no `.autocorrectionDisabled()`, including all three
+  message compose fields, the Sign editor, the identity-challenge question, and three contact or
+  recipient search fields. F1's fix in 2026-08 covered three inputs, and every input added since shipped
+  without it. All 27 are fixed.
+- **System text selection counts as a pasteboard write.** Its Copy menu skips `copySensitive`, so it
+  has no `.localOnly` and no expiry. The identity challenge's incoming question is no longer
+  selectable.
+- **Search fields.** SwiftUI's search field takes `.autocorrectionDisabled()` only from *after*
+  `.searchable` in the chain. A modifier placed before it is ignored. `SearchableModifierPlacementTests`
+  measures this on the real `UISearchTextField`. On iOS 26 the field also defaults to autocorrection
+  off. The check still requires the modifier, because that default is untested on 18.6.
+- **Scope.** The check reads source text. A modifier applied to a container instead of the field
+  fails, deliberately. `UserDefaults` keys are checked against the list in `SECURITY_CHECKLIST.md`.
+
 ### 10. Shrink the radio fingerprint
 
 **Why.** The Bonjour service `_peer-data-ex._tcp`/`_udp` ([Info.plist](../../Occulta/Info.plist),

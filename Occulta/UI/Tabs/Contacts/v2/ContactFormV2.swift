@@ -265,6 +265,7 @@ private struct PhoneSectionRowsV2: View {
                         .keyboardType(.phonePad)
                         .textContentType(.telephoneNumber)
                         .tint(Color.occultaAccent)
+                        .autocorrectionDisabled()
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
