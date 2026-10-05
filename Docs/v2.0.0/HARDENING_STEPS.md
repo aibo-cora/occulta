@@ -195,6 +195,28 @@ foreground, and confirm that advertising stops on every exit path, backgrounding
 
 **Tracked:** new.
 
+**Status, 2026-10-05.** The exit paths were checked against the code, on `v2.0.0/exchange-advertising-teardown`.
+- **Already right:**
+  - Advertising starts 3 s after the user taps "Exchange Keys", not when the screen opens.
+  - Each exchange gets a fresh random peer name, with no discovery info.
+  - It stops on timeout, failure and save.
+  - It stops on backgrounding (`KeyExchangeLiveView`, shown in every phase but resting).
+  - A 30 s watchdog stops it if ranging updates stop.
+- **Fixed:** leaving the screen. Nothing stopped the exchange when the screen went away, so teardown
+  depended on the `@State` manager being freed, which isn't guaranteed to stop the advertiser, with
+  the watchdog as the only bound. `KeyExchange` now calls `finish()` in `onDisappear`.
+  `KeyExchangeTeardownTests` hosts the real screen mid-exchange and checks that removing it stops the
+  exchange; it failed before the fix.
+- **What remains, and can't be fixed:** the service name is unique to Occulta and fixed in
+  `Info.plist`. Anyone in radio range during the seconds of an exchange can tell Occulta is in use.
+  They see no peer name that links two exchanges.
+- **Open, needs a decision: the joined Wi-Fi network.** MultipeerConnectivity advertises over the Wi-Fi
+  network the phone is joined to, not only over the direct peer-to-peer radio. Everyone on that network
+  receives the mDNS announcement, and its equipment may log it, a record held by a third party and kept
+  longer than anything a nearby scanner sees. Closing this means replacing MultipeerConnectivity with
+  Network.framework restricted to the peer-to-peer link. That is a rewrite of the exchange transport,
+  and it drops Bluetooth, which the 25 cm exchange may not need.
+
 ### 11. Keep the app's public face ordinary
 
 **Why.** Having Occulta installed, and when it was used, can be established without touching the app.

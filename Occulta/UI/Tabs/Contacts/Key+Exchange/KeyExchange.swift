@@ -19,11 +19,13 @@ struct KeyExchange: View {
 
     @Environment(ContactManager.self) private var contactManager: ContactManager?
 
-    init(identifier: String) {
+    /// - Parameter exchangeManager: injectable so tests can observe teardown without starting radios.
+    init(identifier: String, exchangeManager: ExchangeManager = .init()) {
         let predicate = #Predicate<Contact.Profile> {
             $0.identifier == identifier
         }
         self._contacts = Query(filter: predicate)
+        self._exchangeManager = State(initialValue: exchangeManager)
     }
 
     var name: String {
@@ -115,6 +117,11 @@ struct KeyExchange: View {
                 self.showTimeoutBanner = true
                 self.exchangeManager.finish()
             }
+        }
+        // Leaving the screen must stop advertising `_peer-data-ex`, which identifies Occulta to
+        // anyone scanning nearby, rather than leave it to the watchdog (hardening step 10).
+        .onDisappear {
+            self.exchangeManager.finish()
         }
     }
 
