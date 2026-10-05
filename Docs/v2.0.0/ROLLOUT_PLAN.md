@@ -5,8 +5,9 @@
 assumption in [`PASSPHRASE_LAYER_KEYS.md`](../../Occulta/Features/SecureMode/PASSPHRASE_LAYER_KEYS.md)
 §5.
 
-**Summary.** Steps 6–16 don't depend on each other and can ship one at a time, in any order. Steps 1–5
-can be split by data (vault first, then contacts), but not step by step. The rules below stay fixed
+**Summary.** Steps 6–16 and 17a don't depend on each other and can ship one at a time, in any order.
+Steps 1–5 can be split by data (vault first, then contacts), but not step by step. 17b ships with the
+contacts slice. The rules below stay fixed
 however the stages are cut.
 
 ## Rules that can't be staged
@@ -44,9 +45,9 @@ however the stages are cut.
 | Stage | Ships | What someone holding the phone and passcode gets afterwards |
 |---|---|---|
 | **0 — nothing users see** | 9 CI trace check, 12 fuzzing, 13 drop keys on background, 10 advertising only in foreground, 14 signing checks, 15 account hardening | Same as today. This stage closes supply-chain risk and stops known leak types from coming back. |
-| **1 — additions old versions tolerate** | 6 prekeys in the exchange, 7a post-quantum status shown, 8 mandatory comparison, 11 wording pass | Same on the phone. Messages between two updated contacts are forward-secret from the first one, and the exchange can't be intercepted. |
+| **1 — additions old versions tolerate** | 6 prekeys in the exchange, 7a post-quantum status shown, 8 mandatory comparison, 11 wording pass, 17a per-contact secret for classical-only pairs and keyed sender fingerprint | Same on the phone. Messages between two updated contacts are forward-secret from the first one, and the exchange can't be intercepted. |
 | **2 — vault slice** | Steps 1–5 applied to vault entries; the phrase replaces the PIN | Vault content stays sealed without the phrase, and the PIN verifiers are gone. Contacts' depth stamps are still readable, so the number of depths still leaks. |
-| **3 — contacts slice** | Steps 1–5 applied to contacts, then the old local-DB key is deleted | Only what the surrendered phrase opens. |
+| **3 — contacts slice** | Steps 1–5 applied to contacts, 17b random prekey tags and random padding, then the old local-DB key is deleted | Only what the surrendered phrase opens, apart from the items step 17 lists as open. |
 | **4 — the rest** | Steps 1–5 for backup-key, custody-shard and restore records; 7b refuse classical-only sends; 16 in-app guidance | The remaining records close. |
 
 ### Stage 0
@@ -64,9 +65,18 @@ Each step is its own PR. Step 14 is a gate before any App Store submission, not 
   of the contact population on iOS 26 or it just blocks messaging.
 - **8** is a UX change: no contact saves without the comparison.
 - **11** goes through counsel in one pass, as register §E asks. Step 16's copy depends on it.
+- **17a** is a protocol addition negotiated through `maxBundleVersion`: a pair uses it only when both
+  sides support it. The per-contact secret protects nothing until Stage 3 seals the contact records. It
+  ships here anyway so the population upgrades early, which shrinks the "senders on old versions" open
+  item by the time Stage 3 lands. The keyed sender fingerprint helps from the day a pair upgrades. It
+  doesn't depend on Stage 3.
 
 **Done when:** the exchange is tested old→new, new→old and new↔new; a first message after an exchange
-is shown to use a prekey; and saving without a comparison is shown to be impossible.
+is shown to use a prekey; saving without a comparison is shown to be impossible; and a classical-only
+pair is shown to open in the new mode only with the per-contact secret, both for a pair set up at the
+exchange and for one upgraded in band; and an upgraded file is shown not to match
+`SHA-256(senderPublicKey ‖ nonce)` for any nonce it carries, in single, group and identity-challenge
+bundles.
 
 ### Stage 2 — vault
 
@@ -84,6 +94,10 @@ many depths exist.
 
 The hardest slice (see Stage 2). It ends with deleting the old local-DB Secure Enclave key, which is
 what turns every leftover old-key ciphertext into noise.
+
+**17b** ships in this slice because the prekey-tag map lives in the contact record. Every dummy key must
+exist before any old `prekey.<contactID>.*` tag is retagged. Whether an Enclave key's tag can be updated in place has to be
+checked on a device first, because the Simulator is unreliable for that kind of update.
 
 ### Stage 4 — the rest
 
@@ -103,6 +117,8 @@ Each needs tests and a no-data-loss migration plan before it counts as done. The
   rotation left keys that nothing deleted).
 - **Rule 2 and Rule 4 enforced in code, not in the UI flow.** Every depth migrates in one step, and the
   old keys are deleted for all depths in one step.
+- **Prekeys survive the retagging** (Stage 3). A message sent to a prekey before the migration still
+  opens after it, and no `prekey.<contactID>.*` tag remains.
 - **The in-progress state leaks nothing about depths.** Being mid-migration may be visible. Which depth
   is ahead of which must not be.
 - **Schema change through a migration plan.** The project has no `VersionedSchema`/`SchemaMigrationPlan`

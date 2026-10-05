@@ -196,6 +196,99 @@ values outright, and becomes a real gap once it can't. Fields: `VaultEntry.visib
 `.visibleThroughDepth`/`.globalTrusteeDepth`, `PendingShamirSecretRestore.attributeID`/`.deletionToken`.
 Doing it in the same migration costs nothing extra.
 
+**Requirement, decided 2026-10-04: message keys must not route around the layer keys.** Sealing the
+database under `layerKey_D` does not cover the keys that open messages. Without this requirement, a
+surrendered duress phrase plus one keychain query exposes the hidden contacts that the rest of this
+section hides.
+
+*The leaks, against code at `732f4f3`:*
+- Prekey private keys are Enclave keys tagged `prekey.<contactID>.<uuid>` (`Prekey.seTag`). Listing the
+  keychain names every contact that has prekeys. A contactID absent from the surrendered depth is a
+  hidden contact, and comparing images shows how often each one messages.
+- An Enclave key is usable by anyone holding the passcode (`.privateKeyUsage`,
+  `WhenUnlockedThisDeviceOnly`). A captured `.occ` carries `prekeyID` in the clear.
+- What else the session key needs (`Crypto+Manager+KeyDerivation.swift`, `deriveInboundKey`):
+  - `.forwardSecret` and `.longTermFallback` also mix in the contact's ML-KEM secrets, which are stored on
+    the contact (`quantumKeyMaterialEncrypted`). Once the record is sealed under layer keys, a depth that
+    can't see the contact can't open these messages. **These modes need no change.**
+  - `.forwardSecretNoPQ` and `.longTermNoPQ` need only the prekey or the identity key, both usable with
+    the passcode. **These are the gap.**
+
+*Why prekeys stay in the Enclave.* Moving them into the contact's record would hide them behind the
+phrase but break forward secrecy. Consider an image taken before a prekey is used, with the phrase obtained
+after: the old image holds the sealed key, and the phrase opens it. Only an Enclave key is absent from
+every image and gone for good once deleted. A deleted keychain item survives in an older image of the
+keychain, which the passcode opens. So the fix keeps the Enclave key and makes *using* it insufficient
+on its own, the way ML-KEM already does for its modes.
+
+*The requirement:*
+1. **Every classical-only pair gets a per-contact secret.** It is mixed into both the forward-secret and
+   the fallback derivation, the same way ML-KEM's secrets are, and stored in the contact's record. New
+   pairs derive it at the in-person exchange. Existing pairs exchange it in band, one forward-secret
+   message each way, each side contributing half. After its prekey is consumed, an earlier image can't
+   open that message. Until both halves arrive, the pair stays in the old mode. Sending in the new mode
+   needs the peer's version to support it, through the existing `maxBundleVersion` negotiation.
+2. **Prekey tags are random and name no contact.** The map from prekey ID to tag lives in the contact's
+   record. Existing prekeys are retagged in place. Whether `SecItemUpdate` can change the tag of an
+   Enclave key on a device needs checking first. `KeychainMigrationSETests` shows the Simulator can't be
+   trusted for that kind of update. Deleting and regenerating instead strands messages already sent to
+   the old prekeys (Bug 82).
+3. **Random padding of the Enclave prekeys.** About 15 prekeys per contact otherwise reveals roughly how
+   many contacts exist, hidden ones included. Each install creates a random number of dummy Enclave
+   keys, indistinguishable from real prekeys.
+   - **Created once, never touched.** The count is drawn once per install. No depth ever deletes or
+     replaces a dummy, so no depth ever has to tell a dummy from a real prekey, and no list of dummies
+     exists anywhere.
+   - **What it hides:** in one image, the adversary sees the total but not the dummy count. Hidden
+     contacts whose prekeys fit inside the random range pass as dummies. A range of 32–128, for example,
+     covers about six hidden contacts holding a full batch each. The range is not decided.
+   - **Build-up:** all dummies exist before any old `prekey.<contactID>.*` tag is retagged, so no image
+     catches a partly built pool next to real tags. Enclave key generation time on an iPhone 11 decides
+     whether that fits in one sitting. Measure it before choosing.
+   - **Coverage:** every install gets the dummies, not only installs with duress depths. Rule 3 of the
+     rollout plan applies for the same reason.
+   - **Rejected 2026-10-04: replacing dummies at the end of each real-depth session.** It would make
+     prekey changes that the surrendered depth can't account for look normal across repeated images. It
+     was dropped because it adds almost nothing measurable:
+     - Those prekey changes come only from a hidden contact's messages, and the transport's records
+       usually show those messages anyway.
+     - A session the adversary forces at a duress depth still shows that nothing was replaced.
+     - It only matters if row changes between images are hidden too (the write-frequency requirement
+       above).
+
+     It would also have needed the real depth to work out which keys no record claims, to read
+     coercer-created depths through a chain of stored child keys, and to round its counts. A
+     fixed-size pool was rejected for the same reason: holding the total fixed means deleting dummies.
+
+4. **The sender fingerprint is keyed with the per-contact secret (decided 2026-10-04).** Today it is
+   `SHA-256(senderPublicKey ‖ nonce)` in the clear (`OccultaBundle.SecrecyContext.fingerprint`). Anyone
+   holding the user's public key, which every contact has, can therefore attribute `.occ` files to the
+   user wherever they turn up.
+   - **The new tag** is an HMAC over a fresh nonce, keyed with the secret the two contacts share: the
+     ML-KEM secret, or item 1's classical one. Only the two of them can compute it, and the recipient
+     routes exactly as before, one computation per contact.
+   - **Group format.** Every send since 1.9.0 uses it, a single contact included. Today a group file
+     carries one outer fingerprint for all recipients. Instead, each `Recipient` entry carries its own
+     tag, and the outer fingerprint is dropped. The `recipients` array already shows how many recipients
+     there are, so per-entry tags reveal nothing new.
+   - **Identity challenges** build the fingerprint separately (`IdentityChallenge+Manager.swift`) and get
+     the same change.
+   - **Mixed groups.** The outer fingerprint remains while any recipient in a file hasn't upgraded, so
+     until then that file stays attributable.
+   - **What it protects:** attribution of files that reach the adversary without the transport's records,
+     such as files on a seized contact's phone, moved through Files, or forwarded. Where the transport's
+     records exist, they already show who sent what.
+
+*Open, not decided. None of these is accepted:*
+- Messages from senders on old versions, in the classical-only modes, open with the passcode until both
+  sides support item 1.
+- The transport's own records (who sent which file to whom, and when) show that a relationship exists. An
+  ongoing two-way exchange with a contact the surrendered depth doesn't show can't pass as a deleted
+  contact. That is outside the app.
+- Across repeated images, prekeys the surrendered depth can't account for disappear and appear. A new
+  batch for a hidden contact shows up as about 15 new keys.
+- In one image, hidden contacts beyond what the random padding covers make the total stand out.
+
 ---
 
 ## 3. Duress compatibility

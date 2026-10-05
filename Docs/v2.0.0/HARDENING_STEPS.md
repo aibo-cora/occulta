@@ -19,6 +19,8 @@ Code references are against `3319fd7`. Line numbers drift, so re-check them befo
 6. Send prekeys during the in-person exchange
 7. Show or require post-quantum per contact
 8. Authenticate the exchange peer, not just that it's close
+17. Keep message keys behind the depth keys (added 2026-10-04; numbered last so earlier references
+    stay valid)
 
 **C. Leave nothing outside the app's own storage**
 9. Add a CI check that blocks APIs that leave traces in the OS
@@ -148,6 +150,51 @@ skips the comparison, someone physically close can win the distance check and si
 Either make the comparison mandatory before a contact saves, or implement `didReceiveCertificate`.
 
 **Tracked:** register §B, §3.2 (P1).
+
+### 17. Message keys behind the depth keys
+
+**Status:** decided 2026-10-04. The design is in the spec, §2, "message keys must not route around the
+layer keys".
+
+**Why.** Steps 1–5 seal the database, but the keys that open messages are outside it. Prekey private
+keys are Enclave keys tagged `prekey.<contactID>.<uuid>`
+([Prekey.swift:61](../../Occulta/Features/Forward+Secrecy/Prekey.swift)), and the passcode is enough
+to use them. With steps 1–5 alone, a surrendered duress phrase plus a keychain listing gives the
+adversary three things:
+- **The hidden contacts.** The tags name them.
+- **How often each one messages.** Image-to-image changes in tag counts show it.
+- **The content of their classical-only messages.** Those modes need only the prekey or identity key.
+  Pairs with ML-KEM are already safe, because their derivation also needs the ML-KEM secrets stored in
+  the contact's record.
+
+**What changes.**
+1. **17a. A per-contact secret for classical-only pairs**, mixed in the way ML-KEM's secrets are. New
+   pairs derive it at the exchange. Existing pairs exchange it in band, over forward-secret messages.
+2. **17b. Random prekey tags**, with the map kept in the contact's record.
+3. **17b. Random padding:** each install creates a random number of dummy Enclave keys, once. Nothing
+   ever deletes or replaces them. In one image they hide a few hidden contacts' prekeys. Replacing
+   dummies each session was considered and rejected: it adds almost nothing measurable, because the
+   transport usually shows the same messages.
+
+Prekeys stay in the Enclave. Moving them into the record would break forward secrecy against an image
+taken before the phrase is obtained.
+
+4. **17a. A sender fingerprint keyed with the per-contact secret** instead of the public key. Today
+   anyone with the user's public key, which every contact has, can tell which `.occ` files the user
+   sent. Group files carry one tag per recipient entry in place of the single outer fingerprint. It
+   ships in 17a because 17a already changes the wire format and its negotiation.
+
+**Open, needs a decision.** This step doesn't close these, and none is accepted:
+- **Senders on old versions.** Their classical-only messages stay readable until they update.
+- **Transport records** still show that a relationship exists. Step 16's guidance has to cover this.
+- **Repeated images** show prekeys appearing and disappearing that the surrendered depth can't account
+  for.
+- **More hidden contacts than the random padding covers** make the total stand out in one image.
+- **The padding range** itself.
+- **Mixed groups.** A group file keeps the old, attributable fingerprint while any recipient hasn't
+  upgraded.
+
+**Tracked:** new. Found 2026-10-04 while closing the assessment's "unopened messages" residual.
 
 ---
 
@@ -301,6 +348,9 @@ step 1 ships, and afterwards for everything step 1 doesn't cover. At-risk users 
 The phrase setup screen is the natural place to show this once. Its wording depends on step 11.
 
 **Tracked:** new.
+
+The guidance must also say that the transport keeps its own records. An ongoing exchange of `.occ` files
+with a hidden contact is visible in Messages history and its backups, whatever the app does (step 17).
 
 ---
 
