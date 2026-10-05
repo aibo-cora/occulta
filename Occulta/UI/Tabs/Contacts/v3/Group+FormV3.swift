@@ -103,6 +103,7 @@ extension Group {
                     Section("Name") {
                         TextField("Group name", text: self.$name)
                             .tint(Color.occultaAccent)
+                            .autocorrectionDisabled()
                     }
 
                     if !self.eligible.isEmpty {

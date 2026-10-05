@@ -312,7 +312,9 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       — `UserDefaults`/`@AppStorage` holds four booleans and one version string: `showFingerprints`,
       `showTrustSummary`, `hasCompletedOnboarding`, `vault.postRestoreActionNeeded`, and
       `whatsNewLastSeenVersion` (the marketing version, which `Info.plist` already carries). No key
-      material, no identifiers, and no key whose name discloses Secure Mode. The What's New copy
+      material, no identifiers, and no key whose name discloses Secure Mode. `OSTraceTests` fails
+      on any key outside these five, so adding one means updating this list and that test together.
+      The What's New copy
       (`WhatsNew.releases`) is compiled into the binary and shown on an unlocked phone, so each
       release's entry is read against the same rule before tagging.
 - [x] All writes to `FileManager.temporaryDirectory` use `Data.writeProtected(to:)`

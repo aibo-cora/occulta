@@ -93,6 +93,7 @@ struct ComposableMessage: View {
                     .clipShape(RoundedRectangle(cornerRadius: 22))
                     .lineLimit(1...5)
                     .tint(.occultaAccent)
+                    .autocorrectionDisabled()
 
                 let hasText = !self.vm.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 Button { self.vm.addText() } label: {

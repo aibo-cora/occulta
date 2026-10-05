@@ -147,6 +147,7 @@ extension Contact {
                     Section("Note") {
                         TextField("Add note", text: self.$contact.note, axis: .vertical)
                             .lineLimit(4...)
+                            .autocorrectionDisabled()
                     }
                     
                     switch self.mode {

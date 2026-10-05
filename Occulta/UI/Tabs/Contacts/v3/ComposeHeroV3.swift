@@ -58,6 +58,7 @@ struct ComposeHeroV3: View {
                 .lineLimit(4...)
                 .frame(minHeight: self.vm.messages.isEmpty ? 100 : 60, alignment: .topLeading)
                 .tint(.occultaAccent)
+                .autocorrectionDisabled()
 
             let fileItems = self.vm.messages
                 .filter { if case .file = $0.format { return true }; return false }
