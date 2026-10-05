@@ -27,7 +27,7 @@ user has Occulta at all. Once the cryptography holds, those become the adversary
 | **Messages copied in transit, phone seized later** | The first message each way, and about 1 in 16 after, can be opened with the phone. Opened forward-secret messages can't. | Only unopened messages (see residuals). Pairs without post-quantum are recorded now to decrypt later, until 7b. |
 | **Implant on the phone while in use (Pegasus-class)** | Everything. | Everything. Dropping keys in the background (13) shortens the window. Only Apple's Lockdown Mode reduces the chance of infection. |
 | **A contact's phone seized** | The user's identity, the relationship, and anything the contact kept. | Same, limited only by the contact's own passcode and phrase. |
-| **Establishing that the user has Occulta, and when it's used** | Apple's download records, the OS's app-usage records, and the radio broadcast during exchanges. | The broadcast window is smaller (10). The rest doesn't change. |
+| **Establishing that the user has Occulta, and when it's used** | Apple's download records, the OS's app-usage records, and the radio broadcast during exchanges. | The broadcast window is smaller (10). The rest doesn't change. The mDNS announcement on the joined Wi-Fi network, which that network's equipment may log, is open (10). |
 | **Malicious update (account stolen or developer compelled)** | Everything. | Stealing the account gets harder (15). Nothing stops a compelled developer. |
 
 **A strength already in place:** Occulta keeps no message history. Message Persistence is exploratory
