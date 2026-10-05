@@ -13,33 +13,33 @@ import Foundation
 /// is unchanged. See Docs/Features/Bundle/SPEC.md for the full wire layout.
 ///
 /// Each method maps 1:1 to a future Rust FFI call in `occulta-protocol`.
-struct WireHandle {
+public struct WireHandle {
 
-    static let magic: [UInt8] = [0x4F, 0x43, 0x43, 0x42]  // "OCCB"
+    public static let magic: [UInt8] = [0x4F, 0x43, 0x43, 0x42]  // "OCCB"
 
     // MARK: - Outer Bundle
 
     /// Parsed outer envelope. Does not contain decrypted content.
     /// Use `fingerprintNonce` + `senderFingerprint` to identify the sender
     /// before calling `open`.
-    struct Bundle {
-        let version: UInt8
-        let minReaderVersion: UInt8
-        let mode: UInt8
-        let flags: UInt16
-        let prekeyID: Data?          // nil or 36-byte UTF-8 UUID
-        let ephemeralKey: Data       // 65-byte P-256 key, or empty Data on longTerm paths
-        let fingerprintNonce: Data   // 16 bytes
-        let senderFingerprint: Data  // 32 bytes
-        let ciphertext: Data         // AES-GCM combined: nonce(12) || ct || tag(16)
-        let groupEnvelope: Data?     // TLV section 0x01 — JSON(GroupEnvelope), nil for non-group bundles
+    public struct Bundle {
+        public let version: UInt8
+        public let minReaderVersion: UInt8
+        public let mode: UInt8
+        public let flags: UInt16
+        public let prekeyID: Data?          // nil or 36-byte UTF-8 UUID
+        public let ephemeralKey: Data       // 65-byte P-256 key, or empty Data on longTerm paths
+        public let fingerprintNonce: Data   // 16 bytes
+        public let senderFingerprint: Data  // 32 bytes
+        public let ciphertext: Data         // AES-GCM combined: nonce(12) || ct || tag(16)
+        public let groupEnvelope: Data?     // TLV section 0x01 — JSON(GroupEnvelope), nil for non-group bundles
     }
 
     // MARK: - Outer envelope: parse
 
     /// Parse the binary outer envelope without decrypting.
     /// Throws `BundleError.unsupportedVersion` if `min_reader_version` exceeds this build.
-    static func parse(_ data: Data) throws -> Bundle {
+    public static func parse(_ data: Data) throws -> Bundle {
         var r = Reader(data)
 
         let magic4 = try r.read(4)
@@ -128,7 +128,7 @@ struct WireHandle {
 
     /// Encode a fully constructed `OccultaBundle` as a binary outer envelope.
     /// The bundle's `ciphertext` must already be the AES-GCM combined output.
-    static func encode(_ bundle: OccultaBundle) throws -> Data {
+    public static func encode(_ bundle: OccultaBundle) throws -> Data {
         guard let vByte = Self._versionToByte[bundle.version] else {
             throw OccultaBundle.BundleError.unsupportedVersion
         }
@@ -161,8 +161,14 @@ struct WireHandle {
         w.data(bundle.ciphertext)
 
         // TLV section 0x01 — group envelope (§4.4). Written only for group bundles.
+        //
+        // Sorted keys: this JSON travels in cleartext, and a default JSONEncoder orders keys by
+        // a hash seeded per process, so the order changed with every app launch — a signal an
+        // observer could use to group bundles by sender session, against what `blind` is for.
+        // Nothing authenticates these bytes and every receiver parses any order, so this is
+        // compatible in both directions.
         if let group = bundle.group {
-            let groupJSON = try JSONEncoder().encode(group)
+            let groupJSON = try Self.sortedEncoder.encode(group)
             w.uint8(0x01)
             w.uint32BE(UInt32(groupJSON.count))
             w.data(groupJSON)
@@ -176,7 +182,7 @@ struct WireHandle {
     /// Binary-encode a `SealedPayload`. This is the plaintext passed to AES.GCM.seal.
     /// The `message` field (already binary Basket bytes) is written as raw bytes.
     /// All other fields are written as a length-prefixed JSON block.
-    static func encode(payload: OccultaBundle.SealedPayload) throws -> Data {
+    public static func encode(payload: OccultaBundle.SealedPayload) throws -> Data {
         let meta = PayloadMeta(
             appVersion:        payload.appVersion,
             prekeyBatch:       payload.prekeyBatch,
@@ -199,7 +205,7 @@ struct WireHandle {
     // MARK: - Payload: decode
 
     /// Decode binary `SealedPayload` bytes produced by `encode(payload:)`.
-    static func decode(payload data: Data) throws -> OccultaBundle.SealedPayload {
+    public static func decode(payload data: Data) throws -> OccultaBundle.SealedPayload {
         var r = Reader(data)
 
         let metaLen  = Int(try r.uint32BE())
@@ -225,7 +231,7 @@ struct WireHandle {
 
     /// Binary-encode a `Basket`. The result becomes `SealedPayload.message`.
     /// File content is written as raw bytes; all other metadata is JSON.
-    static func encode(basket: Basket) throws -> Data {
+    public static func encode(basket: Basket) throws -> Data {
         let meta = BasketMeta(id: basket.id, date: basket.date, owner: basket.owner)
         let metaJSON = try Self.sortedEncoder.encode(meta)
 
@@ -252,7 +258,7 @@ struct WireHandle {
     // MARK: - Basket: decode
 
     /// Decode binary Basket bytes produced by `encode(basket:)`.
-    static func decode(basket data: Data) throws -> Basket {
+    public static func decode(basket data: Data) throws -> Basket {
         var r = Reader(data)
 
         let metaLen   = Int(try r.uint32BE())
@@ -277,10 +283,10 @@ struct WireHandle {
 
     // MARK: - Version / mode byte tables
 
-    static let versionByte: UInt8 = 0x04
+    public static let versionByte: UInt8 = 0x04
 
-    static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
-    static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
+    public static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
+    public static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
 
     // groupCapable/groupShardCapable/senderSignatureCapable/prefixedSenderSignatureCapable
     // all encode to 0x04 on the wire (same binary layout as v4); 0x05–0x08 are only written

@@ -17,6 +17,7 @@
 import Foundation
 import LocalAuthentication
 import SwiftUI
+import OccultaCore
 
 extension IdentityChallenge {
 

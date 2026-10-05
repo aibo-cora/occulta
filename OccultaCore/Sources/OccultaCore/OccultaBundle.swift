@@ -58,11 +58,11 @@ import CryptoKit
 /// They must be readable before any key is derived. Tampering with them makes the
 /// bundle undeliverable — no contact's fingerprint will match — but cannot expose
 /// plaintext or inject bad prekeys.
-struct OccultaBundle: Codable {
+public struct OccultaBundle: Codable {
 
     // MARK: - Errors
 
-    enum BundleError: Error {
+    public enum BundleError: Error {
         /// `SecRandomCopyBytes` failed to produce entropy.
         /// Encryption must not proceed with a zero or predictable nonce.
         case entropyUnavailable
@@ -78,7 +78,7 @@ struct OccultaBundle: Codable {
 
     // MARK: - Version
 
-    static let currentVersion: Version = .v3fs
+    public static let currentVersion: Version = .v3fs
 
     /// ⚠️ Adding a new case here is a **wire-format-breaking change** for older
     /// builds already in the field. An old `Version` enum without the new case
@@ -89,7 +89,7 @@ struct OccultaBundle: Codable {
     /// keep the wire `version` at a value old builds already understand. See
     /// the Exchange.swift comment for the same pattern applied to key-exchange
     /// messages.
-    enum Version: String, Codable {
+    public enum Version: String, Codable, Sendable {
         /// Long-term SE key. No forward secrecy. Legacy only.
         case v1
         /// Ephemeral key path. Never shipped.
@@ -141,7 +141,7 @@ struct OccultaBundle: Codable {
 
         /// The minimum app version that can read this wire format.
         /// `nil` means the case is not a real wire format (legacy, unsupported).
-        var minimumAppVersion: String? {
+        public var minimumAppVersion: String? {
             switch self {
             case .v3fs:             return "0.0.0"
             case .v4:               return "1.8.2"
@@ -155,7 +155,7 @@ struct OccultaBundle: Codable {
 
         /// The binary wire byte for this version. Used by WireHandle for encoding/decoding.
         /// `nil` for cases that are JSON-only or not real wire formats.
-        var wireByte: UInt8? {
+        public var wireByte: UInt8? {
             switch self {
             case .v4:                return 0x04
             case .groupCapable:      return 0x05
@@ -167,7 +167,7 @@ struct OccultaBundle: Codable {
         }
 
         /// True when this contact's app version supports group bundles.
-        var supportsGroups: Bool { self.isAtLeast(.groupCapable) }
+        public var supportsGroups: Bool { self.isAtLeast(.groupCapable) }
 
         /// Position in `known` — lower index = newer/higher capability tier.
         /// `nil` for non-tiered cases (`.v1`, `.v2`, `.unsupported`) that never come
@@ -178,7 +178,7 @@ struct OccultaBundle: Codable {
         /// feature set is a subset of this one's. Adding a new tier above `other` in
         /// `known` extends this automatically; no separate case list to maintain,
         /// unlike `supportsGroups` above.
-        func isAtLeast(_ other: Version) -> Bool {
+        public func isAtLeast(_ other: Version) -> Bool {
             guard let mine = self.rank, let theirs = other.rank else { return false }
             return mine <= theirs
         }
@@ -198,21 +198,21 @@ struct OccultaBundle: Codable {
 
         /// The most capable tier this build understands. `known` is descending, so this
         /// tracks automatically when a tier is added above the current top.
-        static var mostCapable: Version { Self.known.first ?? .v3fs }
+        public static var mostCapable: Version { Self.known.first ?? .v3fs }
 
         /// The highest wire byte this build can map to a tier. A recorded byte above this
         /// came from a build newer than ours — see `ContactManager.bundleVersionState`.
-        static var highestKnownWireByte: UInt8 { Self.known.compactMap(\.wireByte).max() ?? 0 }
+        public static var highestKnownWireByte: UInt8 { Self.known.compactMap(\.wireByte).max() ?? 0 }
 
         /// The highest capability level a contact running `appVersion` can handle.
-        static func max(forAppVersion appVersion: String) -> Version {
+        public static func max(forAppVersion appVersion: String) -> Version {
             Self.known.first {
                 guard let min = $0.minimumAppVersion else { return false }
                 return appVersion.compare(min, options: .numeric) != .orderedAscending
             } ?? .v3fs
         }
 
-        init(from decoder: Decoder) throws {
+        public init(from decoder: Decoder) throws {
             let raw = try decoder.singleValueContainer().decode(String.self)
             self = Version(rawValue: raw) ?? .unsupported
         }
@@ -224,7 +224,7 @@ struct OccultaBundle: Codable {
     /// fallback on the receive side. Adding a case here makes old builds decode
     /// the bundle as `.unsupported`, producing `BundleError.unsupportedMode`
     /// (explicit, actionable) rather than a cryptic authentication failure.
-    enum Mode: String, Codable {
+    public enum Mode: String, Codable, Sendable {
         /// Full forward secrecy + hybrid PQ.
         /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub) ∥ ML-KEM).
         /// Recipient's prekey private key deleted from SE on successful open.
@@ -261,7 +261,7 @@ struct OccultaBundle: Codable {
         /// Mode this build does not understand. Same semantics as `Version.unsupported`.
         case unsupported
 
-        init(from decoder: Decoder) throws {
+        public init(from decoder: Decoder) throws {
             let raw = try decoder.singleValueContainer().decode(String.self)
             self = Mode(rawValue: raw) ?? .unsupported
         }
@@ -280,11 +280,16 @@ struct OccultaBundle: Codable {
     /// The recipient reconstructs the full `Prekey` by filling in their own
     /// local identifier as `contactID` when storing the batch.
     nonisolated
-    struct WirePrekey: Codable, Equatable {
+    public struct WirePrekey: Codable, Equatable {
         /// Unique identifier for this prekey within its batch.
-        let id:        String
+        public let id:        String
         /// x963 uncompressed P-256 public key (65 bytes).
-        let publicKey: Data
+        public let publicKey: Data
+
+        public init(id: String, publicKey: Data) {
+            self.id        = id
+            self.publicKey = publicKey
+        }
     }
     
     // MARK: - ShardOperation
@@ -310,8 +315,8 @@ struct OccultaBundle: Codable {
     /// and render `SealedPayload.message` as regular text — same pattern as
     /// `identityChallenge`.
     nonisolated
-    struct ShardOperation: Codable {
-        enum Kind: String, Codable {
+    public struct ShardOperation: Codable {
+        public enum Kind: String, Codable {
             /// Owner → trustee: here is your shard (first distribution).
             case distribute
             /// Owner → trustee: here is a replacement shard; discard `attributeID`.
@@ -324,19 +329,19 @@ struct OccultaBundle: Codable {
             /// The handler skips it silently so bundles from newer builds don't break older ones.
             case unsupported
 
-            init(from decoder: Decoder) throws {
+            public init(from decoder: Decoder) throws {
                 let raw = try decoder.singleValueContainer().decode(String.self)
                 self = Kind(rawValue: raw) ?? .unsupported
             }
         }
 
-        let kind: Kind
+        public let kind: Kind
         /// The `SignedAttribute` shard payload. Non-nil for `.distribute`, `.replace`, and `.handback`.
-        let attribute: SignedAttribute?
+        public let attribute: SignedAttribute?
         /// A single shard ID. Non-nil for `.replace` (old shard to delete).
-        let attributeID: UUID?
+        public let attributeID: UUID?
 
-        init(
+        public init(
             kind: Kind,
             attribute: SignedAttribute? = nil,
             attributeID: UUID? = nil
@@ -359,18 +364,18 @@ struct OccultaBundle: Codable {
     /// - `WirePrekey.contactID` (stripped at the type level) cannot leak.
     /// - Batch size gives no metadata beyond total bundle size.
     nonisolated
-    struct SealedPayload: Codable {
+    public struct SealedPayload: Codable {
         /// The message plaintext.
         ///
         /// For regular messages this is the user's text or file basket.
         /// For identity challenges (non-nil `identityChallenge`) this is a
         /// human-readable fallback string shown by old builds that don't
         /// know about the identity-challenge envelope.
-        let message: Data
+        public let message: Data
         /// The sender's fresh prekeys for the recipient to store, or nil.
         /// Non-nil on the fallback path (always), and on the FS path when
         /// the sender's SE stock for this contact is below the replenishment threshold.
-        let prekeyBatch: PrekeySyncBatch?
+        public let prekeyBatch: PrekeySyncBatch?
 
         /// Identity-challenge sub-envelope. `nil` means a regular message —
         /// routing to `IdentityChallenge.Manager` happens iff this is non-nil.
@@ -384,7 +389,7 @@ struct OccultaBundle: Codable {
         /// Added in v1.4.0. Future per-feature envelopes (Document Signing,
         /// etc.) should sit alongside as their own optional fields rather
         /// than extending this one.
-        let identityChallenge: IdentityChallengeEnvelope?
+        public let identityChallenge: IdentityChallengeEnvelope?
 
         /// SSS shard-protocol operations. `nil` means a regular message.
         ///
@@ -394,17 +399,17 @@ struct OccultaBundle: Codable {
         /// always uses `.longTermFallback` mode so old builds decode the outer bundle.
         ///
         /// Added in v1.6.0.
-        let shardOperations: [ShardOperation]?
+        public let shardOperations: [ShardOperation]?
 
         /// IDs of all custody shards this sender currently holds for the recipient.
         /// `nil` = old build (no-op for receiver). `[]` = holds nothing.
         /// Trustee → owner direction only. Added in v1.7.0.
-        let custodyManifest: [UUID]?
+        public let custodyManifest: [UUID]?
 
         /// Sender's app version string (e.g. `"1.8.2"`). Receivers derive the contact's
         /// `maxBundleVersion` from this and store it encrypted on the contact record.
         /// `nil` means the sender is on a build older than 1.8.2. Added in v1.8.2.
-        let appVersion: String?
+        public let appVersion: String?
 
         /// HMAC-SHA256(sessionKey, senderLongTermPublicKey). Authenticates sender identity
         /// inside the GCM-protected ciphertext, preventing any party (including other group
@@ -414,15 +419,15 @@ struct OccultaBundle: Codable {
         /// The session key is the sole keying material — only the actual sender can produce
         /// this value, and only authenticated recipients can verify it. `nil` on bundles
         /// from builds older than 1.9.0. Added in v1.9.0.
-        let senderProof: Data?
+        public let senderProof: Data?
 
         /// The stable group UUID this bundle was sealed for. Stored inside the encrypted
         /// payload so the receiver can match the bundle to a local `Group` record without
         /// the group identity being visible in the cleartext `GroupEnvelope`.
         /// `nil` on non-group bundles and builds older than 1.9.0. Added in v1.9.0.
-        let groupID: UUID?
+        public let groupID: UUID?
 
-        init(
+        public init(
             message: Data,
             prekeyBatch: PrekeySyncBatch? = nil,
             identityChallenge: IdentityChallengeEnvelope? = nil,
@@ -446,10 +451,15 @@ struct OccultaBundle: Codable {
         ///
         /// Encrypted inside `SealedPayload.ciphertext` — never visible to observers.
         nonisolated
-        struct PrekeySyncBatch: Codable {
-            let generatedAt: Date
+        public struct PrekeySyncBatch: Codable {
+            public let generatedAt: Date
             /// Wire representation of the prekey public keys in this batch.
-            let prekeys: [WirePrekey]
+            public let prekeys: [WirePrekey]
+
+            public init(generatedAt: Date, prekeys: [WirePrekey]) {
+                self.generatedAt = generatedAt
+                self.prekeys     = prekeys
+            }
         }
     }
 
@@ -459,27 +469,33 @@ struct OccultaBundle: Codable {
     ///
     /// Every field here is covered by the GCM tag — modification causes `openBundle` to throw.
     /// The version enum is prepended to the AAD outside this struct (see `computeAdditionalAuthentication()`).
-    struct SecrecyContext: Codable {
+    public struct SecrecyContext: Codable {
         /// Which key derivation path was used.
-        let mode: Mode
+        public let mode: Mode
  
         /// Sender's ephemeral public key in x963 format (65 bytes).
         /// `.forwardSecret`: throwaway key for this message only.
         /// `.longTermFallback`: empty `Data()` — never the sender's long-term key;
         /// the recipient already has it, and putting it in cleartext AAD would
         /// leak the sender's identity to any passive observer.
-        let ephemeralPublicKey: Data
+        public let ephemeralPublicKey: Data
  
         /// UUID of the recipient's prekey used to derive the session key.
         /// Non-nil only when `mode == .forwardSecret`.
         /// The recipient looks this up in their `ownPrekeys` store to reconstruct
         /// the SE tag and retrieve the corresponding private key.
-        let prekeyID: String?
+        public let prekeyID: String?
+
+        public init(mode: Mode, ephemeralPublicKey: Data, prekeyID: String?) {
+            self.mode               = mode
+            self.ephemeralPublicKey = ephemeralPublicKey
+            self.prekeyID           = prekeyID
+        }
 
         // MARK: Fingerprint helpers
 
         /// SHA-256(publicKey || nonce) — 32 bytes.
-        static func fingerprint(for publicKey: Data, nonce: Data) -> Data {
+        public static func fingerprint(for publicKey: Data, nonce: Data) -> Data {
             var input = publicKey
             input.append(nonce)
             
@@ -491,7 +507,7 @@ struct OccultaBundle: Codable {
         /// - Throws: `BundleError.entropyUnavailable` if `SecRandomCopyBytes` fails.
         ///   Callers must not fall back to a hardcoded nonce — a static nonce
         ///   makes `senderFingerprint` identical across all bundles from the same sender.
-        static func generateNonce() throws -> Data {
+        public static func generateNonce() throws -> Data {
             try self._generateNonce { bytes, count in
                 SecRandomCopyBytes(kSecRandomDefault, count, bytes)
             }
@@ -520,17 +536,17 @@ struct OccultaBundle: Codable {
     /// preventing passive observers from clustering bundles by group identity.
     /// The stable `groupID` is stored inside the encrypted `SealedPayload` only.
     nonisolated
-    struct GroupEnvelope: Codable {
+    public struct GroupEnvelope: Codable {
         /// Format version. `1` = trial-decryption slot-finding (no cleartext fingerprints).
         /// Receivers that encounter an unknown version must reject the bundle.
-        let version:    UInt8
+        public let version:    UInt8
         /// HMAC-SHA256(key: groupID.rawBytes, msg: blindNonce). Fresh per bundle.
-        let blind:      Data
+        public let blind:      Data
         /// 16 random bytes. Combined with a stored group's UUID to verify `blind`.
-        let blindNonce: Data
-        let recipients: [Recipient]
+        public let blindNonce: Data
+        public let recipients: [Recipient]
 
-        init(version: UInt8 = 1, blind: Data, blindNonce: Data, recipients: [Recipient]) {
+        public init(version: UInt8 = 1, blind: Data, blindNonce: Data, recipients: [Recipient]) {
             self.version    = version
             self.blind      = blind
             self.blindNonce = blindNonce
@@ -540,14 +556,19 @@ struct OccultaBundle: Codable {
 
     /// One entry per group member in the active depth layer at send time.
     nonisolated
-    struct Recipient: Codable {
+    public struct Recipient: Codable {
         /// Per-recipient key exchange fields. `mode` is `.forwardSecret` or
         /// `.longTermFallback`; never `.group` or `.unsupported`.
-        let secrecyContext: SecrecyContext
+        public let secrecyContext: SecrecyContext
         /// AES-GCM(JSON(RecipientPayload), wrappingKey, AAD: blind).
         /// The receiver finds their slot by trial-decryption — no cleartext
         /// identity hint is included, so an observer cannot confirm membership.
-        let wrappedPayload: Data
+        public let wrappedPayload: Data
+
+        public init(secrecyContext: SecrecyContext, wrappedPayload: Data) {
+            self.secrecyContext = secrecyContext
+            self.wrappedPayload = wrappedPayload
+        }
     }
 
     /// Plaintext sealed inside each `Recipient.wrappedPayload`.
@@ -567,20 +588,20 @@ struct OccultaBundle: Codable {
     /// (`bugs.md` Bug 141). A payload from an older sender still carries them; the
     /// keyed decoder below ignores them.
     nonisolated
-    struct RecipientPayload: Codable {
+    public struct RecipientPayload: Codable {
         /// 32-byte random session key that decrypts the shared outer ciphertext.
-        let sessionKey: Data
+        public let sessionKey: Data
         /// Sender's fresh prekeys for this recipient, or nil when stock is healthy
         /// and the forward-secret path was used. Mirrors the single-recipient
         /// replenishment logic — same threshold, same `PrekeySyncBatch` type.
-        let prekeyBatch: SealedPayload.PrekeySyncBatch?
+        public let prekeyBatch: SealedPayload.PrekeySyncBatch?
         /// Fixed-size (tier-padded), always present. Real ops first; entries beyond
         /// the real count carry `kind == .unsupported` filler.
-        let shardOperations: [ShardOperation]
+        public let shardOperations: [ShardOperation]
         /// Fixed-size (tier-padded), always present. Only the first
         /// `custodyManifestCount` entries are real shard IDs.
-        let custodyManifest: [UUID]
-        let custodyManifestCount: Int
+        public let custodyManifest: [UUID]
+        public let custodyManifestCount: Int
         /// Whether the sender actually attempted to build `custodyManifest` (and, before
         /// Bug 141, `expectedShards`) for this recipient.
         ///
@@ -603,7 +624,7 @@ struct OccultaBundle: Codable {
         /// Without this flag both cases decode to the same `count == 0`, so the
         /// receiver would silently skip real loss-detection signals
         /// exactly as often as it correctly skips irrelevant ones.
-        let shardMetadataAttempted: Bool
+        public let shardMetadataAttempted: Bool
 
         /// ECDSA signature over `Recipient.secrecyContext.ephemeralPublicKey`, signed
         /// with the sender's long-term identity key. Populated only for FS-mode
@@ -614,9 +635,9 @@ struct OccultaBundle: Codable {
         /// mode's session key never involves the sender's long-term identity, so
         /// without this, `senderProof` alone can be satisfied without holding the
         /// real sender's private key. Added in v1.10.0.
-        let senderEphemeralSignature: Data?
+        public let senderEphemeralSignature: Data?
 
-        init(
+        public init(
             sessionKey: Data,
             prekeyBatch: SealedPayload.PrekeySyncBatch? = nil,
             shardOperations: [ShardOperation] = [],
@@ -644,7 +665,7 @@ struct OccultaBundle: Codable {
             case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature
         }
 
-        init(from decoder: Decoder) throws {
+        public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.sessionKey               = try c.decode(Data.self, forKey: .sessionKey)
             self.prekeyBatch              = try c.decodeIfPresent(SealedPayload.PrekeySyncBatch.self, forKey: .prekeyBatch)
@@ -659,28 +680,28 @@ struct OccultaBundle: Codable {
     // MARK: - Fields
 
     /// Protocol version. Included in AAD — tampering causes `open` to throw.
-    let version: Version
+    public let version: Version
 
     /// Minimal key-exchange fields. Authenticated as AAD — not encrypted.
     /// An observer can read `mode`, `ephemeralPublicKey`, and `prekeyID` only.
     /// For group bundles: `mode = .group`, `ephemeralPublicKey = Data()`, `prekeyID = nil`.
-    let secrecy: SecrecyContext
+    public let secrecy: SecrecyContext
 
     /// AES-GCM combined payload: nonce(12B) || JSON(SealedPayload) || tag(16B).
     /// For group bundles the session key is in each `Recipient.wrappedPayload`;
     /// `SealedPayload.prekeyBatch` is always nil (replenishment is per-recipient).
-    let ciphertext: Data
+    public let ciphertext: Data
 
     /// 16 random bytes, unique per bundle. Pre-decryption routing — not in AAD.
-    let fingerprintNonce: Data
+    public let fingerprintNonce: Data
 
     /// SHA-256(senderLongTermPublicKey || fingerprintNonce). Routing — not in AAD.
-    let senderFingerprint: Data
+    public let senderFingerprint: Data
 
     /// Group envelope — non-nil iff `secrecy.mode == .group`.
-    let group: GroupEnvelope?
+    public let group: GroupEnvelope?
 
-    init(
+    public init(
         version: Version,
         secrecy: SecrecyContext,
         ciphertext: Data,
@@ -698,16 +719,18 @@ struct OccultaBundle: Codable {
 
     // MARK: - Serialisation
 
-    func encoded(version: Version = .v3fs) throws -> Data {
+    public func encoded(version: Version = .v3fs) throws -> Data {
         switch version {
         case .v4, .groupCapable, .groupShardCapable:
             return try WireHandle.encode(self)
         default:
-            return try JSONEncoder().encode(self)
+            // Sorted keys: the legacy JSON bundle is cleartext, and a default JSONEncoder's key
+            // order changes with every app launch (see `WireHandle.encode`'s group envelope).
+            return try Self.encoder.encode(self)
         }
     }
 
-    static func decoded(from data: Data) throws -> OccultaBundle {
+    public static func decoded(from data: Data) throws -> OccultaBundle {
         if data.prefix(WireHandle.magic.count).elementsEqual(WireHandle.magic) {
             let parsed = try WireHandle.parse(data)
             return try OccultaBundle(wireBundle: parsed)
@@ -725,7 +748,7 @@ struct OccultaBundle: Codable {
     ///
     /// `.sortedKeys` is mandatory — without it, two `JSONEncoder` instances can produce
     /// different key orderings for the same struct, causing spurious `authenticationFailure`.
-    static func computeAdditionalAuthentication(version: OccultaBundle.Version, secrecy: SecrecyContext) throws -> Data {
+    public static func computeAdditionalAuthentication(version: OccultaBundle.Version, secrecy: SecrecyContext) throws -> Data {
         let version = version.rawValue.data(using: .utf8)!
         let secrecy = try Self.encoder.encode(secrecy)
         let together = version + secrecy
@@ -743,11 +766,11 @@ struct OccultaBundle: Codable {
 
     // MARK: - UI helpers
 
-    var isForwardSecret: Bool {
+    public var isForwardSecret: Bool {
         self.secrecy.mode == .forwardSecret || self.secrecy.mode == .forwardSecretNoPQ
     }
 
-    var securityLabel: String {
+    public var securityLabel: String {
         switch secrecy.mode {
         case .forwardSecret:     return "Forward Secret"
         case .forwardSecretNoPQ: return "Forward Secret"
@@ -770,14 +793,14 @@ struct OccultaBundle: Codable {
 /// `ContactManager.encryptGroupBundle` pads every recipient's shard arrays up to
 /// the same tier for a given send, computed from the real maximum across all
 /// recipients in that send.
-enum ShardPadding {
+public enum ShardPadding {
     /// Smallest doubling tier (2, 4, 8, 16, ...) that fits `count`. No upper bound —
     /// tiers grow to fit whatever the real maximum is for this specific send, so
     /// there is no reject/truncate path. Tradeoff: bundle size correlates with real
     /// content amount at tier granularity (coarser than exact size, far coarser than
     /// per-recipient distinguishability) across bundles observed over time — an
     /// accepted residual, not the leak this scheme closes.
-    static func tier(for count: Int) -> Int {
+    public static func tier(for count: Int) -> Int {
         var t = 2
         while t < count { t *= 2 }
         return t
@@ -788,7 +811,7 @@ enum ShardPadding {
 
 extension OccultaBundle {
     /// Reconstruct an `OccultaBundle` from a parsed binary outer envelope.
-    init(wireBundle b: WireHandle.Bundle) throws {
+    public init(wireBundle b: WireHandle.Bundle) throws {
         guard let version = WireHandle.byteToVersion(b.version) else {
             throw BundleError.unsupportedVersion
         }

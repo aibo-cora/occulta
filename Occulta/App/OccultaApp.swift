@@ -12,6 +12,7 @@ import Combine
 import ImageIO
 import SQLite3
 import UniformTypeIdentifiers
+import OccultaCore
 
 // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
 
@@ -960,7 +961,7 @@ struct RootView: View {
     /// After decryption, file-type attachments are written to a temporary directory
     /// so `AsyncImage` and `AVPlayer` can load them by URL.
     private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket? {
-        try await withThrowingTaskGroup(of: Occulta.File.self) { group in
+        try await withThrowingTaskGroup(of: OccultaCore.File.self) { group in
             let bundle = try? OccultaBundle.decoded(from: fileContents)
 
             debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
@@ -1096,7 +1097,7 @@ struct RootView: View {
 
             // ── Write file attachments, photos, videos to temp directory ─────────────────
 
-            var processed: [Occulta.File] = []
+            var processed: [OccultaCore.File] = []
             let tempDir         = FileManager.default.temporaryDirectory
             let attachmentManager = (try? self.contactManager.fileEncryptionKey(for: decrypted.ownerID))
                 .map { AttachmentManager(contactKey: $0) }
@@ -1115,7 +1116,7 @@ struct RootView: View {
                     // `file.format` below, only the on-disk path changes.
                     let fileURL = tempDir
                         .appendingPathComponent(UUID().uuidString)
-                        .appendingPathExtension(Occulta.File.Metadata.sanitizedFilesystemExtension(metadata.extension))
+                        .appendingPathExtension(OccultaCore.File.Metadata.sanitizedFilesystemExtension(metadata.extension))
                     let content = file.content ?? Data()
 
                     group.addTask {
@@ -1124,7 +1125,7 @@ struct RootView: View {
                         } else {
                             try content.writeProtected(to: fileURL)
                         }
-                        return Occulta.File(url: fileURL, format: file.format, date: file.date)
+                        return OccultaCore.File(url: fileURL, format: file.format, date: file.date)
                     }
 
                 default:

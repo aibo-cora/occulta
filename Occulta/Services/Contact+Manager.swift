@@ -13,6 +13,7 @@ import Combine
 import CoreData
 import Foundation
 import CryptoKit
+import OccultaCore
 
 @Observable
 class ContactManager {

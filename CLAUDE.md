@@ -71,10 +71,14 @@ particular not `apple/swift-crypto`, which on Apple platforms only re-exports Cr
 BoringSSL bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
 
 The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
-holds the code being extracted for reuse (`ShamirSecretSharing`, `PQProvider` so far) and must stay
-dependency-free: its `Package.swift` declares none, and adding one is the same supply-chain change
-as adding it to the app. It is nonisolated by default, unlike the app's `MainActor`. Its tests stay
-in `OccultaTests` (`@testable import OccultaCore`) so the one test command below still runs them.
+holds the code being extracted for reuse — `ShamirSecretSharing`, `PQProvider`, and the wire and
+at-rest formats (`OccultaBundle`, `WireHandle`, `DepthCodec`, `SignedAttribute`,
+`IdentityChallengeEnvelope`, `Basket`/`File`) — and must stay dependency-free: its `Package.swift`
+declares none, and adding one is the same supply-chain change as adding it to the app. It is
+nonisolated by default and builds in Swift 6 mode, unlike the app's `MainActor`. Its tests stay in
+`OccultaTests` (`@testable import OccultaCore`) so the one test command below still runs them.
+`OccultaTests/Interop/InteropVectors.json` pins the formats byte for byte; a change that alters a
+recorded vector breaks compatibility with existing contacts.
 
 - **Open:** `open Occulta.xcodeproj`
 - **Build/Run:** Cmd+R in Xcode, targeting a physical iPhone 11+ (U1 chip required for NearbyInteraction)

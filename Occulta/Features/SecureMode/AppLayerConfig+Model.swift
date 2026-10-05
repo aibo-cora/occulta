@@ -6,6 +6,7 @@
 import CryptoKit
 import Foundation
 import SwiftData
+import OccultaCore
 
 /// Routing depth — which contact layer the app is currently showing.
 ///

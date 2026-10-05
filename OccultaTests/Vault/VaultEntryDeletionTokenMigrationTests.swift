@@ -15,6 +15,7 @@ import Foundation
 import CryptoKit
 import SwiftData
 @testable import Occulta
+@testable import OccultaCore
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {

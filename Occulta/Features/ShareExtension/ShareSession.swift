@@ -16,6 +16,7 @@
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+import OccultaCore
 
 /// What `ShareSession` needs from the share-staging key: it only ever opens what the
 /// extension sealed.
@@ -73,10 +74,10 @@ enum ShareSession {
         in container: URL,
         keyManager: any ShareSessionDecrypting,
         now: Date = .now
-    ) throws -> [Occulta.File] {
+    ) throws -> [OccultaCore.File] {
         let sessionDir = self.directory(for: id, in: container)
 
-        var files: [Occulta.File] = []
+        var files: [OccultaCore.File] = []
 
         do {
             var manifestData = try keyManager.decrypt(
@@ -104,9 +105,9 @@ enum ShareSession {
                     content = stripped
                 }
 
-                files.append(Occulta.File(
+                files.append(OccultaCore.File(
                     content: content,
-                    format: .file(Occulta.File.Metadata(
+                    format: .file(OccultaCore.File.Metadata(
                         name: UUID().uuidString,
                         extension: entry.fileExtension
                     ))

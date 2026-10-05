@@ -7,6 +7,7 @@
 
 import Foundation
 import CryptoKit
+import OccultaCore
 
 // MARK: - Forward-secret encryption
 

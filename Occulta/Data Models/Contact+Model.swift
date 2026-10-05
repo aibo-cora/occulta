@@ -2,6 +2,7 @@ import SwiftData
 import Contacts
 import Foundation
 import CryptoKit
+import OccultaCore
 
 // MARK: - Main Contact Model
 

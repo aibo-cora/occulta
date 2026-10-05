@@ -22,6 +22,7 @@ import Foundation
 import CryptoKit
 import SwiftData
 @testable import Occulta
+@testable import OccultaCore
 
 
 

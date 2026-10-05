@@ -9,6 +9,7 @@ import Testing
 import Foundation
 import CryptoKit
 @testable import Occulta
+@testable import OccultaCore
 
 // MARK: - Helpers
 
@@ -562,7 +563,7 @@ private struct Pair {
         let content = Data("group round-trip test".utf8)
 
         let basketData = try WireHandle.encode(basket: Basket(files: [
-            Occulta.File(content: content, format: .text, date: Date())
+            OccultaCore.File(content: content, format: .text, date: Date())
         ]))
 
         let r      = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)

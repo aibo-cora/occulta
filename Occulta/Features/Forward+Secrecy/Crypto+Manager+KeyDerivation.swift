@@ -5,6 +5,7 @@
 
 import Foundation
 import CryptoKit
+import OccultaCore
 
 // MARK: - Outbound key derivation (shared by both seal overloads)
 
