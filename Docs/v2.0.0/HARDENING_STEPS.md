@@ -134,7 +134,7 @@ not depend on whether Secure Mode is on.
 
 ### 7. Show or require post-quantum per contact
 
-**Why.** ML-KEM runs only on iOS 26+ (`PQProvider`, `#available(iOS 26, *)`). Any pair where one side is
+**Why.** ML-KEM runs only on iOS 26+ (`PostQuantumProvider`, `#available(iOS 26, *)`). Any pair where one side is
 older gets classical crypto only. A well-resourced adversary records traffic now to decrypt later.
 Show each contact's post-quantum status, and give at-risk users a setting that refuses to send
 classical-only messages.

@@ -12,12 +12,12 @@ import CryptoKit
 @testable import Occulta
 import OccultaCore
 
-// MARK: - 1. PQProvider Tests
+// MARK: - 1. PostQuantumProvider Tests
 
 @available(iOS 26, *)
-final class PQProviderTests: XCTestCase {
+final class PostQuantumProviderTests: XCTestCase {
 
-    let provider: PQProvider = PQProviderFactory.createForTesting()!
+    let provider: PostQuantumProvider = PostQuantumProviderFactory.createForTesting()!
 
     // MARK: 1.1 Key generation
 
@@ -169,7 +169,7 @@ final class PQProviderTests: XCTestCase {
     }
 }
 
-// MARK: - 2. PQProviderFactory Tests
+// MARK: - 2. PostQuantumProviderFactory Tests
 
 
 
@@ -224,7 +224,7 @@ final class HybridKeyDerivationTests: XCTestCase {
 
     let alice = PQTestKeyPair()
     let bob = PQTestKeyPair()
-    let provider: PQProvider = PQProviderFactory.createForTesting()!
+    let provider: PostQuantumProvider = PostQuantumProviderFactory.createForTesting()!
 
     // MARK: 4.1 Both sides derive identical hybrid shared secret
 
@@ -375,7 +375,7 @@ final class DicewareKeyDerivationTests: XCTestCase {
 
     let alice = PQTestKeyPair()
     let bob = PQTestKeyPair()
-    let provider: PQProvider = PQProviderFactory.createForTesting()!
+    let provider: PostQuantumProvider = PostQuantumProviderFactory.createForTesting()!
 
     func testBothSidesDeriveIdenticalDicewareKey() {
         guard let aliceKeyPair = self.provider.generateKeyPair(),
@@ -600,7 +600,7 @@ final class HybridEncryptDecryptTests: XCTestCase {
 
     let alice = PQTestKeyPair()
     let bob = PQTestKeyPair()
-    let provider: PQProvider = PQProviderFactory.createForTesting()!
+    let provider: PostQuantumProvider = PostQuantumProviderFactory.createForTesting()!
 
     func testEncryptWithHybridKeyDecryptWithSameKey() throws {
         guard let aliceKeyPair = self.provider.generateKeyPair(),

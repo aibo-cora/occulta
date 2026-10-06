@@ -1174,7 +1174,7 @@ pub fn x963_kdf_sha256(
 ### `mlkem.rs` — Android only (feature `mlkem`)
 
 iOS performs ML-KEM-1024 in CryptoKit (`SecureEnclave.MLKEM1024`, iOS 26+,
-gated in `PQProvider.swift`) — the decapsulation key never leaves the SE, and
+gated in `PostQuantumProvider.swift`) — the decapsulation key never leaves the SE, and
 iOS never calls this module. Android has no platform or hardware ML-KEM, so the
 lattice operations live here, implemented by `libcrux-ml-kem` (formally
 verified, FIPS 203 final — encapsulation keys and ciphertexts are

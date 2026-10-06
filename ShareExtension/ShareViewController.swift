@@ -6,7 +6,7 @@
 //  Extension only — never linked by the main app.
 //
 //  Security boundary: this process NEVER links Manager.Key, Manager.Crypto,
-//  ContactManager, PrekeyManager, PQProvider, or OccultaBundle. The only crypto
+//  ContactManager, PrekeyManager, PostQuantumProvider, or OccultaBundle. The only crypto
 //  it performs is ShareStagingKeyManager's AES-GCM for the staged files and manifest.
 //
 //  It does not choose the recipient. Picking one here meant the app received what looked

@@ -1,5 +1,5 @@
 //
-//  PQProvider.swift
+//  PostQuantumProvider.swift
 //  Occulta
 //
 //  Post-quantum key encapsulation provider.
@@ -16,7 +16,7 @@ import CryptoKit
 
 /// Abstracts ML-KEM operations behind a version-agnostic interface.
 /// ExchangeManager and all call sites use this protocol — no ML-KEM types leak out.
-public protocol PQProvider {
+public protocol PostQuantumProvider {
 
     /// Generate an ML-KEM-1024 key pair.
     ///
@@ -51,22 +51,22 @@ public protocol PQProvider {
 
 // MARK: - Factory
 
-public enum PQProviderFactory {
+public enum PostQuantumProviderFactory {
 
     /// Returns a production PQ provider (SE-backed) if the platform supports ML-KEM.
     /// Returns nil on iOS < 26 — the exchange falls back to classical-only.
-    public static func create() -> PQProvider? {
+    public static func create() -> PostQuantumProvider? {
         if #available(iOS 26, *) {
-            return SecureEnclavePQProvider()
+            return SecureEnclavePostQuantumProvider()
         }
         return nil
     }
 
     /// Returns an in-memory PQ provider for unit tests (no Secure Enclave required).
     /// Returns nil on iOS < 26.
-    public static func createForTesting() -> PQProvider? {
+    public static func createForTesting() -> PostQuantumProvider? {
         if #available(iOS 26, *) {
-            return InMemoryPQProvider()
+            return InMemoryPostQuantumProvider()
         }
         return nil
     }
@@ -88,7 +88,7 @@ public enum PQProviderFactory {
 /// The private key is available after the first unlock, matching the app's usage pattern
 /// where the exchange happens while the device is unlocked and in active use.
 @available(iOS 26, *)
-private final class SecureEnclavePQProvider: PQProvider {
+private final class SecureEnclavePostQuantumProvider: PostQuantumProvider {
 
     func generateKeyPair() -> (publicKeyData: Data, privateKeyHandle: Any)? {
         guard
@@ -130,7 +130,7 @@ private final class SecureEnclavePQProvider: PQProvider {
 /// In-memory ML-KEM-1024 for unit tests. No Secure Enclave required.
 /// Cryptographic operations are identical — only the key storage differs.
 @available(iOS 26, *)
-private final class InMemoryPQProvider: PQProvider {
+private final class InMemoryPostQuantumProvider: PostQuantumProvider {
 
     func generateKeyPair() -> (publicKeyData: Data, privateKeyHandle: Any)? {
         guard
