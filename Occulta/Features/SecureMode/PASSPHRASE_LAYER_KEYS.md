@@ -221,6 +221,13 @@ every image and gone for good once deleted. A deleted keychain item survives in 
 keychain, which the passcode opens. So the fix keeps the Enclave key and makes *using* it insufficient
 on its own, the way ML-KEM already does for its modes.
 
+**Superseded for prekeys, 2026-10-06** (`Docs/Features/Prekey Continuity/DESIGN.md` §9, decision D9). An
+Enclave key kept in the keychain is not "absent from every image". It is a wrapped blob stored on disk
+(Apple DTS). Nothing documents that deleting it revokes an older copy, and the keychain records each item's
+creation date and doesn't scrub deleted rows. Prekeys stay Enclave keys, but their wrapped blobs move into
+the contact's sealed record, generated through CryptoKit. That requires the phrase as well as the passcode to
+use an old copy, and it leaves no keychain items for items 2 and 3 below to hide. Item 1 is unchanged.
+
 *The requirement:*
 1. **Every classical-only pair gets a per-contact secret.** It is mixed into both the forward-secret and
    the fallback derivation, the same way ML-KEM's secrets are, and stored in the contact's record. New
@@ -228,12 +235,13 @@ on its own, the way ML-KEM already does for its modes.
    message each way, each side contributing half. After its prekey is consumed, an earlier image can't
    open that message. Until both halves arrive, the pair stays in the old mode. Sending in the new mode
    needs the peer's version to support it, through the existing `maxBundleVersion` negotiation.
-2. **Prekey tags are random and name no contact.** The map from prekey ID to tag lives in the contact's
+2. **Prekey tags are random and name no contact.** *(Superseded by D9 above: new prekeys have no keychain
+   item, and legacy ones retire within 30 days.)* The map from prekey ID to tag lives in the contact's
    record. Existing prekeys are retagged in place. Whether `SecItemUpdate` can change the tag of an
    Enclave key on a device needs checking first. `KeychainMigrationSETests` shows the Simulator can't be
    trusted for that kind of update. Deleting and regenerating instead strands messages already sent to
    the old prekeys (Bug 82).
-3. **Random padding of the Enclave prekeys.** About 15 prekeys per contact otherwise reveals roughly how
+3. **Random padding of the Enclave prekeys.** *(Superseded by D9 above, for the same reason.)* About 15 prekeys per contact otherwise reveals roughly how
    many contacts exist, hidden ones included. Each install creates a random number of dummy Enclave
    keys, indistinguishable from real prekeys.
    - **Created once, never touched.** The count is drawn once per install. No depth ever deletes or

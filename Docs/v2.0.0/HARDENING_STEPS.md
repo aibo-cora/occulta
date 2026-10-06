@@ -130,6 +130,9 @@ batch during the exchange gives every message forward secrecy from the first.
 fallback. Test the exchange in both directions between old and new versions. The payload's size must
 not depend on whether Secure Mode is on.
 
+**Design:** [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), proposed 2026-10-06. Its §3.2 is
+this step. Seeding covers only the first message; the design's §3.1 and §3.3 cover the 1 in 16.
+
 **Tracked:** new. The measurement comes from the register's note on 82a.
 
 ### 7. Show or require post-quantum per contact
@@ -170,14 +173,20 @@ adversary three things:
 **What changes.**
 1. **17a. A per-contact secret for classical-only pairs**, mixed in the way ML-KEM's secrets are. New
    pairs derive it at the exchange. Existing pairs exchange it in band, over forward-secret messages.
-2. **17b. Random prekey tags**, with the map kept in the contact's record.
-3. **17b. Random padding:** each install creates a random number of dummy Enclave keys, once. Nothing
+2. ~~**17b. Random prekey tags**, with the map kept in the contact's record.~~
+3. ~~**17b. Random padding:** each install creates a random number of dummy Enclave keys, once. Nothing
    ever deletes or replaces them. In one image they hide a few hidden contacts' prekeys. Replacing
    dummies each session was considered and rejected: it adds almost nothing measurable, because the
-   transport usually shows the same messages.
+   transport usually shows the same messages.~~
 
-Prekeys stay in the Enclave. Moving them into the record would break forward secrecy against an image
-taken before the phrase is obtained.
+~~Prekeys stay in the Enclave. Moving them into the record would break forward secrecy against an image
+taken before the phrase is obtained.~~
+
+**17b superseded, 2026-10-06** ([Prekey Continuity §9](../Features/Prekey%20Continuity/DESIGN.md), D9).
+Prekeys stay Enclave keys, but their wrapped blobs move into the contact's sealed record, generated through
+CryptoKit, and no prekey is a keychain item any more. A keychain Enclave key is itself a blob on disk with a
+creation date, and nothing documents that deleting it revokes an older copy, so the reason above didn't hold.
+Software keys in the record are the fallback only with the owner's explicit sign-off.
 
 4. **17a. A sender fingerprint keyed with the per-contact secret** instead of the public key. Today
    anyone with the user's public key, which every contact has, can tell which `.occ` files the user
@@ -188,9 +197,15 @@ taken before the phrase is obtained.
 - **Senders on old versions.** Their classical-only messages stay readable until they update.
 - **Transport records** still show that a relationship exists. Step 16's guidance has to cover this.
 - **Repeated images** show prekeys appearing and disappearing that the surrendered depth can't account
-  for.
-- **More hidden contacts than the random padding covers** make the total stand out in one image.
-- **The padding range** itself.
+  for. *Changed by D9:* prekey changes become row writes, which step 4 covers like any other. This holds only
+  once the legacy keychain prekeys have retired (30 days after the last use of their batch). Until then it
+  applies to them as written.
+- ~~**More hidden contacts than the random padding covers** make the total stand out in one image.~~ Moot
+  under D9: no padding, no prekey keychain items. Legacy keychain prekeys remain countable until they retire.
+- **Where prekeys live.** Decided 2026-10-06 (D9, above).
+- ~~**The padding range** itself.~~ Moot under D9. The prekey batch size and refill threshold are decided
+  separately: 15/5 for v2.0.0 ([Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md) D4,
+  2026-10-06).
 - **Mixed groups.** A group file keeps the old, attributable fingerprint while any recipient hasn't
   upgraded.
 

@@ -7,7 +7,8 @@ assumption in [`PASSPHRASE_LAYER_KEYS.md`](../../Occulta/Features/SecureMode/PAS
 
 **Summary.** Steps 6–16 and 17a don't depend on each other and can ship one at a time, in any order.
 Steps 1–5 can be split by data (vault first, then contacts), but not step by step. 17b ships with the
-contacts slice. The rules below stay fixed
+contacts slice. (Since 2026-10-06, 17b for prekeys means moving their Enclave blobs into the contact record,
+Prekey Continuity D9.) The rules below stay fixed
 however the stages are cut.
 
 ## Rules that can't be staged
@@ -47,7 +48,7 @@ however the stages are cut.
 | **0 — nothing users see** | 9 CI trace check, 12 fuzzing, 13 drop keys on background, 10 advertising only in foreground, 14 signing checks, 15 account hardening | Same as today. This stage closes supply-chain risk and stops known leak types from coming back. |
 | **1 — additions old versions tolerate** | 6 prekeys in the exchange, 7a post-quantum status shown, 8 mandatory comparison, 11 wording pass, 17a per-contact secret for classical-only pairs and keyed sender fingerprint | Same on the phone. Messages between two updated contacts are forward-secret from the first one, and the exchange can't be intercepted. |
 | **2 — vault slice** | Steps 1–5 applied to vault entries; the phrase replaces the PIN | Vault content stays sealed without the phrase, and the PIN verifiers are gone. Contacts' depth stamps are still readable, so the number of depths still leaks. |
-| **3 — contacts slice** | Steps 1–5 applied to contacts, 17b random prekey tags and random padding, then the old local-DB key is deleted | Only what the surrendered phrase opens, apart from the items step 17 lists as open. |
+| **3 — contacts slice** | Steps 1–5 applied to contacts, 17b (since D9: new prekeys as Enclave blobs in the contact record, legacy keychain prekeys retiring), then the old local-DB key is deleted | Only what the surrendered phrase opens, apart from the items step 17 lists as open. Legacy keychain prekeys stay countable until they retire. |
 | **4 — the rest** | Steps 1–5 for backup-key, custody-shard and restore records; 7b refuse classical-only sends; 16 in-app guidance | The remaining records close. |
 
 ### Stage 0
@@ -98,6 +99,12 @@ what turns every leftover old-key ciphertext into noise.
 **17b** ships in this slice because the prekey-tag map lives in the contact record. Every dummy key must
 exist before any old `prekey.<contactID>.*` tag is retagged. Whether an Enclave key's tag can be updated in place has to be
 checked on a device first, because the Simulator is unreliable for that kind of update.
+
+**Changed by D9, 2026-10-06** ([Prekey Continuity §9](../Features/Prekey%20Continuity/DESIGN.md)). There are
+no dummy keys and no retagging. New prekeys are CryptoKit Enclave keys whose blobs live in the contact record,
+so they still ship in this slice. Existing keychain prekeys aren't moved: they stay until consumed or retired
+(30 days), and until then they remain countable in the keychain. The slice's protection for prekeys is
+complete only after that.
 
 ### Stage 4 — the rest
 

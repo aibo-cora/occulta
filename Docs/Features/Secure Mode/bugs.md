@@ -12854,3 +12854,225 @@ All six are added to the exception set. A sweep found no other `.md`/`.html` und
 `BundleContentsTests` (`OccultaTests/BundleContentsTests.swift`, no Enclave needed). It runs hosted in `Occulta.app`,
 fails on any `.md` or `.html` in the bundle or its appexes, and checks that the host is the app with both appexes
 embedded. With the exclusions reverted it fails and names exactly the six.
+
+## Bug 155 — An identity challenge makes each side generate a fresh prekey batch while the other still has keys
+
+**Status:** Open. Found 2026-10-06 reviewing the prekey batch lifecycle (Bugs 155–160 come from that review).
+
+**Target:** `v2.0.0`. Present since the identity challenge shipped (`b63b5daa`, 2026-04-15).
+
+### Severity: Medium (the main source of Bug 156's leftover Enclave keys)
+
+### What happens
+
+1. A batch is requested implicitly: when a bundle opens on the long-term path, `decryptSealed` and `openGroup`
+   read that as "the sender has used up my prekeys" and, if no batch is pending, call
+   `generateAndStoreFreshBatch` (15 new Enclave keys).
+2. `IdentityChallenge.Manager.sealIdentityBundle` always seals with `.longTermFallback`, whatever prekeys the
+   challenger holds, and `OccultaApp` opens it through `decryptSealed`. The challenge and the response each
+   trigger step 1 on the receiving side.
+3. The new batch rides the receiver's next message. `syncInboundPrekeys` accepts it (newer `generatedAt`) and
+   **replaces** the stored keys, discarding the unused part of the previous batch.
+4. The private halves of the discarded keys stay in the Enclave with nothing left to consume them (Bug 156).
+   Up to 15 per side, per challenge.
+
+Old-path shard sends to contacts below 1.9.0 do the same: `encryptBundle` skips the prekey pop when a piece is
+carried (`needsPrekey`), so those bundles are long-term even with prekeys available.
+
+### Fix (proposed)
+
+Only a bundle that could have been forward-secret should request a batch. Candidates: skip generation in
+`decryptSealed` when the payload carries `identityChallenge` (it is decoded after generation today, see
+Bug 159, so the order has to change first); or have the challenge use a prekey when one is available. Either
+way, the receiver must still treat the bundle the same on the wire, since identity-challenge traffic is meant
+to be indistinguishable from an ordinary fallback message.
+
+### Guard
+
+None yet. Needed: open an identity-challenge bundle through `decryptSealed` for a sender with no pending batch
+and assert none is created.
+
+## Bug 156 — Unused prekeys are never removed from the Secure Enclave
+
+**Status:** Open — fix decided 2026-10-06, not yet built: delete retired keys 30 days after retirement.
+
+**Target:** `v2.0.0`. Pruning existed (`d16ec10c`, 2026-03-18) and was removed in `efb0b199` (2026-03-29);
+every release with forward secrecy is affected.
+
+### Severity: Medium (open-ended forward-secrecy window for unopened messages; key count grows with history)
+
+### What happens
+
+A prekey private key leaves the Enclave in only two ways: `PrekeyManager.consume` when a message using it is
+opened, and `deleteAllKeys(for:)` when the contact is removed. Keys the contact will never use stay for good.
+They come from:
+
+- a batch replaced before it was used up (Bugs 155 and 157);
+- messages sealed to a key and never opened — lost in transit, or deleted unread;
+- batches generated and never saved (Bug 159).
+
+Two consequences:
+
+- **Forward secrecy.** A message sealed to a key that is never consumed can be opened by anyone who later has the
+  `.occ` file and the unlocked device, with no time limit. The rest of the design assumes that window closes.
+- **Forensic.** The number of `prekey.<contactID>.*` keys per contact only grows. It reflects how many batches
+  were replaced and how many messages were lost, which is more history than the design needs to keep.
+
+`remainingCount(for:)` counts these keys too, so it overstates how many prekeys the contact really holds. It
+has no production caller today, nor does `needsReplenishment`, which is built on it; wiring either up as-is
+would misfire.
+
+The comment in `PrekeyManager.generateBatch` ("A partial batch would prune old SE keys and increment the
+sequence") still describes the removed mechanism.
+
+### Fix — decided 2026-10-06
+
+The retirement rule in `Docs/Features/Prekey Continuity/DESIGN.md` §3.1 (its decision D1). A batch retires when
+the contact first uses a key from a newer batch; its remaining keys are deleted **30 days after retirement**.
+
+By time rather than by message count: a count leaves a contact who goes quiet holding old keys indefinitely,
+and their unopened files are where the risk is. The two options considered were:
+
+- **On the next generation, keeping one older batch** for in-flight messages. Bounded storage, but no bound
+  in time for a quiet contact. Not chosen.
+- **After a fixed age.** Bounds the forward-secrecy window in time; fails messages delivered late. Chosen.
+
+A leftover key at retirement always belongs to a message that was sealed and not opened here, so a file opened
+more than 30 days after its batch retired can't be opened. It fails with the generic error. The rule needs the
+batch a key belongs to recorded at generation, and a migration that treats the keys existing installs already
+hold as one retired-on-first-use batch (design §8, stage 1).
+
+### Guard
+
+None yet.
+
+## Bug 157 — Using any of our prekeys clears the pending batch, even one from an older batch
+
+**Status:** Open.
+
+**Target:** `v2.0.0`. Present since the pending batch was introduced (`8ec81d8a`, 2026-03-23).
+
+### Severity: Low (one extra fallback round; adds to Bug 156)
+
+### What happens
+
+`decryptSealed` and `openGroup` call `clearPendingBatch()` whenever a bundle opens with a prekey, as "proof the
+contact received our batch". It proves they received *a* batch, not the pending one. With messages arriving out
+of order:
+
+1. The contact seals m15 with our last key from batch 1, then m16 on the long-term path.
+2. m16 arrives first; we generate batch 2 and store it as pending.
+3. m15 arrives; its batch-1 key clears batch 2 before batch 2 has gone anywhere.
+
+The contact stays on the long-term path, the next fallback generates batch 3, and batch 2's keys stay in the
+Enclave (Bug 156).
+
+### Fix (proposed)
+
+Clear only when the consumed prekey's id is in the pending batch. The pending batch is stored with its ids, so
+no format change is needed.
+
+### Guard
+
+None yet. Needed: the sequence above through `decryptSealed`, asserting batch 2 is still pending after m15.
+
+## Bug 158 — A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely
+
+**Status:** Open — fix needs a decision.
+
+**Target:** `v2.0.0`. Present since `latestPrekeysGeneratedAt` was introduced (`efb0b199`, 2026-03-29).
+
+### Severity: Medium (forward secrecy silently off for a pair; neither side can restore it)
+
+### What happens
+
+`syncInboundPrekeys` accepts a batch only if its `generatedAt` is later than the last one accepted. That date
+comes from the **sender's** clock. If the sender's clock moves back past their previous batch's date (manual
+time setting, or a device restored with a wrong clock):
+
+1. Their new batch is older than the stored date, so we drop it without saying anything.
+2. We never use a key from it, so the sender never clears it (`clearPendingBatch` needs a used key).
+3. While a batch is pending, the sender doesn't generate another (`!hasPendingBatch`).
+
+Every message from us to that contact goes out on the long-term path until the sender's clock passes the old
+date. Nothing on either side shows why.
+
+### Fix — open, needs a decision
+
+`Docs/Features/Prekey Continuity/DESIGN.md` §3.3 proposes the first option below, with a batch `id` added as an
+optional field and the date rule kept for batches without one.
+
+The date check exists for a real reason: an old copy of the current batch can arrive after we have used some of
+its keys, and accepting it would bring back keys the contact has already deleted, making the messages sealed to
+them unopenable. Any replacement has to keep rejecting that copy. Options:
+
+- Dedupe on batch identity (its prekey ids) instead of time: reject a batch we have already accepted, accept any
+  other. Needs the ids of past batches kept, or a batch id added to `PrekeySyncBatch` (a wire change, which the
+  interop vectors pin).
+- Keep the date, and also accept an older-dated batch when our store for that contact is empty and the batch is
+  one we have not seen.
+
+### Guard
+
+None yet.
+
+## Bug 159 — A fresh prekey batch is generated before the bundle has passed every check
+
+**Status:** Open.
+
+**Target:** `v2.0.0`. `decryptSealed` has had this order since forward secrecy was introduced; `openGroup` since
+`87d3a21f` (2026-06-25).
+
+### Severity: Low (leftover Enclave keys; no message is accepted that shouldn't be)
+
+### What happens
+
+`decryptSealed` calls `generateAndStoreFreshBatch` before `decodePayload`; `openGroup` calls it before the
+`senderProof` check. Both bundles have already been authenticated by AES-GCM at that point, so nothing forged
+gets through. But if a later step throws, the 15 Enclave keys already exist while the pending batch is never
+saved (the explicit `modelContext.save()` is not reached). Every retry of the same file makes 15 more (Bug 156).
+
+### Fix (proposed)
+
+Move the generation after the last check that can throw, just before the save. This is also what Bug 155's fix
+needs, since it must see the decoded payload first.
+
+### Guard
+
+None yet.
+
+## Bug 160 — No test exercises the real prekey replenishment trigger
+
+**Status:** Open.
+
+**Target:** `v2.0.0`.
+
+### Severity: Medium (process: the mechanism that restores forward secrecy has no regression guard)
+
+### What happens
+
+`ExhaustionScenarioTests` (`ForwardSecrecyIntegrationTests.swift`) re-implements the orchestration inside the
+tests instead of calling it. `exhaustion_hasPendingBatch_blocksSecondGeneration`, for example, contains its own
+`if !contact.hasPendingBatch { … }`, and `exhaustion_pendingBatchCleared_onFSReceipt` calls `consume` and
+`clearPendingBatch` directly. They would all still pass with the trigger deleted from `ContactManager`.
+
+The only test on the real path is `PieceCarriesPrekeyBatchTests.trusteeStoresBatch` (Bug 152), which checks that
+a batch is delivered and stored, not that a long-term bundle generates one or that a used key clears it.
+
+Not covered by anything: a long-term bundle stores a pending batch; a forward-secret bundle clears it; the full
+cycle (keys used up → fallback → batch generated → batch rides the reply → next message is forward-secret), on
+both `decryptSealed` and `openGroup`.
+
+The doc comment on `ContactManager.encryptGroupBundle` says a batch is attached when the member's "stock for this
+sender is below the replenishment threshold". It is attached whenever one is pending; the threshold
+(`PrekeyManager.replenishThreshold`) is not used anywhere in production.
+
+### Fix (proposed)
+
+End-to-end tests through `decryptSealed` and `openGroup` for each item above. They create prekeys through
+`PrekeyManager`, so they need `.enabled(if: secureEnclaveAvailable())`, not the ambient trait. Correct the
+`encryptGroupBundle` comment.
+
+### Guard
+
+This entry is the guard's absence.

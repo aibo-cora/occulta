@@ -2,6 +2,8 @@
 
 An **OccultaBundle** is the encrypted container used to send any data between two Occulta contacts — messages, vault shards, prekey material, and identity challenges. Every bundle is addressed to a single recipient and can only be opened by the device that holds the matching private key.
 
+**Related:** `Docs/Features/Bundle/SPEC.md` (v4 wire format, byte for byte). `Docs/Features/Prekey Continuity/DESIGN.md` (proposed: when each mode is used, and replacing the long-term fallback between current builds). Known bugs are listed at the end of this document.
+
 ---
 
 ## The Big Picture
@@ -147,3 +149,21 @@ The current wire version is `v3fs`. The version tag is included in the AAD so it
 | Either → Unknown build | Rejected at version or mode check |
 
 If a contact is on an old build that cannot open a NoPQ bundle, the solution is for both parties to update — or, to restore quantum key material via re-exchange so hybrid modes can be used again.
+
+---
+
+## Known Bugs
+
+Detail lives in `Docs/Features/Secure Mode/bugs.md`; this is the subset that concerns bundles and prekeys.
+
+| Bug | Summary | Status |
+|---|---|---|
+| 82 | A contact identity-key change makes earlier messages from that contact undecryptable | Open (split into 82a/82b) |
+| 83 | A contact who downgrades below 1.10.2 stops receiving our forward-secret group messages | Open |
+| 152 | A trustee who has used up the owner's prekeys never confirms a backup-key piece | Fixed 2026-09-29 |
+| 155 | An identity challenge makes each side generate a fresh prekey batch while the other still has keys | Open |
+| 156 | Unused prekeys are never removed from the Secure Enclave | Open — fix decided (30 days after retirement) |
+| 157 | Using any of our prekeys clears the pending batch, even one from an older batch | Open |
+| 158 | A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely | Open — needs a decision |
+| 159 | A fresh prekey batch is generated before the bundle has passed every check | Open |
+| 160 | No test exercises the real prekey replenishment trigger | Open |
