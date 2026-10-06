@@ -145,7 +145,7 @@ graph in one event. Every contact re-pairs physically with the new phone.
 **R-7 · The channel is the owner's own two phones in a physical ceremony.** The same proximity and
 Diceware word confirmation as a contact exchange (`Exchange+Manager.swift`), with the payload
 sealed under a one-time session key from ephemeral key agreement (P-256, plus ML-KEM-768 behind
-`#available(iOS 26, *)` as in `PQProvider`). Neither phone's identity key is involved and nothing
+`#available(iOS 26, *)` as in `PostQuantumProvider`). Neither phone's identity key is involved and nothing
 is trusted beyond this one transfer. The old phone requires vault unlock (biometric) before it
 sends vault content, exactly as export does today.
 

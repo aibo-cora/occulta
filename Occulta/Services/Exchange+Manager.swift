@@ -11,7 +11,7 @@
 //  ⚠️ Backward compatibility contract:
 //  - All messages use `version: .v1` on the wire.
 //  - Classical (P-256-only) exchanges use hybridResult: nil in the Payload.
-//  - If PQProvider is nil (iOS < 26), exchange is classical-only.
+//  - If PostQuantumProvider is nil (iOS < 26), exchange is classical-only.
 //  - If peer sends identity without `encapsulationKey`, exchange is classical-only.
 //
 //  ⚠️ Thread safety:
@@ -64,7 +64,7 @@ class ExchangeManager: NSObject {
     // MARK: - PQ exchange state
 
     /// PQ provider — nil on iOS < 26.
-    private let pqProvider: PQProvider? = PQProviderFactory.create()
+    private let postQuantumProvider: PostQuantumProvider? = PostQuantumProviderFactory.create()
     /// Our 16-byte nonce, generated at session start and committed in discovery.
     private var ourNonce: Data?
     /// Peer's nonce from their discovery message. Nil if peer is v1.
@@ -166,7 +166,7 @@ class ExchangeManager: NSObject {
         let keyManager = Manager.Key()
         self.ourNonce = keyManager.generateExchangeNonce()
 
-        if let provider = self.pqProvider, let keyPair = provider.generateKeyPair() {
+        if let provider = self.postQuantumProvider, let keyPair = provider.generateKeyPair() {
             self.privateKeyHandle = keyPair.privateKeyHandle
             self.encapsulationKeyData = keyPair.publicKeyData
             #if DEBUG
@@ -472,7 +472,7 @@ class ExchangeManager: NSObject {
                 self.phase = .identityExchanged(fingerprint: peersP256Key.sha256)
 
                 if let peerEncapKey = decoded.encapsulationKey,
-                   let provider = self.pqProvider,
+                   let provider = self.postQuantumProvider,
                    self.privateKeyHandle != nil {
                     // PQ path
                     #if DEBUG
@@ -509,7 +509,7 @@ class ExchangeManager: NSObject {
                 } else {
                     // Classical fallback: no PQ provider, no private key, or peer has no encapsulation key.
                     #if DEBUG
-                    debugPrint("[KE] Classical path — provider: \(self.pqProvider != nil), privateKey: \(self.privateKeyHandle != nil), peerKey: \(decoded.encapsulationKey != nil)")
+                    debugPrint("[KE] Classical path — provider: \(self.postQuantumProvider != nil), privateKey: \(self.privateKeyHandle != nil), peerKey: \(decoded.encapsulationKey != nil)")
                     #endif
 
                     if case .sendingMyIdentity = self.exchangeStatus {
@@ -577,7 +577,7 @@ class ExchangeManager: NSObject {
                 }
                 guard let ciphertext = decoded.ciphertext,
                       let handle = self.privateKeyHandle,
-                      let provider = self.pqProvider else { return }
+                      let provider = self.postQuantumProvider else { return }
 
                 #if DEBUG
                 debugPrint("[KE] Peer's ciphertext received from \(peerID.displayName)")

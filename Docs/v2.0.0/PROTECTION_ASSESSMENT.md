@@ -88,4 +88,4 @@ itself.
 | Secure Mode PIN verifiers crack in under a second after extraction | `bugs.md` Bug 119, threat review of 2026-09-29 |
 | 7 diceware words ≈ 90.5 bits; ~27,000 years at the Bitcoin network's SHA-256 scale with PBKDF2 | Spec §4 table, order of magnitude, assumptions stated there |
 | Fallback fires first in each direction, then roughly 1 in 16 | `OPEN_LIMITATIONS.md` note on 82a (`defaultBatchSize` 15, no prekeys in the exchange) |
-| ML-KEM only on iOS 26+ | `CLAUDE.md`; `PQProvider` availability gate |
+| ML-KEM only on iOS 26+ | `CLAUDE.md`; `PostQuantumProvider` availability gate |

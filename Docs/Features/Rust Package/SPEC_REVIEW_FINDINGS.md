@@ -94,7 +94,7 @@ pair.
 
 ### F9. ML-KEM-1024 has no Android home — ⚠️ decision recorded
 iOS uses `SecureEnclave.MLKEM1024` (CryptoKit, iOS 26+, gated in
-`Features/PostQuantum/PQProvider.swift`) — the decapsulation key never leaves the SE.
+`OccultaCore/Sources/OccultaCore/PostQuantumProvider.swift`) — the decapsulation key never leaves the SE.
 Android has no platform or hardware ML-KEM.
 **Decision:** new feature-gated `occulta-crypto/mlkem.rs` backed by `libcrux-ml-kem`
 (formally verified, FIPS 203 final — wire-compatible with CryptoKit). **Documented posture

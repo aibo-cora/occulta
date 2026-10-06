@@ -71,7 +71,7 @@ particular not `apple/swift-crypto`, which on Apple platforms only re-exports Cr
 BoringSSL bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
 
 The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
-holds the code being extracted for reuse — `ShamirSecretSharing`, `PQProvider`, and the wire and
+holds the code being extracted for reuse — `ShamirSecretSharing`, `PostQuantumProvider`, and the wire and
 at-rest formats (`OccultaBundle`, `WireHandle`, `DepthCodec`, `SignedAttribute`,
 `IdentityChallengeEnvelope`, `Basket`/`File`) — and must stay dependency-free: its `Package.swift`
 declares none, and adding one is the same supply-chain change as adding it to the app. It is
@@ -107,7 +107,7 @@ recorded vector breaks compatibility with existing contacts.
 Physical device needed for NearbyInteraction.
 
 Note the deployment target and the availability gates are different things: ML-KEM is behind
-`#available(iOS 26, *)` in `PQProvider`, so the post-quantum path is live only on iOS 26+ and the
+`#available(iOS 26, *)` in `PostQuantumProvider`, so the post-quantum path is live only on iOS 26+ and the
 classical-only modes exist for everything between 18.6 and that.
 
 **Secure Enclave and the test suite.** Most tests inject `TestKeyManager` or run under
