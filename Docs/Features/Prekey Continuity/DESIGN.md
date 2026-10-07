@@ -3,7 +3,7 @@
 **Status:** Proposed, 2026-10-06. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
-Nothing else is decided.
+**Downgrades ruled out by release order** (D6, 2026-10-07). Only D7 is open.
 Every point that needs a decision is listed in §10 and marked where it comes up. §9 records research that
 challenges where prekeys are stored at all.
 
@@ -381,10 +381,28 @@ New fields are optional and ride inside the sealed payload. Behaviour changes on
 | **Recipient new** | Everything here | Old sender ignores `lastResort` and `id`, replaces its store, falls back to long-term when out. The recipient answers long-term bundles as today. Retirement still works (§3.1). |
 | **Recipient old** | Old recipient's batches have no `lastResort`, so the sender falls back to long-term when out. Batches without an `id` use the date rule. | Unchanged |
 
-**Downgrade.** A contact who sent us a last-resort key and then installs an older build can't open bundles
-sealed to it: their build looks up the derived `prekeyID` and finds nothing. This is the same class as Bug 83,
-and the recorded version can't detect it, since it only ever rises. **Open, needs a decision (D6).** Downgrades
-on iOS need TestFlight or a side-loaded build.
+**Downgrade (D6, decided 2026-10-07).** A contact who sent us a last-resort key and then installs an older
+build can't open bundles sealed to it: their build looks up the derived `prekeyID` and finds nothing. The
+recorded version can't detect it, since it only ever rises. Downgrades on iOS need TestFlight or a sideloaded
+build.
+
+**Decided: rule it out by release order.** Last-resort keys (stage 2) ship no earlier than the release that
+does v2.0.0's one-way migration: rollout stage 3, the contacts slice, which D9 already ties prekey storage to.
+`ROLLOUT_PLAN.md` holds that "migrations are one-way. An older build can't read resealed data." So any build
+that can issue a last-resort key has migrated, and any build too old to understand one can't read the migrated
+database at all. A contact who forces such a downgrade has an app that can't read its own data. That is the
+rollout plan's existing consequence, and nothing about it comes from this design. Only TestFlight testers
+moving between pre-release builds could meet the narrower failure.
+
+**Rejected: a "last reported version" marker for this decision.** Every message carries `appVersion`, so a
+second, overwritable marker could stop us sealing to the temporary key once a contact reports an older build.
+It would hand a lever to anyone with temporary use of the contact's identity key, such as someone holding
+their unlocked phone or malware on it. One planted "old version" message would move everything we send them
+afterwards from their prekeys to the long-term key, openable from either phone, ours included, with no time
+limit. The D2 indicator would show it, but that is a warning, not a protection. Its only benefit is to
+TestFlight and sideload users. The rejection covers this use only. Bug 83's remedy uses the same kind of
+marker for the signature-prefix choice, where a forced downgrade only means signing the bare form, and that
+remains valid.
 
 **New capability tier** (name to choose), at the release that ships §3.4(a). §3.1 and §3.3 need none: a
 batch's own fields say what its sender supports.
@@ -485,7 +503,8 @@ D1 and D9 are decided.
   is dropped (158); retired keys are deleted after the grace period and not before; a message sealed to a
   retired key within the grace period still opens.
 
-**Stage 2 — last-resort key (§3.1).** Needs D6. D2's indicator and D5's replay guards ship with it.
+**Stage 2 — last-resort key (§3.1).** D2's indicator and D5's replay guards ship with it. Ships no earlier
+than the release that does the one-way migration (rollout stage 3, D6), and never ahead of stage 1.
 - *Migration:* pairs get a last-resort key with their next batch. Existing custody rows have no "supersedes"
   field (G2′): one pass re-seals each with a random filler ID, the same re-seal `deleteCustodyShards`
   already does, so no row is distinguishable by having been migrated.
@@ -623,7 +642,7 @@ would still not outweigh its unconditional metadata leaks.
 
 ## 10. Open decisions
 
-D6 and D7 are open, and none is accepted.
+D7 is open, and not accepted.
 
 | # | Decision | Where |
 |---|---|---|
@@ -632,7 +651,7 @@ D6 and D7 are open, and none is accepted.
 | D3 | Identity challenges. **Decided 2026-10-07: group format to contacts at the new tier (a)**; long-term to older contacts as today | §3.4 |
 | D4 | Batch size and refill threshold `T`. **Decided 2026-10-06: 15/5.** 50/15 revisited only with a measurement from an iPhone 11 holding no real data | §4.1 |
 | D5 | Replay of last-resort bundles. **Decided 2026-10-07: messages may reopen; piece operations and manifests only on one-time keys; trustee guards G1 (no duplicate `.replace`) and G2′ ("supersedes" field in the existing row); a replay matrix over every protocol case.** Replay cache, per-owner tombstones, timestamp ordering and a manifest counter rejected | §3.1 |
-| D6 | Handling a contact who downgrades after sending a last-resort key | §5 |
+| D6 | A contact who downgrades after sending a last-resort key. **Decided 2026-10-07: ruled out by release order**: last-resort keys ship no earlier than the one-way migration. A "last reported version" marker for this decision was rejected as a downgrade lever | §5 |
 | D7 | Binding the seed batch: sign it (§3.2), or wait for step 8 and send it after confirmation | §3.2 |
 | D8 | Target release. **Decided 2026-10-06: v2.0.0**, alongside steps 6 and 17 | §8 |
 | D9 | Where prekeys live. **Decided 2026-10-06: Enclave-wrapped blobs (CryptoKit) in the contact's sealed record**, not keychain items. Fallback to software keys in the record only with the owner's explicit, recorded sign-off | §9 |

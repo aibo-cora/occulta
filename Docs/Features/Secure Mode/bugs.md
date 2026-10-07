@@ -4223,6 +4223,13 @@ Cheaper alternative if the extra field is unwelcome: drop the tier entirely and 
 unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare arm in
 `verifySenderEphemeralSignature` at the same time. That is the end state either way.
 
+**Note, 2026-10-07.** The last-claimed marker was considered for a second use and rejected for that use only:
+deciding whether to seal to a contact's last-resort prekey (`Docs/Features/Prekey Continuity/DESIGN.md` §5,
+D6). There, a planted "old version" from someone with temporary use of the contact's identity key would move
+everything we send them onto the long-term key, openable from either phone indefinitely. This remedy is
+unaffected: a forced downgrade of the *prefix choice* only means signing bare, which exposes nothing, as
+argued above. Don't reuse a last-claimed marker for any decision that weakens confidentiality.
+
 ---
 
 ## Bug 84 — Share-extension handoff runs the whole outbound encryption before the PIN, and its transport sheet presents over the PIN gate

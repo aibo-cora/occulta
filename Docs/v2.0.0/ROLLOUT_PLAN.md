@@ -40,6 +40,10 @@ however the stages are cut.
 - **App Store phased release** spreads a migration release over 7 days for automatic-update users. It
   only limits damage if users report problems, because the app sends no telemetry.
 - **Migrations are one-way.** An older build can't read resealed data.
+- **Last-resort prekeys ship no earlier than the one-way migration** (stage 3 below; [Prekey
+  Continuity](../Features/Prekey%20Continuity/DESIGN.md) D6, 2026-10-07). An older build can't open a
+  message sealed to one. This rule means any build that issues one has already migrated, so no working
+  build can be downgraded below it.
 
 ## Stages
 
