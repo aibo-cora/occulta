@@ -2,7 +2,7 @@
 
 **Status:** Proposed, 2026-10-06. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
-15, refill at 5** (D4). All decided 2026-10-06; nothing else is.
+15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). Nothing else is decided.
 Every point that needs a decision is listed in §10 and marked where it comes up. §9 records research that
 challenges where prekeys are stored at all.
 
@@ -210,15 +210,29 @@ long-term key itself "as defense-in-depth" and opens the bundle with it. Every s
 rejects a challenge sent any other way, including in group format, even though `OccultaApp` routes group
 challenges to the handler.
 
-**Open, needs a decision (D3):**
-- **(a) Send challenges in group format to contacts at the new tier.** The handler takes the payload
-  `openGroup` already opened instead of re-deriving. The challenge is then authenticated by
-  `senderEphemeralSignature` (an identity-key signature) rather than by long-term ECDH, which is equivalent.
-  The response is already signed by the identity key. Contacts below the tier keep today's path. This also
-  removes Bug 155's trigger, since a challenge would no longer look like an exhausted sender.
-- **(b) Leave challenges long-term.** They then stand out to anyone holding the files.
+**Decided 2026-10-07 (D3): option (a), challenges in group format to contacts at the new tier.** Option (b),
+leaving them long-term, was rejected: once §3.1–3.3 are in, challenges would stand out to anyone holding the
+files.
 
-I recommend (a).
+- **Sending.** A challenge and its response go through the same group-format path as a message, sealed with a
+  one-time key, the temporary key, or, with neither, the long-term key. The last case keeps the header's rule
+  that "identity verification must never fail because of prekey exhaustion".
+- **Receiving.** Phase 2 (`decryptChallenge`) and phase 3 (`verifyResponse`) take the payload and sender that
+  `openGroup` already opened and checked, instead of re-deriving the long-term key in `openIdentityBundle`.
+  `openGroup`'s checks replace that defense-in-depth. The slot only opens with our own prekey or long-term key.
+  For a forward-secret slot, `senderEphemeralSignature` is verified and, at this tier, required. And
+  `senderProof` binds the routing fields.
+- **Authentication is unchanged in strength.** The challenge was authenticated by long-term ECDH; it is now
+  authenticated by an identity-key signature over the slot's ephemeral key. Both need the contact's identity
+  private key. The response stays signed by the identity key after the contact approves it.
+- **Version gate.** Contacts below the tier keep today's long-term path, unchanged. The tier is shared with
+  step 17a's negotiation rather than adding another.
+- **Bonus.** Challenge contents, including the typed context note, get forward secrecy instead of being
+  openable from either phone indefinitely.
+- **Bug 155.** New-tier challenges no longer look like an exhausted sender, so they stop triggering batches.
+  Long-term challenges from contacts below the tier still would, so `decryptSealed` also skips batch generation
+  when the payload carries `identityChallenge`. That needs Bug 159's reordering first, since generation runs
+  before decoding today.
 
 ---
 
@@ -428,10 +442,13 @@ D1 and D9 are decided.
   indicator resolves to each of its three states from the matching key state (one-time key held, only the
   last-resort key, neither) and to the same state at every depth.
 
-**Stage 3 — identity challenges (§3.4).** Needs D3 and the new tier.
+**Stage 3 — identity challenges (§3.4).** D3 is decided (group format at the new tier). Needs the tier, shared
+with step 17a.
 - *Migration:* none. A challenge already in flight uses the old path, which stays.
-- *Tests:* a challenge to a new-tier contact goes in group format and verifies; to an older contact, long-term
-  as today; a group-format challenge with a bad ephemeral signature is rejected.
+- *Tests:* a challenge and its response to a new-tier contact go in group format and verify end to end; with
+  no prekeys held for the contact, they still go through, on the long-term slot; to an older contact,
+  long-term as today; a group-format challenge with a bad or missing ephemeral signature is rejected; a
+  long-term challenge from an older contact creates no prekey batch (Bug 155).
 
 **Stage 4 — refill and append (§3.3).** D4 is decided (15/5).
 - *Migration:* none beyond stage 1's.
@@ -549,13 +566,13 @@ would still not outweigh its unconditional metadata leaks.
 
 ## 10. Open decisions
 
-D3–D7 are open, and none is accepted.
+D5–D7 are open, and none is accepted.
 
 | # | Decision | Where |
 |---|---|---|
 | D1 | Grace period before a retired batch is deleted. **Decided 2026-10-06: by time, 30 days from retirement** | §3.1 |
 | D2 | What the compose indicator shows when only the last-resort key is held. **Decided 2026-10-06: a third state in its own colour, and a description on every state.** Colour (blue middle state, amber long-term) and wording signed off 2026-10-07 | §7 |
-| D3 | Identity challenges: move to group format (a) or leave long-term (b) | §3.4 |
+| D3 | Identity challenges. **Decided 2026-10-07: group format to contacts at the new tier (a)**; long-term to older contacts as today | §3.4 |
 | D4 | Batch size and refill threshold `T`. **Decided 2026-10-06: 15/5.** 50/15 revisited only with a measurement from an iPhone 11 holding no real data | §4.1 |
 | D5 | Replay of last-resort bundles: accept until deletion, or keep a replay cache | §3.1 |
 | D6 | Handling a contact who downgrades after sending a last-resort key | §5 |

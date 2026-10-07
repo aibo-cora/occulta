@@ -12857,7 +12857,8 @@ embedded. With the exclusions reverted it fails and names exactly the six.
 
 ## Bug 155 — An identity challenge makes each side generate a fresh prekey batch while the other still has keys
 
-**Status:** Open. Found 2026-10-06 reviewing the prekey batch lifecycle (Bugs 155–160 come from that review).
+**Status:** Open — fix decided 2026-10-07, not yet built. Found 2026-10-06 reviewing the prekey batch lifecycle
+(Bugs 155–160 come from that review).
 
 **Target:** `v2.0.0`. Present since the identity challenge shipped (`b63b5daa`, 2026-04-15).
 
@@ -12879,13 +12880,15 @@ embedded. With the exclusions reverted it fails and names exactly the six.
 Old-path shard sends to contacts below 1.9.0 do the same: `encryptBundle` skips the prekey pop when a piece is
 carried (`needsPrekey`), so those bundles are long-term even with prekeys available.
 
-### Fix (proposed)
+### Fix — decided 2026-10-07
 
-Only a bundle that could have been forward-secret should request a batch. Candidates: skip generation in
-`decryptSealed` when the payload carries `identityChallenge` (it is decoded after generation today, see
-Bug 159, so the order has to change first); or have the challenge use a prekey when one is available. Either
-way, the receiver must still treat the bundle the same on the wire, since identity-challenge traffic is meant
-to be indistinguishable from an ordinary fallback message.
+Both candidates, by contact version (`Docs/Features/Prekey Continuity/DESIGN.md` §3.4, decision D3):
+- **Contacts at the new tier:** challenges go in group format, sealed like a message, so they no longer look
+  like an exhausted sender and request no batch.
+- **Contacts below it:** challenges stay long-term, and `decryptSealed` skips batch generation when the payload
+  carries `identityChallenge`. It is decoded after generation today, so Bug 159's reordering comes first.
+
+The old-path shard case (contacts below 1.9.0) is not covered by either and stays open.
 
 ### Guard
 

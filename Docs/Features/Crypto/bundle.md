@@ -161,7 +161,7 @@ Detail lives in `Docs/Features/Secure Mode/bugs.md`; this is the subset that con
 | 82 | A contact identity-key change makes earlier messages from that contact undecryptable | Open (split into 82a/82b) |
 | 83 | A contact who downgrades below 1.10.2 stops receiving our forward-secret group messages | Open |
 | 152 | A trustee who has used up the owner's prekeys never confirms a backup-key piece | Fixed 2026-09-29 |
-| 155 | An identity challenge makes each side generate a fresh prekey batch while the other still has keys | Open |
+| 155 | An identity challenge makes each side generate a fresh prekey batch while the other still has keys | Open — fix decided (group-format challenges, D3) |
 | 156 | Unused prekeys are never removed from the Secure Enclave | Open — fix decided (30 days after retirement) |
 | 157 | Using any of our prekeys clears the pending batch, even one from an older batch | Open |
 | 158 | A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely | Open — needs a decision |
