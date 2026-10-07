@@ -60,7 +60,7 @@ depends on.
 | Register §E | Language risk; `USER_GUIDE.md` overclaims and names authorities | Tier 3 P1 | 11 |
 | Register §I | A duress depth's content can look thin next to the real one | Accepted, 2026-09-07 | Residual; see the assessment |
 | Spec §2, message keys | Prekey tags name contacts; classical-only modes open with the passcode alone | Decided, 2026-10-04; open items listed in step 17 | 17 |
-| Bugs 155–160 | Prekey batch lifecycle: needless batches, keys never pruned, clock-based dedupe, untested trigger | Open | 6, 17 (via [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), targeted at v2.0.0 on 2026-10-06; D1–D4, D8, D9 decided, D5–D7 open. D9 supersedes 17b for prekeys) |
+| Bugs 155–160 | Prekey batch lifecycle: needless batches, keys never pruned, clock-based dedupe, untested trigger | Open | 6, 17 (via [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), targeted at v2.0.0 on 2026-10-06; D1–D5, D8, D9 decided, D6–D7 open. D9 supersedes 17b for prekeys) |
 
 Steps 6, 7, 10, 13, 15, 16 and 17 are not tracked anywhere else yet.
 

@@ -2,7 +2,8 @@
 
 **Status:** Proposed, 2026-10-06. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
-15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). Nothing else is decided.
+15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
+Nothing else is decided.
 Every point that needs a decision is listed in §10 and marked where it comes up. §9 records research that
 challenges where prekeys are stored at all.
 
@@ -149,9 +150,59 @@ openable on their phone, for as long as that lasts. There is no better fallback:
 would push the sender back to the identity keys, which are exposed on both phones, forever. What the user
 can do is wait for a reply before sending something sensitive, which is what D2's indicator is for.
 
-**Replay.** A last-resort bundle opens again if it is delivered again, until its key is deleted. A long-term
-bundle opens again forever, so this is no worse than today. A replay cache would stop it, but it would be a
-stored record of messages received. **Open, needs a decision (D5).**
+**Replay (D5, decided 2026-10-07).** A last-resort bundle opens again whenever it is delivered again, until
+its key is deleted, and is processed again each time. A long-term bundle already behaves this way, forever.
+That was harmless because long-term bundles are barred from anything with lasting effect. A last-resort
+bundle uses the forward-secret mode, though, and the receive path accepts backup-piece operations on
+forward-secret slots, which was safe only because one-time keys made each such bundle single-use.
+
+What a repeat delivery would do:
+
+| Effect | On repeat |
+|---|---|
+| Message shown again | Yes. This is what D2's "Multiple Views" already says |
+| Identity challenge | Nothing: each nonce is single-use, and challenges go stale |
+| Prekey batch inside it | Nothing, once Bug 158's batch IDs drop a batch already seen |
+| "Sender is out of keys" signal | At most one unneeded batch when none is pending |
+| `.replace` (trustee) | Stores another copy of the piece each time: unlike `.distribute`, it doesn't check for one already held |
+| Old `.distribute` / `.replace` after a newer one (trustee) | **Brings back a piece the owner replaced**, undoing a rotation. With `newKey`, that rotation exists to revoke a dropped trustee's piece (Bugs 141, 144) |
+| Custody manifest (owner) | Can flip a piece's status from a stale report |
+
+**Decided: (a), with two guards on the trustee side and a test matrix.**
+- **Backup-piece operations and custody manifests ride only on one-time keys.** The sender doesn't attach them
+  when it seals to the last-resort key. The receiver drops them from a slot opened with a last-resort key,
+  as it already does on long-term slots. A trustee on the last-resort key confirms later, as on long-term
+  today, which refilling makes rare.
+- **Only the current last-resort key signals "out of keys".** A repeat delivery sealed to an older one
+  generates nothing.
+- **G1: `.replace` skips a piece it already holds,** as `.distribute` does (protocol case 15). This stops
+  duplicate rows.
+- **G2′: each custody row carries a "supersedes" field,** the ID the piece replaced, taken from the
+  `.replace` that installed it. While the row is held, an operation carrying that ID is rejected, which
+  blocks the most damaging replay: undoing the latest rotation. The field is inside the existing sealed row,
+  always present, and always the same size (a random ID after a plain `.distribute`). It is written in the
+  same write as the piece and deleted with it, so it adds no record, history or write that the row doesn't
+  already have. It remembers one generation back. Older replays rely on the first bullet.
+- **The replay matrix is the main safety net.** Every case in `Occulta/Features/Vault/SHARD_PROTOCOL_CASES.md`
+  is run with each operation delivered twice and in every order. Custody state must match a single in-order
+  delivery.
+
+**Considered and rejected:**
+- **A replay cache of opened last-resort bundles.** It is a stored list that grows with traffic from a
+  contact. It would make "Multiple Views" untrue for the recipient's own reopening, and it would only add
+  blocking re-display, which long-term messages never had.
+- **G2, a per-owner list of retired piece IDs.** It would be a new per-owner record that outlives the piece,
+  grows with every rotation, and changes on writes only that owner causes. For a hidden owner, that is
+  another artifact with history.
+- **Rejecting a piece older (by its signed `createdAt`) than one already held.** There is nothing safe to
+  compare it with. A trustee legitimately holds several live pieces from one owner, one per depth
+  (`VAULT_KEY_LAYERING.md`), so comparing per owner would judge one depth's piece by another's: a wrong
+  rejection, and coupling between depths. And every re-split mints a new `entryID` (`prepareShards`,
+  Bug 124), so comparing per `entryID` never compares anything. Making it work needs a signed lineage ID
+  that survives re-splits. That is a wire change, and it would let a trustee link an owner's pieces into
+  lineages and count how many of the owner's depths have backups.
+- **M1, a counter in custody manifests.** It is a wire change, and the first bullet already makes manifests
+  single-use.
 
 ### 3.2 Seed a batch at the in-person exchange
 
@@ -434,13 +485,19 @@ D1 and D9 are decided.
   is dropped (158); retired keys are deleted after the grace period and not before; a message sealed to a
   retired key within the grace period still opens.
 
-**Stage 2 — last-resort key (§3.1).** Needs D5 and D6. D2's indicator ships with it.
-- *Migration:* none. Pairs get a last-resort key with their next batch.
+**Stage 2 — last-resort key (§3.1).** Needs D6. D2's indicator and D5's replay guards ship with it.
+- *Migration:* pairs get a last-resort key with their next batch. Existing custody rows have no "supersedes"
+  field (G2′): one pass re-seals each with a random filler ID, the same re-seal `deleteCustodyShards`
+  already does, so no row is distinguishable by having been migrated.
 - *Tests:* sender falls back to last-resort, not long-term, when out; the derived `prekeyID` differs per
   bundle and matches the UUID format; recipient opens it without consuming it; the three bookkeeping rows in
   §3.1; an old-format batch leaves the sender on long-term; interop vectors for a batch that carries it; the
   indicator resolves to each of its three states from the matching key state (one-time key held, only the
-  last-resort key, neither) and to the same state at every depth.
+  last-resort key, neither) and to the same state at every depth. Replay (D5): no piece operation or
+  manifest is attached when sealing to the last-resort key; a last-resort slot carrying them has them dropped;
+  a repeat delivery sealed to an older last-resort key generates no batch; a repeated `.replace` stores
+  nothing (G1); a replayed operation carrying a held row's "supersedes" ID is rejected (G2′); the "supersedes"
+  field encodes to the same size with and without a real ID; and the replay matrix over every protocol case.
 
 **Stage 3 — identity challenges (§3.4).** D3 is decided (group format at the new tier). Needs the tier, shared
 with step 17a.
@@ -566,7 +623,7 @@ would still not outweigh its unconditional metadata leaks.
 
 ## 10. Open decisions
 
-D5–D7 are open, and none is accepted.
+D6 and D7 are open, and none is accepted.
 
 | # | Decision | Where |
 |---|---|---|
@@ -574,7 +631,7 @@ D5–D7 are open, and none is accepted.
 | D2 | What the compose indicator shows when only the last-resort key is held. **Decided 2026-10-06: a third state in its own colour, and a description on every state.** Colour (blue middle state, amber long-term) and wording signed off 2026-10-07 | §7 |
 | D3 | Identity challenges. **Decided 2026-10-07: group format to contacts at the new tier (a)**; long-term to older contacts as today | §3.4 |
 | D4 | Batch size and refill threshold `T`. **Decided 2026-10-06: 15/5.** 50/15 revisited only with a measurement from an iPhone 11 holding no real data | §4.1 |
-| D5 | Replay of last-resort bundles: accept until deletion, or keep a replay cache | §3.1 |
+| D5 | Replay of last-resort bundles. **Decided 2026-10-07: messages may reopen; piece operations and manifests only on one-time keys; trustee guards G1 (no duplicate `.replace`) and G2′ ("supersedes" field in the existing row); a replay matrix over every protocol case.** Replay cache, per-owner tombstones, timestamp ordering and a manifest counter rejected | §3.1 |
 | D6 | Handling a contact who downgrades after sending a last-resort key | §5 |
 | D7 | Binding the seed batch: sign it (§3.2), or wait for step 8 and send it after confirmation | §3.2 |
 | D8 | Target release. **Decided 2026-10-06: v2.0.0**, alongside steps 6 and 17 | §8 |
