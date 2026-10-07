@@ -16,7 +16,7 @@ Code references are against `3319fd7`. Line numbers drift, so re-check them befo
 5. Bind the small sealed fields to their row and field
 
 **B. Protect messages the adversary already holds**
-6. Send prekeys during the in-person exchange
+6. Send prekeys during the in-person exchange (deferred out of v2.0.0, 2026-10-07)
 7. Show or require post-quantum per contact
 8. Authenticate the exchange peer, not just that it's close
 17. Keep message keys behind the depth keys (added 2026-10-04; numbered last so earlier references
@@ -132,6 +132,12 @@ not depend on whether Secure Mode is on.
 
 **Design:** [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), proposed 2026-10-06. Its §3.2 is
 this step. Seeding covers only the first message; the design's §3.1 and §3.3 cover the 1 in 16.
+
+**Deferred out of v2.0.0, 2026-10-07.** Once §3.1 and §3.3 ship, a pair leaves the long-term mode at the
+contact's first reply, so this step would only protect messages sent to a new contact before that reply.
+That doesn't justify a new exchange message, a version check, and end-to-end testing on two physical phones,
+none of which is available without real data. The compose indicator warns before that first reply. The
+remaining exposure is open, not accepted. The binding worked out for it (D7) is kept in the design's §3.2.
 
 **Tracked:** new. The measurement comes from the register's note on 82a.
 

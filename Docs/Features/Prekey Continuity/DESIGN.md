@@ -3,7 +3,8 @@
 **Status:** Proposed, 2026-10-06. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
-**Downgrades ruled out by release order** (D6, 2026-10-07). Only D7 is open.
+**Downgrades ruled out by release order** (D6, 2026-10-07). **Seeding at the exchange (§3.2,
+stage 5, step 6) deferred out of v2.0.0** (2026-10-07), which leaves D7 moot until it returns.
 Every point that needs a decision is listed in §10 and marked where it comes up. §9 records research that
 challenges where prekeys are stored at all.
 
@@ -43,7 +44,9 @@ standing liability on two devices.
 ## 2. Goals and non-goals
 
 **Goals**
-- No message between two contacts on a current build uses the identity keys for its session key.
+- No message between two contacts on a current build uses the identity keys for its session key once the
+  contact has replied for the first time. Before that first reply, with §3.2 deferred, messages to a new
+  contact use the long-term key, and the compose indicator says so (§7). **Open, not accepted.**
 - A message sent while the sender is out of one-time prekeys is exposed on the recipient's device only, and
   only until the recipient's next batch replaces the key (§3.1, "Without a reply").
 - Nothing new is visible to someone holding the files, the keychain, or a coerced unlock.
@@ -56,9 +59,9 @@ standing liability on two devices.
 
 ## 3. Design
 
-Four parts, all needed. §3.1 is the one that removes the long-term mode; §3.2 and §3.3 make one-time prekeys
-the normal case so §3.1 is rarely used; §3.4 keeps identity challenges from standing out once long-term
-bundles are rare.
+Four parts. §3.1 is the one that removes the long-term mode; §3.2 and §3.3 make one-time prekeys the normal
+case so §3.1 is rarely used; §3.4 keeps identity challenges from standing out once long-term bundles are rare.
+§3.2 is deferred out of v2.0.0 (2026-10-07); the other three ship.
 
 ### 3.1 Last-resort prekey
 
@@ -205,6 +208,28 @@ What a repeat delivery would do:
   single-use.
 
 ### 3.2 Seed a batch at the in-person exchange
+
+**Deferred out of v2.0.0, 2026-10-07.** With §3.1 and §3.3 in place, a pair leaves the long-term mode the moment
+the contact first replies, since that reply carries their first batch. Seeding would then only protect what is
+sent to a new contact before that first reply: usually one message, sometimes a short burst. Against that:
+- a new exchange message and a version check, so exchanges with older builds still complete;
+- D7's binding (below);
+- end-to-end testing that needs two physical iPhones running the exchange, since UWB doesn't run in the
+  Simulator, and every available phone holds real data.
+
+What covers the gap meanwhile is D2's indicator. Before that first reply it reads "Multiple Views · Long-Term
+Key — Hold back anything sensitive", so a user can send a short hello and wait. The remaining exposure, that
+messages before a new contact's first reply use the long-term key, is **open, not accepted**. The section
+below is kept as the design to return to.
+
+**D7, as worked out before the deferral.** Bind the batch by sealing it under a key derived from the same
+secret as the comparison words: the identity ECDH, the ML-KEM secrets and both nonces, under a separate HKDF
+label. Send it right after the ML-KEM step and before the words appear, then hold it in memory and store it
+only on Confirm. Matching words then prove the batch came from the person checked. Sealing also keeps the
+last-resort key's `idKey` confidential end to end, which signing alone would leave to the unauthenticated
+session's encryption. If the batch hasn't arrived by Confirm, the contact is saved without it. Mixing the
+batch into the words was rejected as fragile. Waiting for step 8 binds nothing unless step 8 adds session
+certificates.
 
 This is v2.0.0 step 6. It removes "the first message is always long-term". Additions to step 6's constraints:
 
@@ -430,7 +455,7 @@ replaced. 17a is unchanged: the identity key stays in the keychain.
 
 | Observer | Today | After |
 |---|---|---|
-| Holds the `.occ` files | Sees which bundles are long-term: the first message, ~1 in 16, challenges | Long-term only to or from older builds. Last-resort bundles look like one-time ones. With §3.4(a), challenges don't stand out. |
+| Holds the `.occ` files | Sees which bundles are long-term: the first message, ~1 in 16, challenges | Long-term only to or from older builds, and before a new contact's first reply. Last-resort bundles look like one-time ones. With §3.4(a), challenges don't stand out. |
 | Images the keychain | ~15 keys per contact plus an unbounded number of leftovers (Bug 156), each with a creation date | No prekey items once legacy keys retire (D9) |
 | Images the device repeatedly | Keys disappear as messages are read | Rows change, covered by step 4 as any other write (D9) |
 | Coerces an unlock at a duress depth | Sees the forward-secrecy indicator for contacts at that depth | The same. The indicator must not depend on depth. |
@@ -469,7 +494,8 @@ the label and description carry that, which they have to do anyway for colour-bl
 
 *When the long-term state still happens.* Older-build contacts once their one-time keys run out; contacts who
 have updated but not yet sent a batch from the new build; and the edges (a stranded version marker, a
-downgrade under D6, a reset of our stored copy of their keys). New contacts never reach it once stage 5 ships.
+downgrade under D6, a reset of our stored copy of their keys), and every new contact until their first reply,
+since seeding at the exchange (stage 5) is deferred.
 
 The description is plain language, with no claim beyond what the mode delivers (register §E). The state is
 per contact and doesn't depend on depth, so a coercer at the compose screen learns at most that the contact
@@ -531,12 +557,13 @@ with step 17a.
 - *Tests:* refill fires at `T`; the sender appends and uses the oldest first; the first use of the new batch
   retires the old one; a two-way conversation of 100 messages never reaches the last-resort key.
 
-**Stage 5 — seed at the exchange (§3.2, v2.0.0 step 6).** Lands with 17a and 17b, which change the exchange
-and the tags. Needs D7.
-- *Tests:* both directions between old and new builds; a batch with a bad signature isn't stored; a cancelled
-  exchange leaves no Enclave keys; the first message after an exchange is forward secret.
+**Stage 5 — seed at the exchange (§3.2, v2.0.0 step 6). Deferred out of v2.0.0, 2026-10-07 (§3.2).** When it
+returns: D7's sealing as recorded in §3.2.
+- *Tests, for then:* both directions between old and new builds; a batch that fails to open isn't stored; a
+  cancelled exchange leaves nothing behind; the first message after an exchange is forward secret.
 
-**Expected result** between two current-build contacts after stage 5: no message uses the identity keys. A
+**Expected result** between two current-build contacts after stage 4: no message uses the identity keys once
+the contact has first replied; before that, messages to a new contact are long-term and the indicator says so. A
 one-way burst past the keys held uses the last-resort key. It is exposed on the recipient's phone only, until
 the sender uses a key from the recipient's next batch, plus 30 days; with no reply, for as long as the
 recipient keeps the key (§3.1). To measure it, count long-term bundles in a scripted
@@ -642,7 +669,8 @@ would still not outweigh its unconditional metadata leaks.
 
 ## 10. Open decisions
 
-D7 is open, and not accepted.
+None is open for v2.0.0. D7 returns with stage 5. The exposure §2 names (messages before a new contact's
+first reply) is open, not accepted.
 
 | # | Decision | Where |
 |---|---|---|
@@ -652,6 +680,6 @@ D7 is open, and not accepted.
 | D4 | Batch size and refill threshold `T`. **Decided 2026-10-06: 15/5.** 50/15 revisited only with a measurement from an iPhone 11 holding no real data | §4.1 |
 | D5 | Replay of last-resort bundles. **Decided 2026-10-07: messages may reopen; piece operations and manifests only on one-time keys; trustee guards G1 (no duplicate `.replace`) and G2′ ("supersedes" field in the existing row); a replay matrix over every protocol case.** Replay cache, per-owner tombstones, timestamp ordering and a manifest counter rejected | §3.1 |
 | D6 | A contact who downgrades after sending a last-resort key. **Decided 2026-10-07: ruled out by release order**: last-resort keys ship no earlier than the one-way migration. A "last reported version" marker for this decision was rejected as a downgrade lever | §5 |
-| D7 | Binding the seed batch: sign it (§3.2), or wait for step 8 and send it after confirmation | §3.2 |
+| D7 | Binding the seed batch. **Moot for v2.0.0: stage 5 deferred, 2026-10-07.** Worked-out answer kept in §3.2 for when it returns: seal under a key derived from the words' secret, sent before the words | §3.2 |
 | D8 | Target release. **Decided 2026-10-06: v2.0.0**, alongside steps 6 and 17 | §8 |
 | D9 | Where prekeys live. **Decided 2026-10-06: Enclave-wrapped blobs (CryptoKit) in the contact's sealed record**, not keychain items. Fallback to software keys in the record only with the owner's explicit, recorded sign-off | §9 |
