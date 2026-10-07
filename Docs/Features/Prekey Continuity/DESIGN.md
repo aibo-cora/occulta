@@ -231,6 +231,15 @@ session's encryption. If the batch hasn't arrived by Confirm, the contact is sav
 batch into the words was rejected as fragile. Waiting for step 8 binds nothing unless step 8 adds session
 certificates.
 
+**Likely direction when this returns (owner's note, 2026-10-07).** Exchange the prekeys, or any other data the
+pair needs at setup, **after** both users confirm the comparison words, authenticated with a key derived from
+the confirmed secret. That key is symmetric, so it gives a MAC or AEAD rather than a signature; sealing with
+AEAD also covers the `idKey`'s confidentiality. Nothing is accepted until the human check has passed. What it
+changes: today each phone's Confirm is local and tears its session down at once (`finish()` in
+`KeyExchange.swift`). The session would have to stay up until both sides have confirmed and exchanged, and
+the timeout and one-side-cancels cases would need defining. That replaces the send-before-the-words timing
+above, whose only advantage is that a fast Confirm on one side can't cut the exchange short.
+
 This is v2.0.0 step 6. It removes "the first message is always long-term". Additions to step 6's constraints:
 
 - **The batch includes a last-resort key**, so the first burst of more than 15 messages is covered too.
@@ -680,6 +689,6 @@ first reply) is open, not accepted.
 | D4 | Batch size and refill threshold `T`. **Decided 2026-10-06: 15/5.** 50/15 revisited only with a measurement from an iPhone 11 holding no real data | §4.1 |
 | D5 | Replay of last-resort bundles. **Decided 2026-10-07: messages may reopen; piece operations and manifests only on one-time keys; trustee guards G1 (no duplicate `.replace`) and G2′ ("supersedes" field in the existing row); a replay matrix over every protocol case.** Replay cache, per-owner tombstones, timestamp ordering and a manifest counter rejected | §3.1 |
 | D6 | A contact who downgrades after sending a last-resort key. **Decided 2026-10-07: ruled out by release order**: last-resort keys ship no earlier than the one-way migration. A "last reported version" marker for this decision was rejected as a downgrade lever | §5 |
-| D7 | Binding the seed batch. **Moot for v2.0.0: stage 5 deferred, 2026-10-07.** Worked-out answer kept in §3.2 for when it returns: seal under a key derived from the words' secret, sent before the words | §3.2 |
+| D7 | Binding the seed batch. **Moot for v2.0.0: stage 5 deferred, 2026-10-07.** Kept in §3.2 for when it returns: authenticate with a key derived from the words' secret, most likely exchanging prekeys and other setup data after both users confirm the words (owner's note, 2026-10-07) | §3.2 |
 | D8 | Target release. **Decided 2026-10-06: v2.0.0**, alongside steps 6 and 17 | §8 |
 | D9 | Where prekeys live. **Decided 2026-10-06: Enclave-wrapped blobs (CryptoKit) in the contact's sealed record**, not keychain items. Fallback to software keys in the record only with the owner's explicit, recorded sign-off | §9 |
