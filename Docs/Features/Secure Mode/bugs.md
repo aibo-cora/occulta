@@ -13097,8 +13097,12 @@ clears. Each test uses its own contact identifier and deletes its Enclave prekey
 
 The `encryptGroupBundle` comment now says the batch is attached whenever one is pending.
 
-`ExhaustionScenarioTests` is left as it was. Its tests still pass and still re-implement the orchestration, so
-they guard nothing on their own; whether to delete them is a separate call.
+`ExhaustionScenarioTests` was deleted the same day. Each of its five tests either re-implemented the
+orchestration in its own body or asserted something another suite already covers: the long-term mode with no
+prekey (`CryptoForwardSecrecyTests`), batch generation (`PrekeyManagerTests`), and pending-batch store, load
+and clear (`ForwardSecrecyModelTests`). Names like `fallbackDetected` and `onFSReceipt` described app behaviour
+the tests never touched, which is how this bug went unnoticed. All five were Enclave-gated, so CI's skip count
+drops by five.
 
 ### Guard
 
