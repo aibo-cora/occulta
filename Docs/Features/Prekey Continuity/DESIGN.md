@@ -519,7 +519,8 @@ other OS store (v2.0.0 step 9).
 Each stage ships with its tests and a migration that loses no message. Enclave-backed tests use
 `.enabled(if: secureEnclaveAvailable())`, since they create prekeys through `PrekeyManager`.
 
-**Stage 0 — tests on today's code (Bug 160).** End to end through `decryptSealed` and `openGroup`: a long-term
+**Stage 0 — tests on today's code (Bug 160). Done 2026-10-08:** `PrekeyReplenishmentTriggerTests.swift`, Bug 159
+fixed; full suite 985 tests, 0 failed, 6 skipped (all `KeychainMigrationSETests`). End to end through `decryptSealed` and `openGroup`: a long-term
 bundle creates a pending batch; a forward-secret bundle clears it; the full cycle back to forward secrecy.
 These pin current behaviour before anything changes. Also fix Bug 159 (generate after the last check).
 

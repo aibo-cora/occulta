@@ -13028,7 +13028,7 @@ None yet.
 
 ## Bug 159 — A fresh prekey batch is generated before the bundle has passed every check
 
-**Status:** Open.
+**Status:** Fixed 2026-10-08 (prekey continuity stage 0, branch `v2.0.0/prekey-stage-0`).
 
 **Target:** `v2.0.0`. `decryptSealed` has had this order since forward secrecy was introduced; `openGroup` since
 `87d3a21f` (2026-06-25).
@@ -13042,18 +13042,27 @@ None yet.
 gets through. But if a later step throws, the 15 Enclave keys already exist while the pending batch is never
 saved (the explicit `modelContext.save()` is not reached). Every retry of the same file makes 15 more (Bug 156).
 
-### Fix (proposed)
+### Fix
 
-Move the generation after the last check that can throw, just before the save. This is also what Bug 155's fix
-needs, since it must see the decoded payload first.
+The pending-batch bookkeeping (clearing the batch, or generating one) now runs after every check that can
+throw and immediately before the save: `decryptSealed` step 5, `openGroup` step 6.5. Prekey *consumption*
+stays where it was, at the moment the bundle opens, so a rejected bundle still can't leave a used prekey alive
+in the Enclave (§2.2 of `SECURITY_CHECKLIST.md`). This is also the ordering Bug 155's fix needs.
+
+One check still runs after the save: `openGroup`'s missing-`groupID` rejection. A bundle failing it has already
+saved its bookkeeping, so its keys are recorded rather than left behind, which is outside this bug. It is noted
+here because it means a bundle rejected there can still drive the bookkeeping.
 
 ### Guard
 
-None yet.
+`PrekeyReplenishmentTriggerTests.swift` (Enclave-gated): `rejectedAfterOpenLeavesNothing` (`decryptSealed`, a
+bundle carrying an invalid inbound batch) and `rejectedAfterSlotOpensLeavesNothing` (`openGroup`, a corrupted
+shared ciphertext). Each asserts no pending batch and no Enclave prekeys afterwards. With the old order, both
+fail with 15 keys left behind.
 
 ## Bug 160 — No test exercises the real prekey replenishment trigger
 
-**Status:** Open.
+**Status:** Fixed 2026-10-08 (prekey continuity stage 0, branch `v2.0.0/prekey-stage-0`).
 
 **Target:** `v2.0.0`.
 
@@ -13077,12 +13086,21 @@ The doc comment on `ContactManager.encryptGroupBundle` says a batch is attached 
 sender is below the replenishment threshold". It is attached whenever one is pending; the threshold
 (`PrekeyManager.replenishThreshold`) is not used anywhere in production.
 
-### Fix (proposed)
+### Fix
 
-End-to-end tests through `decryptSealed` and `openGroup` for each item above. They create prekeys through
-`PrekeyManager`, so they need `.enabled(if: secureEnclaveAvailable())`, not the ambient trait. Correct the
-`encryptGroupBundle` comment.
+`PrekeyReplenishmentTriggerTests.swift` (`OccultaTests/Forward+Secrecy/`, Enclave-gated) drives the real
+trigger on both paths. A long-term bundle with no batch pending stores 15 fresh Enclave prekeys; a second one
+while a batch is pending generates nothing; a forward-secret bundle sealed to one of our prekeys clears the
+batch and consumes the key. The full cycle runs through the real `openGroup` and `encryptBundle`: long-term in,
+batch generated, the batch rides our reply in the sender's slot, the sender seals to its first key, the batch
+clears. Each test uses its own contact identifier and deletes its Enclave prekeys afterwards.
+
+The `encryptGroupBundle` comment now says the batch is attached whenever one is pending.
+
+`ExhaustionScenarioTests` is left as it was. Its tests still pass and still re-implement the orchestration, so
+they guard nothing on their own; whether to delete them is a separate call.
 
 ### Guard
 
-This entry is the guard's absence.
+The tests above. They assert the trigger's effects directly (a stored batch, its 15 Enclave keys, the batch
+cleared), so removing the trigger from either method would fail them.
