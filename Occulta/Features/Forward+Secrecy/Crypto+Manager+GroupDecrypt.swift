@@ -88,7 +88,7 @@ extension Manager.Crypto {
         senderContactID: String,
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
-        prekeySecretsManager: Manager.PrekeySecretsManager
+        prekeys: PrekeyPrivateKeys
     ) throws -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?, mode: OccultaBundle.Mode) {
         guard let recipients = bundle.group?.recipients else {
             throw GroupDecryptError.noGroupEnvelope
@@ -108,7 +108,7 @@ extension Manager.Crypto {
         var usedPrekey: Prekey?
         defer {
             if let usedPrekey {
-                prekeySecretsManager.consume(prekey: usedPrekey)
+                prekeys.consume(prekeyID: usedPrekey.id, contactID: usedPrekey.contactID)
             }
         }
 
@@ -118,7 +118,7 @@ extension Manager.Crypto {
                 senderContactID: senderContactID,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
-                prekeySecretsManager: prekeySecretsManager
+                prekeys: prekeys
             ) else { continue }
             
             guard let box   = try? AES.GCM.SealedBox(combined: entry.wrappedPayload),

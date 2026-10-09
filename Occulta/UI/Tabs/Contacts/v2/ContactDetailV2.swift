@@ -450,7 +450,7 @@ private struct ComposeHeroV2: View {
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
 
-                    if let isForwardSecret = self.contacts.first?.hasPrekeyAvailable {
+                    if let isForwardSecret = self.contacts.first.map(self.contactManager.hasPrekeyAvailable) {
                         SecrecyIndicator(isForwardSecret: isForwardSecret)
                     }
                 }

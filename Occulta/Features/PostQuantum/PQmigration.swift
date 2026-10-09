@@ -374,6 +374,13 @@ struct DatabaseMigration {
             legacy: legacyCrypto,
             new: newCrypto
         )
+        contact.prekeyRecordEncrypted = try reencryptData(
+            contact.prekeyRecordEncrypted,
+            field: "prekeyRecordEncrypted",
+            id: id,
+            legacy: legacyCrypto,
+            new: newCrypto
+        )
 
         // MARK: Relationship fields
 

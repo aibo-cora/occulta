@@ -61,6 +61,10 @@ extension Manager.Crypto {
     /// FS modes: look up the prekey private key, ECDH, return the Prekey for post-open consumption.
     /// Fallback modes: long-term ECDH, no prekey to consume (returns nil).
     ///
+    /// The private key comes from `prekeys`: an Enclave key rebuilt from the sender's record, or a legacy
+    /// keychain key. Both derive through the same function (`Manager.Key.forwardSecretSessionKey`), so a
+    /// sender can't tell which one it sealed to.
+    ///
     /// NoPQ mode variants always use nil quantum material regardless of what the caller passes —
     /// the mode name is authoritative. This lets `openGroup` pass the same quantum material to
     /// all trial-decryption slots without mismatching NoPQ slots that the sender sealed without ML-KEM.
@@ -71,7 +75,7 @@ extension Manager.Crypto {
         senderContactID: String,
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
-        prekeySecretsManager: Manager.PrekeySecretsManager
+        prekeys: PrekeyPrivateKeys
     ) throws -> (key: SymmetricKey, consumablePrekey: Prekey?) {
         switch secrecy.mode {
         case .forwardSecret, .forwardSecretNoPQ:
@@ -82,14 +86,24 @@ extension Manager.Crypto {
             let temp = Prekey(id: prekeyID, contactID: senderContactID, publicKey: Data())
             // NoPQ: sender did not use ML-KEM — ignore any quantum material on file.
             let effectiveQM: QuantumKeyMaterial? = secrecy.mode == .forwardSecretNoPQ ? nil : quantumMaterial
-            guard
-                let privKey = prekeySecretsManager.retrievePrivateKey(for: temp),
-                let key = self.deriveSessionKey(
-                    ephemeralPrivateKey: privKey,
-                    recipientMaterial: secrecy.ephemeralPublicKey,
-                    quantumMaterial: effectiveQM
+            guard let privateKey = prekeys.privateKey(forPrekeyID: prekeyID, contactID: senderContactID) else {
+                throw EncryptionError.keyDerivationFailed
+            }
+            let key: SymmetricKey?
+            switch privateKey {
+            case .keychain(let secKey):
+                key = self.deriveSessionKey(
+                    ephemeralPrivateKey: secKey, recipientMaterial: secrecy.ephemeralPublicKey, quantumMaterial: effectiveQM
                 )
-            else { throw EncryptionError.keyDerivationFailed }
+            case .enclave(let enclaveKey):
+                key = (try? P256.KeyAgreement.PublicKey(x963Representation: secrecy.ephemeralPublicKey))
+                    .flatMap { try? enclaveKey.sharedSecretFromKeyAgreement(with: $0) }
+                    .flatMap { self.deriveSessionKey(
+                        sharedSecret: $0, ownPublicKey: enclaveKey.publicKey.x963Representation,
+                        recipientMaterial: secrecy.ephemeralPublicKey, quantumMaterial: effectiveQM
+                    ) }
+            }
+            guard let key else { throw EncryptionError.keyDerivationFailed }
             return (key, temp)
 
         case .longTermFallback, .longTermNoPQ:

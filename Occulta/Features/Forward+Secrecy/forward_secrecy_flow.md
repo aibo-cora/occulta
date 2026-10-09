@@ -1,3 +1,6 @@
+> Out of date since prekey continuity stage 1: `configureForwardSecrecy`, `popOldestPrekeyData`, `syncInboundPrekeys`
+> and `clearPendingBatch` are gone. See `Docs/Features/Prekey Continuity/DESIGN.md`, stage 1.
+
 ```mermaid
 flowchart TD
     subgraph ALICE["Alice — encryptBundle"]

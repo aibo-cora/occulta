@@ -4,9 +4,9 @@
 //
 //  §2.2 — a prekey must not survive a bundle that opened and was then rejected.
 //
-//  These need a real Secure Enclave: prekey private keys are SE-backed and
-//  `findAndOpenRecipientSlot` takes the concrete `Manager.PrekeySecretsManager`, so there is no
-//  injection seam to prefer over gating (see CLAUDE.md's note on the two).
+//  These need a real Secure Enclave: they check that a legacy keychain prekey, SE-backed, is gone
+//  from the keychain, which an injected `PrekeyPrivateKeys` would not exercise (see CLAUDE.md's
+//  note on seams and gating).
 //
 
 import Testing
@@ -73,7 +73,7 @@ private func secureEnclaveAvailable() -> Bool {
                 senderContactID: self.contactID,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: nil,
-                prekeySecretsManager: self.prekeySecretsManager
+                prekeys: self.prekeySecretsManager
             )
         }
 
@@ -134,7 +134,7 @@ private func secureEnclaveAvailable() -> Bool {
                 senderContactID: "someone-else",
                 senderPublicKey: f.senderPub,
                 quantumMaterial: nil,
-                prekeySecretsManager: f.prekeySecretsManager
+                prekeys: f.prekeySecretsManager
             )
         }
 

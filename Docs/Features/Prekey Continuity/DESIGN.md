@@ -587,13 +587,22 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     from their base vector by exactly the `id` field. The bookkeeper rejects an ID that isn't 16 bytes: the
     sender chooses it and the record stores it.
   - **Generation.** 15 CryptoKit Enclave keys, the same access control as today, blobs into a new own-batch
-    record.
+    record. Built 2026-10-09 (`PrekeySecretsManager.generateEnclaveKeys`, installed by
+    `ContactManager.installFreshBatch`); it stays after every check that can reject the bundle (Bug 159).
   - **Lookup.** The receive path checks the record's blobs first, then the keychain for legacy keys. The key
     manager's forward-secret derivation splits into "raw shared secret" and "session key from it", so a
-    CryptoKit key and a `SecKey` go through the same derivation.
+    CryptoKit key and a `SecKey` go through the same derivation. Built 2026-10-09: the receive path takes a
+    `PrekeyPrivateKeys`, which `SenderPrekeys` implements over the sender's record and the keychain.
+  - **Where it is read until the migration.** `ContactManager.prekeyRecord(for:)` reads the new field, else the
+    old one in today's format, and every write goes to the new field only. That fallback exists only between the
+    wiring commit and the migration commit, which removes it.
   - **Consumption.** Removing a blob from the record is saved immediately, before anything that can still
     reject the bundle, as the keychain delete was (§2.2). The write-ahead log is then checkpointed, so the
-    consumed blob doesn't survive there until SQLite's next checkpoint.
+    consumed blob doesn't survive there until SQLite's next checkpoint. Built 2026-10-09: `SenderPrekeys`
+    applies the bookkeeping below at the same moment and saves both together, so a bundle rejected after its
+    slot opens still delivers the pending batch it used (Bug 157) and retires older keys. That is the same
+    fail-secure trade as consumption itself: only the holder of our batch can open the slot, and all it gains is
+    retiring our keys early.
   - **Bookkeeping.** The pending batch clears only when the key used belongs to it (Bug 157). The first use of
     a newer batch retires older ones, and the first use of any record-held batch retires the legacy keys (`legacyKeys`). A
     sweep deletes retired blobs, and the contact's legacy keychain keys by tag, 30 days after the respective
@@ -622,7 +631,8 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
   release (rollout stage 3, the contacts slice), which D9 already ties it to.
 - *Commits:* the key-manager split (pure refactor, existing tests unchanged); fixed-size record (Bug 161);
   record format and wire `id` with interop vectors; generation, lookup, consumption with its immediate save and
-  checkpoint, Bug 157; retirement, sweep and the contact-deletion overwrite; migration.
+  checkpoint, Bug 157 (done 2026-10-09, with the compose indicator moved to `ContactManager` and the profile's
+  prekey helpers removed); retirement, sweep and the contact-deletion overwrite; migration.
 - *Tests:* creating a CryptoKit Enclave key adds no keychain item (count before and after); a blob-backed prekey
   opens a message and its blob is gone from the record afterwards; a bundle rejected after it opens still leaves
   its blob deleted and saved; the record encodes to exactly 16 KB empty and with every limit reached at once;

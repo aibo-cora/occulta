@@ -1006,7 +1006,7 @@ extension ContactManager {
     ///   - Identity challenge sends are always on this path regardless of version.
     ///
     /// ## Pending batch delivery guarantee (message mode)
-    /// A `pendingOutboundBatch` is attached to every message until the contact sends back
+    /// A pending batch is attached to every message until the contact sends back
     /// a `.forwardSecret` bundle using one of our prekeys — cryptographic proof they stored
     /// it. Only then is the batch cleared.
     func encryptBundle(
@@ -1056,20 +1056,21 @@ extension ContactManager {
         // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
         let needsPrekey = !isCarryingShard || targetVersion.supportsGroups
         if needsPrekey {
-            try contact.configureForwardSecrecy()
+            var record = try self.prekeyRecord(for: contact)
 
             #if DEBUG
-            debugPrint("Encrypting \(isCarryingShard ? "shard" : "message") bundle for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
+            debugPrint("Encrypting \(isCarryingShard ? "shard" : "message") bundle for contact. Inbound prekeys: \(record.inboundBatches.reduce(0) { $0 + $1.keys.count }), pending batch: \(PrekeyBookkeeper().hasPendingBatch(record))")
             #endif
 
-            if let blob = try contact.popOldestPrekeyData() {
-                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+            contactPrekey = PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: contact.identifier)
+            if contactPrekey != nil {
+                try self.store(record, for: contact)
             }
             // Attached whether or not a piece rides along: a queued piece goes with every
             // message until the trustee confirms it, and the trustee can only confirm in a
             // forward-secret reply, which needs this batch once our prekeys run out
             // (`bugs.md` Bug 152).
-            outboundBatch = try contact.loadPendingBatch()
+            outboundBatch = self.pendingBatchForWire(in: record)
         }
 
         // ── 4. Build and seal payload ─────────────────────────────────────
@@ -1188,7 +1189,7 @@ extension ContactManager {
         shardCustodyManager: ShardCustodyManager? = nil
     ) throws -> Data {
         // Pass 1 below pops each member's oldest prekey (mutating
-        // contact.forwardSecrecyEncrypted in memory) before any of the fallible work
+        // contact.prekeyRecordEncrypted in memory) before any of the fallible work
         // that follows — the per-member `buildShardOperations` call still inside pass 1,
         // and `seal`/`WireHandle.encode`/`bundle.encoded` in pass 2. If any of that
         // throws, the explicit `self.modelContext.save()` near the bottom of this
@@ -1229,16 +1230,14 @@ extension ContactManager {
         let pending: [PendingGroupRecipient] = try members.map { contact in
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
 
-            try contact.configureForwardSecrecy()
-
-            var contactPrekey: Prekey? = nil
-
-            if let blob = try contact.popOldestPrekeyData() {
-                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+            var record = try self.prekeyRecord(for: contact)
+            let contactPrekey = PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: contact.identifier)
+            if contactPrekey != nil {
+                try self.store(record, for: contact)
                 prekeyConsumed = true
             }
 
-            let pendingBatch = try contact.loadPendingBatch()
+            let pendingBatch = self.pendingBatchForWire(in: record)
 
             // `isAtLeast`, not `==`. Equality asks "is this contact exactly at the shard tier",
             // which stops being the right question the moment a tier is added above it — and
@@ -1548,11 +1547,10 @@ extension ContactManager {
         guard bundle.secrecy.mode != .group else { throw OccultaBundle.BundleError.unsupportedMode }
 
         let cryptoOps     = Manager.Crypto()
-        let prekeySecretsManager = Manager.PrekeySecretsManager()
 
         // ── 1. Identify sender by fingerprint ───────────────────────────
-        let sender = try self.identifyOwner(for: bundle)
-        try sender.configureForwardSecrecy()
+        let sender  = try self.identifyOwner(for: bundle)
+        let prekeys = try self.senderPrekeys(for: sender)
 
         // ── 2. Key derivation + open ─────────────────────────────────────
         #if DEBUG
@@ -1567,18 +1565,18 @@ extension ContactManager {
             senderContactID: sender.identifier,
             senderPublicKey: senderPublicKey,
             quantumMaterial: quantumMaterial,
-            prekeySecretsManager: prekeySecretsManager
+            prekeys: prekeys
         )
         let payloadData = try cryptoOps.open(bundle, using: sessionKey)
 
         // ── 3. Consume the prekey ────────────────────────────────────────
         // Now, before anything below can reject the bundle: the key has done its work, and a
-        // rejection must not leave it alive in the Enclave (§2.2).
+        // rejection must not leave it alive (§2.2). `SenderPrekeys` saves the record at once.
         if let consumable {
             #if DEBUG
             debugPrint("Opened bundle using prekey = \(consumable), consuming key...")
             #endif
-            prekeySecretsManager.consume(prekey: consumable)
+            prekeys.consume(prekeyID: consumable.id, contactID: consumable.contactID)
         }
 
         // ── 4. Decode, update capability, store inbound batch ────────────
@@ -1590,7 +1588,7 @@ extension ContactManager {
         #if DEBUG
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         #endif
-        try self.storeInboundBatch(decodedPayload.prekeyBatch, for: sender)
+        try self.acceptInboundBatch(decodedPayload.prekeyBatch, into: prekeys)
 
         // Shard-protocol content requires forward secrecy. If this bundle used the
         // long-term-key fallback path, treat any shard-protocol fields as
@@ -1607,26 +1605,22 @@ extension ContactManager {
             )
         }
 
-        // ── 5. Pending-batch bookkeeping ─────────────────────────────────
-        // After every check that can throw (`bugs.md` Bug 159): generating here creates Enclave
-        // keys, which a later rejection would otherwise leave behind with nothing to save them.
-        if consumable != nil {
-            try sender.clearPendingBatch()
-            #if DEBUG
-            debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
-            #endif
-        } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeySecretsManager)
+        // ── 5. A new batch for a long-term bundle ────────────────────────
+        // After every check that can throw (`bugs.md` Bug 159). Clearing the pending batch is no
+        // longer here: using a key from it already did, at consumption (Bug 157).
+        if consumable == nil, !PrekeyBookkeeper().hasPendingBatch(prekeys.record) {
+            try self.installFreshBatch(into: prekeys)
         }
 
         // ── 6. Persist ───────────────────────────────────────────────────
+        try self.store(prekeys.record, for: sender)
         try self.modelContext.save()
 
         #if DEBUG
         // Identifier prefix, not the decrypted name. Enough to correlate lines about the same
         // contact across a session, without putting a plaintext name in the console — the
         // identifier is already ciphertext and is never decrypted here.
-        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
+        debugPrint("Saved after decrypt. Inbound prekeys now: \(prekeys.record.inboundBatches.reduce(0) { $0 + $1.keys.count }), sender: \(sender.identifier.prefix(12))…, pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
         #endif
 
         return (decodedPayload, sender.identifier)
@@ -1656,19 +1650,6 @@ extension ContactManager {
         default:
             return nil
         }
-    }
-
-    private func generateAndStoreFreshBatch(for sender: Contact.Profile, using prekeySecretsManager: Manager.PrekeySecretsManager) throws {
-        #if DEBUG
-        debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
-        #endif
-        let prekeys = try prekeySecretsManager.generateBatch(contactID: sender.identifier)
-        let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-        let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeysSuitableForTransport)
-        try sender.store(batch: batch)
-        #if DEBUG
-        debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
-        #endif
     }
 
     private func decodePayload(_ data: Data, version: OccultaBundle.Version) throws -> OccultaBundle.SealedPayload {
@@ -1734,27 +1715,6 @@ extension ContactManager {
 
         sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
     }
-
-    private func storeInboundBatch(_ batch: OccultaBundle.SealedPayload.PrekeySyncBatch?, for sender: Contact.Profile) throws {
-        guard let batch else { return }
-        #if DEBUG
-        debugPrint("Decrypting bundle containing inbound prekey sync batch...")
-        #endif
-        guard batch.prekeys.count <= Manager.PrekeySecretsManager.defaultBatchSize * 2 else {
-            throw Errors.invalidPrekeySyncBatch
-        }
-        guard batch.prekeys.allSatisfy({ $0.publicKey.count == 65 }) else {
-            throw Errors.invalidBundleFormat
-        }
-        let blobs: [Data] = batch.prekeys.compactMap { wired in
-            let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
-            return try? JSONEncoder().encode(prekey)
-        }
-        #if DEBUG
-        debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
-        #endif
-        try sender.syncInboundPrekeys(blobs, date: batch.generatedAt)
-    }
 }
 
 // MARK: - Group bundle decryption
@@ -1800,7 +1760,6 @@ extension ContactManager {
         }
 
         let cryptoOps     = Manager.Crypto()
-        let prekeySecretsManager = Manager.PrekeySecretsManager()
 
         // ── 1. Identify sender ──────────────────────────────────────────
         // Skip the fingerprint scan when the caller already identified the sender.
@@ -1811,7 +1770,7 @@ extension ContactManager {
         } else {
             sender = try self.identifyOwner(for: bundle)
         }
-        try sender.configureForwardSecrecy()
+        let prekeys = try self.senderPrekeys(for: sender)
 
         // ── 2. Resolve sender key material ─────────────────────────────
         let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
@@ -1824,7 +1783,7 @@ extension ContactManager {
             senderContactID: sender.identifier,
             senderPublicKey: senderPublicKey,
             quantumMaterial: quantumMaterial,
-            prekeySecretsManager: prekeySecretsManager
+            prekeys: prekeys
         )
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
@@ -1860,7 +1819,7 @@ extension ContactManager {
         }
 
         #if DEBUG
-        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumed: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
+        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumed: \(consumable != nil), sender pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
         #endif
 
         // ── 5. Open shared ciphertext ────────────────────────────────────
@@ -1886,27 +1845,22 @@ extension ContactManager {
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
-        try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
+        try self.acceptInboundBatch(recipientPayload.prekeyBatch, into: prekeys)
 
-        // ── 6.5. Pending-batch bookkeeping ───────────────────────────────
+        // ── 6.5. A new batch for a long-term slot ────────────────────────
         // The prekey itself is already gone — `findAndOpenRecipientSlot` consumes it the moment
-        // the slot opens, so that a rejection cannot leave it alive in the Enclave (§2.2).
-        // `consumable` reports what was consumed; what remains is the model-side bookkeeping,
-        // which stays behind every check above that can throw, so a rejected bundle cannot drive
-        // it (`bugs.md` Bug 159): generating here creates Enclave keys, and a later rejection
-        // would leave them behind with nothing to save them.
-        if consumable != nil {
-            // They used one of our prekeys, which is cryptographic proof they received the
-            // batch we have been attaching to every outbound message.
-            try sender.clearPendingBatch()
-        } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeySecretsManager)
+        // the slot opens, and `SenderPrekeys` saves that and its bookkeeping at once (§2.2;
+        // delivery of the pending batch, Bug 157). Generating stays behind every check above that
+        // can throw (`bugs.md` Bug 159), so a rejected bundle can't make us issue keys.
+        if consumable == nil, !PrekeyBookkeeper().hasPendingBatch(prekeys.record) {
+            try self.installFreshBatch(into: prekeys)
         }
+        try self.store(prekeys.record, for: sender)
         try self.modelContext.save()
 
         #if DEBUG
         // Identifier prefix, not the decrypted name — see the same log on the direct path.
-        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
+        debugPrint("Saved after group decrypt. Inbound prekeys now: \(prekeys.record.inboundBatches.reduce(0) { $0 + $1.keys.count }), sender: \(sender.identifier.prefix(12))…, pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
         #endif
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }

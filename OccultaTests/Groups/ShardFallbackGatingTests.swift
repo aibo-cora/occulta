@@ -118,12 +118,9 @@ private func makeRecipient(
         // Fake EC point (not a real SE keypair) -- only its *presence* matters for
         // the gating logic under test, matching GroupShardGatingTests' own approach.
         let prekeyPublicKey = try TestKeyManager().retrieveIdentity()
-        let prekey  = Prekey(id: UUID().uuidString, contactID: identifier, publicKey: prekeyPublicKey)
-        let encoded = try JSONEncoder().encode(prekey)
-        var secrecy = ForwardSecrecy()
-        secrecy.encodedPrekeys = [encoded]
-        let encodedSecrecy = try JSONEncoder().encode(secrecy)
-        profile.forwardSecrecyEncrypted = try encodedSecrecy.encrypt()
+        var record = PrekeyRecord.empty
+        record.inboundBatches = [.init(id: nil, keys: [.init(id: UUID().uuidString, publicKey: prekeyPublicKey)])]
+        profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
     }
 
     try contactManager.insertProfile(profile)
@@ -178,7 +175,7 @@ private enum TestSetupError: Error { case seUnavailable }
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
             senderContactID: "self", senderPublicKey: senderPub,
-            quantumMaterial: nil, prekeySecretsManager: Manager.PrekeySecretsManager()
+            quantumMaterial: nil, prekeys: Manager.PrekeySecretsManager()
         )
         #expect(mode == .longTermFallback || mode == .longTermNoPQ, "no prekey available -> must use fallback mode")
 
@@ -221,7 +218,7 @@ private enum TestSetupError: Error { case seUnavailable }
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
             senderContactID: "self", senderPublicKey: senderPub,
-            quantumMaterial: syntheticQuantumMaterial(), prekeySecretsManager: Manager.PrekeySecretsManager()
+            quantumMaterial: syntheticQuantumMaterial(), prekeys: Manager.PrekeySecretsManager()
         )
         #expect(mode == .longTermFallback, "no prekey available, ML-KEM on file -> hybrid fallback mode")
 
@@ -345,15 +342,16 @@ private enum TestSetupError: Error { case seUnavailable }
 // piece stayed queued forever.
 
 /// A pending outbound batch of `count` prekeys, stored on `profile` as `encryptBundle` finds it.
+/// The blobs are filler: sending reads only the public keys.
 @MainActor
-private func storePendingBatch(count: Int, on profile: Contact.Profile) throws -> OccultaBundle.SealedPayload.PrekeySyncBatch {
-    try profile.configureForwardSecrecy()
-    let prekeys = try (0..<count).map { _ in
-        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: try TestKeyManager().retrieveIdentity())
+private func storePendingBatch(count: Int, on profile: Contact.Profile) throws -> PrekeyBookkeeper.OutboundBatch {
+    let keys = try (0..<count).map { _ in
+        PrekeyBookkeeper.GeneratedKey(blob: Data(count: 32), publicKey: try TestKeyManager().retrieveIdentity())
     }
-    let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeys)
-    try profile.store(batch: batch)
-    return batch
+    var record = PrekeyRecord.empty
+    PrekeyBookkeeper().install(keys, into: &record, now: Date())
+    profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
+    return try #require(PrekeyBookkeeper().pendingBatch(in: record))
 }
 
 /// A 1.9.0+ contact whose key material is `publicKey`, with the synthetic ML-KEM material,
@@ -398,12 +396,13 @@ private func insertContact(
         let (recipientPayload, _, _) = try Manager.Crypto(keyManager: recipientKM).findAndOpenRecipientSlot(
             in: bundle, blind: try #require(bundle.group).blind,
             senderContactID: "self", senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(),
-            quantumMaterial: syntheticQuantumMaterial(), prekeySecretsManager: Manager.PrekeySecretsManager()
+            quantumMaterial: syntheticQuantumMaterial(), prekeys: Manager.PrekeySecretsManager()
         )
 
         let delivered = try #require(recipientPayload.prekeyBatch)
         #expect(delivered.prekeys == batch.prekeys)
         #expect(delivered.generatedAt == batch.generatedAt)
+        #expect(delivered.id == batch.id)
     }
 
     /// Gated on a real Enclave: `openGroup` on the trustee side generates a fresh prekey batch
@@ -420,15 +419,15 @@ private func insertContact(
 
         let trusteeSide = try makeContactManager()
         let owner       = try insertContact(identifier: "owner", publicKey: selfPub, in: trusteeSide)
-        try owner.configureForwardSecrecy()
-        #expect(owner.availableInboundPrekeyCount == 0, "precondition: the trustee has used up the owner's prekeys")
+        let inboundCount = { try trusteeSide.prekeyRecord(for: owner).inboundBatches.reduce(0) { $0 + $1.keys.count } }
+        #expect(try inboundCount() == 0, "precondition: the trustee has used up the owner's prekeys")
 
         let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
         let encoded = try ownerSide.encryptBundle(basket: Basket(files: []), for: "trustee", shardOperations: [op])
 
         _ = try trusteeSide.openGroup(bundle: try OccultaBundle.decoded(from: encoded), ownerID: "owner")
 
-        #expect(owner.availableInboundPrekeyCount == batch.prekeys.count,
+        #expect(try inboundCount() == batch.prekeys.count,
                 "the trustee can now reply forward-secret, so its manifest is no longer dropped")
     }
 }

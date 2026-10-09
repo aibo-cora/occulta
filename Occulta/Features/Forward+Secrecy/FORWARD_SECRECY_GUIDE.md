@@ -3,6 +3,11 @@
 Occulta v3fs — internal engineering reference.  
 Commit this file alongside any PR that touches the forward secrecy implementation.
 
+> **Out of date since prekey continuity stage 1.** The `ForwardSecrecy` struct and the `Contact.Profile` prekey
+> methods below were replaced by `PrekeyRecord` (in `prekeyRecordEncrypted`), `PrekeyBookkeeper` and
+> `Contact+Manager+Prekeys.swift`. See `Docs/Features/Prekey Continuity/DESIGN.md`, stage 1, until this guide
+> is rewritten at the end of that stage.
+
 ---
 
 ## Data model

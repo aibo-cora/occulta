@@ -440,7 +440,7 @@ struct ModeDecodingTests {
         let (recipPayloadB, _, _) = try bCrypto.findAndOpenRecipientSlot(
             in: decodedAB, blind: decodedAB.group!.blind,
             senderContactID: "A", senderPublicKey: aPub,
-            quantumMaterial: nil, prekeySecretsManager: self.pm
+            quantumMaterial: nil, prekeys: self.pm
         )
         let sessionKeyB   = SymmetricKey(data: recipPayloadB.sessionKey)
         let payloadBytesB = try bCrypto.openGroupCiphertext(decodedAB, using: sessionKeyB)
@@ -460,7 +460,7 @@ struct ModeDecodingTests {
         let (recipPayloadA, _, _) = try aCrypto.findAndOpenRecipientSlot(
             in: decodedBA, blind: decodedBA.group!.blind,
             senderContactID: "B", senderPublicKey: bPub,
-            quantumMaterial: nil, prekeySecretsManager: self.pm
+            quantumMaterial: nil, prekeys: self.pm
         )
         let sessionKeyA   = SymmetricKey(data: recipPayloadA.sessionKey)
         let payloadBytesA = try aCrypto.openGroupCiphertext(decodedBA, using: sessionKeyA)

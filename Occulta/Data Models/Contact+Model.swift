@@ -51,8 +51,14 @@ extension Contact {
         @Relationship(deleteRule: .cascade, inverse: \Key.profile)
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key]? = []
-        /// Encrypted forward secrecy metadata.
+        /// Encrypted forward secrecy metadata: the JSON `ForwardSecrecy` stored before prekey continuity stage 1.
+        /// Read only to carry a record over into `prekeyRecordEncrypted`; nothing writes it.
         var forwardSecrecyEncrypted: Data?
+
+        /// The sealed `PrekeyRecord` for this contact: always `PrekeyRecordCodec.capacity` bytes of plaintext,
+        /// so its length says nothing about either side's keys (Bug 161). Read and written only by
+        /// `ContactManager`.
+        var prekeyRecordEncrypted: Data?
 
         /// Encrypted JSON-encoded [SignedAttribute] blob (Issue #6).
         /// nil until the contact has shared at least one signed attribute.

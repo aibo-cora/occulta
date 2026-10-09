@@ -131,11 +131,11 @@ Every gate on the local DB key alone is converted. Still gated, because they gen
 Enclave — they exercise the real `Manager.Key` or create prekeys through `PrekeySecretsManager`, whose
 private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `DuressModePrekeyTests`, `PrekeySecretsManagerTests`, `ForwardSecrecyIntegrationTests`,
-`PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the three suites in that file),
+`PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the four suites in that file),
 `PrekeyGenerationMeasurementTests`, the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
 and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
-(`decryptSealed` calls `generateAndStoreFreshBatch` when a fallback message arrives with no
+(`decryptSealed` calls `installFreshBatch` when a fallback message arrives with no
 pending batch). A test that reaches that receive path needs the gate, not the trait.
 The share-staging key (`ShareStagingKeyManager`) has its own, simpler seam: `ShareSession` takes
 `any ShareSessionDecrypting`, so `ShareSessionTests` passes an in-memory key and runs anywhere.
