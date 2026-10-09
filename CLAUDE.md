@@ -132,7 +132,8 @@ Enclave — they exercise the real `Manager.Key` or create prekeys through `Prek
 private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `DuressModePrekeyTests`, `PrekeyManagerTests`, `ForwardSecrecyIntegrationTests`,
 `PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the three suites in that file),
-`PrekeyGenerationMeasurementTests`, the two prekey round-trips in `VersionCompatibilityTests`,
+`PrekeyGenerationMeasurementTests`, the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
+the two prekey round-trips in `VersionCompatibilityTests`,
 and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
 (`decryptSealed` calls `generateAndStoreFreshBatch` when a fallback message arrives with no
 pending batch). A test that reaches that receive path needs the gate, not the trait.
