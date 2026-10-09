@@ -13155,18 +13155,25 @@ to grow:
 - worst case (our own blobs across a retired, a current and a pending batch, plus last-resort keys; their
   prekeys across two batches; one pending batch) is about 11.5 KB in a compact binary layout, but about 19 KB as
   JSON with base64. So the record moves to a compact layout; JSON doesn't fit;
-- if the record would exceed the capacity, the oldest retired blobs are deleted first, which loses only messages
-  that arrive later than the 30-day grace would have allowed anyway (D1).
+- the record can't exceed the capacity: prekey continuity's bookkeeper caps what it holds (48 own keys, two
+  inbound batches, 8 accepted batch IDs, 64-byte inbound key IDs), and when installing a batch would pass the
+  own-key cap it deletes the oldest retired keys first. That loses only messages arriving later than the 30-day
+  grace would have allowed anyway (D1). The codec itself never drops data; it throws on a record past capacity
+  (decided 2026-10-09, design stage 1).
 
 **Never null (added 2026-10-09).** The field is written, as an empty record at the fixed size, when the contact is
 created, so no contact ever has it null. Deletion overwrites it with filler of the same size rather than clearing
 it (stage 1).
 
-Migration rewrites each record at its fixed size when stage 1's lazy migration first opens it. A contact still
-holding `nil` gets an empty fixed-size record on that same pass.
+**Migration (decided 2026-10-09).** One pass over every contact row at launch, before v2.0.0 reseals records per
+depth, moves each record into a **new field** at its fixed size, gives contacts that had none an empty one, and
+sets `forwardSecrecyEncrypted` to `nil` on every row. The old field is then uniformly null, which leaks nothing,
+and is marked deprecated. Migrating lazily, row by row as records were opened, was rejected: migrated and
+unmigrated rows are distinguishable without a key, and after the reseal the rows left unmigrated during duress
+use would be the hidden contacts.
 
 ### Guard
 
-None yet. Needed: every record encodes to exactly the capacity, empty and at worst case; a record past capacity
-evicts oldest-retired-first; a filler row's field matches a real one's length; a newly created contact, a contact
+None yet. Needed: every record encodes to exactly the capacity, empty and with every cap reached at once; a batch
+installed past the own-key cap deletes the oldest retired keys first; the codec throws rather than trims; a filler row's field matches a real one's length; a newly created contact, a contact
 never written to, and a deleted contact all have the field present at that same length.

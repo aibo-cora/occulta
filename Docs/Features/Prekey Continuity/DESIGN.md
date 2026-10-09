@@ -30,7 +30,7 @@ us more by sending us something. So we fall back to the **long-term** mode (`.lo
 `.longTermNoPQ`), which derives the key from the two identity keys:
 
 1. **The first message in each direction.** The in-person exchange carries no prekeys.
-2. **After 15 messages without a reply.** `PrekeyManager.defaultBatchSize` is 15. A new batch is generated
+2. **After 15 messages without a reply.** `PrekeySecretsManager.defaultBatchSize` is 15. A new batch is generated
    only when a long-term bundle arrives, and travels only on the recipient's next message. In a two-way
    conversation that is about 1 in 16 of each side's messages; in a one-way burst, every message past the 15th.
 3. **Every identity challenge and response.** They are sealed long-term on purpose
@@ -266,7 +266,7 @@ A recipient knows how many of its one-time prekeys a contact still holds. It sen
 run out, so a two-way conversation never reaches the last-resort key.
 
 **Refill (B).** When the contact holds `≤ T` unused one-time keys from batches they have received, and no
-batch is pending, B generates a batch and attaches it. `T` replaces `PrekeyManager.replenishThreshold`, which
+batch is pending, B generates a batch and attaches it. `T` replaces `PrekeySecretsManager.replenishThreshold`, which
 is unused today. **`T` = 5, with batches of 15 (D4, decided 2026-10-06, §4.1).**
 
 The count comes from the per-batch records in the contact's record, not from `remainingCount(for:)`. That
@@ -517,7 +517,7 @@ other OS store (v2.0.0 step 9).
 ## 8. Stages, tests, migration
 
 Each stage ships with its tests and a migration that loses no message. Enclave-backed tests use
-`.enabled(if: secureEnclaveAvailable())`, since they create prekeys through `PrekeyManager`.
+`.enabled(if: secureEnclaveAvailable())`, since they create prekeys through `PrekeySecretsManager`.
 
 **Stage 0 — tests on today's code (Bug 160). Done 2026-10-08:** `PrekeyReplenishmentTriggerTests.swift`, Bug 159
 fixed; full suite 985 tests, 0 failed, 6 skipped (all `KeychainMigrationSETests`). End to end through `decryptSealed` and `openGroup`: a long-term
@@ -526,13 +526,35 @@ These pin current behaviour before anything changes. Also fix Bug 159 (generate 
 
 **Stage 1 — prekeys into the record, per-batch records, retirement, batch IDs (D9; Bugs 156, 157, 158, 161).**
 D1 and D9 are decided; the three points below were settled 2026-10-08.
+- *Shape (decided 2026-10-09):* a value and two workers, after reviewing how Signal-iOS and libsignal split
+  prekey work.
+  - `PrekeyRecord` is the value: data only.
+  - `PrekeyRecordCodec` owns the 16 KB format and reading today's JSON. It is lossless: it never drops data, and
+    throws if a record exceeds capacity, which can only mean a broken invariant.
+  - `PrekeyBookkeeper` owns the rules: oldest-first, batch IDs, Bug 157, retirement, the sweep, and the size
+    limits, eviction included (below).
+  - Both workers are stateless structs and pure, so their tests need no Enclave.
+  - `PrekeySecretsManager`, renamed from `PrekeyManager`, keeps only the Enclave and keychain work.
+  - `ContactManager` is the only reader and writer of the record: it loads, calls the workers and the Enclave,
+    stores, saves and flushes the log.
+  - `Contact.Profile` only stores the field; its prekey helpers go. The compose indicator asks `ContactManager`
+    instead of the profile. The live screen is `Contact.DetailsV2`; `ContactDetailV3` is never constructed.
 - *Change:*
   - **Record.** `ForwardSecrecy` holds our own batches (ID, created and retired times, each key's ID and
     143-byte Enclave blob; legacy keychain prekeys as "batch 0" with IDs only), their batches (public prekeys
     with each batch's ID), the IDs of batches already accepted, the pending outbound batch with its ID, and a
     format version.
   - **Fixed size (Bug 161).** The record is encoded in a compact binary layout and padded to a fixed 16 KB
-    for every contact, so its length never tracks activity. Over capacity, the oldest retired blobs go first.
+    for every contact, so its length never tracks activity.
+  - **Size limits, eviction in the bookkeeper (decided 2026-10-09).** Overflow is made impossible by
+    construction rather than handled by the codec. The bookkeeper enforces, at the only moments the record
+    grows: at most 48 of our own keys (pending, current and retired leftovers, plus last-resort keys from stage
+    2), deleting the oldest retired keys first when installing a batch would exceed it; at most two inbound
+    batches, a third dropping the oldest; at most 8 accepted batch IDs; inbound key IDs of at most 64 bytes, a
+    longer one making the batch malformed. Every field then has a maximum size, so the worst-case record is
+    fixed (about 14 KB), and a test encodes a record at every limit at once within 16 KB. Eviction in the codec
+    was rejected: a codec should translate without loss, the rule would sit apart from every other rule about
+    which keys exist, and keys would vanish whenever a record happened to be saved.
     It is also never null: an empty fixed-size record is written when the contact is created, because a null
     field (today, until the first message) tells contacts who've exchanged messages from those who haven't,
     with no key needed.
@@ -552,13 +574,20 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     are dropped by ID (Bug 158).
   - **Contact deletion.** The record is overwritten with filler of the same size, since the row is only
     soft-deleted, as well as deleting legacy keychain keys.
-- *Migration:* lazy, per contact, the first time a record is opened, never as a sweep at launch. After steps
-  1–5, a launch sweep couldn't read a hidden contact's record from a duress depth and would treat contacts
-  differently by depth. Existing keychain prekeys (by tag) become "batch 0", retired when a key from a newer
-  batch is first used and deleted from the keychain 30 days later; after that no prekey keychain items remain.
-  The prekeys we hold for them become one batch with no `id`. The record is rewritten at its fixed size, and a
-  contact whose field is still null gets an empty fixed-size record.
-  Messages already sealed to keychain prekeys still open throughout.
+- *Migration (decided 2026-10-09):* **one pass over every contact row at launch, as the first step of the
+  contacts slice's one-way migration, before records are resealed per depth.** Every record is readable then,
+  because all are sealed under the same local DB key, so the pass treats every row alike.
+  - **Lazy migration was rejected.** Whether a row is migrated is visible without any key (variable JSON
+    against a fixed 16 KB record, or null against present). Converting a row only when its record is first
+    opened would, after the reseal, leave hidden contacts, readable only at their own depth, as the rows still
+    unconverted while the user spends time at a duress depth.
+  - **The record moves to a new field** on `Contact.Profile`; `forwardSecrecyEncrypted` is set to `nil` on every
+    row in the same pass, so it is uniformly null and leaks nothing. The old field is marked
+    `@available(*, deprecated)`, so nothing reads or writes it again outside the migration. The new field is
+    never null: written empty at contact creation, overwritten with same-size filler on deletion.
+  - Existing keychain prekeys (by tag) become "batch 0", retired when a key from a newer batch is first used and
+    deleted from the keychain 30 days later; after that no prekey keychain items remain. The prekeys we hold for
+    them become one batch with no `id`. Messages already sealed to keychain prekeys still open throughout.
 - *Shipping order:* a build that stores blob prekeys can't be downgraded without losing the messages sealed
   to them, as with D6. Stage 1 can be built and merged now but ships no earlier than the one-way migration
   release (rollout stage 3, the contacts slice), which D9 already ties it to.
@@ -567,9 +596,12 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
   checkpoint, Bug 157; retirement, sweep and the contact-deletion overwrite; migration.
 - *Tests:* creating a CryptoKit Enclave key adds no keychain item (count before and after); a blob-backed prekey
   opens a message and its blob is gone from the record afterwards; a bundle rejected after it opens still leaves
-  its blob deleted and saved; the record encodes to exactly 16 KB empty and at worst case, and evicts
-  oldest-retired-first past it; a newly created contact, one never written to, and a deleted one all have the
-  field present at that same size; a deleted contact's record holds no blobs; a legacy keychain prekey and a
+  its blob deleted and saved; the record encodes to exactly 16 KB empty and with every limit reached at once;
+  installing a batch past the own-key limit deletes the oldest retired keys first; a third inbound batch drops the
+  oldest; an inbound batch with an over-long key ID is rejected; the codec throws rather than trims a record past
+  capacity; a newly created contact, one never written to, and a deleted one all have the
+  field present at that same size; after the migration pass every row's new field is present at 16 KB and every
+  row's `forwardSecrecyEncrypted` is `nil`, whatever state the row started in; a deleted contact's record holds no blobs; a legacy keychain prekey and a
   record-held one both open messages; out-of-order arrival keeps the pending batch (157); an older-dated batch
   with a new `id` is accepted, and a repeated `id` is dropped (158); retired keys are deleted after the grace
   period and not before; a message sealed to a retired key within the grace period still opens.
@@ -637,7 +669,7 @@ findings below don't support that.
    has `cdat` and `mdat`, set to the current date automatically and returned as attributes, an
    insertion-ordered `rowid`, the public-key hash `klbl`, `tkid` and `agrp`. This settles §4.1's open
    question: yes. **Confirmed on a device keychain 2026-10-06** (the probe below, Simulator on Apple
-   Silicon): a prekey created by `PrekeyManager.generateBatch` returns `cdat`, `mdat`, `klbl`, `sha1`,
+   Silicon): a prekey created by `PrekeySecretsManager.generateBatch` returns `cdat`, `mdat`, `klbl`, `sha1`,
    `tkid = com.apple.setoken` and the app's `agrp` through the ordinary `kSecReturnAttributes` query.
 4. **The keychain doesn't scrub deleted rows.** It runs in WAL mode with incremental auto-vacuum, and nothing
    in Apple's Security source sets `secure_delete`
