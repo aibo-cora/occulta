@@ -5,7 +5,7 @@
 //  §2.2 — a prekey must not survive a bundle that opened and was then rejected.
 //
 //  These need a real Secure Enclave: prekey private keys are SE-backed and
-//  `findAndOpenRecipientSlot` takes the concrete `Manager.PrekeyManager`, so there is no
+//  `findAndOpenRecipientSlot` takes the concrete `Manager.PrekeySecretsManager`, so there is no
 //  injection seam to prefer over gating (see CLAUDE.md's note on the two).
 //
 
@@ -31,7 +31,7 @@ private func secureEnclaveAvailable() -> Bool {
     private struct Fixture {
         let senderKM: TestKeyManager
         let recipientCrypto: Manager.Crypto
-        let prekeyManager: Manager.PrekeyManager
+        let prekeySecretsManager: Manager.PrekeySecretsManager
         let prekey: Prekey
         let contactID: String
         let bundle: OccultaBundle
@@ -41,11 +41,11 @@ private func secureEnclaveAvailable() -> Bool {
         init(prefixed: Bool = false) throws {
             self.senderKM        = TestKeyManager()
             self.recipientCrypto = Manager.Crypto(keyManager: TestKeyManager())
-            self.prekeyManager   = Manager.PrekeyManager()
+            self.prekeySecretsManager   = Manager.PrekeySecretsManager()
             self.contactID       = "consume-" + UUID().uuidString
 
             self.prekey = try #require(
-                self.prekeyManager.generateBatch(contactID: self.contactID, count: 1).first
+                self.prekeySecretsManager.generateBatch(contactID: self.contactID, count: 1).first
             )
             let recipient = GroupRecipient(
                 publicKey:       try TestKeyManager().retrieveIdentity(),
@@ -62,7 +62,7 @@ private func secureEnclaveAvailable() -> Bool {
 
         /// True while the prekey's private half is still in the Enclave.
         var privateKeyStillPresent: Bool {
-            self.prekeyManager.retrievePrivateKey(for: self.prekey) != nil
+            self.prekeySecretsManager.retrievePrivateKey(for: self.prekey) != nil
         }
 
         func open(senderPublicKey: Data) throws
@@ -73,12 +73,12 @@ private func secureEnclaveAvailable() -> Bool {
                 senderContactID: self.contactID,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: nil,
-                prekeyManager: self.prekeyManager
+                prekeySecretsManager: self.prekeySecretsManager
             )
         }
 
         func cleanUp() {
-            self.prekeyManager.deleteAllKeys(for: self.contactID)
+            self.prekeySecretsManager.deleteAllKeys(for: self.contactID)
         }
     }
 
@@ -134,7 +134,7 @@ private func secureEnclaveAvailable() -> Bool {
                 senderContactID: "someone-else",
                 senderPublicKey: f.senderPub,
                 quantumMaterial: nil,
-                prekeyManager: f.prekeyManager
+                prekeySecretsManager: f.prekeySecretsManager
             )
         }
 

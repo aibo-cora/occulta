@@ -77,7 +77,7 @@ extension Manager.Crypto {
     /// returns, and any check added later, without those sites having to know about prekeys.
     ///
     /// The cost is that a rejected bundle destroys a prekey. Someone holding the batch we
-    /// published to a contact can burn all `PrekeyManager.defaultBatchSize` of them with
+    /// published to a contact can burn all `PrekeySecretsManager.defaultBatchSize` of them with
     /// bundles that open and then fail. That is the fail-secure direction — the keys are gone,
     /// so nothing sealed to them survives a later device seizure — and it recovers on its own:
     /// once the batch is exhausted the contact's next send falls back to long-term ECDH, which
@@ -88,7 +88,7 @@ extension Manager.Crypto {
         senderContactID: String,
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
-        prekeyManager: Manager.PrekeyManager
+        prekeySecretsManager: Manager.PrekeySecretsManager
     ) throws -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?, mode: OccultaBundle.Mode) {
         guard let recipients = bundle.group?.recipients else {
             throw GroupDecryptError.noGroupEnvelope
@@ -108,7 +108,7 @@ extension Manager.Crypto {
         var usedPrekey: Prekey?
         defer {
             if let usedPrekey {
-                prekeyManager.consume(prekey: usedPrekey)
+                prekeySecretsManager.consume(prekey: usedPrekey)
             }
         }
 
@@ -118,7 +118,7 @@ extension Manager.Crypto {
                 senderContactID: senderContactID,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
-                prekeyManager: prekeyManager
+                prekeySecretsManager: prekeySecretsManager
             ) else { continue }
             
             guard let box   = try? AES.GCM.SealedBox(combined: entry.wrappedPayload),

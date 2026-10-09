@@ -71,7 +71,7 @@ extension Manager.Crypto {
         senderContactID: String,
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
-        prekeyManager: Manager.PrekeyManager
+        prekeySecretsManager: Manager.PrekeySecretsManager
     ) throws -> (key: SymmetricKey, consumablePrekey: Prekey?) {
         switch secrecy.mode {
         case .forwardSecret, .forwardSecretNoPQ:
@@ -83,7 +83,7 @@ extension Manager.Crypto {
             // NoPQ: sender did not use ML-KEM — ignore any quantum material on file.
             let effectiveQM: QuantumKeyMaterial? = secrecy.mode == .forwardSecretNoPQ ? nil : quantumMaterial
             guard
-                let privKey = prekeyManager.retrievePrivateKey(for: temp),
+                let privKey = prekeySecretsManager.retrievePrivateKey(for: temp),
                 let key = self.deriveSessionKey(
                     ephemeralPrivateKey: privKey,
                     recipientMaterial: secrecy.ephemeralPublicKey,

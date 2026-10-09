@@ -52,7 +52,7 @@ private struct DecryptPair {
             senderContactID: "sender",
             senderPublicKey: senderPub,
             quantumMaterial: nil,
-            prekeyManager: Manager.PrekeyManager()
+            prekeySecretsManager: Manager.PrekeySecretsManager()
         )
         #expect(payload.sessionKey.count == 32)
     }
@@ -69,7 +69,7 @@ private struct DecryptPair {
             try crypto.findAndOpenRecipientSlot(
                 in: bundle, blind: Data(count: 32),
                 senderContactID: "sender", senderPublicKey: Data(count: 65),
-                quantumMaterial: nil, prekeyManager: Manager.PrekeyManager()
+                quantumMaterial: nil, prekeySecretsManager: Manager.PrekeySecretsManager()
             )
         }
     }
@@ -86,7 +86,7 @@ private struct DecryptPair {
                 senderContactID: "sender",
                 senderPublicKey: senderPub,
                 quantumMaterial: nil,
-                prekeyManager: Manager.PrekeyManager()
+                prekeySecretsManager: Manager.PrekeySecretsManager()
             )
         }
     }
@@ -117,7 +117,7 @@ private struct DecryptPair {
                 senderContactID: "sender",
                 senderPublicKey: senderPub,
                 quantumMaterial: nil,
-                prekeyManager: Manager.PrekeyManager()
+                prekeySecretsManager: Manager.PrekeySecretsManager()
             )
         }
     }
@@ -144,7 +144,7 @@ private struct DecryptPair {
             senderContactID: "sender",
             senderPublicKey: senderPub,
             quantumMaterial: nil,
-            prekeyManager: Manager.PrekeyManager()
+            prekeySecretsManager: Manager.PrekeySecretsManager()
         )
         #expect(payload.sessionKey.count == 32)
     }
@@ -459,7 +459,7 @@ private struct DecryptPair {
             senderContactID: "test",
             senderPublicKey: senderPub,
             quantumMaterial: nil,
-            prekeyManager: Manager.PrekeyManager()
+            prekeySecretsManager: Manager.PrekeySecretsManager()
         )
         #expect(consumable == nil)
 
@@ -479,7 +479,7 @@ private struct DecryptPair {
                 senderContactID: "test",
                 senderPublicKey: Data(count: 65),
                 quantumMaterial: nil,
-                prekeyManager: Manager.PrekeyManager()
+                prekeySecretsManager: Manager.PrekeySecretsManager()
             )
         }
     }

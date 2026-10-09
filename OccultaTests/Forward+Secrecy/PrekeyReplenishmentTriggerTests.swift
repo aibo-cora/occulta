@@ -2,7 +2,7 @@
 //  PrekeyReplenishmentTriggerTests.swift
 //  OccultaTests
 //
-//  ⚠️  Requires a Secure Enclave: the receive path generates prekeys through `PrekeyManager`.
+//  ⚠️  Requires a Secure Enclave: the receive path generates prekeys through `PrekeySecretsManager`.
 //
 //  Drives the real prekey replenishment trigger in `ContactManager.decryptSealed` and
 //  `ContactManager.openGroup`, end to end (`bugs.md` Bug 160). The tests in
@@ -37,7 +37,7 @@ private struct Fixture {
     let senderKM:  TestKeyManager
     let senderID:  String
     let selfPub:   Data
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     /// A store with one contact, the sender, on the group-capable tier, holding no keys either way.
     init() throws {
@@ -126,8 +126,8 @@ private struct Fixture {
         _ = try f.cm.decryptSealed(bundle: try f.longTermBundle())
 
         let batch = try #require(try f.sender.loadPendingBatch())
-        #expect(batch.prekeys.count == Manager.PrekeyManager.defaultBatchSize)
-        #expect(f.enclavePrekeyCount == Manager.PrekeyManager.defaultBatchSize)
+        #expect(batch.prekeys.count == Manager.PrekeySecretsManager.defaultBatchSize)
+        #expect(f.enclavePrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
     }
 
     @Test("A second long-term bundle while a batch is pending generates nothing", .enabled(if: secureEnclaveAvailable()))
@@ -142,7 +142,7 @@ private struct Fixture {
 
         let after = try #require(try f.sender.loadPendingBatch())
         #expect(after.prekeys == first.prekeys, "the pending batch must not be replaced")
-        #expect(f.enclavePrekeyCount == Manager.PrekeyManager.defaultBatchSize)
+        #expect(f.enclavePrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
     }
 
     @Test("A forward-secret bundle sealed to one of our prekeys clears the pending batch and consumes the prekey", .enabled(if: secureEnclaveAvailable()))
@@ -156,7 +156,7 @@ private struct Fixture {
         _ = try f.cm.decryptSealed(bundle: try f.forwardSecretBundle(to: prekey))
 
         #expect(try f.sender.hasPendingBatch == false)
-        #expect(f.enclavePrekeyCount == Manager.PrekeyManager.defaultBatchSize - 1)
+        #expect(f.enclavePrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize - 1)
         #expect(f.pm.retrievePrivateKey(for: prekey) == nil, "the prekey must be gone from the Enclave")
     }
 
@@ -193,8 +193,8 @@ private struct Fixture {
         _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
 
         let batch = try #require(try f.sender.loadPendingBatch())
-        #expect(batch.prekeys.count == Manager.PrekeyManager.defaultBatchSize)
-        #expect(f.enclavePrekeyCount == Manager.PrekeyManager.defaultBatchSize)
+        #expect(batch.prekeys.count == Manager.PrekeySecretsManager.defaultBatchSize)
+        #expect(f.enclavePrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
     }
 
     @Test("A second long-term slot while a batch is pending generates nothing", .enabled(if: secureEnclaveAvailable()))
@@ -209,7 +209,7 @@ private struct Fixture {
 
         let after = try #require(try f.sender.loadPendingBatch())
         #expect(after.prekeys == first.prekeys, "the pending batch must not be replaced")
-        #expect(f.enclavePrekeyCount == Manager.PrekeyManager.defaultBatchSize)
+        #expect(f.enclavePrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
     }
 
     @Test("A forward-secret slot sealed to one of our prekeys clears the pending batch and consumes the prekey", .enabled(if: secureEnclaveAvailable()))
@@ -223,7 +223,7 @@ private struct Fixture {
         _ = try f.cm.openGroup(bundle: try f.groupBundle(prekey: prekey), ownerID: f.senderID)
 
         #expect(try f.sender.hasPendingBatch == false)
-        #expect(f.enclavePrekeyCount == Manager.PrekeyManager.defaultBatchSize - 1)
+        #expect(f.enclavePrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize - 1)
         #expect(f.pm.retrievePrivateKey(for: prekey) == nil, "the prekey must be gone from the Enclave")
     }
 
@@ -272,7 +272,7 @@ private struct Fixture {
         let (senderSlot, _, _) = try Manager.Crypto(keyManager: f.senderKM).findAndOpenRecipientSlot(
             in: reply, blind: try #require(reply.group).blind,
             senderContactID: "self", senderPublicKey: f.selfPub,
-            quantumMaterial: nil, prekeyManager: f.pm
+            quantumMaterial: nil, prekeySecretsManager: f.pm
         )
         let delivered = try #require(senderSlot.prekeyBatch)
         #expect(delivered.prekeys == pending.prekeys)
@@ -283,6 +283,6 @@ private struct Fixture {
         _ = try f.cm.openGroup(bundle: try f.groupBundle(prekey: prekey), ownerID: f.senderID)
 
         #expect(try f.sender.hasPendingBatch == false)
-        #expect(f.enclavePrekeyCount == Manager.PrekeyManager.defaultBatchSize - 1)
+        #expect(f.enclavePrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize - 1)
     }
 }

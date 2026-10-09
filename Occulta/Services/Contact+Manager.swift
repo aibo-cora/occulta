@@ -502,7 +502,7 @@ class ContactManager {
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
-        Manager.PrekeyManager().deleteAllKeys(for: identifier)
+        Manager.PrekeySecretsManager().deleteAllKeys(for: identifier)
         try self.modelContext.save()
 
         // Derived once and reused across every group in the pass below, instead of once
@@ -1548,7 +1548,7 @@ extension ContactManager {
         guard bundle.secrecy.mode != .group else { throw OccultaBundle.BundleError.unsupportedMode }
 
         let cryptoOps     = Manager.Crypto()
-        let prekeyManager = Manager.PrekeyManager()
+        let prekeySecretsManager = Manager.PrekeySecretsManager()
 
         // ── 1. Identify sender by fingerprint ───────────────────────────
         let sender = try self.identifyOwner(for: bundle)
@@ -1567,7 +1567,7 @@ extension ContactManager {
             senderContactID: sender.identifier,
             senderPublicKey: senderPublicKey,
             quantumMaterial: quantumMaterial,
-            prekeyManager: prekeyManager
+            prekeySecretsManager: prekeySecretsManager
         )
         let payloadData = try cryptoOps.open(bundle, using: sessionKey)
 
@@ -1578,7 +1578,7 @@ extension ContactManager {
             #if DEBUG
             debugPrint("Opened bundle using prekey = \(consumable), consuming key...")
             #endif
-            prekeyManager.consume(prekey: consumable)
+            prekeySecretsManager.consume(prekey: consumable)
         }
 
         // ── 4. Decode, update capability, store inbound batch ────────────
@@ -1616,7 +1616,7 @@ extension ContactManager {
             debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
             #endif
         } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeySecretsManager)
         }
 
         // ── 6. Persist ───────────────────────────────────────────────────
@@ -1658,11 +1658,11 @@ extension ContactManager {
         }
     }
 
-    private func generateAndStoreFreshBatch(for sender: Contact.Profile, using prekeyManager: Manager.PrekeyManager) throws {
+    private func generateAndStoreFreshBatch(for sender: Contact.Profile, using prekeySecretsManager: Manager.PrekeySecretsManager) throws {
         #if DEBUG
         debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
         #endif
-        let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
+        let prekeys = try prekeySecretsManager.generateBatch(contactID: sender.identifier)
         let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
         let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeysSuitableForTransport)
         try sender.store(batch: batch)
@@ -1740,7 +1740,7 @@ extension ContactManager {
         #if DEBUG
         debugPrint("Decrypting bundle containing inbound prekey sync batch...")
         #endif
-        guard batch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
+        guard batch.prekeys.count <= Manager.PrekeySecretsManager.defaultBatchSize * 2 else {
             throw Errors.invalidPrekeySyncBatch
         }
         guard batch.prekeys.allSatisfy({ $0.publicKey.count == 65 }) else {
@@ -1800,7 +1800,7 @@ extension ContactManager {
         }
 
         let cryptoOps     = Manager.Crypto()
-        let prekeyManager = Manager.PrekeyManager()
+        let prekeySecretsManager = Manager.PrekeySecretsManager()
 
         // ── 1. Identify sender ──────────────────────────────────────────
         // Skip the fingerprint scan when the caller already identified the sender.
@@ -1824,7 +1824,7 @@ extension ContactManager {
             senderContactID: sender.identifier,
             senderPublicKey: senderPublicKey,
             quantumMaterial: quantumMaterial,
-            prekeyManager: prekeyManager
+            prekeySecretsManager: prekeySecretsManager
         )
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
@@ -1900,7 +1900,7 @@ extension ContactManager {
             // batch we have been attaching to every outbound message.
             try sender.clearPendingBatch()
         } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeySecretsManager)
         }
         try self.modelContext.save()
 

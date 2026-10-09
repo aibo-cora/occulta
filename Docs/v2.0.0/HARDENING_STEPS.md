@@ -57,7 +57,7 @@ collision check disappears as a side effect: at ~90 bits an accidental collision
 **Evidence.**
 - `.privateKeyUsage` + `WhenUnlockedThisDeviceOnly`: identity
   ([Key+Manager.swift:101](../../Occulta/Services/Key+Manager.swift)), local DB (`:504`), custody
-  (`:752`), Secure Mode (`:937`), prekeys ([PrekeyManager.swift:46](../../Occulta/Features/Forward+Secrecy/PrekeyManager.swift)),
+  (`:752`), Secure Mode (`:937`), prekeys ([PrekeySecretsManager.swift:46](../../Occulta/Features/Forward+Secrecy/PrekeySecretsManager.swift)),
   share index ([ShareIndexKeyManager.swift:87](../../Occulta/Features/ShareExtension/ShareIndexKeyManager.swift)).
 - Vault key: `[.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode]` (`Key+Manager.swift:653`).
 
@@ -121,7 +121,7 @@ already does. Doing it in the same migration costs nothing extra.
 ### 6. Prekeys in the in-person exchange
 
 **Why.** The exchange sends no prekeys, and batches are generated only on receipt
-(`PrekeyManager.defaultBatchSize` is 15). So the first message in each direction is a long-term
+(`PrekeySecretsManager.defaultBatchSize` is 15). So the first message in each direction is a long-term
 fallback bundle, and so is roughly 1 in 16 after that. An adversary who keeps those files and later
 takes the phone can open every one of them. iCloud Messages backups are a standing copy. Sending a
 batch during the exchange gives every message forward secrecy from the first.

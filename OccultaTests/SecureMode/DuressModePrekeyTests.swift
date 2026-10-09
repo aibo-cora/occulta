@@ -81,7 +81,7 @@ private func makeSecurityContainer() throws -> ModelContainer {
 @Suite("Secure Mode — duress prekey protection")
 @MainActor struct DuressModePrekeyTests {
 
-    let pm     = Manager.PrekeyManager()
+    let pm     = Manager.PrekeySecretsManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
     // MARK: identifyOwner prekey safety

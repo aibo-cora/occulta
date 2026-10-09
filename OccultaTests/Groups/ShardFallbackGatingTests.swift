@@ -178,7 +178,7 @@ private enum TestSetupError: Error { case seUnavailable }
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
             senderContactID: "self", senderPublicKey: senderPub,
-            quantumMaterial: nil, prekeyManager: Manager.PrekeyManager()
+            quantumMaterial: nil, prekeySecretsManager: Manager.PrekeySecretsManager()
         )
         #expect(mode == .longTermFallback || mode == .longTermNoPQ, "no prekey available -> must use fallback mode")
 
@@ -221,7 +221,7 @@ private enum TestSetupError: Error { case seUnavailable }
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
             senderContactID: "self", senderPublicKey: senderPub,
-            quantumMaterial: syntheticQuantumMaterial(), prekeyManager: Manager.PrekeyManager()
+            quantumMaterial: syntheticQuantumMaterial(), prekeySecretsManager: Manager.PrekeySecretsManager()
         )
         #expect(mode == .longTermFallback, "no prekey available, ML-KEM on file -> hybrid fallback mode")
 
@@ -273,7 +273,7 @@ private enum TestSetupError: Error { case seUnavailable }
 
 // Gated on a real Enclave, not `.ambientTestKeyManager`: receiving a fallback message
 // with no pending batch makes the receive path generate a fresh prekey batch through
-// `PrekeyManager`, whose private keys are created in the Enclave.
+// `PrekeySecretsManager`, whose private keys are created in the Enclave.
 @Suite("openGroup / decryptSealed — receiver strips shard content on fallback slot")
 @MainActor struct ReceiverShardFallbackTests {
 
@@ -398,7 +398,7 @@ private func insertContact(
         let (recipientPayload, _, _) = try Manager.Crypto(keyManager: recipientKM).findAndOpenRecipientSlot(
             in: bundle, blind: try #require(bundle.group).blind,
             senderContactID: "self", senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(),
-            quantumMaterial: syntheticQuantumMaterial(), prekeyManager: Manager.PrekeyManager()
+            quantumMaterial: syntheticQuantumMaterial(), prekeySecretsManager: Manager.PrekeySecretsManager()
         )
 
         let delivered = try #require(recipientPayload.prekeyBatch)
@@ -407,7 +407,7 @@ private func insertContact(
     }
 
     /// Gated on a real Enclave: `openGroup` on the trustee side generates a fresh prekey batch
-    /// through `PrekeyManager`, as `ReceiverShardFallbackTests` explains.
+    /// through `PrekeySecretsManager`, as `ReceiverShardFallbackTests` explains.
     @Test("The trustee's device stores the batch that came with the piece", .enabled(if: secureEnclaveAvailable()))
     func trusteeStoresBatch() throws {
         // Both ends are this device's own identity: the owner seals to it, and a second

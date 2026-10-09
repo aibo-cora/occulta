@@ -43,10 +43,10 @@ private func secureEnclaveAvailable() -> Bool {
 @Suite("Prekey generation — Enclave blob measurement (D4, D9)")
 @MainActor struct PrekeyGenerationMeasurementTests {
 
-    let pm    = Manager.PrekeyManager()
+    let pm    = Manager.PrekeySecretsManager()
     let clock = ContinuousClock()
 
-    /// The proposed batch (D4). Today's is `PrekeyManager.defaultBatchSize`.
+    /// The proposed batch (D4). Today's is `PrekeySecretsManager.defaultBatchSize`.
     static let proposedBatchSize = 50
 
     @Test("A CryptoKit Enclave key leaves no keychain item", .enabled(if: secureEnclaveAvailable()))
@@ -73,7 +73,7 @@ private func secureEnclaveAvailable() -> Bool {
         var report = ["device: \(Self.deviceModel()), \(ProcessInfo.processInfo.operatingSystemVersionString)"]
         defer { Attachment.record(report.joined(separator: "\n"), named: "prekey-measurement.txt") }
 
-        let batch    = Manager.PrekeyManager.defaultBatchSize
+        let batch    = Manager.PrekeySecretsManager.defaultBatchSize
         let proposed = Self.proposedBatchSize
         let access   = try Self.prekeyAccessControl()
 
@@ -132,7 +132,7 @@ private func secureEnclaveAvailable() -> Bool {
 
     // MARK: - Helpers
 
-    /// The access control `PrekeyManager.generateBatch` gives its keys, so both paths are measured
+    /// The access control `PrekeySecretsManager.generateBatch` gives its keys, so both paths are measured
     /// under the same constraints.
     private static func prekeyAccessControl() throws -> SecAccessControl {
         var error: Unmanaged<CFError>?

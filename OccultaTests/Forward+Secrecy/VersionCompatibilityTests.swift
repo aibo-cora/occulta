@@ -232,7 +232,7 @@ struct ModeDecodingTests {
 
     // MARK: Regular bundles from a 1.9.0 sender reach older contacts intact
 
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     @Test(.enabled(if: secureEnclaveAvailable())) func fsBundle_v4Binary_survivesRoundTrip() throws {
         // A 1.9.0 sender seals with a prekey (FS path). A 1.8.x recipient must
@@ -386,7 +386,7 @@ struct ModeDecodingTests {
 @Suite("Cross-version two-way round-trips")
 @MainActor struct CrossVersionRoundTripTests {
 
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     // MARK: Routing discriminator
 
@@ -440,7 +440,7 @@ struct ModeDecodingTests {
         let (recipPayloadB, _, _) = try bCrypto.findAndOpenRecipientSlot(
             in: decodedAB, blind: decodedAB.group!.blind,
             senderContactID: "A", senderPublicKey: aPub,
-            quantumMaterial: nil, prekeyManager: self.pm
+            quantumMaterial: nil, prekeySecretsManager: self.pm
         )
         let sessionKeyB   = SymmetricKey(data: recipPayloadB.sessionKey)
         let payloadBytesB = try bCrypto.openGroupCiphertext(decodedAB, using: sessionKeyB)
@@ -460,7 +460,7 @@ struct ModeDecodingTests {
         let (recipPayloadA, _, _) = try aCrypto.findAndOpenRecipientSlot(
             in: decodedBA, blind: decodedBA.group!.blind,
             senderContactID: "B", senderPublicKey: bPub,
-            quantumMaterial: nil, prekeyManager: self.pm
+            quantumMaterial: nil, prekeySecretsManager: self.pm
         )
         let sessionKeyA   = SymmetricKey(data: recipPayloadA.sessionKey)
         let payloadBytesA = try aCrypto.openGroupCiphertext(decodedBA, using: sessionKeyA)

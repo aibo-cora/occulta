@@ -1,5 +1,5 @@
 //
-//  Prekey+Manager.swift
+//  PrekeySecretsManager.swift
 //  Occulta
 //
 //  Created by Yura on 3/17/26.
@@ -13,7 +13,7 @@ extension Manager {
     ///
     /// All private keys are stored in the Secure Enclave tagged
     /// `"prekey.<contactID>.<uuid>"`.
-    class PrekeyManager {
+    class PrekeySecretsManager {
 
         // MARK: - Constants
 
@@ -33,7 +33,7 @@ extension Manager {
         /// - Returns:
         ///   - `prekeys`:      Generated ``Prekey`` structs (public side only).
         /// - Throws: If SE key creation fails.
-        func generateBatch(contactID: String, count: Int = PrekeyManager.defaultBatchSize) throws -> [Prekey] {
+        func generateBatch(contactID: String, count: Int = PrekeySecretsManager.defaultBatchSize) throws -> [Prekey] {
             var prekeys: [Prekey] = []
 
             for _ in 0..<count {
@@ -288,7 +288,7 @@ extension Manager {
 
 // MARK: - Errors
 
-extension Manager.PrekeyManager {
+extension Manager.PrekeySecretsManager {
     enum PrekeyError: Error {
         /// `SecKeyCreateRandomKey` returned nil during batch generation.
         /// The SE may be temporarily unavailable or under resource pressure.
