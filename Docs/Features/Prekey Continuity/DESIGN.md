@@ -540,10 +540,32 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
   - `Contact.Profile` only stores the field; its prekey helpers go. The compose indicator asks `ContactManager`
     instead of the profile. The live screen is `Contact.DetailsV2`; `ContactDetailV3` is never constructed.
 - *Change:*
-  - **Record.** `ForwardSecrecy` holds our own batches (ID, created and retired times, each key's ID and
-    143-byte Enclave blob; legacy keychain prekeys as "batch 0" with IDs only), their batches (public prekeys
-    with each batch's ID), the IDs of batches already accepted, the pending outbound batch with its ID, and a
-    format version.
+  - **Record** (`PrekeyRecord`, built 2026-10-09). Our own batches: ID, created and retired times, an
+    `isPending` flag, and each key's 16-byte ID, 143-byte Enclave blob, and public key while pending. Their
+    batches: each batch's ID and its keys' IDs and public keys. The IDs of batches already accepted, the date
+    rule's last date, and `legacyKeys`. The pending batch is marked by `isPending` on its own batch,
+    not referenced by ID: a pending batch carried over from today's format has no ID and must keep travelling
+    without one, since a peer that accepted it under the date rule would accept it again if it reappeared with
+    one. The bookkeeper keeps at most one batch pending.
+  - **Legacy keys are not listed in the record (decided 2026-10-09).** Our prekeys from before stage 1 are
+    keychain Enclave keys, and the keychain never returns an Enclave key's wrapped blob, so they can't be moved
+    into the record: they stay in the keychain until retired. A message naming a prekey ID the record doesn't
+    hold is looked up in the keychain; deletion goes by the contact's tag prefix. The one exception is a pending
+    batch carried over from today's format, which still has to be sent: it stays an own batch whose keys have no
+    blob. An earlier plan listed every legacy key as a "batch 0" with an `isLegacy` flag; it was dropped as
+    redundant (a missing blob already says "keychain") and as space the record doesn't need to spend.
+  - **`legacyKeys` (decided 2026-10-09; a three-state field since the bookkeeper was built).** When the
+    contact first uses a key from one of our record-held batches, the legacy keys we issued them are retired; the
+    sweep deletes them by tag 30 days later (D1). States: `none` (a contact added after stage 1, or deleted),
+    `inUse` (every record converted from today's format starts here), `retired(since:)`. A plain date was the
+    first form; it couldn't say the keys were already gone, so every later sweep would delete by tag again, and
+    clearing it would read as "not retired yet" and be set again by the next message. Three states delete exactly
+    once. It is per contact because each contact switches at a different time. Alternatives rejected: deleting
+    legacy keys only when consumed leaves unused ones forever (Bug 156); deleting at the switch loses messages
+    still in transit; one deadline for everyone breaks rarely-writing contacts who still hold legacy keys;
+    waiting for our first record-held batch to expire is safe but one batch late, and never happens for a contact
+    who stops before a second batch. Legacy tags name the contact in the keychain (step 17's leak), so they should
+    go as early as is safe.
   - **Fixed size (Bug 161).** The record is encoded in a compact binary layout and padded to a fixed 16 KB
     for every contact, so its length never tracks activity.
   - **Size limits, eviction in the bookkeeper (decided 2026-10-09).** Overflow is made impossible by
@@ -552,7 +574,8 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     2), deleting the oldest retired keys first when installing a batch would exceed it; at most two inbound
     batches, a third dropping the oldest; at most 8 accepted batch IDs; inbound key IDs of at most 64 bytes, a
     longer one making the batch malformed. Every field then has a maximum size, so the worst-case record is
-    fixed (about 14 KB), and a test encodes a record at every limit at once within 16 KB. Eviction in the codec
+    fixed: 13,307 bytes measured (normal use 5,808), and a test encodes a record at every limit at once
+    within 16 KB with at least 1 KB to spare. Eviction in the codec
     was rejected: a codec should translate without loss, the rule would sit apart from every other rule about
     which keys exist, and keys would vanish whenever a record happened to be saved.
     It is also never null: an empty fixed-size record is written when the contact is created, because a null
@@ -569,9 +592,11 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     reject the bundle, as the keychain delete was (§2.2). The write-ahead log is then checkpointed, so the
     consumed blob doesn't survive there until SQLite's next checkpoint.
   - **Bookkeeping.** The pending batch clears only when the key used belongs to it (Bug 157). The first use of
-    a newer batch retires older ones; a sweep deletes blobs, and legacy keychain keys by tag, 30 days after
+    a newer batch retires older ones, and the first use of any record-held batch retires the legacy keys (`legacyKeys`). A
+    sweep deletes retired blobs, and the contact's legacy keychain keys by tag, 30 days after the respective
     retirement, on receipt and at unlock for the contacts that depth can read (D1, Bug 156). Inbound batches
-    are dropped by ID (Bug 158).
+    are dropped by ID (Bug 158). Accepting a batch still replaces the keys held from that contact, as today;
+    appending is stage 4's.
   - **Contact deletion.** The record is overwritten with filler of the same size, since the row is only
     soft-deleted, as well as deleting legacy keychain keys.
 - *Migration (decided 2026-10-09):* **one pass over every contact row at launch, as the first step of the
@@ -585,9 +610,10 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     row in the same pass, so it is uniformly null and leaks nothing. The old field is marked
     `@available(*, deprecated)`, so nothing reads or writes it again outside the migration. The new field is
     never null: written empty at contact creation, overwritten with same-size filler on deletion.
-  - Existing keychain prekeys (by tag) become "batch 0", retired when a key from a newer batch is first used and
-    deleted from the keychain 30 days later; after that no prekey keychain items remain. The prekeys we hold for
-    them become one batch with no `id`. Messages already sealed to keychain prekeys still open throughout.
+  - Existing keychain prekeys stay in the keychain, unlisted, until 30 days after they retire (`legacyKeys`); after
+    that no prekey keychain items remain for that contact. The prekeys we hold for them become one inbound batch
+    with no `id`, and a pending batch becomes a pending own batch with no `id` and no blobs. Messages already
+    sealed to keychain prekeys still open throughout.
 - *Shipping order:* a build that stores blob prekeys can't be downgraded without losing the messages sealed
   to them, as with D6. Stage 1 can be built and merged now but ships no earlier than the one-way migration
   release (rollout stage 3, the contacts slice), which D9 already ties it to.
