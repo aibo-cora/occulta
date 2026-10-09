@@ -167,3 +167,4 @@ Detail lives in `Docs/Features/Secure Mode/bugs.md`; this is the subset that con
 | 158 | A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely | Open — needs a decision |
 | 159 | A fresh prekey batch is generated before the bundle has passed every check | Fixed 2026-10-08 |
 | 160 | No test exercises the real prekey replenishment trigger | Fixed 2026-10-08 |
+| 161 | A contact's sealed prekey record changes size with their message activity | Open — fix decided (fixed 16 KB capacity, stage 1) |

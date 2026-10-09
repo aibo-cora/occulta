@@ -13108,3 +13108,65 @@ drops by five.
 
 The tests above. They assert the trigger's effects directly (a stored batch, its 15 Enclave keys, the batch
 cleared), so removing the trigger from either method would fail them.
+
+## Bug 161 — A contact's sealed prekey record changes size with their message activity
+
+**Status:** Open — fix decided 2026-10-08, to be built in prekey continuity stage 1
+(`Docs/Features/Prekey Continuity/DESIGN.md` §8). Found planning that stage.
+
+**Target:** `v2.0.0`. Present since `forwardSecrecyEncrypted` was introduced (forward secrecy, 2026-03).
+
+### Severity: Medium (forensic, once v2.0.0 seals records per depth; subsumed today)
+
+Today the passcode alone opens the local DB key, so whoever can read the file can read everything, and this adds
+nothing. Once steps 1–5 of v2.0.0 seal each depth's records under its own key, a record's *length* is still
+readable without any key, so it becomes a leak.
+
+### What happens
+
+`Contact.Profile.forwardSecrecyEncrypted` is `encrypt(JSONEncoder().encode(ForwardSecrecy))`
+(`Contact+Model+Profile.swift`). Its plaintext holds the contact's public prekeys we can still use
+(`encodedPrekeys`, 0–15 entries, each a JSON-encoded `Prekey`) and the batch we're waiting to deliver
+(`pendingOutboundBatch`, present or absent). AES-GCM preserves length, so the ciphertext's size tracks both:
+- it shrinks by one prekey each time we send them a message, and jumps back when their batch arrives;
+- it grows by a batch when their long-term message arrives, and shrinks when they use a key from it.
+
+Anyone with the database file and no key can therefore read, per contact row, roughly how many of their keys we
+hold and whether a batch is pending. Comparing two images shows how many messages went each way in between.
+That holds for hidden contacts too: their rows exist, and step 3's filler only hides them if every row's field has
+the same length. Prekey continuity stage 1 makes this worse, since the record will also hold our own private
+blobs (D9), 143 bytes each.
+
+**The field's presence leaks too (added 2026-10-09).** `forwardSecrecyEncrypted` is optional and stays `nil`
+until `configureForwardSecrecy` creates it, which happens only on the first send (`encryptBundle`,
+`encryptGroupBundle`) or the first receive (`decryptSealed`, `openGroup`). SQLite records NULL structurally,
+independent of encryption. So a plain `WHERE forwardSecrecyEncrypted IS NULL` query, with no key, separates
+contacts the user has exchanged messages with from those never written to. That is the same class as Bug 112's
+`deletionToken`.
+
+Other variable-length sealed fields on `Contact.Profile` were not checked for the same problem. Steps 3–5's
+fixed-width rule applies to them as well.
+
+### Fix — decided 2026-10-08
+
+Pad the encoded record to a **fixed capacity of 16 KB** before sealing, for every contact and for step 3's filler
+rows alike, so the field's length never varies. The capacity is sized for stages 2 and 4 as well, so it never has
+to grow:
+- worst case (our own blobs across a retired, a current and a pending batch, plus last-resort keys; their
+  prekeys across two batches; one pending batch) is about 11.5 KB in a compact binary layout, but about 19 KB as
+  JSON with base64. So the record moves to a compact layout; JSON doesn't fit;
+- if the record would exceed the capacity, the oldest retired blobs are deleted first, which loses only messages
+  that arrive later than the 30-day grace would have allowed anyway (D1).
+
+**Never null (added 2026-10-09).** The field is written, as an empty record at the fixed size, when the contact is
+created, so no contact ever has it null. Deletion overwrites it with filler of the same size rather than clearing
+it (stage 1).
+
+Migration rewrites each record at its fixed size when stage 1's lazy migration first opens it. A contact still
+holding `nil` gets an empty fixed-size record on that same pass.
+
+### Guard
+
+None yet. Needed: every record encodes to exactly the capacity, empty and at worst case; a record past capacity
+evicts oldest-retired-first; a filler row's field matches a real one's length; a newly created contact, a contact
+never written to, and a deleted contact all have the field present at that same length.

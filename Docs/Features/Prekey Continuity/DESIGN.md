@@ -524,20 +524,55 @@ fixed; full suite 985 tests, 0 failed, 6 skipped (all `KeychainMigrationSETests`
 bundle creates a pending batch; a forward-secret bundle clears it; the full cycle back to forward secrecy.
 These pin current behaviour before anything changes. Also fix Bug 159 (generate after the last check).
 
-**Stage 1 — prekeys into the record, per-batch records, retirement, batch IDs (D9; Bugs 156, 157, 158).**
-D1 and D9 are decided.
-- *Change:* new batches are CryptoKit Enclave keys whose blobs go in a fixed-width field of the contact's sealed
-  record. The receive path looks a prekey up in the record first, then in the keychain for legacy keys.
-- *Migration:* on first launch, each contact's existing keychain prekeys (by tag) become "batch 0" in the
-  record, retired when a key from a newer batch is first used, and deleted from the keychain after the grace
-  period. After that no prekey keychain items remain. A's stored `encodedPrekeys` become one batch with no
-  `id`. Messages already sealed to keychain prekeys still open throughout.
+**Stage 1 — prekeys into the record, per-batch records, retirement, batch IDs (D9; Bugs 156, 157, 158, 161).**
+D1 and D9 are decided; the three points below were settled 2026-10-08.
+- *Change:*
+  - **Record.** `ForwardSecrecy` holds our own batches (ID, created and retired times, each key's ID and
+    143-byte Enclave blob; legacy keychain prekeys as "batch 0" with IDs only), their batches (public prekeys
+    with each batch's ID), the IDs of batches already accepted, the pending outbound batch with its ID, and a
+    format version.
+  - **Fixed size (Bug 161).** The record is encoded in a compact binary layout and padded to a fixed 16 KB
+    for every contact, so its length never tracks activity. Over capacity, the oldest retired blobs go first.
+    It is also never null: an empty fixed-size record is written when the contact is created, because a null
+    field (today, until the first message) tells contacts who've exchanged messages from those who haven't,
+    with no key needed.
+  - **Wire.** `PrekeySyncBatch` gains an optional 16-byte `id`, with new interop vectors; batches without one
+    keep the date rule.
+  - **Generation.** 15 CryptoKit Enclave keys, the same access control as today, blobs into a new own-batch
+    record.
+  - **Lookup.** The receive path checks the record's blobs first, then the keychain for legacy keys. The key
+    manager's forward-secret derivation splits into "raw shared secret" and "session key from it", so a
+    CryptoKit key and a `SecKey` go through the same derivation.
+  - **Consumption.** Removing a blob from the record is saved immediately, before anything that can still
+    reject the bundle, as the keychain delete was (§2.2). The write-ahead log is then checkpointed, so the
+    consumed blob doesn't survive there until SQLite's next checkpoint.
+  - **Bookkeeping.** The pending batch clears only when the key used belongs to it (Bug 157). The first use of
+    a newer batch retires older ones; a sweep deletes blobs, and legacy keychain keys by tag, 30 days after
+    retirement, on receipt and at unlock for the contacts that depth can read (D1, Bug 156). Inbound batches
+    are dropped by ID (Bug 158).
+  - **Contact deletion.** The record is overwritten with filler of the same size, since the row is only
+    soft-deleted, as well as deleting legacy keychain keys.
+- *Migration:* lazy, per contact, the first time a record is opened, never as a sweep at launch. After steps
+  1–5, a launch sweep couldn't read a hidden contact's record from a duress depth and would treat contacts
+  differently by depth. Existing keychain prekeys (by tag) become "batch 0", retired when a key from a newer
+  batch is first used and deleted from the keychain 30 days later; after that no prekey keychain items remain.
+  The prekeys we hold for them become one batch with no `id`. The record is rewritten at its fixed size, and a
+  contact whose field is still null gets an empty fixed-size record.
+  Messages already sealed to keychain prekeys still open throughout.
+- *Shipping order:* a build that stores blob prekeys can't be downgraded without losing the messages sealed
+  to them, as with D6. Stage 1 can be built and merged now but ships no earlier than the one-way migration
+  release (rollout stage 3, the contacts slice), which D9 already ties it to.
+- *Commits:* the key-manager split (pure refactor, existing tests unchanged); fixed-size record (Bug 161);
+  record format and wire `id` with interop vectors; generation, lookup, consumption with its immediate save and
+  checkpoint, Bug 157; retirement, sweep and the contact-deletion overwrite; migration.
 - *Tests:* creating a CryptoKit Enclave key adds no keychain item (count before and after); a blob-backed prekey
-  opens a message and its blob is gone from the record afterwards; the record field's size doesn't change with
-  how many blobs it holds; a legacy keychain prekey still opens a message after migration; out-of-order
-  arrival keeps the pending batch (157); an older-dated batch with a new `id` is accepted, and a repeated `id`
-  is dropped (158); retired keys are deleted after the grace period and not before; a message sealed to a
-  retired key within the grace period still opens.
+  opens a message and its blob is gone from the record afterwards; a bundle rejected after it opens still leaves
+  its blob deleted and saved; the record encodes to exactly 16 KB empty and at worst case, and evicts
+  oldest-retired-first past it; a newly created contact, one never written to, and a deleted one all have the
+  field present at that same size; a deleted contact's record holds no blobs; a legacy keychain prekey and a
+  record-held one both open messages; out-of-order arrival keeps the pending batch (157); an older-dated batch
+  with a new `id` is accepted, and a repeated `id` is dropped (158); retired keys are deleted after the grace
+  period and not before; a message sealed to a retired key within the grace period still opens.
 
 **Stage 2 — last-resort key (§3.1).** D2's indicator and D5's replay guards ship with it. Ships no earlier
 than the release that does the one-way migration (rollout stage 3, D6), and never ahead of stage 1.
