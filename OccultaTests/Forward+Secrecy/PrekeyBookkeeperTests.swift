@@ -126,6 +126,12 @@ struct PrekeyBookkeeperAcceptTests {
                 try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: prekeys, into: &record)
             }
         }
+        // A batch ID is stored in the record, so a sender can't choose its size.
+        for badID in [randomBytes(15), randomBytes(17), randomBytes(1024)] {
+            #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
+                try self.bookkeeper.accept(id: badID, generatedAt: Date(), prekeys: wire(1), into: &record)
+            }
+        }
         #expect(record == .empty, "a rejected batch must change nothing")
     }
 }

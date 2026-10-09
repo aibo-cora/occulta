@@ -207,6 +207,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     struct Batch: Decodable, Sendable {
         let generatedAt: Double
         let prekeys: [WirePrekeyInput]
+        /// Hex. Absent from the vectors recorded before batch IDs existed, which must keep their bytes.
+        let id: String?
     }
 
     struct WirePrekeyInput: Decodable, Sendable {
@@ -430,7 +432,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             generatedAt: Date(timeIntervalSinceReferenceDate: input.generatedAt),
             prekeys: try input.prekeys.map {
                 OccultaBundle.WirePrekey(id: $0.id, publicKey: try Self.bytes($0.publicKey))
-            }
+            },
+            id: try input.id.map(Self.bytes)
         )
     }
 

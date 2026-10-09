@@ -28,9 +28,12 @@ struct PrekeyBookkeeper {
     static let maxInboundKeysPerBatch = 30
     static let maxInboundKeyIDBytes = 64
     static let maxAcceptedBatchIDs = 8
+    /// A batch ID is chosen by the sender and stored in the record, twice, so its size is fixed.
+    static let batchIDBytes = 16
 
     enum BookkeeperError: Error, Equatable {
-        /// An inbound batch with too many keys, a key that isn't a 65-byte public key, or an over-long key ID.
+        /// An inbound batch with an ID that isn't 16 bytes, too many keys, a key that isn't a 65-byte public
+        /// key, or an over-long key ID.
         case malformedBatch
     }
 
@@ -85,7 +88,8 @@ struct PrekeyBookkeeper {
     func accept(
         id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], into record: inout PrekeyRecord
     ) throws -> Bool {
-        guard prekeys.count <= Self.maxInboundKeysPerBatch,
+        guard id == nil || id?.count == Self.batchIDBytes,
+              prekeys.count <= Self.maxInboundKeysPerBatch,
               prekeys.allSatisfy({ $0.publicKey.count == 65 && $0.id.utf8.count <= Self.maxInboundKeyIDBytes })
         else { throw BookkeeperError.malformedBatch }
 
@@ -219,6 +223,6 @@ struct PrekeyBookkeeper {
 
     private static func randomBatchID() -> Data {
         var generator = SystemRandomNumberGenerator()
-        return Data((0..<16).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
+        return Data((0..<Self.batchIDBytes).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
     }
 }

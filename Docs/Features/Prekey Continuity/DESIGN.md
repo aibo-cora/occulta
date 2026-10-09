@@ -582,7 +582,10 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     field (today, until the first message) tells contacts who've exchanged messages from those who haven't,
     with no key needed.
   - **Wire.** `PrekeySyncBatch` gains an optional 16-byte `id`, with new interop vectors; batches without one
-    keep the date rule.
+    keep the date rule. Built 2026-10-09: omitted from the encoding when `nil`, so every existing vector kept
+    its bytes, and two new ones (`payload.prekeyBatchWithID`, `recipientPayload.prekeyBatchWithID`) each differ
+    from their base vector by exactly the `id` field. The bookkeeper rejects an ID that isn't 16 bytes: the
+    sender chooses it and the record stores it.
   - **Generation.** 15 CryptoKit Enclave keys, the same access control as today, blobs into a new own-batch
     record.
   - **Lookup.** The receive path checks the record's blobs first, then the keychain for legacy keys. The key

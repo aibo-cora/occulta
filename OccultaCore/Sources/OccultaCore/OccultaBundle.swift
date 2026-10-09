@@ -455,10 +455,19 @@ public struct OccultaBundle: Codable {
             public let generatedAt: Date
             /// Wire representation of the prekey public keys in this batch.
             public let prekeys: [WirePrekey]
+            /// 16 random bytes identifying the batch, so a receiver drops a batch it has already accepted
+            /// whatever its date (`bugs.md` Bug 158; prekey continuity stage 1).
+            ///
+            /// Absent from batches sent by builds before stage 1, and from a pending batch carried over from
+            /// them, which must keep travelling without one. A receiver filters those by `generatedAt`, as
+            /// before. Omitted from the encoding when `nil`, so a batch without one encodes exactly as it always
+            /// did, and builds that don't know the field ignore it.
+            public let id: Data?
 
-            public init(generatedAt: Date, prekeys: [WirePrekey]) {
+            public init(generatedAt: Date, prekeys: [WirePrekey], id: Data? = nil) {
                 self.generatedAt = generatedAt
                 self.prekeys     = prekeys
+                self.id          = id
             }
         }
     }
