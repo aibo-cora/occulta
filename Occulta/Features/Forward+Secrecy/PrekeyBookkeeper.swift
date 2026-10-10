@@ -24,7 +24,7 @@ struct PrekeyBookkeeper {
 
     /// Our own keys the record may hold: pending, current and retired leftovers.
     static let maxOwnKeys = 48
-    /// Matches `ContactManager.storeInboundBatch`'s existing bound of twice the batch size.
+    /// The bound inbound batches had before stage 1: twice the batch size.
     static let maxInboundKeysPerBatch = 30
     static let maxInboundKeyIDBytes = 64
     static let maxAcceptedBatchIDs = 8

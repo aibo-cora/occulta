@@ -162,9 +162,9 @@ Detail lives in `Docs/Features/Secure Mode/bugs.md`; this is the subset that con
 | 83 | A contact who downgrades below 1.10.2 stops receiving our forward-secret group messages | Open |
 | 152 | A trustee who has used up the owner's prekeys never confirms a backup-key piece | Fixed 2026-09-29 |
 | 155 | An identity challenge makes each side generate a fresh prekey batch while the other still has keys | Open — fix decided (group-format challenges, D3) |
-| 156 | Unused prekeys are never removed from the Secure Enclave | Open — fix decided (30 days after retirement) |
-| 157 | Using any of our prekeys clears the pending batch, even one from an older batch | Open |
-| 158 | A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely | Open — needs a decision |
+| 156 | Unused prekeys are never removed from the Secure Enclave | Fixed on the stage 1 branch; residual open, needs a decision (lost-message keys in a batch still in use) |
+| 157 | Using any of our prekeys clears the pending batch, even one from an older batch | Fixed on the stage 1 branch |
+| 158 | A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely | Fixed on the stage 1 branch (batch IDs); senders on older builds keep it |
 | 159 | A fresh prekey batch is generated before the bundle has passed every check | Fixed 2026-10-08 |
 | 160 | No test exercises the real prekey replenishment trigger | Fixed 2026-10-08 |
-| 161 | A contact's sealed prekey record changes size with their message activity | Open — fix decided (fixed 16 KB capacity, stage 1) |
+| 161 | A contact's sealed prekey record changes size with their message activity | Fixed on the stage 1 branch |

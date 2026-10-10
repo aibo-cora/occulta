@@ -12904,7 +12904,12 @@ and assert none is created.
 
 ## Bug 156 — Unused prekeys are never removed from the Secure Enclave
 
-**Status:** Open — fix decided 2026-10-06, not yet built: delete retired keys 30 days after retirement.
+**Status:** Fixed 2026-10-10 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged; ships with
+the contacts slice. Retired keys, and legacy keychain keys once retired, are deleted 30 days after retirement.
+**Residual — open, needs a decision:** the clock starts at retirement, and a batch retires only when the contact
+uses a newer one. In the batch a contact is still using, a key whose message was lost stays until they move on to
+the next batch, so for a contact who goes quiet it has no time limit; the same holds for legacy keys of a contact
+who never uses a record-held batch. Those are the "contact who goes quiet" this fix chose a time limit for.
 
 **Target:** `v2.0.0`. Pruning existed (`d16ec10c`, 2026-03-18) and was removed in `efb0b199` (2026-03-29);
 every release with forward secrecy is affected.
@@ -12954,11 +12959,15 @@ hold as one retired-on-first-use batch (design §8, stage 1).
 
 ### Guard
 
-None yet.
+`PrekeyBookkeeperTests` (retirement, the sweep, eviction), `PrekeyLifecycleTests` (`PrekeySweepTests`: deleted
+after 30 days and not before; legacy keys marked gone once; the unlock sweep covers visible contacts only) and
+`PrekeyRecordWiringTests.receiptSweepsBeforeRejection` (the sweep on receipt deletes legacy keychain keys and is
+saved even when the bundle is rejected).
 
 ## Bug 157 — Using any of our prekeys clears the pending batch, even one from an older batch
 
-**Status:** Open.
+**Status:** Fixed 2026-10-09 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged: the pending
+batch stops being pending only when the key used belongs to it (`PrekeyBookkeeper.consume`).
 
 **Target:** `v2.0.0`. Present since the pending batch was introduced (`8ec81d8a`, 2026-03-23).
 
@@ -12984,11 +12993,14 @@ no format change is needed.
 
 ### Guard
 
-None yet. Needed: the sequence above through `decryptSealed`, asserting batch 2 is still pending after m15.
+`PrekeyBookkeeperTests`: out-of-order arrival keeps the pending batch. Through `decryptSealed` and `openGroup`,
+`PrekeyReplenishmentTriggerTests` checks that a key from the pending batch delivers it.
 
 ## Bug 158 — A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely
 
-**Status:** Open — fix needs a decision.
+**Status:** Fixed 2026-10-09 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged: a batch
+carries a 16-byte ID and is deduplicated by it, whatever its date (the first option below). A batch without an ID,
+from a sender on an older build, keeps the date rule, so that sender keeps the bug until they update.
 
 **Target:** `v2.0.0`. Present since `latestPrekeysGeneratedAt` was introduced (`efb0b199`, 2026-03-29).
 
@@ -13024,7 +13036,9 @@ them unopenable. Any replacement has to keep rejecting that copy. Options:
 
 ### Guard
 
-None yet.
+`PrekeyBookkeeperTests`: an older-dated batch with a new ID is accepted, a repeated ID is dropped, and a batch
+without an ID keeps the date rule. The interop vectors `payload.prekeyBatchWithID` and
+`recipientPayload.prekeyBatchWithID` pin the wire field.
 
 ## Bug 159 — A fresh prekey batch is generated before the bundle has passed every check
 
@@ -13111,8 +13125,9 @@ cleared), so removing the trigger from either method would fail them.
 
 ## Bug 161 — A contact's sealed prekey record changes size with their message activity
 
-**Status:** Open — fix decided 2026-10-08, to be built in prekey continuity stage 1
-(`Docs/Features/Prekey Continuity/DESIGN.md` §8). Found planning that stage.
+**Status:** Fixed 2026-10-10 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1,
+`Docs/Features/Prekey Continuity/DESIGN.md` §8), not yet merged; ships with the contacts slice. Found planning
+that stage. Step 3's filler rows don't exist yet; they must use the same sealed size.
 
 **Target:** `v2.0.0`. Present since `forwardSecrecyEncrypted` was introduced (forward secrecy, 2026-03).
 
@@ -13168,12 +13183,14 @@ it (stage 1).
 **Migration (decided 2026-10-09).** One pass over every contact row at launch, before v2.0.0 reseals records per
 depth, moves each record into a **new field** at its fixed size, gives contacts that had none an empty one, and
 sets `forwardSecrecyEncrypted` to `nil` on every row. The old field is then uniformly null, which leaks nothing,
-and is marked deprecated. Migrating lazily, row by row as records were opened, was rejected: migrated and
+and is made private (not deprecated, which warned on every build through `@Model`'s generated code). Migrating lazily, row by row as records were opened, was rejected: migrated and
 unmigrated rows are distinguishable without a key, and after the reseal the rows left unmigrated during duress
 use would be the hidden contacts.
 
 ### Guard
 
-None yet. Needed: every record encodes to exactly the capacity, empty and with every cap reached at once; a batch
-installed past the own-key cap deletes the oldest retired keys first; the codec throws rather than trims; a filler row's field matches a real one's length; a newly created contact, a contact
-never written to, and a deleted contact all have the field present at that same length.
+`PrekeyRecordCodecTests` (exactly the capacity, empty and with every cap reached at once; throws rather than
+trims), `PrekeyBookkeeperTests` (eviction of the oldest retired keys first), `PrekeyLifecycleTests` (a saved, an
+imported and a deleted contact all have the field at the same length) and `PrekeyRecordMigrationTests` (after the
+pass every row's field has that length, whatever it started with). Still needed when step 3 is built: a filler
+row's field matches a real one's length.

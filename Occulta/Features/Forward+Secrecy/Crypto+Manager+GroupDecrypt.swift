@@ -63,7 +63,8 @@ extension Manager.Crypto {
     ///
     /// ## Consumes the prekey
     ///
-    /// Once a slot opens, its prekey is deleted from the Enclave before this function returns,
+    /// Once a slot opens, its prekey is consumed through `prekeys` before this function returns (out of the
+    /// sender's record, which is saved at once, or out of the keychain for a legacy key),
     /// on **every** exit — the success path and the signature-mismatch throw alike. The
     /// returned `Prekey?` therefore reports what *was* consumed; it is not an instruction to
     /// the caller to consume it.
