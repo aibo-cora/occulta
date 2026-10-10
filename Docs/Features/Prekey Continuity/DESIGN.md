@@ -594,9 +594,8 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     manager's forward-secret derivation splits into "raw shared secret" and "session key from it", so a
     CryptoKit key and a `SecKey` go through the same derivation. Built 2026-10-09: the receive path takes a
     `PrekeyPrivateKeys`, which `SenderPrekeys` implements over the sender's record and the keychain.
-  - **Where it is read until the migration.** `ContactManager.prekeyRecord(for:)` reads the new field, else the
-    old one in today's format, and every write goes to the new field only. That fallback exists only between the
-    wiring commit and the migration commit, which removes it.
+  - **Where it is read.** `ContactManager.prekeyRecord(for:)` reads the new field only. Between the wiring commit
+    and the migration commit it fell back to the old field in today's format; the migration commit removed that.
   - **Consumption.** Removing a blob from the record is saved immediately, before anything that can still
     reject the bundle, as the keychain delete was (§2.2). The write-ahead log is then checkpointed, so the
     consumed blob doesn't survive there until SQLite's next checkpoint. Built 2026-10-09: `SenderPrekeys`
@@ -626,9 +625,25 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     opened would, after the reseal, leave hidden contacts, readable only at their own depth, as the rows still
     unconverted while the user spends time at a duress depth.
   - **The record moves to a new field** on `Contact.Profile`; `forwardSecrecyEncrypted` is set to `nil` on every
-    row in the same pass, so it is uniformly null and leaks nothing. The old field is marked
-    `@available(*, deprecated)`, so nothing reads or writes it again outside the migration. The new field is
-    never null: written empty at contact creation, overwritten with same-size filler on deletion.
+    row in the same pass, so it is uniformly null and leaks nothing. The old field is made `private`, so nothing
+    reads or writes it again outside the migrations, which reach it through `retiredForwardSecrecyEncrypted`
+    (changed 2026-10-10 from `@available(*, deprecated)`: `@Model`'s generated schema names every stored
+    property, so the deprecation warned on every build, where it would have been ignored; `private` makes any
+    other use a compile error instead). The new field is never null: written empty at contact creation,
+    overwritten with same-size filler on deletion.
+  - **Built 2026-10-10** as `DatabaseMigration.migratePrekeyRecords`, in the launch migrations after
+    `migrateToV2`. The per-depth reseal doesn't exist yet, so "before the reseal" is a constraint on that work:
+    it must run after this pass. What each row gets:
+    - A live row's record is converted by the codec. One that won't decrypt, decode or fit in 16 KB (nothing
+      bounded an inbound key ID before stage 1) becomes empty with `legacyKeys` in use, as an unreadable record
+      is read at run time: the keys held from that contact are lost until their next long-term message. No old
+      record means no message was ever exchanged: empty, no legacy keys.
+    - A soft-deleted row gets an empty record, by readability as the deleted rows' depth stamps are scrubbed:
+      sealed when its `deletionToken` decrypts, random bytes at the sealed size when it doesn't.
+    - A row still on the v1 scheme is skipped and `migrateToV2` retries it first: its old field isn't under the
+      current key yet, so converting it would discard it. Such a row already shows through its plaintext
+      `encryptionScheme`, so its missing new field adds nothing.
+    - A row with a new field and no old one is left byte-identical, so ordinary launches rewrite nothing.
   - Existing keychain prekeys stay in the keychain, unlisted, until 30 days after they retire (`legacyKeys`); after
     that no prekey keychain items remain for that contact. The prekeys we hold for them become one inbound batch
     with no `id`, and a pending batch becomes a pending own batch with no `id` and no blobs. Messages already
@@ -640,7 +655,7 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
   record format and wire `id` with interop vectors; generation, lookup, consumption with its immediate save and
   checkpoint, Bug 157 (done 2026-10-09, with the compose indicator moved to `ContactManager` and the profile's
   prekey helpers removed); retirement, sweep and the contact-deletion overwrite (done 2026-10-10, with the
-  empty record at creation); migration.
+  empty record at creation); migration (done 2026-10-10).
 - *Tests:* creating a CryptoKit Enclave key adds no keychain item (count before and after); a blob-backed prekey
   opens a message and its blob is gone from the record afterwards; a bundle rejected after it opens still leaves
   its blob deleted and saved; the record encodes to exactly 16 KB empty and with every limit reached at once;

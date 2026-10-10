@@ -18,14 +18,13 @@ extension ContactManager {
 
     /// The prekey record between us and `contact`.
     ///
-    /// Reads `prekeyRecordEncrypted`, or, for a contact whose record hasn't been carried over yet,
-    /// `forwardSecrecyEncrypted` in today's format. A contact with neither has never exchanged a message.
+    /// Every row has one, written at creation or by `DatabaseMigration.migratePrekeyRecords`; nil reads as empty.
     ///
     /// An unreadable record starts over, as it did before stage 1: the keys we held for them and the
     /// batch we were delivering are lost, and the next long-term message from them restores both. Legacy keys
     /// may still exist for them, so the fresh record says so.
     func prekeyRecord(for contact: Contact.Profile) throws -> PrekeyRecord {
-        guard let sealed = contact.prekeyRecordEncrypted ?? contact.forwardSecrecyEncrypted else { return .empty }
+        guard let sealed = contact.prekeyRecordEncrypted else { return .empty }
         guard let plaintext = sealed.decrypt() else {
             var fresh = PrekeyRecord.empty
             fresh.legacyKeys = .inUse

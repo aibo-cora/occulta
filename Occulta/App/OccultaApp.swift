@@ -182,6 +182,16 @@ struct OccultaApp: App {
         }
 
 
+        // Before the reseal of contacts per depth, whenever that ships (`migratePrekeyRecords`), and after
+        // `migrateToV2`, whose rows it skips until they're converted.
+        do {
+            try DatabaseMigration.migratePrekeyRecords(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("prekey record migration error: \(error)")
+            #endif
+        }
+
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
         do {

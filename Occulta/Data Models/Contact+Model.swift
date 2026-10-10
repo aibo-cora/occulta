@@ -52,8 +52,14 @@ extension Contact {
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key]? = []
         /// Encrypted forward secrecy metadata: the JSON `ForwardSecrecy` stored before prekey continuity stage 1.
-        /// Read only to carry a record over into `prekeyRecordEncrypted`; nothing writes it.
-        var forwardSecrecyEncrypted: Data?
+        /// Retired: `DatabaseMigration.migratePrekeyRecords` carries it into `prekeyRecordEncrypted` and sets it
+        /// to nil on every row, so it is uniformly empty and says nothing. Kept only because dropping a column
+        /// relies on SwiftData's inferred migration.
+        ///
+        /// Private so that nothing uses it again: the migrations reach it through `retiredForwardSecrecyEncrypted`.
+        /// Not `@available(*, deprecated)`, which was the first plan: `@Model`'s generated schema names every stored
+        /// property, so the warning would fire on every build and be ignored.
+        private var forwardSecrecyEncrypted: Data?
 
         /// The sealed `PrekeyRecord` for this contact: always `PrekeyRecordCodec.capacity` bytes of plaintext,
         /// so its length says nothing about either side's keys (Bug 161). Read and written only by
@@ -390,4 +396,12 @@ enum Scopes: Codable {
     /// Key was acquired through `Nearby Interaction` and we have full confidence who it belongs to.
     case sign
     case none
+}
+
+extension Contact.Profile {
+    /// The retired `forwardSecrecyEncrypted`, for the migrations that re-encrypt and empty it, and nothing else.
+    var retiredForwardSecrecyEncrypted: Data? {
+        get { self.forwardSecrecyEncrypted }
+        set { self.forwardSecrecyEncrypted = newValue }
+    }
 }

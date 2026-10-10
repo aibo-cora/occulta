@@ -377,8 +377,9 @@ private struct Fixture {
     }
 
     /// A contact still holding a batch from before stage 1 seals to a keychain key, which the record
-    /// has no blob for. It must open, and leave the keychain.
-    @Test("A legacy keychain prekey still opens and is consumed", .enabled(if: secureEnclaveAvailable()))
+    /// has no blob for. Their record is carried over by the launch migration, as on an upgraded device;
+    /// the message must then open, and the key leave the keychain.
+    @Test("A legacy keychain prekey still opens after the migration and is consumed", .enabled(if: secureEnclaveAvailable()))
     func legacyKeychainPrekeyOpens() throws {
         let f = try Fixture()
         defer { f.cleanUp() }
@@ -390,8 +391,10 @@ private struct Fixture {
         var legacy = ForwardSecrecy()
         legacy.pendingOutboundBatch = try JSONEncoder().encode(batch)
         let sender = try f.sender
-        sender.forwardSecrecyEncrypted = try #require(try JSONEncoder().encode(legacy).encrypt())
+        sender.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        sender.retiredForwardSecrecyEncrypted = try #require(try JSONEncoder().encode(legacy).encrypt())
         try f.cm.modelContext.save()
+        try DatabaseMigration.migratePrekeyRecords(modelContext: f.cm.modelContext)
 
         let prekey = try #require(keys.first)
         _ = try f.cm.decryptSealed(bundle: try f.forwardSecretBundle(to: prekey))
