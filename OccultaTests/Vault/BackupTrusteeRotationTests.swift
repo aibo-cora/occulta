@@ -20,7 +20,7 @@ import CryptoKit
 import LocalAuthentication
 import SwiftData
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 /// `exportBackup` writes `backup-export-meta.dat` under Application Support — must exist
 /// before the first export, same requirement `VaultRestoreTrustTests` works around.

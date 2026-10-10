@@ -1,6 +1,6 @@
 //
 //  Basket.swift
-//  OccultaCore
+//  OccultaFormats
 //
 //  The plaintext a bundle carries: a basket of files, with their metadata.
 //

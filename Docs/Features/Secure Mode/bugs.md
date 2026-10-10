@@ -10920,7 +10920,7 @@ once you check the surrounding transport:
    (`attestation.verify(against: senderPublicKey)`) ever proved. Checked whether the transport layer
    already proves the same thing, rather than assuming: `shardOperations` (carrying both `attribute` and
    `attestation`) is a field inside `OccultaBundle.SealedPayload`
-   ([OccultaBundle.swift:395-428](OccultaCore/Sources/OccultaCore/OccultaBundle.swift:395)), sealed as one
+   ([OccultaBundle.swift:395-428](OccultaCore/Sources/OccultaFormats/OccultaBundle.swift:395)), sealed as one
    GCM-authenticated blob. `senderProof`'s own doc comment states plainly what that buys: *"only the
    actual sender can produce this value."* For a 1:1 exchange — which handback always is, trustee to
    owner, never a group — the session key itself is derivable only by the two parties involved, so a

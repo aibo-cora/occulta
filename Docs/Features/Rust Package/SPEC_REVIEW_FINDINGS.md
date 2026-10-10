@@ -15,7 +15,7 @@ source that was checked — none of the critical findings are speculative.
 ### F1. `Mode` enum is missing two shipped cases — ✅ fixed
 The spec defined only `ForwardSecret` and `LongTermFallback`. Swift ships **four** modes:
 `forwardSecret`, `forwardSecretNoPQ`, `longTermFallback`, `longTermNoPQ`
-(`OccultaCore/Sources/OccultaCore/OccultaBundle.swift:227-268`). The NoPQ variants are the
+(`OccultaCore/Sources/OccultaFormats/OccultaBundle.swift:227-268`). The NoPQ variants are the
 classical-only paths used whenever the peer's ML-KEM material is absent or corrupt. Rust as
 specified would decode every classical-only bundle as `Unsupported` and abort.
 **Fix:** all four variants added with exact raw strings.
@@ -50,7 +50,7 @@ killing the whole bundle decode instead of the graceful path.
 ### F5. `ShardOperation` wire shape is wrong — ✅ fixed
 Two errors (`OccultaBundle.swift:215-219`):
 - `attribute` is a nested `SignedAttribute` **JSON object** in Swift
-  (`OccultaCore/Sources/OccultaCore/SignedAttribute.swift`), not base64 `Data` as the spec modelled.
+  (`OccultaCore/Sources/OccultaFormats/SignedAttribute.swift`), not base64 `Data` as the spec modelled.
 - The JSON key is `attributeID` (capital ID); `rename_all = "camelCase"` produces
   `attributeId` — the same casing trap the spec itself flagged for `prekeyID`.
 

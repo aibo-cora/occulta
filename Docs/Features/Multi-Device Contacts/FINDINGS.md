@@ -302,7 +302,7 @@ The request/response is authenticated by the same mechanism as everything else i
 
 ### Verified, no action needed
 
-Custody content (`shardOperations`/`custodyManifest`/`expectedShards`, [OccultaBundle.swift:598-604](../../../OccultaCore/Sources/OccultaCore/OccultaBundle.swift)) needs no independent signature for the Session 8 receiver-side check — it rides inside the AEAD-sealed bundle, and successful decryption against a specific device's key already is the "sender fingerprint" being verified. This differs in kind from the revocation broadcast's explicit SE signature (`occulta-device-revocation-v1`), which exists because that artifact must be self-contained and independently verifiable *outside* a live session (guardians relay it without decrypting it). State this explicitly so no future pass builds a redundant second signing scheme for custody content.
+Custody content (`shardOperations`/`custodyManifest`/`expectedShards`, [OccultaBundle.swift:598-604](../../../OccultaCore/Sources/OccultaFormats/OccultaBundle.swift)) needs no independent signature for the Session 8 receiver-side check — it rides inside the AEAD-sealed bundle, and successful decryption against a specific device's key already is the "sender fingerprint" being verified. This differs in kind from the revocation broadcast's explicit SE signature (`occulta-device-revocation-v1`), which exists because that artifact must be self-contained and independently verifiable *outside* a live session (guardians relay it without decrypting it). State this explicitly so no future pass builds a redundant second signing scheme for custody content.
 
 ### Findings, ranked
 

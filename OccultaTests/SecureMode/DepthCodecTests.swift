@@ -23,7 +23,7 @@ import Foundation
 import CryptoKit
 import SwiftData
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 @Suite("DepthCodec — Bug 85 plaintext format")
 struct DepthCodecTests {

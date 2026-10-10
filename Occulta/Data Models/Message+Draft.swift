@@ -6,7 +6,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
-import OccultaCore
+import OccultaFormats
 
 // MARK: - Message
 
@@ -76,7 +76,7 @@ extension Message {
         /// yet committed to anything; `basket.files` is every already-committed
         /// item, in order — attachments *and*, in thread compose mode, already-
         /// "sent"-into-thread text bubbles (`ComposeViewModel.addText()` appends
-        /// a `.text`-formatted `OccultaCore.File` per bubble; a single draft can
+        /// a `.text`-formatted `OccultaFormats.File` per bubble; a single draft can
         /// hold several). Trying to tell those apart by position in one flat
         /// array (e.g. "the last `.text` entry is the input field") is exactly
         /// the kind of implicit convention this codebase has already been
@@ -154,7 +154,7 @@ extension Message {
 
         /// `Application Support/Drafts/<id>/` — one folder per draft, named by the
         /// row's own opaque id, never by the recipient's identifier. Holds each
-        /// attachment as its own file, named by its `OccultaCore.File.id`, still sealed
+        /// attachment as its own file, named by its `OccultaFormats.File.id`, still sealed
         /// under the contact's per-contact key (see FINDINGS.md, "Key" and
         /// "Attachment storage" — attachment bytes are never re-sealed under the
         /// canonical DB key that protects this row).
@@ -177,7 +177,7 @@ extension Message {
         /// to) and the load side (to reconstruct a fresh, correct URL rather than
         /// trusting one persisted at save time — see `attachmentsFolder(for:)`
         /// callers in `DraftStore`).
-        static func attachmentFilename(for file: OccultaCore.File) -> String {
+        static func attachmentFilename(for file: OccultaFormats.File) -> String {
             guard case .file(let meta) = file.format,
                   let ext = meta.extension, !ext.isEmpty
             else { return file.id.uuidString }
