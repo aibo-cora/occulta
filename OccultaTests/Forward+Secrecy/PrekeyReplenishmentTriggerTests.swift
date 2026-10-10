@@ -348,6 +348,34 @@ private struct Fixture {
         #expect(PrekeyBookkeeper().pendingBatch(in: saved) == nil)
     }
 
+    /// The sweep on receipt (D1, Bug 156) runs before the bundle is opened and is saved at once, so
+    /// even a bundle that is then rejected leaves expired keys deleted: from the record, and the
+    /// legacy ones from the keychain.
+    @Test("A message from a contact sweeps their record first, even when it is rejected", .enabled(if: secureEnclaveAvailable()))
+    func receiptSweepsBeforeRejection() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.pm.generateBatch(contactID: f.senderID)
+        let now = Date()
+        var record = PrekeyRecord.empty
+        record.ownBatches = [PrekeyRecord.OwnBatch(
+            id: Data(count: 16), createdAt: now - 60 * 86_400, retiredAt: now - 31 * 86_400, isPending: false,
+            keys: [PrekeyRecord.OwnKey(id: Data(count: 16), blob: Data(count: 143), publicKey: nil)]
+        )]
+        record.legacyKeys = .retired(since: now - 31 * 86_400)
+        try f.cm.store(record, for: try f.sender)
+        try f.cm.modelContext.save()
+
+        let bundle = f.corrupted(try f.groupBundle())
+        #expect(throws: (any Error).self) { _ = try f.cm.openGroup(bundle: bundle, ownerID: f.senderID) }
+
+        let saved = try f.savedRecord
+        #expect(saved.ownBatches.isEmpty)
+        #expect(saved.legacyKeys == PrekeyRecord.LegacyKeys.none)
+        #expect(f.keychainPrekeyCount == 0, "legacy keys past their grace period must be gone from the keychain")
+    }
+
     /// A contact still holding a batch from before stage 1 seals to a keychain key, which the record
     /// has no blob for. It must open, and leave the keychain.
     @Test("A legacy keychain prekey still opens and is consumed", .enabled(if: secureEnclaveAvailable()))

@@ -580,7 +580,8 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     which keys exist, and keys would vanish whenever a record happened to be saved.
     It is also never null: an empty fixed-size record is written when the contact is created, because a null
     field (today, until the first message) tells contacts who've exchanged messages from those who haven't,
-    with no key needed.
+    with no key needed. Built 2026-10-10, in both places a contact is created (`save(contact:)` and
+    `createContacts(from:)`).
   - **Wire.** `PrekeySyncBatch` gains an optional 16-byte `id`, with new interop vectors; batches without one
     keep the date rule. Built 2026-10-09: omitted from the encoding when `nil`, so every existing vector kept
     its bytes, and two new ones (`payload.prekeyBatchWithID`, `recipientPayload.prekeyBatchWithID`) each differ
@@ -606,11 +607,17 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
   - **Bookkeeping.** The pending batch clears only when the key used belongs to it (Bug 157). The first use of
     a newer batch retires older ones, and the first use of any record-held batch retires the legacy keys (`legacyKeys`). A
     sweep deletes retired blobs, and the contact's legacy keychain keys by tag, 30 days after the respective
-    retirement, on receipt and at unlock for the contacts that depth can read (D1, Bug 156). Inbound batches
+    retirement, on receipt and at unlock for the contacts that depth can read (D1, Bug 156). Built 2026-10-10
+    (`ContactManager.sweepPrekeys`): on receipt it runs before the bundle is opened and is saved and flushed at
+    once, like a used key, so a rejected bundle still leaves expired keys deleted; at unlock it covers the contacts
+    visible at the authenticated depth, runs at every depth, and is flushed by the checkpoint every unlock already
+    takes. Inbound batches
     are dropped by ID (Bug 158). Accepting a batch still replaces the keys held from that contact, as today;
     appending is stage 4's.
   - **Contact deletion.** The record is overwritten with filler of the same size, since the row is only
-    soft-deleted, as well as deleting legacy keychain keys.
+    soft-deleted, as well as deleting legacy keychain keys. Built 2026-10-10: the filler is the sealed empty
+    record, for the reason `deleteContact` seals benign depth stamps rather than random bytes: the rest of the
+    row still decrypts, so a field that didn't would read as something deliberately destroyed.
 - *Migration (decided 2026-10-09):* **one pass over every contact row at launch, as the first step of the
   contacts slice's one-way migration, before records are resealed per depth.** Every record is readable then,
   because all are sealed under the same local DB key, so the pass treats every row alike.
@@ -632,7 +639,8 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
 - *Commits:* the key-manager split (pure refactor, existing tests unchanged); fixed-size record (Bug 161);
   record format and wire `id` with interop vectors; generation, lookup, consumption with its immediate save and
   checkpoint, Bug 157 (done 2026-10-09, with the compose indicator moved to `ContactManager` and the profile's
-  prekey helpers removed); retirement, sweep and the contact-deletion overwrite; migration.
+  prekey helpers removed); retirement, sweep and the contact-deletion overwrite (done 2026-10-10, with the
+  empty record at creation); migration.
 - *Tests:* creating a CryptoKit Enclave key adds no keychain item (count before and after); a blob-backed prekey
   opens a message and its blob is gone from the record afterwards; a bundle rejected after it opens still leaves
   its blob deleted and saved; the record encodes to exactly 16 KB empty and with every limit reached at once;

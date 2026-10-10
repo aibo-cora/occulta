@@ -334,6 +334,7 @@ struct RootView: View {
                 // Without a gate, `wire()` went straight to `.unlocked` and this call is what
                 // covers that case. Both may fire; the sweep is idempotent.
                 self.purgeOrphanedGroupsIfAtRealDepth()
+                self.sweepPrekeysIfUnlocked()
 
                 // Unconditional, at every depth and on every launch, and deliberately not
                 // folded into the purge above: a checkpoint that fired only at depth 0 would
@@ -364,10 +365,11 @@ struct RootView: View {
                 // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
                 // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
                 self.purgeOrphanedGroupsIfAtRealDepth()
+                self.sweepPrekeysIfUnlocked()
 
-                // Flushes the purge's delete records out of the WAL (`secure_delete` zeroes
+                // Flushes the purge's and the sweep's delete records out of the WAL (`secure_delete` zeroes
                 // them on the way), and runs on **every** unlock at every depth even though
-                // only a depth-0 unlock can have deleted anything — a checkpoint that followed
+                // only a depth-0 unlock can purge groups — a checkpoint that followed
                 // the deletion would otherwise announce it.
                 self.security.checkpointStore()
                 if let data = self.pendingFileData {
@@ -921,6 +923,13 @@ struct RootView: View {
         else { return }
 
         try? self.contactManager.purgeUnreadableGroups(using: key)
+    }
+
+    /// Deletes prekeys past their grace period (D1, Bug 156), for the contacts visible at the authenticated depth.
+    /// Gated on the phase for the reason `purgeOrphanedGroupsIfAtRealDepth()` gives; runs at every depth.
+    private func sweepPrekeysIfUnlocked() {
+        guard self.appScreen.phase == .unlocked else { return }
+        try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
     }
 
     /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,

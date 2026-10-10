@@ -203,6 +203,9 @@ class ContactManager {
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
             newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
+            // The prekey record is never nil either: an empty one, the same size as any other, so the field
+            // doesn't tell contacts who've exchanged messages from those who haven't (Bug 161).
+            try self.store(.empty, for: newContact)
             self.modelContext.insert(newContact)
         }
 
@@ -391,6 +394,9 @@ class ContactManager {
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
             newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
+            // The prekey record is never nil either: an empty one, the same size as any other, so the field
+            // doesn't tell contacts who've exchanged messages from those who haven't (Bug 161).
+            try self.store(.empty, for: newContact)
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -499,6 +505,9 @@ class ContactManager {
         contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
         contact.globalTrusteeDepth  = try DepthCodec.encode(-1).encrypt()
         contact.originDepth         = try DepthCodec.encode(0).encrypt()
+        // The prekey record, for the same reason: an empty record, the same size as any other, drops our private
+        // keys for this contact while reading as an ordinary row.
+        try self.store(.empty, for: contact)
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)

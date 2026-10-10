@@ -58,16 +58,16 @@ extension ContactManager {
 
     // MARK: - Receiving
 
-    /// The sender's prekeys for opening one inbound bundle. Using a key saves the record at once.
+    /// The sender's prekeys for opening one inbound bundle, swept first. Using a key saves the record at once.
     func senderPrekeys(for sender: Contact.Profile) throws -> SenderPrekeys {
-        SenderPrekeys(record: try self.prekeyRecord(for: sender)) { [weak self] record in
+        // The sweep on receipt (D1). What it deletes is past its grace period, so it's saved and flushed at once,
+        // as a used key is.
+        if try self.sweepPrekeys(of: sender) { try self.saveAndFlush() }
+        return SenderPrekeys(record: try self.prekeyRecord(for: sender)) { [weak self] record in
             guard let self else { return }
             do {
                 try self.store(record, for: sender)
-                try self.modelContext.save()
-                // `secure_delete` scrubs the freed page, but the write-ahead log still holds the previous record,
-                // used key and all, until a checkpoint.
-                self.security.checkpointStore()
+                try self.saveAndFlush()
             } catch {
                 #if DEBUG
                 debugPrint("⚠️ A used prekey couldn't be saved out of the record — forward secrecy NOT established for this message: \(error)")
@@ -94,6 +94,42 @@ extension ContactManager {
     func installFreshBatch(into prekeys: SenderPrekeys) throws {
         let keys = try Manager.PrekeySecretsManager().generateEnclaveKeys()
         PrekeyBookkeeper().install(keys, into: &prekeys.record, now: Date())
+    }
+
+    // MARK: - Sweep
+
+    /// Deletes what the grace period no longer protects from `contact`'s record, and the contact's legacy keychain
+    /// keys once they're due (D1, Bug 156). Doesn't save.
+    ///
+    /// - Returns: whether the record changed.
+    @discardableResult
+    func sweepPrekeys(of contact: Contact.Profile, now: Date = Date()) throws -> Bool {
+        var record = try self.prekeyRecord(for: contact)
+        let before = record
+        if PrekeyBookkeeper().sweep(&record, now: now) {
+            Manager.PrekeySecretsManager().deleteAllKeys(for: contact.identifier)
+        }
+        guard record != before else { return false }
+        try self.store(record, for: contact)
+        return true
+    }
+
+    /// The sweep at unlock, over the contacts visible at `depth`: the ones that depth can read once records are
+    /// sealed per depth. Saves if anything changed; the caller flushes the log, as it does on every unlock.
+    func sweepPrekeys(visibleAtDepth depth: Int, now: Date = Date()) throws {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return }
+        var changed = false
+        for contact in try self.fetchAllContacts() where contact.isVisible(atDepth: depth, usingKey: key) {
+            changed = try self.sweepPrekeys(of: contact, now: now) || changed
+        }
+        if changed { try self.modelContext.save() }
+    }
+
+    /// `secure_delete` scrubs the freed page, but the write-ahead log still holds the previous record, deleted keys
+    /// and all, until a checkpoint.
+    private func saveAndFlush() throws {
+        try self.modelContext.save()
+        self.security.checkpointStore()
     }
 }
 
