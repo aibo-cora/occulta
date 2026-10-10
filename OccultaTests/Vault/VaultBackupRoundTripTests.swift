@@ -23,7 +23,7 @@ import CryptoKit
 import LocalAuthentication
 import SwiftData
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 // `VaultManager` takes an injected key manager and the harness below uses one, but that seam
 // does not reach the depth stamps: `addEntry` writes `visibleThroughDepth` through the bare

@@ -15,7 +15,7 @@ import Testing
 import Foundation
 import SwiftData
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {

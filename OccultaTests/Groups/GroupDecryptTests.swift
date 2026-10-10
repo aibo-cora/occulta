@@ -9,7 +9,7 @@ import Testing
 import Foundation
 import CryptoKit
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 // MARK: - Helpers
 
