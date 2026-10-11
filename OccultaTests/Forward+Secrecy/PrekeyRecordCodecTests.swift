@@ -28,19 +28,26 @@ private func ownKey(withPublicKey: Bool) -> PrekeyRecord.OwnKey {
     PrekeyRecord.OwnKey(id: uuidBytes(), blob: randomBytes(143), publicKey: withPublicKey ? randomBytes(65) : nil)
 }
 
-/// A record at every limit the bookkeeper enforces at once (design §8, stage 1, "Size limits"): 48 own keys, the
-/// 15 in the pending batch still carrying their public keys; two inbound batches at the per-batch limit, with
-/// key IDs at the length limit (stage 1 holds one, stage 4 two); 8 accepted batch IDs; every date set.
+/// The largest record the bookkeeper allows (design §8, stage 1, "Size limits"). 48 own keys spread over as many
+/// entries as they can form: the pending batch of 15, still carrying its ID and public keys, then 33 entries of one
+/// key each, as a chatty contact who loses one file per batch leaves them (the batch in use, and retired ones whose
+/// leftovers are within their 30 days). Each entry costs about 45 bytes beyond its key, so this shape, not three
+/// full batches, is the worst case. Two inbound batches at the per-batch limit, with key IDs at the length limit
+/// (stage 1 holds one, stage 4 two); 8 accepted batch IDs; every date set.
 ///
-/// Every value is distinct. A binary plist stores a repeated value once, so repeated IDs or blobs would make this
-/// record look smaller than any real one; that is how an earlier version of this fixture passed at 13 KB while
-/// the limits it claimed to model needed 19.
+/// Every value is distinct, dates included. A binary plist stores a repeated value once, so repeated IDs, blobs or
+/// dates would make this record look smaller than any real one; that is how an earlier version of this fixture
+/// passed at 13 KB while the limits it claimed to model needed 19.
 private func recordAtEveryLimit() -> PrekeyRecord {
-    let now = Date()
-    let ownBatch = { (count: Int, pending: Bool, retired: Bool) in
-        PrekeyRecord.OwnBatch(id: randomBytes(16), createdAt: now, retiredAt: retired ? now : nil,
-                              isPending: pending, keys: (0..<count).map { _ in ownKey(withPublicKey: pending) })
+    let start = Date()
+    var tick = 0.0
+    let date = { () -> Date in tick += 1; return start + tick }
+    let oneKey = { (retired: Bool) in
+        PrekeyRecord.OwnBatch(id: nil, createdAt: date(), retiredAt: retired ? date() : nil,
+                              isPending: false, keys: [ownKey(withPublicKey: false)])
     }
+    let pending = PrekeyRecord.OwnBatch(id: randomBytes(16), createdAt: date(), retiredAt: nil, isPending: true,
+                                        keys: (0..<15).map { _ in ownKey(withPublicKey: true) })
     let inbound = { PrekeyRecord.InboundBatch(
         id: randomBytes(16),
         keys: (0..<PrekeyBookkeeper.maxInboundKeysPerBatch).map { _ in
@@ -51,11 +58,11 @@ private func recordAtEveryLimit() -> PrekeyRecord {
         }
     ) }
     let record = PrekeyRecord(
-        ownBatches: [ownBatch(18, false, true), ownBatch(15, false, false), ownBatch(15, true, false)],
+        ownBatches: (0..<32).map { _ in oneKey(true) } + [oneKey(false), pending],
         inboundBatches: [inbound(), inbound()],
         acceptedBatchIDs: (0..<8).map { _ in randomBytes(16) },
-        latestInboundGeneratedAt: now,
-        legacyKeys: .retired(since: now)
+        latestInboundGeneratedAt: date(),
+        legacyKeys: .retired(since: date())
     )
     precondition(record.ownBatches.reduce(0) { $0 + $1.keys.count } == PrekeyBookkeeper.maxOwnKeys)
     return record
@@ -81,9 +88,9 @@ struct PrekeyRecordCodecFormatTests {
         #expect(plaintext.count == PrekeyRecordCodec.capacity)
         #expect(try self.codec.decode(plaintext) == record)
 
-        // The design budgets about 14 KB for this record. Keep at least 1 KB of headroom, so a field added
+        // This record measures about 15.7 KB of the 16 KB. Keep at least 512 bytes of headroom, so a field added
         // without revisiting the limits fails here rather than on a device.
-        #expect(PrekeyRecordCodec.headerSize + payloadLength(of: plaintext) <= PrekeyRecordCodec.capacity - 1024)
+        #expect(PrekeyRecordCodec.headerSize + payloadLength(of: plaintext) <= PrekeyRecordCodec.capacity - 512)
     }
 
     @Test("A record's encoded length doesn't depend on what it holds")

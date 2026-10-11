@@ -583,8 +583,13 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     stage 2), deleting the oldest retired keys when installing a batch would exceed it; inbound batches of at most
     15 keys with key IDs of at most 36 bytes (a UUID string), anything larger making the batch malformed; at most
     8 accepted batch IDs. Stage 1 holds one inbound batch, since accepting replaces; the budget allows two, for
-    stage 4's append. Every field then has a maximum size: 48 own keys and two full inbound batches measure
-    14,351 bytes, and a test encodes that record within 16 KB with at least 1 KB to spare.
+    stage 4's append. Every field then has a maximum size, but the limits bound keys, not the entries they sit
+    in, and each own-batch entry costs about 45 bytes beyond its keys. So the worst case is 48 own keys in as
+    many entries as they can form: the pending batch, then 33 one-key entries, which a chatty contact losing one
+    file per batch leaves within 30 days. With two full inbound batches it measures 15,683 bytes, and a test
+    encodes that record within 16 KB with at least 512 bytes to spare. It fits because a batch drops its 16-byte
+    ID once delivered, as it drops its public keys: the ID is needed only on the wire. Kept, the IDs took the same
+    record to 16,508 bytes, past the 16,379 available (found 2026-10-11; it needed about 30 batches in 30 days).
     - **Corrected 2026-10-11.** The limits were first 30 keys per inbound batch and 64-byte IDs, with the worst
       case put at 13,307 bytes. That figure came from a test fixture with 16-key batches and one repeated ID,
       which a binary plist stores once. Measured with distinct values those limits need 19,751 bytes, past
@@ -597,6 +602,12 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
       message the contact sealed to them; it was removed, and a test pins the two-batch bound so a stage that
       changes it (stage 2's last-resort key) has to do so on purpose. Evicting a retired key loses only a file
       sealed before the contact moved on and not yet opened, and only when more than 18 such keys are waiting.
+    - **No retiring of skipped keys within a batch (rejected 2026-10-11).** Since the contact uses keys oldest
+      first, using key 7 shows keys 1–6 were taken earlier; retiring them then would start their 30 days without
+      waiting for the batch to retire, closing part of Bug 156's residual. Rejected: it splits a retired entry off
+      the batch at each skip, the contact controls the skips, and every entry has a fixed cost, so a contact
+      sealing to every other key could fill the record in about 75 messages. The window it closes needs a copy of
+      a file lost in transit and the unlocked phone. The skipped keys stay with their batch and retire with it.
     Eviction in the codec
     was rejected: a codec should translate without loss, the rule would sit apart from every other rule about
     which keys exist, and keys would vanish whenever a record happened to be saved.

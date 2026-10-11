@@ -156,7 +156,7 @@ nothing: on the first failure it throws, and the keys already made vanish with i
 ## What a used key proves (`PrekeyBookkeeper.consume`)
 
 - **Delivery (Bug 157).** A key from the pending batch proves the contact received it: the batch stops being
-  pending and its public keys, needed only to send it, are dropped. A key from any other batch leaves the pending
+  pending and its ID and public keys, needed only to send it, are dropped. A key from any other batch leaves the pending
   batch alone.
 - **Retirement.** Senders use keys oldest first, so a key from batch *n* retires every older batch.
 - **Legacy keys.** The first use of a record-held key moves `legacyKeys` from `inUse` to `retired(since:)`.
@@ -201,10 +201,13 @@ The bookkeeper keeps the record within what 16 KB is budgeted for, so the codec 
 | Their key ID | 36 bytes | `accept` |
 | Accepted batch IDs | 8 | `accept` |
 
-Stage 1 holds one batch of theirs; the budget allows two, for stage 4. Worst case, 48 own keys and two full batches
-of theirs, measures 14,351 bytes. The codec throws `overCapacity` past 16 KB, which can only mean a broken invariant.
-Measure with distinct values: a binary plist stores a repeated value once, so a fixture with repeated IDs or blobs
-understates the size (mistake 19).
+Stage 1 holds one batch of theirs; the budget allows two, for stage 4. The limits bound keys, not entries, and each
+of our batch entries costs about 45 bytes beyond its keys, so the worst case is 48 own keys in as many entries as
+they can form (the pending batch plus 33 one-key entries) with two full batches of theirs: 15,683 bytes. It fits
+because a delivered batch drops its ID; with IDs kept it was 16,508, past the 16,379 available. The codec throws
+`overCapacity` past 16 KB, which can only mean a broken invariant. Measure with distinct values, dates included: a
+binary plist stores a repeated value once, so a fixture with repeated IDs, blobs or dates understates the size
+(mistake 19). And measure the shape with the most entries, not the fewest (mistake 20).
 
 ---
 
@@ -302,6 +305,9 @@ relationship graph. The receiver supplies its own. `OccultaTests/Interop/Interop
 19. **A size budget measured with repeated values.** The worst-case fixture repeated one inbound key ID, which a
     binary plist stores once, and used 16-key batches against a 30-key limit. It passed at 13 KB; the real limits
     needed 19 KB, past the 16 KB record. Fixed by distinct values and tighter inbound limits.
+20. **A size budget measured on three batches.** The limits bound keys, not the entries holding them, and every
+    entry has a fixed cost. 48 keys spread over 34 entries, which a chatty contact losing a file per batch
+    produces, came to 16.5 KB. Fixed by dropping a batch's ID at delivery and testing that shape.
 
 ---
 

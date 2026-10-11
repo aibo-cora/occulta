@@ -174,7 +174,7 @@ struct PrekeyBookkeeperConsumeTests {
         #expect(self.bookkeeper.blob(forPrekeyID: id, in: record) == nil)
     }
 
-    @Test("A key from the pending batch delivers it and drops its public keys; one from an older batch doesn't")
+    @Test("A key from the pending batch delivers it and drops its ID and public keys; one from an older batch doesn't")
     func onlyItsOwnKeyClearsPending() throws {
         let now = Date()
         var (record, ids) = try self.threeBatches(now: now)
@@ -187,6 +187,7 @@ struct PrekeyBookkeeperConsumeTests {
         self.bookkeeper.consume(prekeyID: ids[2][0], in: &record, now: now)
         #expect(!self.bookkeeper.hasPendingBatch(record))
         #expect(record.ownBatches.last?.keys.allSatisfy { $0.publicKey == nil } == true)
+        #expect(record.ownBatches.allSatisfy { $0.id == nil }, "a delivered batch keeps no ID")
     }
 
     @Test("Using a key retires every older batch, and the first record-held key retires the legacy keys")

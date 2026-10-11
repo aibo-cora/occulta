@@ -63,8 +63,8 @@ struct PrekeyRecord: Codable, Equatable {
 
     /// A batch of keys we generated for this contact.
     struct OwnBatch: Codable, Equatable {
-        /// 16 random bytes, sent with the batch. `nil` for a batch from before batch IDs existed, which must keep
-        /// travelling without one.
+        /// 16 random bytes, sent with the batch while it is pending. `nil` once delivered, since it's needed only on
+        /// the wire, and for a pending batch from before batch IDs existed, which must keep travelling without one.
         var id: Data?
         /// Sent as the batch's `generatedAt`, which older builds still filter by.
         var createdAt: Date

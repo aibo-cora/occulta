@@ -134,8 +134,9 @@ struct PrekeyBookkeeper {
 
     /// Records that the contact used one of our prekeys: the key is removed, and what its use proves is applied.
     ///
-    /// - A key from the pending batch proves they received it, so it stops being pending and its public keys,
-    ///   needed only to send it, are dropped. A key from any other batch leaves the pending batch alone (Bug 157).
+    /// - A key from the pending batch proves they received it, so it stops being pending and its ID and public
+    ///   keys, needed only to send it, are dropped. Dropping the ID also keeps each retired entry's fixed cost down,
+    ///   which the record's size budget counts on. A key from any other batch leaves the pending batch alone (Bug 157).
     /// - Every older batch retires now: they use keys oldest first, so they're done with those.
     /// - The first use of a record-held key retires the legacy keys we issued them.
     /// - A key the record doesn't hold, a legacy keychain key, changes nothing else.
@@ -149,6 +150,7 @@ struct PrekeyBookkeeper {
 
         if record.ownBatches[batchIndex].isPending {
             record.ownBatches[batchIndex].isPending = false
+            record.ownBatches[batchIndex].id = nil
             for index in record.ownBatches[batchIndex].keys.indices {
                 record.ownBatches[batchIndex].keys[index].publicKey = nil
             }

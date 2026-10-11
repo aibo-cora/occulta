@@ -12909,7 +12909,12 @@ the contacts slice. Retired keys, and legacy keychain keys once retired, are del
 **Residual — open, needs a decision:** the clock starts at retirement, and a batch retires only when the contact
 uses a newer one. In the batch a contact is still using, a key whose message was lost stays until they move on to
 the next batch, so for a contact who goes quiet it has no time limit; the same holds for legacy keys of a contact
-who never uses a record-held batch. Those are the "contact who goes quiet" this fix chose a time limit for.
+who never uses a record-held batch. Those are the "contact who goes quiet" this fix chose a time limit for. It
+exposes a file only to someone who kept a copy of it from transit and later has the unlocked phone; an unread file
+that did arrive is readable by design, as in any messenger. Two ways to narrow it were weighed on 2026-10-11 and
+not taken (design §8, stage 1): retiring a batch's skipped keys when a later key is used costs a record entry per
+skip, which the contact controls; and a lifetime both sides honour costs messages from contacts on older builds
+who return after it. Signal accepts the second trade (libsignal's 30-day `MAX_UNACKNOWLEDGED_SESSION_AGE`).
 
 **Target:** `v2.0.0`. Pruning existed (`d16ec10c`, 2026-03-18) and was removed in `efb0b199` (2026-03-29);
 every release with forward secrecy is affected.
@@ -13167,8 +13172,9 @@ fixed-width rule applies to them as well.
 Pad the encoded record to a **fixed capacity of 16 KB** before sealing, for every contact and for step 3's filler
 rows alike, so the field's length never varies. The capacity is sized for stages 2 and 4 as well, so it never has
 to grow:
-- worst case (48 of our own keys across a retired, a current and a pending batch; two full batches of theirs;
-  8 accepted batch IDs) measures 14,351 bytes in a compact binary layout, and would be far larger as JSON with
+- worst case (48 of our own keys in as many entries as they can form, the pending batch and 33 one-key entries;
+  two full batches of theirs; 8 accepted batch IDs) measures 15,683 bytes in a compact binary layout, with each
+  batch's ID dropped once delivered (16,508 with them kept, past the capacity; found 2026-10-11), and would be far larger as JSON with
   base64. So the record moves to a compact layout; JSON doesn't fit. (The first estimate, about 11.5 KB with
   30-key inbound batches and 64-byte key IDs, was wrong: measured with distinct values those limits need 19,751
   bytes. Corrected 2026-10-11 by limiting inbound batches to 15 keys and 36-byte IDs; design §8, "Size limits".)
