@@ -348,6 +348,40 @@ private struct Fixture {
         #expect(PrekeyBookkeeper().pendingBatch(in: saved) == nil)
     }
 
+    /// D1: a retired batch's leftover keys are kept 30 days for files sealed to them and still on their way. The
+    /// contact seals two files to batch A, moves on to batch B, and only then do those files arrive: the first,
+    /// within the 30 days, opens; the second, after the sweep at 31 days, doesn't.
+    @Test("A file sealed to a retired key opens within the grace period, and not after it", .enabled(if: secureEnclaveAvailable()))
+    func retiredKeyOpensWithinGrace() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        // Batch A is generated and delivered: the contact uses its first key.
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let batchA = try #require(try f.pendingBatch).prekeys.map {
+            Prekey(id: $0.id, contactID: f.senderID, publicKey: $0.publicKey)
+        }
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(prekey: batchA[0]), ownerID: f.senderID)
+
+        // Two files sealed to A's next keys, held back: still on their way.
+        let late    = try f.groupBundle(prekey: batchA[1])
+        let tooLate = try f.groupBundle(prekey: batchA[2])
+
+        // The contact runs out, gets batch B, and uses it: A retires.
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let batchB = try f.firstPendingPrekey()
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(prekey: batchB), ownerID: f.senderID)
+        #expect(try f.record.ownBatches.first?.retiredAt != nil, "precondition: batch A is retired")
+
+        _ = try f.cm.openGroup(bundle: late, ownerID: f.senderID)
+
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: batchA[2].id, in: try f.record) != nil)
+        try f.cm.sweepPrekeys(of: try f.sender, now: Date() + 31 * 86_400)
+        try f.cm.modelContext.save()
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: batchA[2].id, in: try f.savedRecord) == nil)
+        #expect(throws: (any Error).self) { _ = try f.cm.openGroup(bundle: tooLate, ownerID: f.senderID) }
+    }
+
     /// The sweep on receipt (D1, Bug 156) runs before the bundle is opened and is saved at once, so
     /// even a bundle that is then rejected leaves expired keys deleted: from the record, and the
     /// legacy ones from the keychain.
