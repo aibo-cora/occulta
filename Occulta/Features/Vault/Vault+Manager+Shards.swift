@@ -14,7 +14,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
-import OccultaCore
+import OccultaFormats
 
 extension VaultManager {
 

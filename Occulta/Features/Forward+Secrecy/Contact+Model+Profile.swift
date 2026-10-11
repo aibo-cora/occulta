@@ -8,7 +8,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
-import OccultaCore
+import OccultaFormats
 
 // MARK: - Prekey storage and sender identification on Contact.Profile
 

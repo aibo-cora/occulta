@@ -3,7 +3,7 @@ import SwiftData
 import UniformTypeIdentifiers
 import PhotosUI
 import AVKit
-import OccultaCore
+import OccultaFormats
 
 extension URL: @retroactive Identifiable {
     public var id: String { self.absoluteString }
@@ -168,18 +168,18 @@ struct ComposableMessage: View {
 extension ComposableMessage {
     struct Conversation: View {
         let mode: Modes
-        @Binding var messages: [OccultaCore.File]
+        @Binding var messages: [OccultaFormats.File]
         var pendingImports:    [PendingImport]    = []
         var attachmentManager: AttachmentManager? = nil
         var thumbnails:        [URL: UIImage]     = [:]
-        var onDelete:          ((OccultaCore.File) -> Void)? = nil
+        var onDelete:          ((OccultaFormats.File) -> Void)? = nil
 
         enum Modes {
             case read(messageOwner: String), write
         }
 
         private enum Item: Identifiable {
-            case message(OccultaCore.File, showHeader: Bool)
+            case message(OccultaFormats.File, showHeader: Bool)
             case pending(PendingImport, showHeader: Bool)
 
             var id: UUID {
@@ -258,7 +258,7 @@ extension ComposableMessage {
             }
         }
 
-        private func shouldShowDateSeparator(before: OccultaCore.File, current: OccultaCore.File) -> Bool {
+        private func shouldShowDateSeparator(before: OccultaFormats.File, current: OccultaFormats.File) -> Bool {
             guard let d1 = before.date, let d2 = current.date else { return false }
             return !Calendar.current.isDate(d1, inSameDayAs: d2)
         }
@@ -269,7 +269,7 @@ extension ComposableMessage {
 
 extension ComposableMessage {
     struct MessageBubble: View {
-        let file:              OccultaCore.File
+        let file:              OccultaFormats.File
         let mode:              Conversation.Modes
         var attachmentManager: AttachmentManager? = nil
         var thumbnails:        [URL: UIImage]      = [:]
@@ -358,7 +358,7 @@ extension ComposableMessage {
             }
         }
 
-        @ViewBuilder private func imageBubble(name: String, metadata: OccultaCore.File.Metadata) -> some View {
+        @ViewBuilder private func imageBubble(name: String, metadata: OccultaFormats.File.Metadata) -> some View {
             VStack(spacing: 6) {
                 SwiftUI.Group {
                     if let img = self.decryptedImage {
@@ -398,7 +398,7 @@ extension ComposableMessage {
             }
         }
 
-        @ViewBuilder private func videoBubble(name: String, url: URL, metadata: OccultaCore.File.Metadata) -> some View {
+        @ViewBuilder private func videoBubble(name: String, url: URL, metadata: OccultaFormats.File.Metadata) -> some View {
             VStack(spacing: 6) {
                 SwiftUI.Group {
                     if let player = self.videoPlayer {
@@ -453,7 +453,7 @@ extension ComposableMessage {
             }
         }
 
-        @ViewBuilder private func genericFileBubble(name: String, metadata: OccultaCore.File.Metadata) -> some View {
+        @ViewBuilder private func genericFileBubble(name: String, metadata: OccultaFormats.File.Metadata) -> some View {
             HStack {
                 Image(systemName: "doc.fill").font(.title2)
                 VStack(alignment: .leading, spacing: 2) {
@@ -741,8 +741,8 @@ struct PHPickerRepresentable: UIViewControllerRepresentable {
         ComposableMessage.Conversation(
             mode: .read(messageOwner: UUID().uuidString),
             messages: .constant([
-                OccultaCore.File(content: "https://www.apple.com".data(using: .utf8), format: .text),
-                OccultaCore.File(content: "Hi".data(using: .utf8), format: .text)
+                OccultaFormats.File(content: "https://www.apple.com".data(using: .utf8), format: .text),
+                OccultaFormats.File(content: "Hi".data(using: .utf8), format: .text)
             ])
         )
     }

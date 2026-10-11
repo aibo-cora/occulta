@@ -16,7 +16,7 @@ import SwiftData
 import Foundation
 import LocalAuthentication
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 @MainActor
 private func makeVault() throws -> (vault: VaultManager, km: TestKeyManager, container: ModelContainer) {

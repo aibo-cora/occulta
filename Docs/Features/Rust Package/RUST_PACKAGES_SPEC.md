@@ -527,7 +527,7 @@ pub struct WirePrekey {
 /// Old builds silently ignore this type.
 ///
 /// ⚠️ `attribute` is a **nested `SignedAttribute` JSON object** in Swift
-/// (`OccultaCore/Sources/OccultaCore/SignedAttribute.swift` — Category enum, value, signature, …),
+/// (`OccultaCore/Sources/OccultaFormats/SignedAttribute.swift` — Category enum, value, signature, …),
 /// NOT base64 `Data`. Mirror the full Codable shape at scaffold time; the
 /// struct below references it as a placeholder.
 ///

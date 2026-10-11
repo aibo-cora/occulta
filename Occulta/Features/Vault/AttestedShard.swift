@@ -4,7 +4,7 @@
 //
 
 import Foundation
-import OccultaCore
+import OccultaFormats
 
 // MARK: - AttestedShard
 

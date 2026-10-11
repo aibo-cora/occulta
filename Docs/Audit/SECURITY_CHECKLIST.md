@@ -511,9 +511,9 @@ sign-off block, not against project settings alone.
       The project has no package dependencies of any kind.
 
       **Since `v2.0.0/occulta-core-package` (2026-10-01) the project has one local package**,
-      `OccultaCore/`, first-party and in this repo — so `XCSwiftPackageProductDependency` and
-      `packageReferences` now each appear once, for it, and the grep above no longer proves the
-      item. The check is now: `grep XCRemoteSwiftPackageReference` over `Occulta.xcodeproj/`
+      `OccultaCore/`, first-party and in this repo — so `packageReferences` now appears once, for it,
+      and `XCSwiftPackageProductDependency` once per product the app links (`OccultaCore`,
+      `OccultaFormats`), and the grep above no longer proves the item. The check is now: `grep XCRemoteSwiftPackageReference` over `Occulta.xcodeproj/`
       returns nothing; the only `XCLocalSwiftPackageReference` is `relativePath = OccultaCore`;
       `OccultaCore/Package.swift` declares no `dependencies`; and no `Package.resolved` exists.
       The archive re-check below (zero bundles, CryptoKit the only crypto link) still applies —

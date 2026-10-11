@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
-import OccultaCore
+import OccultaFormats
 
 // MARK: - DraftStore
 
@@ -47,7 +47,7 @@ final class DraftStore {
         recipientID:  String,
         isSensitive:  @escaping () -> Bool,
         text:         String,
-        messages:     [OccultaCore.File],
+        messages:     [OccultaFormats.File],
         useThread:    Bool,
         modelContext: ModelContext
     ) {
@@ -79,7 +79,7 @@ final class DraftStore {
         recipientID:  String,
         isSensitive:  Bool,
         text:         String,
-        messages:     [OccultaCore.File],
+        messages:     [OccultaFormats.File],
         useThread:    Bool,
         modelContext: ModelContext
     ) async {
@@ -106,7 +106,7 @@ final class DraftStore {
     func load(
         recipientID:  String,
         modelContext: ModelContext
-    ) -> (text: String, messages: [OccultaCore.File], wasThreadMode: Bool)? {
+    ) -> (text: String, messages: [OccultaFormats.File], wasThreadMode: Bool)? {
         guard let row = Message.Draft.find(recipientID: recipientID, in: modelContext) else { return nil }
         do {
             guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return nil }
@@ -115,14 +115,14 @@ final class DraftStore {
             let payload = try JSONDecoder().decode(Message.Draft.Payload.self, from: plain)
 
             let folder = Message.Draft.attachmentsFolder(for: row.id)
-            var loadedMessages: [OccultaCore.File] = []
+            var loadedMessages: [OccultaFormats.File] = []
             for file in payload.basket.files {
                 if case .text = file.format, file.content != nil {
                     loadedMessages.append(file)
                     continue
                 }
                 let url = folder.appendingPathComponent(Message.Draft.attachmentFilename(for: file))
-                var restored = OccultaCore.File(url: url, format: file.format, date: file.date)
+                var restored = OccultaFormats.File(url: url, format: file.format, date: file.date)
                 restored.id = file.id
                 loadedMessages.append(restored)
             }
@@ -143,7 +143,7 @@ final class DraftStore {
         recipientID:  String,
         isSensitive:  Bool,
         text:         String,
-        messages:     [OccultaCore.File],
+        messages:     [OccultaFormats.File],
         useThread:    Bool,
         modelContext: ModelContext
     ) async {
@@ -198,7 +198,7 @@ final class DraftStore {
             // to copy. The current, not-yet-committed input field text is kept
             // out of this array entirely — it lives in Payload.draftText.
             let folder = Message.Draft.attachmentsFolder(for: draftID)
-            var referencedFiles: [OccultaCore.File] = []
+            var referencedFiles: [OccultaFormats.File] = []
             for file in messages {
                 if let sourceURL = file.url {
                     let destinationURL = folder.appendingPathComponent(Message.Draft.attachmentFilename(for: file))
@@ -213,7 +213,7 @@ final class DraftStore {
                         try? FileManager.default.copyItem(at: sourceURL, to: destinationURL)
                     }
                     guard FileManager.default.fileExists(atPath: destinationURL.path) else { continue }
-                    var referenced = OccultaCore.File(format: file.format, date: file.date)
+                    var referenced = OccultaFormats.File(format: file.format, date: file.date)
                     referenced.id = file.id
                     referencedFiles.append(referenced)
                 } else if file.content != nil {
