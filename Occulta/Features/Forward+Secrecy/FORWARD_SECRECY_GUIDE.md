@@ -32,8 +32,10 @@ One `PrekeyRecord` per contact, sealed in `Contact.Profile.prekeyRecordEncrypted
 struct PrekeyRecord {
     var ownBatches: [OwnBatch]          // ours, for the contact to seal to: id, createdAt, retiredAt, isPending,
                                         //   keys (16-byte id, Enclave blob; a public key only for a
-                                        //   carried-over key without a blob, derived from the blob otherwise)
+                                        //   carried-over key without a blob, derived from the blob otherwise),
+                                        //   lastResort (stage 2: kept with its batch, never removed by use)
     var inboundBatches: [InboundBatch]  // theirs, for us to seal to: id, keys (id, public key)
+    var inboundLastResort: InboundKey?  // stage 2: their last-resort key, outliving their one-time keys
     var acceptedBatchIDs: [Data]        // IDs of their batches already accepted, the 8 most recent
     var latestInboundGeneratedAt: Date? // the date rule, for their batches that carry no ID
     var legacyKeys: LegacyKeys          // our keychain prekeys from before stage 1: none | inUse | retired(since:)
@@ -204,8 +206,10 @@ The bookkeeper keeps the record within what 16 KB is budgeted for, so the codec 
 
 Stage 1 holds one batch of theirs; the budget allows two, for stage 4. The limits bound keys, not entries, and each
 of our batch entries costs about 45 bytes beyond its keys, so the worst case is 48 own keys in as many entries as
-they can form (the pending batch plus 33 one-key entries) with two full batches of theirs: 15,683 bytes. It fits
-because a delivered batch drops its ID; with IDs kept it was 16,508, past the 16,379 available. The codec throws
+they can form with two full batches of theirs. With stage 2's last-resort keys that is the pending batch's 16 plus
+32 one-key entries, and the contact's last-resort key: 15,874 bytes, counting the pending batch's public keys as
+stored, which leaves room to store them again. The size test keeps 256 bytes of margin. It fits because a delivered
+batch drops its ID; with IDs kept the stage 1 shape was 16,508, past the 16,379 available. The codec throws
 `overCapacity` past 16 KB, which can only mean a broken invariant. Measure with distinct values, dates included: a
 binary plist stores a repeated value once, so a fixture with repeated IDs, blobs or dates understates the size
 (mistake 19). And measure the shape with the most entries, not the fewest (mistake 20).
@@ -266,6 +270,10 @@ PrekeySyncBatch {            — inside SealedPayload (single-recipient) or Reci
     id                       — UUID string
     publicKey                — 65 bytes
   }]                         — no contactID on the wire
+  lastResort?                — stage 2: a WirePrekey the sender may seal to more than once once out of
+                               one-time keys. Its id never appears in a bundle's prekeyID: a bundle sealed
+                               to it carries HMAC-SHA256(id as UUID bytes, ephemeral public key) as a UUID
+                               (`SecrecyContext.lastResortPrekeyID`)
 }
 ```
 

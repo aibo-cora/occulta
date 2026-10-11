@@ -604,6 +604,11 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     stored, though they are now derived. It fits because a batch drops its 16-byte ID once delivered: the ID is
     needed only on the wire. Kept, the IDs took the same
     record to 16,508 bytes, past the 16,379 available (found 2026-10-11; it needed about 30 batches in 30 days).
+    - **With stage 2's last-resort keys** (one per own batch, counted in the 48, and the contact's one) the same
+      shape, now the pending batch's 16 keys plus 32 one-key entries, measures 15,874 bytes. The test's margin
+      went from 512 to 256 bytes to fit it rather than giving up the room kept for storing public keys again
+      (decided 2026-10-11): any per-key field across 48 keys is still well over 256. Counting public keys as
+      derived, as the code does, about 1.5 KB is left.
     - **Corrected 2026-10-11.** The limits were first 30 keys per inbound batch and 64-byte IDs, with the worst
       case put at 13,307 bytes. That figure came from a test fixture with 16-key batches and one repeated ID,
       which a binary plist stores once. Measured with distinct values those limits need 19,751 bytes, past
@@ -728,6 +733,10 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
 
 **Stage 2 — last-resort key (§3.1).** D2's indicator and D5's replay guards ship with it. Ships no earlier
 than the release that does the one-way migration (rollout stage 3, D6), and never ahead of stage 1.
+- *Commits:* record and wire (done 2026-10-11: `PrekeySyncBatch.lastResort`, the derived prekey ID in
+  `OccultaFormats` with a known-answer test, our last-resort key on each own batch and the contact's on the
+  record, generated and sent with every new batch but not yet used, two new interop vectors); sending and
+  receiving with the bookkeeping table; D5's replay guards with the custody-row migration; D2's indicator.
 - *Migration:* pairs get a last-resort key with their next batch. Existing custody rows have no "supersedes"
   field (G2′): one pass re-seals each with a random filler ID, the same re-seal `deleteCustodyShards`
   already does, so no row is distinguishable by having been migrated.

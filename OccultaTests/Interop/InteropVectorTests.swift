@@ -209,6 +209,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let prekeys: [WirePrekeyInput]
         /// Hex. Absent from the vectors recorded before batch IDs existed, which must keep their bytes.
         let id: String?
+        /// Absent from the vectors recorded before last-resort keys existed (prekey continuity stage 2).
+        let lastResort: WirePrekeyInput?
     }
 
     struct WirePrekeyInput: Decodable, Sendable {
@@ -433,7 +435,10 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             prekeys: try input.prekeys.map {
                 OccultaBundle.WirePrekey(id: $0.id, publicKey: try Self.bytes($0.publicKey))
             },
-            id: try input.id.map(Self.bytes)
+            id: try input.id.map(Self.bytes),
+            lastResort: try input.lastResort.map {
+                OccultaBundle.WirePrekey(id: $0.id, publicKey: try Self.bytes($0.publicKey))
+            }
         )
     }
 

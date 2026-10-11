@@ -463,11 +463,19 @@ public struct OccultaBundle: Codable {
             /// before. Omitted from the encoding when `nil`, so a batch without one encodes exactly as it always
             /// did, and builds that don't know the field ignore it.
             public let id: Data?
+            /// A key the sender may seal to more than once, when it has none of `prekeys` left (prekey continuity
+            /// §3.1, stage 2). Its `id` is never written in a bundle's `prekeyID`: a bundle sealed to it carries
+            /// `SecrecyContext.lastResortPrekeyID(keyID:ephemeralPublicKey:)` instead, keyed with that `id`, so
+            /// the `id` must stay inside sealed payloads.
+            ///
+            /// Absent from batches sent before stage 2. Omitted from the encoding when `nil`, like `id`.
+            public let lastResort: WirePrekey?
 
-            public init(generatedAt: Date, prekeys: [WirePrekey], id: Data? = nil) {
+            public init(generatedAt: Date, prekeys: [WirePrekey], id: Data? = nil, lastResort: WirePrekey? = nil) {
                 self.generatedAt = generatedAt
                 self.prekeys     = prekeys
                 self.id          = id
+                self.lastResort  = lastResort
             }
         }
     }
@@ -509,6 +517,25 @@ public struct OccultaBundle: Codable {
             input.append(nonce)
             
             return Data(SHA256.hash(data: input))
+        }
+
+        /// The `prekeyID` of a bundle sealed to a last-resort key (prekey continuity §3.1).
+        ///
+        /// A last-resort key is sealed to more than once, so its own ID in the clear would link every bundle
+        /// sealed to it. Instead each bundle carries HMAC-SHA256 of its ephemeral public key, keyed with the
+        /// last-resort key's ID as raw UUID bytes, truncated to 16 bytes with the UUID version-4 and variant bits
+        /// set, and formatted as `UUID().uuidString` formats one. A new ephemeral key gives a new ID; it can't be
+        /// computed or matched without the key's ID; and it looks like a one-time key's.
+        ///
+        /// - Returns: `nil` if `keyID` isn't a UUID string.
+        public static func lastResortPrekeyID(keyID: String, ephemeralPublicKey: Data) -> String? {
+            guard let uuid = UUID(uuidString: keyID) else { return nil }
+            let key = SymmetricKey(data: withUnsafeBytes(of: uuid.uuid) { Data($0) })
+            var b = [UInt8](Data(HMAC<SHA256>.authenticationCode(for: ephemeralPublicKey, using: key)).prefix(16))
+            b[6] = (b[6] & 0x0F) | 0x40
+            b[8] = (b[8] & 0x3F) | 0x80
+            return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                               b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])).uuidString
         }
 
         /// 16 cryptographically random bytes.

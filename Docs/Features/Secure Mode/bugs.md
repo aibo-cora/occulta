@@ -13173,7 +13173,8 @@ Pad the encoded record to a **fixed capacity of 16 KB** before sealing, for ever
 rows alike, so the field's length never varies. The capacity is sized for stages 2 and 4 as well, so it never has
 to grow:
 - worst case (48 of our own keys in as many entries as they can form, the pending batch and 33 one-key entries;
-  two full batches of theirs; 8 accepted batch IDs) measures 15,683 bytes in a compact binary layout, with each
+  two full batches of theirs; 8 accepted batch IDs) measures 15,683 bytes (15,874 with stage 2's last-resort keys)
+  in a compact binary layout, with each
   batch's ID dropped once delivered (16,508 with them kept, past the capacity; found 2026-10-11), and would be far larger as JSON with
   base64. So the record moves to a compact layout; JSON doesn't fit. (The first estimate, about 11.5 KB with
   30-key inbound batches and 64-byte key IDs, was wrong: measured with distinct values those limits need 19,751

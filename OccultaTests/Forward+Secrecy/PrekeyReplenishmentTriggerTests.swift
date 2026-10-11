@@ -170,6 +170,7 @@ private struct Fixture {
 
         let batch = try #require(try f.pendingBatch)
         #expect(batch.prekeys.count == Manager.PrekeySecretsManager.defaultBatchSize)
+        #expect(batch.lastResort != nil, "a fresh batch carries a last-resort key")
         #expect(try f.ownPrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
         #expect(f.keychainPrekeyCount == 0)
     }
@@ -239,6 +240,7 @@ private struct Fixture {
 
         let batch = try #require(try f.pendingBatch)
         #expect(batch.prekeys.count == Manager.PrekeySecretsManager.defaultBatchSize)
+        #expect(batch.lastResort != nil, "a fresh batch carries a last-resort key")
         #expect(try f.ownPrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
         #expect(f.keychainPrekeyCount == 0)
     }
@@ -315,6 +317,8 @@ private struct Fixture {
         let delivered = try #require(senderSlot.prekeyBatch)
         #expect(delivered.prekeys == pending.prekeys)
         #expect(delivered.id == pending.id)
+        #expect(delivered.lastResort == pending.lastResort)
+        #expect(delivered.lastResort != nil)
 
         // The sender's next message uses the first key it received.
         let wire   = try #require(delivered.prekeys.first)

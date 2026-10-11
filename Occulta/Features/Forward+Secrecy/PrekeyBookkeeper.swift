@@ -23,11 +23,12 @@ struct PrekeyBookkeeper {
     /// sealed to them earlier and still in transit (D1).
     static let gracePeriod: TimeInterval = 30 * 24 * 60 * 60
 
-    /// Our own keys the record may hold: pending, current and retired leftovers.
+    /// Our own keys the record may hold: pending, current and retired leftovers, last-resort keys included.
     ///
     /// Only retired keys are ever evicted to stay within it, which works because the keys that aren't retired are
-    /// at most two batches: the pending one and the one the contact is using (`install`). A later stage that adds to
-    /// those, like stage 2's last-resort key, has to keep that true; `PrekeyBookkeeperEvictionTests` checks it.
+    /// at most two batches: the pending one and the one the contact is using (`install`), each 15 one-time keys
+    /// and a last-resort key. A later stage that adds to those has to keep that true;
+    /// `PrekeyBookkeeperEvictionTests` checks it.
     static let maxOwnKeys = 48
     /// Our batch size, and every build's: no build sends more. Holding two such batches from the contact (stage 4)
     /// next to `maxOwnKeys` of ours is what the codec's 16 KB is budgeted for.
@@ -40,7 +41,7 @@ struct PrekeyBookkeeper {
 
     enum BookkeeperError: Error, Equatable {
         /// An inbound batch with an ID that isn't 16 bytes, too many keys, a key that isn't a 65-byte public
-        /// key, or an over-long key ID.
+        /// key, an over-long key ID, or a last-resort key whose ID isn't a UUID.
         case malformedBatch
     }
 
@@ -50,6 +51,8 @@ struct PrekeyBookkeeper {
         let id: Data?
         let generatedAt: Date
         let prekeys: [OccultaBundle.WirePrekey]
+        /// `nil` for a batch made before stage 2, or one whose last-resort blob won't give a public key.
+        let lastResort: OccultaBundle.WirePrekey?
     }
 
     // MARK: - Sending to the contact
@@ -73,19 +76,21 @@ struct PrekeyBookkeeper {
     /// out: no message sealed to it could be opened.
     func pendingBatch(in record: PrekeyRecord, publicKeyOfBlob: (Data) -> Data?) -> OutboundBatch? {
         guard let batch = record.ownBatches.first(where: \.isPending) else { return nil }
+        let wire = { (key: PrekeyRecord.OwnKey) in
+            (key.publicKey ?? key.blob.flatMap(publicKeyOfBlob))
+                .map { OccultaBundle.WirePrekey(id: Self.uuidString(key.id), publicKey: $0) }
+        }
         return OutboundBatch(
             id: batch.id,
             generatedAt: batch.createdAt,
-            prekeys: batch.keys.compactMap { key in
-                (key.publicKey ?? key.blob.flatMap(publicKeyOfBlob))
-                    .map { OccultaBundle.WirePrekey(id: Self.uuidString(key.id), publicKey: $0) }
-            }
+            prekeys: batch.keys.compactMap(wire),
+            lastResort: batch.lastResort.flatMap(wire)
         )
     }
 
     // MARK: - Receiving from the contact
 
-    /// Accepts a batch this contact sent us, replacing the keys we held from them.
+    /// Accepts a batch this contact sent us, replacing the keys we held from them, their last-resort key included.
     ///
     /// A batch with an ID is dropped if that ID was accepted before (Bug 158); its date doesn't matter, so a
     /// sender whose clock went back isn't stuck. A batch without one comes from an older build and keeps
@@ -94,12 +99,15 @@ struct PrekeyBookkeeper {
     /// - Returns: whether the batch was accepted.
     /// - Throws: `malformedBatch` for a batch outside the record's limits, which no build of ours produces.
     func accept(
-        id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], into record: inout PrekeyRecord
+        id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], lastResort: OccultaBundle.WirePrekey?,
+        into record: inout PrekeyRecord
     ) throws -> Bool {
         let keys = prekeys.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
-        guard id == nil || id?.count == Self.batchIDBytes, Self.fitsLimits(keys) else {
-            throw BookkeeperError.malformedBatch
-        }
+        let lastResortKey = lastResort.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
+        // A last-resort key's ID keys the prekey IDs derived from it, which need it to be a UUID.
+        guard id == nil || id?.count == Self.batchIDBytes, Self.fitsLimits(keys),
+              lastResortKey.map({ Self.fitsLimits([$0]) && UUID(uuidString: $0.id) != nil }) ?? true
+        else { throw BookkeeperError.malformedBatch }
 
         if let id {
             guard !record.acceptedBatchIDs.contains(id) else { return false }
@@ -113,6 +121,7 @@ struct PrekeyBookkeeper {
         }
 
         record.inboundBatches = keys.isEmpty ? [] : [PrekeyRecord.InboundBatch(id: id, keys: keys)]
+        record.inboundLastResort = lastResortKey
         return true
     }
 
@@ -165,7 +174,7 @@ struct PrekeyBookkeeper {
             record.legacyKeys = .retired(since: now)
         }
 
-        record.ownBatches.removeAll { $0.keys.isEmpty && !$0.isPending }
+        record.ownBatches.removeAll(where: Self.isSpent)
     }
 
     /// Whether a batch is waiting to reach the contact. Until one has, no new one is generated.
@@ -180,28 +189,45 @@ struct PrekeyBookkeeper {
     /// early; it is never a key the contact can still seal to.
     ///
     /// Keys that aren't retired are never evicted, even if that leaves the record over `maxOwnKeys`. They are at most
-    /// the pending batch and the one before it, 2 × 15, so retired keys alone always make room. Deleting a key the
+    /// the pending batch and the one before it, 2 × (15 + a last-resort key), so retired keys alone always make room.
+    /// Within a retired batch the one-time keys go before its last-resort key. Deleting a key the
     /// contact still holds would silently lose every message they seal to it.
     ///
     /// - Precondition: no batch is pending. The caller checks `hasPendingBatch` first.
-    func install(_ blobs: [Data], into record: inout PrekeyRecord, now: Date) {
+    func install(_ blobs: [Data], lastResort: Data? = nil, into record: inout PrekeyRecord, now: Date) {
         assert(!self.hasPendingBatch(record), "a second pending batch would leave the first one undeliverable")
+        let ownKey = { (blob: Data) in PrekeyRecord.OwnKey(id: Self.idBytes(UUID()), blob: blob, publicKey: nil) }
         record.ownBatches.append(PrekeyRecord.OwnBatch(
             id: Self.randomBatchID(),
             createdAt: now,
             retiredAt: nil,
             isPending: true,
-            keys: blobs.map { PrekeyRecord.OwnKey(id: Self.idBytes(UUID()), blob: $0, publicKey: nil) }
+            keys: blobs.map(ownKey),
+            lastResort: lastResort.map(ownKey)
         ))
 
-        var excess = record.ownBatches.reduce(0) { $0 + $1.keys.count } - Self.maxOwnKeys
+        var excess = record.ownBatches.reduce(0) { $0 + Self.keyCount($1) } - Self.maxOwnKeys
         let retired = record.ownBatches.indices.filter { record.ownBatches[$0].retiredAt != nil }
         for index in retired where excess > 0 {
             let dropped = min(excess, record.ownBatches[index].keys.count)
             record.ownBatches[index].keys.removeFirst(dropped)
             excess -= dropped
+            if excess > 0, record.ownBatches[index].lastResort != nil {
+                record.ownBatches[index].lastResort = nil
+                excess -= 1
+            }
         }
-        record.ownBatches.removeAll { $0.keys.isEmpty && !$0.isPending }
+        record.ownBatches.removeAll(where: Self.isSpent)
+    }
+
+    /// One-time keys and the last-resort key, as `maxOwnKeys` counts them.
+    static func keyCount(_ batch: PrekeyRecord.OwnBatch) -> Int {
+        batch.keys.count + (batch.lastResort == nil ? 0 : 1)
+    }
+
+    /// A batch with nothing left to open and nothing left to send. A last-resort key keeps its batch.
+    private static func isSpent(_ batch: PrekeyRecord.OwnBatch) -> Bool {
+        batch.keys.isEmpty && batch.lastResort == nil && !batch.isPending
     }
 
     // MARK: - Maintenance

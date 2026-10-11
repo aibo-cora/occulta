@@ -52,7 +52,9 @@ extension ContactManager {
     /// The batch to attach to every message to the contact until they use a key from it, in wire form.
     func pendingBatchForWire(in record: PrekeyRecord) -> OccultaBundle.SealedPayload.PrekeySyncBatch? {
         PrekeyBookkeeper().pendingBatch(in: record, publicKeyOfBlob: Manager.PrekeySecretsManager.publicKey(ofBlob:)).map {
-            OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: $0.generatedAt, prekeys: $0.prekeys, id: $0.id)
+            OccultaBundle.SealedPayload.PrekeySyncBatch(
+                generatedAt: $0.generatedAt, prekeys: $0.prekeys, id: $0.id, lastResort: $0.lastResort
+            )
         }
     }
 
@@ -81,7 +83,8 @@ extension ContactManager {
         guard let batch else { return }
         do {
             _ = try PrekeyBookkeeper().accept(
-                id: batch.id, generatedAt: batch.generatedAt, prekeys: batch.prekeys, into: &prekeys.record
+                id: batch.id, generatedAt: batch.generatedAt, prekeys: batch.prekeys, lastResort: batch.lastResort,
+                into: &prekeys.record
             )
         } catch PrekeyBookkeeper.BookkeeperError.malformedBatch {
             throw Errors.invalidPrekeySyncBatch
@@ -92,8 +95,11 @@ extension ContactManager {
     /// sender who has no batch of ours waiting. CryptoKit leaves no keychain item, so if anything later fails,
     /// nothing is left behind.
     func installFreshBatch(into prekeys: SenderPrekeys) throws {
-        let blobs = try Manager.PrekeySecretsManager().generateEnclaveKeys()
-        PrekeyBookkeeper().install(blobs, into: &prekeys.record, now: Date())
+        let batchSize = Manager.PrekeySecretsManager.defaultBatchSize
+        // One more than the batch: the last-resort key (prekey continuity §3.1), the same kind of Enclave key.
+        let blobs = try Manager.PrekeySecretsManager().generateEnclaveKeys(count: batchSize + 1)
+        PrekeyBookkeeper().install(Array(blobs.prefix(batchSize)), lastResort: blobs[batchSize],
+                                   into: &prekeys.record, now: Date())
     }
 
     // MARK: - Sweep
