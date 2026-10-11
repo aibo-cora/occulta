@@ -787,6 +787,12 @@ RFID/NFC keycards — the current standard — are trivially cloned, frequently 
 >
 > Remove from the independent expansion list. Viable only as a downstream feature inside organisations already on Expansion A.
 
+> **Addendum (October 11, 2026) — one claim corrected; the disposition stands.** The ruling says UWB "adds nothing for door access specifically: you have to be within NFC/BLE range to open the door anyway, so the proximity constraint is already enforced by physics." That holds for NFC, not for BLE. BLE reaches tens of metres, and a relay carries it further: NCC Group's 2022 link-layer relay opened a Tesla Model 3 and Kwikset/Weiser Kevo smart locks, and the Bluetooth SIG's response was that relay attacks are a known limitation. The defence is a distance measurement the lock makes itself — UWB secure ranging — so UWB does add value at a door, as relay protection.
+>
+> This does not change the disposition, for two reasons. First, what helps is UWB *ranging* at the moment of entry, not the UWB *key-exchange ceremony* Occulta uses today; the ruling's point that the bootstrap adds nothing at a door stands. Second, the relay defence is already standardised: Aliro 1.0 (Connectivity Standards Alliance, released 26 February 2026) specifies NFC, BLE, and BLE plus UWB, with Apple, Google, and Samsung committed to wallet support. UWB ranging is a baseline requirement for any BLE door reader, not an Occulta differentiator.
+>
+> Unverified, and the first thing to check if this is revisited: whether Apple's Nearby Interaction accessory mode gives a third-party door device a distance it can trust on its own (secure ranging with STS), rather than one reported by the phone. The Nearby Interaction Accessory Protocol Specification R4 should answer it.
+
 ---
 
 ### C. Developer and API Authentication
