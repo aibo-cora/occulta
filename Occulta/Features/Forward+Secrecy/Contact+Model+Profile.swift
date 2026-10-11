@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import OccultaCore
+import OccultaFormats
 
 // MARK: - Sender identification on Contact.Profile
 //

@@ -11,6 +11,7 @@ import Foundation
 import CryptoKit
 import SwiftData
 import OccultaCore
+import OccultaFormats
 
 extension ContactManager {
 

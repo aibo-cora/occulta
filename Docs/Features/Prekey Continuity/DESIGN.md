@@ -19,6 +19,8 @@ challenges where prekeys are stored at all.
   keys". Everything here keeps to it.
 - `Docs/Features/Secure Mode/bugs.md` Bugs 155–160 — the review this design came out of. §3 fixes 155, 156,
   157 and 158 as part of the design.
+- `Docs/Features/Occulta for Organizations/DESIGN.md` — one-way delivery from an organization to its clients.
+  Depends on §3.1, and on §3.2 (stage 5) being brought back.
 
 Code references are against `7affd76`.
 

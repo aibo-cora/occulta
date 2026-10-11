@@ -9,6 +9,7 @@ import Testing
 import Foundation
 @testable import Occulta
 @testable import OccultaCore
+@testable import OccultaFormats
 
 private func randomBytes(_ count: Int) -> Data {
     Data((0..<count).map { _ in .random(in: .min ... .max) })

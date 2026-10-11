@@ -18,6 +18,7 @@ import CryptoKit
 import Security
 @testable import Occulta
 @testable import OccultaCore
+@testable import OccultaFormats
 
 private func secureEnclaveAvailable() -> Bool {
     (try? Manager.Key().createHybridLocalEncryptionKey()) != nil

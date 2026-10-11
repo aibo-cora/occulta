@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		DE1C8BEA2F8EC10D00F0E248 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		DEC0DE032F90000000A1B2C3 /* OccultaCore in Frameworks */ = {isa = PBXBuildFile; productRef = DEC0DE022F90000000A1B2C3 /* OccultaCore */; };
+		DEC0DE052F90000000A1B2C3 /* OccultaFormats in Frameworks */ = {isa = PBXBuildFile; productRef = DEC0DE042F90000000A1B2C3 /* OccultaFormats */; };
 		DEC7D75F2EEF1B9000764947 /* QuickLook.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DEC7D75E2EEF1B9000764947 /* QuickLook.framework */; };
 		DEC7D76B2EEF1B9000764947 /* OccultaPreview.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -194,6 +195,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DEC0DE032F90000000A1B2C3 /* OccultaCore in Frameworks */,
+				DEC0DE052F90000000A1B2C3 /* OccultaFormats in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,6 +320,7 @@
 			name = Occulta;
 			packageProductDependencies = (
 				DEC0DE022F90000000A1B2C3 /* OccultaCore */,
+				DEC0DE042F90000000A1B2C3 /* OccultaFormats */,
 			);
 			productName = Occulta;
 			productReference = DEFFD8552E9D293500CA60F9 /* Occulta.app */;
@@ -1072,6 +1075,10 @@
 		DEC0DE022F90000000A1B2C3 /* OccultaCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = OccultaCore;
+		};
+		DEC0DE042F90000000A1B2C3 /* OccultaFormats */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OccultaFormats;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -71,12 +71,15 @@ particular not `apple/swift-crypto`, which on Apple platforms only re-exports Cr
 BoringSSL bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
 
 The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
-holds the code being extracted for reuse — `ShamirSecretSharing`, `PostQuantumProvider`, and the wire and
+holds the code being extracted for reuse in two modules. `OccultaCore` is the API other apps can
+use: `ShamirSecretSharing` and `PostQuantumProvider`. `OccultaFormats` is Occulta's own wire and
 at-rest formats (`OccultaBundle`, `WireHandle`, `DepthCodec`, `SignedAttribute`,
-`IdentityChallengeEnvelope`, `Basket`/`File`) — and must stay dependency-free: its `Package.swift`
-declares none, and adding one is the same supply-chain change as adding it to the app. It is
-nonisolated by default and builds in Swift 6 mode, unlike the app's `MainActor`. Its tests stay in
-`OccultaTests` (`@testable import OccultaCore`) so the one test command below still runs them.
+`IdentityChallengeEnvelope`, `Basket`/`File`), for the app only: they carry Occulta-identifying
+constants that are wire format, such as the `OCCB` magic. The package must stay dependency-free:
+its `Package.swift` declares none, and adding one is the same supply-chain change as adding it to
+the app. It is nonisolated by default and builds in Swift 6 mode, unlike the app's `MainActor`.
+Its tests stay in `OccultaTests` (`@testable import OccultaCore` or `OccultaFormats`) so the one
+test command below still runs them.
 `OccultaTests/Interop/InteropVectors.json` pins the formats byte for byte; a change that alters a
 recorded vector breaks compatibility with existing contacts.
 

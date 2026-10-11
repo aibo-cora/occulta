@@ -5,6 +5,7 @@
 
 import Foundation
 import OccultaCore
+import OccultaFormats
 
 /// Turns a `PrekeyRecord` into the plaintext sealed into `Contact.Profile`, and back.
 ///

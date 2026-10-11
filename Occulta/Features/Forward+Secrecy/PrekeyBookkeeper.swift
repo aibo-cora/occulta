@@ -5,6 +5,7 @@
 
 import Foundation
 import OccultaCore
+import OccultaFormats
 
 /// The rules for a contact's `PrekeyRecord`: which key to seal to, which batches to accept, what a used key
 /// means, and when keys may go (`Docs/Features/Prekey Continuity/DESIGN.md` §8, stage 1).

@@ -665,23 +665,27 @@ struct SearchableModifierPlacementTests {
 
     @Test("A modifier after .searchable reaches the search field")
     func afterReaches() async throws {
-        let field = try await self.searchField(for: NavigationStack {
+        let type = try await self.autocorrectionType(of: NavigationStack {
             List { Text("a") }.searchable(text: .constant("")).autocorrectionDisabled(false)
         })
-        #expect(field.autocorrectionType == .yes)
+        #expect(type == .yes)
     }
 
     @Test("A modifier before .searchable does not")
     func beforeIsIgnored() async throws {
-        let field = try await self.searchField(for: NavigationStack {
+        let type = try await self.autocorrectionType(of: NavigationStack {
             List { Text("a") }.autocorrectionDisabled(false).searchable(text: .constant(""))
         })
-        #expect(field.autocorrectionType != .yes)
+        #expect(type != .yes)
     }
 
-    /// Hosts `view` in a window attached to the test host's scene. A window with no scene is not
-    /// reliably laid out, and its navigation search controller then never appears.
-    private func searchField(for view: some View) async throws -> UISearchTextField {
+    /// Hosts `view` in a window attached to the test host's scene and reads the search field's
+    /// autocorrection type. A window with no scene is not reliably laid out, and its navigation
+    /// search controller then never appears. The read happens here, while the window is alive: once
+    /// it is released the search bar goes with it, and the field outlives it reporting `.default`.
+    /// Reading it in the caller failed `afterReaches` whenever the release landed first, and would
+    /// pass `beforeIsIgnored` without SwiftUI's value ever being read.
+    private func autocorrectionType(of view: some View) async throws -> UITextAutocorrectionType {
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.rootViewController = UIHostingController(rootView: view)
@@ -690,9 +694,9 @@ struct SearchableModifierPlacementTests {
         for _ in 0..<40 {
             window.layoutIfNeeded()
             try await Task.sleep(nanoseconds: 50_000_000)
-            if let field = Self.searchField(in: window.rootViewController) { return field }
+            if let field = Self.searchField(in: window.rootViewController) { return field.autocorrectionType }
         }
-        return try #require(Self.searchField(in: window.rootViewController), "No search field appeared within 2 s")
+        return try #require(Self.searchField(in: window.rootViewController), "No search field appeared within 2 s").autocorrectionType
     }
 
     private static func searchField(in controller: UIViewController?) -> UISearchTextField? {

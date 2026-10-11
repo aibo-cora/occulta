@@ -19,7 +19,7 @@ import CryptoKit
 import LocalAuthentication
 import SwiftData
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 @MainActor
 private struct Owner {
