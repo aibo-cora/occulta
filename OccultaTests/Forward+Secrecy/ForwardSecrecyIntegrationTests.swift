@@ -6,17 +6,14 @@
 //
 //  End-to-end forward secrecy tests using real SE keys and real AES-GCM.
 //  Exercises PrekeyManager + Manager.Crypto together.
-//  Does NOT test ContactManager (that layer requires full SwiftData contact setup).
+//  Does NOT test ContactManager (that layer requires full SwiftData contact setup). The batch
+//  replenishment cycle it drives is tested through it in `PrekeyReplenishmentTriggerTests`.
 //
 //  Coverage:
 //    - FS encrypt/decrypt single message roundtrip
 //    - Forward secrecy guarantee: consumed key cannot decrypt again
 //    - Pool isolation: Alice-Bob pool never touches Alice-Jake pool
-//    - Full exhaustion cycle: drain all prekeys → detect fallback → new batch
-//    - Pending batch rides every subsequent message
 //    - Batch delivery idempotency via duplicate bundle
-//    - hasPendingBatch guard: second fallback does not overwrite
-//    - clearPendingBatch fires on FS receipt
 //    - SecKey lifetime: double-temp-Prekey pattern, no crash
 //    - SE pool deletion on contact removal
 //
@@ -293,194 +290,6 @@ private func openBundle(
         let injected = Prekey(id: real.id, contactID: fakeCID, publicKey: Data())
         #expect(pm.retrievePrivateKey(for: injected) == nil,
                 "Wrong contactID must not retrieve another contact's SE key")
-    }
-}
-
-// MARK: - Exhaustion scenario
-
-@Suite("Integration — Exhaustion scenario")
-@MainActor struct ExhaustionScenarioTests {
-
-    let pm     = Manager.PrekeyManager()
-    let crypto = Manager.Crypto(keyManager: TestKeyManager())
-
-    /// Alice drains all of Bob's prekeys. The next encrypt has no prekey available
-    /// (contactPrekey == nil) → fallback bundle → fallback detected → new batch generated.
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_afterDrainingAllKeys_nextEncryptProducesFallback() throws {
-        let contactID = cid()
-        defer { pm.deleteAllKeys(for: contactID) }
-
-        let (_, recip) = inMemoryKeyPair()
-        let quantum    = testQuantumMaterial()
-
-        // Generate 3 prekeys for Bob. Alice consumes all of them.
-        let prekeys = try pm.generateBatch(contactID: contactID, count: 3)
-        for prekey in prekeys {
-            let payload = OccultaBundle.SealedPayload(message: Data("drain".utf8), prekeyBatch: nil)
-            let encoded = try JSONEncoder().encode(payload)
-            let bundle  = try crypto.seal(
-                message:           encoded,
-                contactPrekey:     prekey,
-                recipientMaterial: recip,
-                quantumMaterial:   quantum
-            )
-            #expect(bundle.secrecy.mode == .forwardSecret)
-
-            // Recipient consumes the key
-            let _: Data? = try {
-                guard
-                    let priv = pm.retrievePrivateKey(for: prekey),
-                    let key  = crypto.deriveSessionKey(ephemeralPrivateKey: priv, recipientMaterial: bundle.secrecy.ephemeralPublicKey, quantumMaterial: quantum)
-                else { return nil }
-                let result = try crypto.open(bundle, using: key)
-                pm.consume(prekey: prekey)
-                return result
-            }()
-        }
-
-        // All keys consumed
-        #expect(pm.remainingCount(for: contactID) == 0)
-
-        // Next seal with no prekey → fallback
-        let fallbackPayload = OccultaBundle.SealedPayload(message: Data("fallback".utf8), prekeyBatch: nil)
-        let fallbackEncoded = try JSONEncoder().encode(fallbackPayload)
-        let fallback        = try crypto.seal(
-            message:           fallbackEncoded,
-            contactPrekey:     nil,   // no prekeys available
-            recipientMaterial: recip,
-            quantumMaterial:   quantum
-        )
-        #expect(fallback.secrecy.mode == .longTermFallback)
-        #expect(fallback.secrecy.prekeyID == nil)
-    }
-
-    /// When a fallback is detected and no pending batch exists,
-    /// a new batch is generated and stored as pending.
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_fallbackDetected_newBatchGenerated() throws {
-        let contactID = cid()
-        defer { pm.deleteAllKeys(for: contactID) }
-
-        // Simulate: fallback detected, !hasPendingBatch → generate
-        let newKeys  = try pm.generateBatch(contactID: contactID, count: Manager.PrekeyManager.defaultBatchSize)
-        #expect(pm.remainingCount(for: contactID) == Manager.PrekeyManager.defaultBatchSize)
-        #expect(newKeys.count == Manager.PrekeyManager.defaultBatchSize)
-
-        // All new keys are retrievable — ready to be sent
-        for key in newKeys {
-            #expect(pm.retrievePrivateKey(for: key) != nil)
-        }
-    }
-
-    /// The pending batch must be the same on every encryptBundle call until
-    /// proof of receipt clears it. Simulated here by loading the batch N times.
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_pendingBatch_sameOnEveryLoad() throws {
-        let container = try {
-            let schema = Schema([Contact.Profile.self, Contact.Profile.Key.self])
-            return try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        }()
-        let context = ModelContext(container)
-        let contact = Contact.Profile(
-            identifier: UUID().uuidString, givenName: "Test", familyName: "C",
-            middleName: "", nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        context.insert(contact)
-        try context.save()
-        try contact.configureForwardSecrecy()
-
-        let cid = cid()
-        defer { pm.deleteAllKeys(for: cid) }
-
-        let keys    = try pm.generateBatch(contactID: cid, count: 3)
-        let wireKeys = keys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-        let batch   = OccultaBundle.SealedPayload.PrekeySyncBatch(
-            generatedAt: Date(timeIntervalSince1970: 1_000_000),
-            prekeys:     wireKeys
-        )
-        try contact.store(batch: batch)
-
-        // Simulate 5 outbound messages — each loads the same pending batch
-        for _ in 0..<5 {
-            let loaded = try contact.loadPendingBatch()
-            #expect(loaded?.prekeys.count == keys.count, "Pending batch must be identical on every load")
-            let diff = abs(loaded!.generatedAt.timeIntervalSince1970 - 1_000_000)
-            #expect(diff < 0.001)
-        }
-
-        // Still pending — hasn't been cleared
-        #expect(contact.hasPendingBatch == true)
-    }
-
-    /// clearPendingBatch fires when FS receipt arrives (consume() succeeded).
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_pendingBatchCleared_onFSReceipt() throws {
-        let container = try {
-            let schema = Schema([Contact.Profile.self, Contact.Profile.Key.self])
-            return try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        }()
-        let context = ModelContext(container)
-        let contact = Contact.Profile(
-            identifier: UUID().uuidString, givenName: "Test", familyName: "C",
-            middleName: "", nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        context.insert(contact)
-        try context.save()
-        try contact.configureForwardSecrecy()
-
-        let cid = cid()
-        defer { pm.deleteAllKeys(for: cid) }
-
-        let keys     = try pm.generateBatch(contactID: cid, count: 2)
-        let wireKeys = keys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-        let batch    = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: wireKeys)
-        try contact.store(batch: batch)
-        #expect(contact.hasPendingBatch == true)
-
-        // Simulate FS receipt: consume fires, then clearPendingBatch
-        pm.consume(prekey: keys[0])                // forward secrecy established
-        try contact.clearPendingBatch()            // proof of receipt
-        #expect(contact.hasPendingBatch == false)
-    }
-
-    /// hasPendingBatch guard: second fallback must not overwrite existing pending batch.
-    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_hasPendingBatch_blocksSecondGeneration() throws {
-        let container = try {
-            let schema = Schema([Contact.Profile.self, Contact.Profile.Key.self])
-            return try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        }()
-        let context = ModelContext(container)
-        let contact = Contact.Profile(
-            identifier: UUID().uuidString, givenName: "Test", familyName: "C",
-            middleName: "", nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        context.insert(contact)
-        try context.save()
-        try contact.configureForwardSecrecy()
-
-        let cid = cid()
-        defer { pm.deleteAllKeys(for: cid) }
-
-        // First fallback: no pending batch, generate and store
-        let keys1    = try pm.generateBatch(contactID: cid, count: 3)
-        let wireK1   = keys1.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-        let batch1   = OccultaBundle.SealedPayload.PrekeySyncBatch(
-            generatedAt: Date(timeIntervalSince1970: 100), prekeys: wireK1
-        )
-        try contact.store(batch: batch1)
-        #expect(contact.hasPendingBatch == true)
-        let cid2 = cid
-        defer { pm.deleteAllKeys(for: cid2) }
-
-        // Second fallback: hasPendingBatch == true → must NOT generate or overwrite
-        if !contact.hasPendingBatch {
-            // This block must NOT execute
-            let keys2  = try pm.generateBatch(contactID: cid2, count: 15)
-            let wireK2 = keys2.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-            let batch2 = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: wireK2)
-            try contact.store(batch: batch2)
-        }
-
-        // Pending batch is still the original 3-key batch
-        let loaded = try contact.loadPendingBatch()
-        #expect(loaded?.prekeys.count == 3, "Original pending batch must be unchanged")
     }
 }
 

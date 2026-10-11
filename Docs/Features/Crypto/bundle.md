@@ -165,5 +165,5 @@ Detail lives in `Docs/Features/Secure Mode/bugs.md`; this is the subset that con
 | 156 | Unused prekeys are never removed from the Secure Enclave | Open — fix decided (30 days after retirement) |
 | 157 | Using any of our prekeys clears the pending batch, even one from an older batch | Open |
 | 158 | A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely | Open — needs a decision |
-| 159 | A fresh prekey batch is generated before the bundle has passed every check | Open |
-| 160 | No test exercises the real prekey replenishment trigger | Open |
+| 159 | A fresh prekey batch is generated before the bundle has passed every check | Fixed 2026-10-08 |
+| 160 | No test exercises the real prekey replenishment trigger | Fixed 2026-10-08 |

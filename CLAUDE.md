@@ -134,7 +134,8 @@ Every gate on the local DB key alone is converted. Still gated, because they gen
 Enclave — they exercise the real `Manager.Key` or create prekeys through `PrekeyManager`, whose
 private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `DuressModePrekeyTests`, `PrekeyManagerTests`, `ForwardSecrecyIntegrationTests`,
-`PrekeyConsumptionOnRejectionTests`, the two prekey round-trips in `VersionCompatibilityTests`,
+`PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the three suites in that file),
+`PrekeyGenerationMeasurementTests`, the two prekey round-trips in `VersionCompatibilityTests`,
 and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
 (`decryptSealed` calls `generateAndStoreFreshBatch` when a fallback message arrives with no
 pending batch). A test that reaches that receive path needs the gate, not the trait.

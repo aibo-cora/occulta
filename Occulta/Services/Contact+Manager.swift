@@ -1168,10 +1168,11 @@ extension ContactManager {
 
     /// Encrypt a basket for all members of a group in the given layer.
     ///
-    /// Each member gets an independent wrapping key (FS or fallback) and a
-    /// per-recipient prekey sync batch if their stock for this sender is below
-    /// the replenishment threshold. The shared ciphertext is sealed once with a
-    /// random session key bound to the group UUID.
+    /// Each member gets an independent wrapping key (FS or fallback) and, in their
+    /// own slot, the prekey batch pending for them, if one is waiting. A batch is
+    /// pending from when that member's long-term message arrives until they use a
+    /// key from it. The shared ciphertext is sealed once with a random session key
+    /// bound to the group UUID.
     ///
     /// Shard distribution (`shardCustodyManager`) is per-member: a member only
     /// receives real shard ops if their build is `.groupShardCapable`, they have
@@ -1570,18 +1571,14 @@ extension ContactManager {
         )
         let payloadData = try cryptoOps.open(bundle, using: sessionKey)
 
-        // ── 3. Prekey management ─────────────────────────────────────────
+        // ── 3. Consume the prekey ────────────────────────────────────────
+        // Now, before anything below can reject the bundle: the key has done its work, and a
+        // rejection must not leave it alive in the Enclave (§2.2).
         if let consumable {
             #if DEBUG
             debugPrint("Opened bundle using prekey = \(consumable), consuming key...")
             #endif
             prekeyManager.consume(prekey: consumable)
-            try sender.clearPendingBatch()
-            #if DEBUG
-            debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
-            #endif
-        } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
         }
 
         // ── 4. Decode, update capability, store inbound batch ────────────
@@ -1610,7 +1607,19 @@ extension ContactManager {
             )
         }
 
-        // ── 5. Persist ───────────────────────────────────────────────────
+        // ── 5. Pending-batch bookkeeping ─────────────────────────────────
+        // After every check that can throw (`bugs.md` Bug 159): generating here creates Enclave
+        // keys, which a later rejection would otherwise leave behind with nothing to save them.
+        if consumable != nil {
+            try sender.clearPendingBatch()
+            #if DEBUG
+            debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
+            #endif
+        } else if !sender.hasPendingBatch {
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+        }
+
+        // ── 6. Persist ───────────────────────────────────────────────────
         try self.modelContext.save()
 
         #if DEBUG
@@ -1850,22 +1859,9 @@ extension ContactManager {
             }
         }
 
-        // ── 4. Prekey bookkeeping ────────────────────────────────────────
-        // The prekey itself is already gone — `findAndOpenRecipientSlot` consumes it the moment
-        // the slot opens, so that a rejection between there and here cannot leave it alive in
-        // the Enclave (§2.2). `consumable` reports what was consumed; what remains for this
-        // block is the model-side bookkeeping, which deliberately stays behind the gates above
-        // so a rejected bundle cannot drive it.
         #if DEBUG
         debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumed: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
         #endif
-        if consumable != nil {
-            // They used one of our prekeys, which is cryptographic proof they received the
-            // batch we have been attaching to every outbound message.
-            try sender.clearPendingBatch()
-        } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
-        }
 
         // ── 5. Open shared ciphertext ────────────────────────────────────
         let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
@@ -1891,6 +1887,21 @@ extension ContactManager {
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
         try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
+
+        // ── 6.5. Pending-batch bookkeeping ───────────────────────────────
+        // The prekey itself is already gone — `findAndOpenRecipientSlot` consumes it the moment
+        // the slot opens, so that a rejection cannot leave it alive in the Enclave (§2.2).
+        // `consumable` reports what was consumed; what remains is the model-side bookkeeping,
+        // which stays behind every check above that can throw, so a rejected bundle cannot drive
+        // it (`bugs.md` Bug 159): generating here creates Enclave keys, and a later rejection
+        // would leave them behind with nothing to save them.
+        if consumable != nil {
+            // They used one of our prekeys, which is cryptographic proof they received the
+            // batch we have been attaching to every outbound message.
+            try sender.clearPendingBatch()
+        } else if !sender.hasPendingBatch {
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+        }
         try self.modelContext.save()
 
         #if DEBUG
