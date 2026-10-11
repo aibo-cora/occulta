@@ -71,14 +71,14 @@ case so §3.1 is rarely used; §3.4 keeps identity challenges from standing out 
 Each batch carries one extra prekey that may be used more than once. When the sender runs out of one-time
 prekeys, it seals to the last-resort key instead of the identity keys.
 
-**Generation (recipient, B).** Generated with the batch, with the same Enclave attributes and tag scheme as a
-one-time prekey, so the keychain can't tell them apart. Which of our keys is the last-resort one is recorded
-in the contact's record, not in the tag.
+**Generation (recipient, B).** Generated with the batch: one more CryptoKit Enclave key, with the same access
+control, held in the record as a blob like the one-time keys (D9), with its public key derived from the blob
+when the batch is sent. The batch records which of its keys is the last-resort one.
 
 **Wire.** `PrekeySyncBatch` gains one optional field, inside the sealed payload:
 
 ```
-lastResort: { publicKey: 65 bytes (x963), idKey: 32 random bytes }   // absent from older builds
+lastResort: WirePrekey { id, publicKey }   // the same type as the one-time keys; absent from older builds
 ```
 
 Synthesized `Codable` omits a nil optional and ignores an unknown key, so older builds decode a batch that
@@ -86,29 +86,38 @@ carries it, and batches without it encode exactly as today; the existing interop
 vectors cover a batch that carries it.
 
 **Sending (A).** On accepting a batch, A stores its `lastResort` in the contact's record, replacing the
-previous one. When `popOldestPrekeyData()` returns nil and a last-resort key is stored, A seals in the normal
-forward-secret mode with a fresh ephemeral key, as for a one-time prekey, with two differences:
+previous one, and keeps it when the one-time keys run out. When `takeInboundPrekey` finds none left and a
+last-resort key is stored, A seals in the normal forward-secret mode with a fresh ephemeral key, as for a
+one-time prekey, with two differences:
 
 - the key is **not** removed after use;
-- the cleartext `prekeyID` is not a stored ID. It is `HMAC-SHA256(idKey, ephemeralPublicKey)`, truncated to
-  16 bytes, with the UUID version-4 and variant bits set, formatted as `UUID().uuidString` formats one.
+- the cleartext `prekeyID` is not the key's ID. It is `HMAC-SHA256(lastResortID, ephemeralPublicKey)`,
+  truncated to 16 bytes, with the UUID version-4 and variant bits set, formatted as `UUID().uuidString` formats
+  one. The HMAC key is the last-resort key's own ID as raw bytes.
 
-The `prekeyID` is why the `idKey` exists. A fixed ID would appear in the clear on every bundle sealed to that
-key and link them all. The derived ID changes with every ephemeral key, can't be computed without the
-`idKey`, and has the same format as a real one. Mode, sizes and the sender's ephemeral signature are those
-of a one-time forward-secret bundle, so the two can't be told apart on the wire.
+A fixed ID would appear in the clear on every bundle sealed to that key and link them all. The ephemeral public
+key is new for every message and already in the bundle, so it serves as the nonce; the derived ID changes with
+it, can't be computed without the last-resort key's ID, and has the same format as a real one. Mode, sizes and
+the sender's ephemeral signature are those of a one-time forward-secret bundle, so the two can't be told apart
+on the wire.
+
+**The last-resort key's ID is its secret (decided 2026-10-11).** It has 122 random bits, travels only inside
+the sealed batch, and unlike a one-time key's ID is never written in a bundle's `prekeyID`: only the derived
+value is. So it can key the HMAC, and a separate 32-byte `idKey`, the first design, was dropped from the wire
+and both records. The condition is that the real ID never appears in the clear; a test checks that a
+last-resort bundle's `prekeyID` never equals it and differs on every send.
 
 Used only when the bundle goes out in group format (`targetVersion.supportsGroups`), so the
 `senderEphemeralSignature` authenticates it. A contact who sends a last-resort key is on a new build, so this
 always holds unless their recorded version is stranded; in that case A falls back to long-term, as today.
 
-**Receiving (B).** In `deriveInboundKey`'s forward-secret branch, when no stored prekey matches the
+**Receiving (B).** In `deriveInboundKey`'s forward-secret branch, when no stored one-time prekey matches the
 `prekeyID`, B computes the derived ID for each last-resort key it still holds for this sender and uses the one
-that matches. There are at most three: the delivered batch's, the pending batch's, and one retired but still
-within its grace period. That is one HMAC per candidate and no extra Enclave operation, so a 32-slot group
-bundle costs at most 96 HMACs. The last-resort key is **not**
-consumed. `findAndOpenRecipientSlot` consumes whatever key opened the slot (its `defer`), so it needs to know
-which kind of key it used.
+that matches; none matching rejects the bundle with the generic error, like any other unknown ID. The
+candidates are one per batch still in the record: the pending one, the delivered one, and retired ones within
+their grace period. That is one HMAC per candidate and no Enclave operation; a 32-slot group bundle against the
+largest record is about a thousand HMACs. The last-resort key is **not** consumed. `findAndOpenRecipientSlot`
+consumes whatever key opened the slot (its `defer`), so it needs to know which kind of key it used.
 
 **Bookkeeping on receipt.** A last-resort bundle means "the sender is out of one-time prekeys". It replaces
 today's long-term trigger:
@@ -235,7 +244,7 @@ below is kept as the design to return to.
 secret as the comparison words: the identity ECDH, the ML-KEM secrets and both nonces, under a separate HKDF
 label. Send it right after the ML-KEM step and before the words appear, then hold it in memory and store it
 only on Confirm. Matching words then prove the batch came from the person checked. Sealing also keeps the
-last-resort key's `idKey` confidential end to end, which signing alone would leave to the unauthenticated
+last-resort key's ID, which keys its derived prekey IDs, confidential end to end, which signing alone would leave to the unauthenticated
 session's encryption. If the batch hasn't arrived by Confirm, the contact is saved without it. Mixing the
 batch into the words was rejected as fragile. Waiting for step 8 binds nothing unless step 8 adds session
 certificates.
@@ -243,7 +252,7 @@ certificates.
 **Likely direction when this returns (owner's note, 2026-10-07).** Exchange the prekeys, or any other data the
 pair needs at setup, **after** both users confirm the comparison words, authenticated with a key derived from
 the confirmed secret. That key is symmetric, so it gives a MAC or AEAD rather than a signature; sealing with
-AEAD also covers the `idKey`'s confidentiality. Nothing is accepted until the human check has passed. What it
+AEAD also covers the confidentiality of the last-resort key's ID. Nothing is accepted until the human check has passed. What it
 changes: today each phone's Confirm is local and tears its session down at once (`finish()` in
 `KeyExchange.swift`). The session would have to stay up until both sides have confirmed and exchanged, and
 the timeout and one-side-cancels cases would need defining. That replaces the send-before-the-words timing
@@ -458,8 +467,7 @@ and the "padding range" and "pruning deletes Enclave keys" bullets below describ
 replaced. 17a is unchanged: the identity key stays in the keychain.
 
 - **17b's random tags and the map in the contact's record** are where this design keeps its per-batch records:
-  which keys belong to which batch, which is the last-resort key, retirement times, the last-resort `idKey`,
-  and accepted batch IDs. Design the record format once, for both.
+  which keys belong to which batch, which is the last-resort key, retirement times, and accepted batch IDs. Design the record format once, for both.
 - **17b's padding range** has to account for the new per-contact count. During a grace period, a contact
   holds up to `T` keys of the old batch, the 15 of the new one, and up to three last-resort keys. At `T = 5`
   that is about 23, against about 15 today. With Bug 156 fixed, the count is also bounded, which it isn't today.
@@ -724,7 +732,7 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   field (G2′): one pass re-seals each with a random filler ID, the same re-seal `deleteCustodyShards`
   already does, so no row is distinguishable by having been migrated.
 - *Tests:* sender falls back to last-resort, not long-term, when out; the derived `prekeyID` differs per
-  bundle and matches the UUID format; recipient opens it without consuming it; the three bookkeeping rows in
+  bundle, matches the UUID format, and never equals the last-resort key's own ID; recipient opens it without consuming it; the three bookkeeping rows in
   §3.1; an old-format batch leaves the sender on long-term; interop vectors for a batch that carries it; the
   indicator resolves to each of its three states from the matching key state (one-time key held, only the
   last-resort key, neither) and to the same state at every depth. Replay (D5): no piece operation or
