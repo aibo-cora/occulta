@@ -31,7 +31,8 @@ One `PrekeyRecord` per contact, sealed in `Contact.Profile.prekeyRecordEncrypted
 ```swift
 struct PrekeyRecord {
     var ownBatches: [OwnBatch]          // ours, for the contact to seal to: id, createdAt, retiredAt, isPending,
-                                        //   keys (16-byte id, Enclave blob, public key while pending)
+                                        //   keys (16-byte id, Enclave blob; a public key only for a
+                                        //   carried-over key without a blob, derived from the blob otherwise)
     var inboundBatches: [InboundBatch]  // theirs, for us to seal to: id, keys (id, public key)
     var acceptedBatchIDs: [Data]        // IDs of their batches already accepted, the 8 most recent
     var latestInboundGeneratedAt: Date? // the date rule, for their batches that carry no ID

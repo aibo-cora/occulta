@@ -51,7 +51,7 @@ extension ContactManager {
 
     /// The batch to attach to every message to the contact until they use a key from it, in wire form.
     func pendingBatchForWire(in record: PrekeyRecord) -> OccultaBundle.SealedPayload.PrekeySyncBatch? {
-        PrekeyBookkeeper().pendingBatch(in: record).map {
+        PrekeyBookkeeper().pendingBatch(in: record, publicKeyOfBlob: Manager.PrekeySecretsManager.publicKey(ofBlob:)).map {
             OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: $0.generatedAt, prekeys: $0.prekeys, id: $0.id)
         }
     }
@@ -92,8 +92,8 @@ extension ContactManager {
     /// sender who has no batch of ours waiting. CryptoKit leaves no keychain item, so if anything later fails,
     /// nothing is left behind.
     func installFreshBatch(into prekeys: SenderPrekeys) throws {
-        let keys = try Manager.PrekeySecretsManager().generateEnclaveKeys()
-        PrekeyBookkeeper().install(keys, into: &prekeys.record, now: Date())
+        let blobs = try Manager.PrekeySecretsManager().generateEnclaveKeys()
+        PrekeyBookkeeper().install(blobs, into: &prekeys.record, now: Date())
     }
 
     // MARK: - Sweep

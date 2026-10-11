@@ -342,16 +342,22 @@ private enum TestSetupError: Error { case seUnavailable }
 // piece stayed queued forever.
 
 /// A pending outbound batch of `count` prekeys, stored on `profile` as `encryptBundle` finds it.
-/// The blobs are filler: sending reads only the public keys.
+///
+/// Its keys carry stored public keys and no blobs, the shape of a batch carried over from before stage 1, so
+/// sending needs no Enclave: a blob's public key would be derived through one, which these tests run without.
 @MainActor
 private func storePendingBatch(count: Int, on profile: Contact.Profile) throws -> PrekeyBookkeeper.OutboundBatch {
     let keys = try (0..<count).map { _ in
-        PrekeyBookkeeper.GeneratedKey(blob: Data(count: 32), publicKey: try TestKeyManager().retrieveIdentity())
+        PrekeyRecord.OwnKey(id: withUnsafeBytes(of: UUID().uuid) { Data($0) }, blob: nil,
+                            publicKey: try TestKeyManager().retrieveIdentity())
     }
     var record = PrekeyRecord.empty
-    PrekeyBookkeeper().install(keys, into: &record, now: Date())
+    record.ownBatches = [PrekeyRecord.OwnBatch(
+        id: Data((0..<16).map { _ in .random(in: .min ... .max) }), createdAt: Date(), retiredAt: nil,
+        isPending: true, keys: keys
+    )]
     profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
-    return try #require(PrekeyBookkeeper().pendingBatch(in: record))
+    return try #require(PrekeyBookkeeper().pendingBatch(in: record) { _ in nil })
 }
 
 /// A 1.9.0+ contact whose key material is `publicKey`, with the synthetic ML-KEM material,

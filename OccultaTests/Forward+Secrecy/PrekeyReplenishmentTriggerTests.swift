@@ -96,7 +96,9 @@ private struct Fixture {
     }
 
     var pendingBatch: PrekeyBookkeeper.OutboundBatch? {
-        get throws { PrekeyBookkeeper().pendingBatch(in: try self.record) }
+        get throws {
+            PrekeyBookkeeper().pendingBatch(in: try self.record, publicKeyOfBlob: Manager.PrekeySecretsManager.publicKey(ofBlob:))
+        }
     }
 
     /// Our prekeys for the sender whose private keys the record still holds.
@@ -346,7 +348,7 @@ private struct Fixture {
 
         let saved = try f.savedRecord
         #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: saved) == nil)
-        #expect(PrekeyBookkeeper().pendingBatch(in: saved) == nil)
+        #expect(!PrekeyBookkeeper().hasPendingBatch(saved))
     }
 
     /// D1: a retired batch's leftover keys are kept 30 days for files sealed to them and still on their way. The
@@ -437,7 +439,7 @@ private struct Fixture {
         #expect(f.pm.retrievePrivateKey(for: prekey) == nil, "the legacy key must be gone from the keychain")
         #expect(f.keychainPrekeyCount == keys.count - 1)
         let saved = try f.savedRecord
-        #expect(PrekeyBookkeeper().pendingBatch(in: saved) == nil, "using it delivers the legacy batch")
+        #expect(!PrekeyBookkeeper().hasPendingBatch(saved), "using it delivers the legacy batch")
         #expect(saved.legacyKeys == .inUse, "the rest of the legacy batch is still the contact's to use")
         #expect(try f.sender.prekeyRecordEncrypted != nil)
     }

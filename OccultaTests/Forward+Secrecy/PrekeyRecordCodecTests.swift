@@ -29,7 +29,9 @@ private func ownKey(withPublicKey: Bool) -> PrekeyRecord.OwnKey {
 }
 
 /// The largest record the bookkeeper allows (design §8, stage 1, "Size limits"). 48 own keys spread over as many
-/// entries as they can form: the pending batch of 15, still carrying its ID and public keys, then 33 entries of one
+/// entries as they can form: the pending batch of 15, still carrying its ID and, deliberately, stored public keys
+/// (the record derives them from the blobs now, but the budget keeps room to store them again if a device shows
+/// deriving is too slow; decided 2026-10-11), then 33 entries of one
 /// key each, as a chatty contact who loses one file per batch leaves them (the batch in use, and retired ones whose
 /// leftovers are within their 30 days). Each entry costs about 45 bytes beyond its key, so this shape, not three
 /// full batches, is the worst case. Two inbound batches at the per-batch limit, with key IDs at the length limit

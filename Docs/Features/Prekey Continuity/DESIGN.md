@@ -550,7 +550,12 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     instead of the profile. The live screen is `Contact.DetailsV2`; `ContactDetailV3` is never constructed.
 - *Change:*
   - **Record** (`PrekeyRecord`, built 2026-10-09). Our own batches: ID, created and retired times, an
-    `isPending` flag, and each key's 16-byte ID, 143-byte Enclave blob, and public key while pending. Their
+    `isPending` flag, and each key's 16-byte ID and 143-byte Enclave blob. A key's public key isn't stored: it is
+    derived from the blob when the pending batch is sent, 0.2–0.3 ms a key and 3–6 ms for a batch of 16 on the
+    Simulator across runs (decided 2026-10-11; an iPhone figure is still needed, from the TestFlight run). Only a pending batch
+    carried over from before stage 1, whose keys have no blob, stores public keys. The size budget still leaves
+    room to store them, so that if a device shows deriving is too slow, storing them again, or caching them in
+    memory, needs no format change. Their
     batches: each batch's ID and its keys' IDs and public keys. The IDs of batches already accepted, the date
     rule's last date, and `legacyKeys`. The pending batch is marked by `isPending` on its own batch,
     not referenced by ID: a pending batch carried over from today's format has no ID and must keep travelling
@@ -587,8 +592,9 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     in, and each own-batch entry costs about 45 bytes beyond its keys. So the worst case is 48 own keys in as
     many entries as they can form: the pending batch, then 33 one-key entries, which a chatty contact losing one
     file per batch leaves within 30 days. With two full inbound batches it measures 15,683 bytes, and a test
-    encodes that record within 16 KB with at least 512 bytes to spare. It fits because a batch drops its 16-byte
-    ID once delivered, as it drops its public keys: the ID is needed only on the wire. Kept, the IDs took the same
+    encodes that record within 16 KB with at least 512 bytes to spare, counting the pending batch's public keys as
+    stored, though they are now derived. It fits because a batch drops its 16-byte ID once delivered: the ID is
+    needed only on the wire. Kept, the IDs took the same
     record to 16,508 bytes, past the 16,379 available (found 2026-10-11; it needed about 30 batches in 30 days).
     - **Corrected 2026-10-11.** The limits were first 30 keys per inbound batch and 64-byte IDs, with the worst
       case put at 13,307 bytes. That figure came from a test fixture with 16-key batches and one repeated ID,

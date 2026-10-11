@@ -44,12 +44,6 @@ struct PrekeyBookkeeper {
         case malformedBatch
     }
 
-    /// A key just generated in the Enclave, as `install` takes it.
-    struct GeneratedKey: Equatable {
-        let blob: Data
-        let publicKey: Data
-    }
-
     /// The batch to attach to outbound messages, before it becomes wire format.
     struct OutboundBatch: Equatable {
         /// `nil` for a pending batch carried over from before stage 1, which must keep travelling without one.
@@ -71,13 +65,20 @@ struct PrekeyBookkeeper {
     }
 
     /// The batch we're still waiting to deliver, to attach to every message to this contact.
-    func pendingBatch(in record: PrekeyRecord) -> OutboundBatch? {
+    ///
+    /// The record doesn't store the public keys of keys it holds a blob for; `publicKeyOfBlob` derives them, which
+    /// the bookkeeper can't do itself without touching the Enclave. Measured at 0.2–0.3 ms a key, 3–6 ms for a
+    /// batch of 16, on the Simulator (`PrekeyGenerationMeasurementTests`, decided 2026-10-11). A key carried over
+    /// from before stage 1 has no blob, and its stored public key is used. A key whose blob won't give one is left
+    /// out: no message sealed to it could be opened.
+    func pendingBatch(in record: PrekeyRecord, publicKeyOfBlob: (Data) -> Data?) -> OutboundBatch? {
         guard let batch = record.ownBatches.first(where: \.isPending) else { return nil }
         return OutboundBatch(
             id: batch.id,
             generatedAt: batch.createdAt,
             prekeys: batch.keys.compactMap { key in
-                key.publicKey.map { OccultaBundle.WirePrekey(id: Self.uuidString(key.id), publicKey: $0) }
+                (key.publicKey ?? key.blob.flatMap(publicKeyOfBlob))
+                    .map { OccultaBundle.WirePrekey(id: Self.uuidString(key.id), publicKey: $0) }
             }
         )
     }
@@ -183,14 +184,14 @@ struct PrekeyBookkeeper {
     /// contact still holds would silently lose every message they seal to it.
     ///
     /// - Precondition: no batch is pending. The caller checks `hasPendingBatch` first.
-    func install(_ keys: [GeneratedKey], into record: inout PrekeyRecord, now: Date) {
+    func install(_ blobs: [Data], into record: inout PrekeyRecord, now: Date) {
         assert(!self.hasPendingBatch(record), "a second pending batch would leave the first one undeliverable")
         record.ownBatches.append(PrekeyRecord.OwnBatch(
             id: Self.randomBatchID(),
             createdAt: now,
             retiredAt: nil,
             isPending: true,
-            keys: keys.map { PrekeyRecord.OwnKey(id: Self.idBytes(UUID()), blob: $0.blob, publicKey: $0.publicKey) }
+            keys: blobs.map { PrekeyRecord.OwnKey(id: Self.idBytes(UUID()), blob: $0, publicKey: nil) }
         ))
 
         var excess = record.ownBatches.reduce(0) { $0 + $1.keys.count } - Self.maxOwnKeys

@@ -29,8 +29,10 @@ extension Manager {
         /// and deleting it from the record deletes the key (`PrekeyGenerationMeasurementTests` asserts no item
         /// appears). Same access control as the keychain prekeys before them.
         ///
+        /// Returns the blobs only: a public key is derived from its blob when needed (`publicKey(ofBlob:)`).
+        ///
         /// - Throws: If the Enclave can't create a key. All or nothing, as with `generateBatch`.
-        func generateEnclaveKeys(count: Int = PrekeySecretsManager.defaultBatchSize) throws -> [PrekeyBookkeeper.GeneratedKey] {
+        func generateEnclaveKeys(count: Int = PrekeySecretsManager.defaultBatchSize) throws -> [Data] {
             var error: Unmanaged<CFError>?
             guard let access = SecAccessControlCreateWithFlags(
                 kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage], &error
@@ -38,9 +40,13 @@ extension Manager {
                 throw error!.takeRetainedValue() as Error
             }
             return try (0..<count).map { _ in
-                let key = try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access)
-                return PrekeyBookkeeper.GeneratedKey(blob: key.dataRepresentation, publicKey: key.publicKey.x963Representation)
+                try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access).dataRepresentation
             }
+        }
+
+        /// The X9.63 public key of a prekey held as an Enclave blob, or `nil` if the blob can't be loaded.
+        nonisolated static func publicKey(ofBlob blob: Data) -> Data? {
+            (try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob))?.publicKey.x963Representation
         }
 
         /// Generate a batch of prekey pairs for a specific contact, as keychain items.

@@ -16,8 +16,20 @@ private func randomBytes(_ count: Int) -> Data {
     Data((0..<count).map { _ in .random(in: .min ... .max) })
 }
 
-private func generated(_ count: Int) -> [PrekeyBookkeeper.GeneratedKey] {
-    (0..<count).map { _ in PrekeyBookkeeper.GeneratedKey(blob: randomBytes(143), publicKey: randomBytes(65)) }
+private func generated(_ count: Int) -> [Data] {
+    (0..<count).map { _ in randomBytes(143) }
+}
+
+/// Stands in for loading an Enclave key from its blob, which these tests don't do: any value that is a function of
+/// the blob shows the right key's public key was used.
+private func fakePublicKey(ofBlob blob: Data) -> Data? {
+    blob.prefix(65)
+}
+
+private extension PrekeyBookkeeper {
+    func pendingBatch(in record: PrekeyRecord) -> OutboundBatch? {
+        self.pendingBatch(in: record, publicKeyOfBlob: fakePublicKey(ofBlob:))
+    }
 }
 
 private func wire(_ count: Int) -> [OccultaBundle.WirePrekey] {
@@ -47,7 +59,7 @@ struct PrekeyBookkeeperSendingTests {
         #expect(record.inboundBatches.isEmpty)
     }
 
-    @Test("A newly installed batch is pending and goes out with its ID, date and public keys")
+    @Test("A newly installed batch is pending and goes out with its ID, date and public keys, derived from its blobs")
     func installedBatchIsPending() throws {
         var record = PrekeyRecord.empty
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -60,8 +72,20 @@ struct PrekeyBookkeeperSendingTests {
         let batch = try #require(self.bookkeeper.pendingBatch(in: record))
         #expect(batch.id?.count == 16)
         #expect(batch.generatedAt == now)
-        #expect(batch.prekeys.map(\.publicKey) == keys.map(\.publicKey))
+        #expect(batch.prekeys.map(\.publicKey) == keys.compactMap(fakePublicKey(ofBlob:)))
+        #expect(record.ownBatches.last?.keys.allSatisfy { $0.publicKey == nil } == true, "public keys aren't stored")
         #expect(batch.prekeys.allSatisfy { UUID(uuidString: $0.id) != nil })
+    }
+
+    /// A blob that won't load can't open anything sealed to its key, so the key isn't handed out.
+    @Test("A key whose blob gives no public key is left out of the batch")
+    func underivableKeyLeftOut() throws {
+        var record = PrekeyRecord.empty
+        let keys = generated(3)
+        self.bookkeeper.install(keys, into: &record, now: Date())
+
+        let batch = try #require(self.bookkeeper.pendingBatch(in: record) { $0 == keys[1] ? nil : $0.prefix(65) })
+        #expect(batch.prekeys.map(\.publicKey) == [keys[0].prefix(65), keys[2].prefix(65)])
     }
 
     @Test("A pending batch carried over from today's format goes out without an ID")
@@ -169,7 +193,7 @@ struct PrekeyBookkeeperConsumeTests {
         self.bookkeeper.install(keys, into: &record, now: Date())
         let id = try #require(self.bookkeeper.pendingBatch(in: record)?.prekeys.first?.id)
 
-        #expect(self.bookkeeper.blob(forPrekeyID: id, in: record) == keys[0].blob)
+        #expect(self.bookkeeper.blob(forPrekeyID: id, in: record) == keys[0])
         self.bookkeeper.consume(prekeyID: id, in: &record, now: Date())
         #expect(self.bookkeeper.blob(forPrekeyID: id, in: record) == nil)
     }

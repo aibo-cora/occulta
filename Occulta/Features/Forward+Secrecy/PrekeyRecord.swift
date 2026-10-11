@@ -83,7 +83,9 @@ struct PrekeyRecord: Codable, Equatable {
         /// `nil` only in a pending batch carried over from before stage 1: it still has to be sent, but its
         /// private halves are legacy keychain keys (see `legacyKeys`).
         var blob: Data?
-        /// x963 public key, kept only while the batch is pending: nothing needs it once the contact has it.
+        /// x963 public key, stored only for a key without a blob, a pending batch carried over from before stage 1,
+        /// and dropped once that batch is delivered. A key with a blob has its public key derived from it when the
+        /// batch is sent (`PrekeyBookkeeper.pendingBatch`).
         var publicKey: Data?
     }
 
