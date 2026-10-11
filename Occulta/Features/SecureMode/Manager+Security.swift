@@ -13,7 +13,7 @@ import Foundation
 import SwiftData
 import CryptoKit
 import SQLite3
-import OccultaCore
+import OccultaFormats
 
 // MARK: - LockoutClock
 

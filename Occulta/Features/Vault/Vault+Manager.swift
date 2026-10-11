@@ -20,7 +20,7 @@ import SwiftData
 import CryptoKit
 import UIKit
 import LocalAuthentication
-import OccultaCore
+import OccultaFormats
 
 // MARK: - VaultManager
 

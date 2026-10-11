@@ -8,7 +8,7 @@ import SwiftData
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
-import OccultaCore
+import OccultaFormats
 
 extension Contact {
     struct DetailsV2: View {
@@ -532,7 +532,7 @@ private struct PendingImportChipV2: View {
 // MARK: - Attachment Chip
 
 private struct AttachmentChipV2: View {
-    let file: OccultaCore.File
+    let file: OccultaFormats.File
     let onRemove: () -> Void
 
     private var isText: Bool {

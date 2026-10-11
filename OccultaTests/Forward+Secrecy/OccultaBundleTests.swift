@@ -12,7 +12,7 @@ import Foundation
 import Security
 
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 // MARK: - AAD
 

@@ -6,7 +6,7 @@
 import CryptoKit
 import SwiftData
 import Foundation
-import OccultaCore
+import OccultaFormats
 
 // MARK: - IneligibilityReason
 

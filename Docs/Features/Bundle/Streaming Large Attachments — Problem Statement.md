@@ -25,7 +25,7 @@ Steps 2–3 are the actual bottleneck, and the mmap fix has no effect on them.
 
 ### The send side has the same shape of problem
 
-Composing a message with a few 1 GB attachments almost certainly has the mirror-image issue: `OccultaCore.File.content` is a plain in-memory `Data` throughout `ComposableMessage.swift`'s compose pipeline, so the attachments are likely fully materialized before `seal()` ever runs. Not confirmed by code reading for this document — noted because a real fix has to be symmetric, not receive-side-only.
+Composing a message with a few 1 GB attachments almost certainly has the mirror-image issue: `OccultaFormats.File.content` is a plain in-memory `Data` throughout `ComposableMessage.swift`'s compose pipeline, so the attachments are likely fully materialized before `seal()` ever runs. Not confirmed by code reading for this document — noted because a real fix has to be symmetric, not receive-side-only.
 
 ---
 

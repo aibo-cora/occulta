@@ -8,7 +8,7 @@
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
-import OccultaCore
+import OccultaFormats
 
 /// `Basket` with an identified owner.
 struct OwnedBasket: Identifiable, Equatable, Codable {

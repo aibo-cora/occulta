@@ -14,7 +14,7 @@
 import Testing
 import Foundation
 @testable import Occulta
-@testable import OccultaCore
+@testable import OccultaFormats
 
 // MARK: - Fixtures
 

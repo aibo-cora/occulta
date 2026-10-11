@@ -5,7 +5,7 @@
 
 import SwiftUI
 import SwiftData
-import OccultaCore
+import OccultaFormats
 
 extension Group {
     struct FormV3: View {
