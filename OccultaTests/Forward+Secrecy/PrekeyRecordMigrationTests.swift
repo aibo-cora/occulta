@@ -103,6 +103,22 @@ struct PrekeyRecordMigrationTests {
         #expect(row.retiredForwardSecrecyEncrypted == nil)
     }
 
+    /// Before stage 1 a contact's batch could hold up to 30 keys with IDs of any length; today's limits are 15 keys
+    /// and 36-byte IDs. Keys outside them are dropped rather than carried over, so every record meets the limits the
+    /// codec's 16 KB is budgeted for. Our pending batch is kept.
+    @Test("A carried-over record drops the contact's keys if they are outside today's limits", .ambientTestKeyManager)
+    func oversizedInboundDropped() throws {
+        let context = ModelContext(try makeContainer())
+        let row = insertRow(old: try sealedLegacyRecord(inboundIDs: (0..<20).map { _ in UUID().uuidString }), in: context)
+
+        try DatabaseMigration.migratePrekeyRecords(modelContext: context)
+
+        let record = try opened(row.prekeyRecordEncrypted)
+        #expect(record.inboundBatches.isEmpty)
+        #expect(record.ownBatches.count == 1 && record.ownBatches.first?.isPending == true)
+        #expect(record.legacyKeys == .inUse)
+    }
+
     @Test("A live row with no record gets an empty one, with no legacy keys", .ambientTestKeyManager)
     func liveRowWithoutRecord() throws {
         let context = ModelContext(try makeContainer())

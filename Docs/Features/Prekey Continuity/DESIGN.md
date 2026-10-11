@@ -146,6 +146,12 @@ Retirement time is stored per batch in the contact's record. Consequences that c
   after the 30 days, together. That burst is step 17's open "repeated images" item, not a new kind of change.
 - **The clock is the recipient's.** Moving it forward deletes early, which loses messages and exposes
   nothing; moving it back keeps keys longer, which needs the unlocked phone.
+- **Deleting at retirement, with no grace, was rejected (2026-10-11).** A new batch replaces the old one in the
+  contact's store, so once they use the new one, nothing new can be sealed to the old keys: deleting them at
+  once would never delete a key the contact holds. But a file sealed to an old key just before the switch and
+  opened after a newer one would be lost, with the generic error. That is a message lost that was never lost in
+  transit, so the grace stays. Deleting earlier keys of the batch still in use was rejected for the same reason,
+  and more strongly: it loses any two files opened out of order, not only those either side of a batch change.
 
 **Without a reply.** A last-resort key retires only when the sender uses a key from a newer batch, and only
 the recipient can send one. A recipient who never replies keeps the key, and every message sealed to it stays
@@ -568,14 +574,27 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     go as early as is safe.
   - **Fixed size (Bug 161).** The record is encoded in a compact binary layout and padded to a fixed 16 KB
     for every contact, so its length never tracks activity.
-  - **Size limits, eviction in the bookkeeper (decided 2026-10-09).** Overflow is made impossible by
-    construction rather than handled by the codec. The bookkeeper enforces, at the only moments the record
-    grows: at most 48 of our own keys (pending, current and retired leftovers, plus last-resort keys from stage
-    2), deleting the oldest retired keys first when installing a batch would exceed it; at most two inbound
-    batches, a third dropping the oldest; at most 8 accepted batch IDs; inbound key IDs of at most 64 bytes, a
-    longer one making the batch malformed. Every field then has a maximum size, so the worst-case record is
-    fixed: 13,307 bytes measured (normal use 5,808), and a test encodes a record at every limit at once
-    within 16 KB with at least 1 KB to spare. Eviction in the codec
+  - **Size limits, eviction in the bookkeeper (decided 2026-10-09, corrected 2026-10-11).** Overflow is made
+    impossible by construction rather than handled by the codec. The bookkeeper enforces, at the only moments the
+    record grows: at most 48 of our own keys (pending, current and retired leftovers, plus last-resort keys from
+    stage 2), deleting the oldest retired keys when installing a batch would exceed it; inbound batches of at most
+    15 keys with key IDs of at most 36 bytes (a UUID string), anything larger making the batch malformed; at most
+    8 accepted batch IDs. Stage 1 holds one inbound batch, since accepting replaces; the budget allows two, for
+    stage 4's append. Every field then has a maximum size: 48 own keys and two full inbound batches measure
+    14,351 bytes, and a test encodes that record within 16 KB with at least 1 KB to spare.
+    - **Corrected 2026-10-11.** The limits were first 30 keys per inbound batch and 64-byte IDs, with the worst
+      case put at 13,307 bytes. That figure came from a test fixture with 16-key batches and one repeated ID,
+      which a binary plist stores once. Measured with distinct values those limits need 19,751 bytes, past
+      16 KB with two batches. Stage 1 still fitted (one batch: 15,152), but stage 4 would not have. No build
+      sends more than 15 keys or anything but UUID IDs, so the tighter limits refuse nothing real; the launch
+      migration drops a carried-over batch outside them.
+    - **Only retired keys are evicted (decided 2026-10-11).** Keys not yet retired are the pending batch and the
+      one before it, at most 2 × 15, so evicting retired keys alone always makes room. The fallback that evicted
+      keys still in use when that wasn't enough could not run, and if it ever did it would silently lose every
+      message the contact sealed to them; it was removed, and a test pins the two-batch bound so a stage that
+      changes it (stage 2's last-resort key) has to do so on purpose. Evicting a retired key loses only a file
+      sealed before the contact moved on and not yet opened, and only when more than 18 such keys are waiting.
+    Eviction in the codec
     was rejected: a codec should translate without loss, the rule would sit apart from every other rule about
     which keys exist, and keys would vanish whenever a record happened to be saved.
     It is also never null: an empty fixed-size record is written when the contact is created, because a null
@@ -613,6 +632,17 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     takes. Inbound batches
     are dropped by ID (Bug 158). Accepting a batch still replaces the keys held from that contact, as today;
     appending is stage 4's.
+  - **No manifest of live keys (rejected 2026-10-10).** The record keeps keys the contact may or may not still
+    hold, so the contact could report which of ours it holds and we delete the rest. Rejected. Our keys in the
+    record are of three kinds: live (unused, in their store), used (sealed to a message we haven't opened), and
+    discarded (dropped unused when their store was replaced). A manifest can only identify the discarded ones,
+    and those expose nothing, since nothing was sealed to them; the record's fixed size means they leak nothing
+    either. The used ones are the forward-secrecy exposure, and the contact can't report on them: it knows it
+    used a key, not whether the file arrived. Against that small gain: deleting whatever a manifest omits would
+    delete a whole live batch whenever a manifest written before the contact received that batch arrived late;
+    its length would track activity unless padded; and it is a wire change older builds don't send. Removing
+    what creates discarded keys is better: stage 4's append (so the threshold must not ship ahead of it), Bug
+    155's decided fix, and older builds as they update.
   - **Contact deletion.** The record is overwritten with filler of the same size, since the row is only
     soft-deleted, as well as deleting legacy keychain keys. Built 2026-10-10: the filler is the sealed empty
     record, for the reason `deleteContact` seals benign depth stamps rather than random bytes: the rest of the
@@ -659,8 +689,8 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
 - *Tests:* creating a CryptoKit Enclave key adds no keychain item (count before and after); a blob-backed prekey
   opens a message and its blob is gone from the record afterwards; a bundle rejected after it opens still leaves
   its blob deleted and saved; the record encodes to exactly 16 KB empty and with every limit reached at once;
-  installing a batch past the own-key limit deletes the oldest retired keys first; a third inbound batch drops the
-  oldest; an inbound batch with an over-long key ID is rejected; the codec throws rather than trims a record past
+  installing a batch past the own-key limit deletes the oldest retired keys first and never a key not yet retired,
+  and those keys never exceed two batches; an inbound batch with too many keys or an over-long key ID is rejected; the codec throws rather than trims a record past
   capacity; a newly created contact, one never written to, and a deleted one all have the
   field present at that same size; after the migration pass every row's new field is present at 16 KB and every
   row's `forwardSecrecyEncrypted` is `nil`, whatever state the row started in; a deleted contact's record holds no blobs; a legacy keychain prekey and a

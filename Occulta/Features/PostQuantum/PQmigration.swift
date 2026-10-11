@@ -320,7 +320,8 @@ struct DatabaseMigration {
     /// Afterwards every row's new field is present at one size and every row's old field is nil, whatever the row
     /// held:
     ///
-    /// - **Live row.** Today's record, converted by `PrekeyRecordCodec`. One that won't decrypt, decode or fit
+    /// - **Live row.** Today's record, converted by `PrekeyRecordCodec`, dropping the contact's keys if they are
+    ///   outside the bookkeeper's limits. One that won't decrypt, decode or fit
     ///   becomes an empty record with legacy keys marked in use, as `ContactManager.prekeyRecord(for:)` reads an
     ///   unreadable one: the keys held from that contact are lost, and their next long-term message restores
     ///   them. No old record at all means no message was ever exchanged, so no legacy keys either.
@@ -366,8 +367,13 @@ struct DatabaseMigration {
         guard let old else { return .empty }
         let codec = PrekeyRecordCodec()
         if let plaintext = old.decrypt(),
-           let record = try? codec.decode(plaintext),
+           var record = try? codec.decode(plaintext),
            (try? codec.encode(record)) != nil {
+            // Before stage 1 the contact's keys were held to looser bounds. Keys outside today's are dropped, as
+            // `accept` would refuse them; our pending batch stays, and the contact's next batch replaces them.
+            if !record.inboundBatches.allSatisfy({ PrekeyBookkeeper.fitsLimits($0.keys) }) {
+                record.inboundBatches = []
+            }
             return record
         }
         var fresh = PrekeyRecord.empty

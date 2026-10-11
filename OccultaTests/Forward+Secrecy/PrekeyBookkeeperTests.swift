@@ -120,7 +120,9 @@ struct PrekeyBookkeeperAcceptTests {
         var record = PrekeyRecord.empty
         let tooMany = wire(PrekeyBookkeeper.maxInboundKeysPerBatch + 1)
         let badKey  = [OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(64))]
-        let longID  = [OccultaBundle.WirePrekey(id: String(repeating: "k", count: 65), publicKey: randomBytes(65))]
+        let longID  = [OccultaBundle.WirePrekey(
+            id: String(repeating: "k", count: PrekeyBookkeeper.maxInboundKeyIDBytes + 1), publicKey: randomBytes(65)
+        )]
         for prekeys in [tooMany, badKey, longID] {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
                 try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: prekeys, into: &record)
@@ -309,5 +311,59 @@ struct PrekeyBookkeeperLimitTests {
             #expect(!self.bookkeeper.sweep(&record, now: .distantFuture))
             #expect(record.legacyKeys == state)
         }
+    }
+}
+
+@Suite("PrekeyBookkeeper — eviction never touches keys still in use")
+struct PrekeyBookkeeperEvictionTests {
+
+    let bookkeeper = PrekeyBookkeeper()
+
+    /// Keys not yet retired are at most the pending batch and the one before it, so evicting retired keys alone can
+    /// always meet `maxOwnKeys`. This is the arithmetic that makes that true; a stage that adds to those keys (a
+    /// last-resort key, a bigger batch) has to change it on purpose.
+    @MainActor
+    @Test("Two batches fit within the own-key limit")
+    func twoBatchesFitTheLimit() {
+        #expect(2 * Manager.PrekeySecretsManager.defaultBatchSize <= PrekeyBookkeeper.maxOwnKeys)
+    }
+
+    /// Batch after batch, the contact uses some keys of each and loses some files, and a new batch is sometimes made
+    /// while they still hold keys of the current one (an identity challenge, Bug 155). Whatever the mix, the keys
+    /// not yet retired never exceed two batches.
+    @Test("Keys not yet retired never exceed two batches, whatever the contact uses")
+    func unretiredKeysStayWithinTwoBatches() throws {
+        var record = PrekeyRecord.empty
+        let now = Date()
+        for cycle in 0..<30 {
+            self.bookkeeper.install(generated(15), into: &record, now: now)
+            let ids = try #require(self.bookkeeper.pendingBatch(in: record)).prekeys.map(\.id)
+            // The contact uses the first key, then a varying share of the rest; the others are lost files, or keys
+            // still in their store when the next batch is made.
+            for id in ids.prefix(1 + cycle % 15) where cycle % 3 != 0 || id == ids[0] {
+                self.bookkeeper.consume(prekeyID: id, in: &record, now: now)
+            }
+            let unretired = record.ownBatches.filter { $0.retiredAt == nil }.reduce(0) { $0 + $1.keys.count }
+            #expect(unretired <= 30)
+            #expect(record.ownBatches.reduce(0) { $0 + $1.keys.count } <= PrekeyBookkeeper.maxOwnKeys)
+        }
+    }
+
+    /// A state the arithmetic above rules out, built by hand: more keys still in use than the limit allows. Eviction
+    /// must leave every one of them, since deleting a key the contact holds loses whatever they seal to it.
+    @Test("Keys still in use are kept even if that leaves the record over the limit")
+    func keysInUseAreNeverEvicted() {
+        let now = Date()
+        var record = PrekeyRecord.empty
+        record.ownBatches = [PrekeyRecord.OwnBatch(
+            id: randomBytes(16), createdAt: now, retiredAt: nil, isPending: false,
+            keys: (0..<40).map { _ in PrekeyRecord.OwnKey(id: randomBytes(16), blob: randomBytes(143), publicKey: nil) }
+        )]
+        let inUse = record.ownBatches[0].keys
+
+        self.bookkeeper.install(generated(15), into: &record, now: now)
+
+        #expect(record.ownBatches.first?.keys == inUse)
+        #expect(record.ownBatches.reduce(0) { $0 + $1.keys.count } == 55)
     }
 }

@@ -13167,13 +13167,15 @@ fixed-width rule applies to them as well.
 Pad the encoded record to a **fixed capacity of 16 KB** before sealing, for every contact and for step 3's filler
 rows alike, so the field's length never varies. The capacity is sized for stages 2 and 4 as well, so it never has
 to grow:
-- worst case (our own blobs across a retired, a current and a pending batch, plus last-resort keys; their
-  prekeys across two batches; one pending batch) is about 11.5 KB in a compact binary layout, but about 19 KB as
-  JSON with base64. So the record moves to a compact layout; JSON doesn't fit;
-- the record can't exceed the capacity: prekey continuity's bookkeeper caps what it holds (48 own keys, two
-  inbound batches, 8 accepted batch IDs, 64-byte inbound key IDs), and when installing a batch would pass the
-  own-key cap it deletes the oldest retired keys first. That loses only messages arriving later than the 30-day
-  grace would have allowed anyway (D1). The codec itself never drops data; it throws on a record past capacity
+- worst case (48 of our own keys across a retired, a current and a pending batch; two full batches of theirs;
+  8 accepted batch IDs) measures 14,351 bytes in a compact binary layout, and would be far larger as JSON with
+  base64. So the record moves to a compact layout; JSON doesn't fit. (The first estimate, about 11.5 KB with
+  30-key inbound batches and 64-byte key IDs, was wrong: measured with distinct values those limits need 19,751
+  bytes. Corrected 2026-10-11 by limiting inbound batches to 15 keys and 36-byte IDs; design §8, "Size limits".)
+- the record can't exceed the capacity: prekey continuity's bookkeeper caps what it holds (48 own keys, 15 keys
+  per inbound batch, 36-byte inbound key IDs, 8 accepted batch IDs), and when installing a batch would pass the
+  own-key cap it deletes the oldest retired keys, never keys not yet retired. That can lose a file sealed to a
+  retired key and not yet opened, within the 30-day grace, but only when more than 18 such keys are waiting. The codec itself never drops data; it throws on a record past capacity
   (decided 2026-10-09, design stage 1).
 
 **Never null (added 2026-10-09).** The field is written, as an empty record at the fixed size, when the contact is

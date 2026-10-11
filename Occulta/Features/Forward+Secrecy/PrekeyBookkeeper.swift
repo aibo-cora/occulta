@@ -23,10 +23,16 @@ struct PrekeyBookkeeper {
     static let gracePeriod: TimeInterval = 30 * 24 * 60 * 60
 
     /// Our own keys the record may hold: pending, current and retired leftovers.
+    ///
+    /// Only retired keys are ever evicted to stay within it, which works because the keys that aren't retired are
+    /// at most two batches: the pending one and the one the contact is using (`install`). A later stage that adds to
+    /// those, like stage 2's last-resort key, has to keep that true; `PrekeyBookkeeperEvictionTests` checks it.
     static let maxOwnKeys = 48
-    /// The bound inbound batches had before stage 1: twice the batch size.
-    static let maxInboundKeysPerBatch = 30
-    static let maxInboundKeyIDBytes = 64
+    /// Our batch size, and every build's: no build sends more. Holding two such batches from the contact (stage 4)
+    /// next to `maxOwnKeys` of ours is what the codec's 16 KB is budgeted for.
+    static let maxInboundKeysPerBatch = 15
+    /// A UUID string, which every build sends as a prekey ID. The contact chooses it, so it is bounded like the rest.
+    static let maxInboundKeyIDBytes = 36
     static let maxAcceptedBatchIDs = 8
     /// A batch ID is chosen by the sender and stored in the record, twice, so its size is fixed.
     static let batchIDBytes = 16
@@ -88,10 +94,10 @@ struct PrekeyBookkeeper {
     func accept(
         id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], into record: inout PrekeyRecord
     ) throws -> Bool {
-        guard id == nil || id?.count == Self.batchIDBytes,
-              prekeys.count <= Self.maxInboundKeysPerBatch,
-              prekeys.allSatisfy({ $0.publicKey.count == 65 && $0.id.utf8.count <= Self.maxInboundKeyIDBytes })
-        else { throw BookkeeperError.malformedBatch }
+        let keys = prekeys.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
+        guard id == nil || id?.count == Self.batchIDBytes, Self.fitsLimits(keys) else {
+            throw BookkeeperError.malformedBatch
+        }
 
         if let id {
             guard !record.acceptedBatchIDs.contains(id) else { return false }
@@ -104,9 +110,15 @@ struct PrekeyBookkeeper {
             record.latestInboundGeneratedAt = generatedAt
         }
 
-        let keys = prekeys.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
         record.inboundBatches = keys.isEmpty ? [] : [PrekeyRecord.InboundBatch(id: id, keys: keys)]
         return true
+    }
+
+    /// Whether one batch of the contact's keys is within the record's limits. `accept` holds every new batch to it;
+    /// the launch migration holds keys carried over from before stage 1, which had looser bounds, to it too.
+    static func fitsLimits(_ keys: [PrekeyRecord.InboundKey]) -> Bool {
+        keys.count <= Self.maxInboundKeysPerBatch
+            && keys.allSatisfy { $0.publicKey.count == 65 && $0.id.utf8.count <= Self.maxInboundKeyIDBytes }
     }
 
     /// The Enclave blob for one of our prekeys, or `nil` when the record doesn't hold it: a legacy key, whose
@@ -159,9 +171,13 @@ struct PrekeyBookkeeper {
 
     /// Adds a batch just generated in the Enclave as the pending one.
     ///
-    /// Then holds the record to `maxOwnKeys`: the oldest retired keys go first, whose messages are already past
-    /// due; only if that isn't enough, the oldest keys still in use. Either way a message still to arrive for an
-    /// evicted key can't be opened.
+    /// Then holds the record to `maxOwnKeys` by deleting the oldest retired keys first. A retired key can only open a
+    /// file the contact sealed before moving to a newer batch and we haven't opened, so evicting one loses that file
+    /// early; it is never a key the contact can still seal to.
+    ///
+    /// Keys that aren't retired are never evicted, even if that leaves the record over `maxOwnKeys`. They are at most
+    /// the pending batch and the one before it, 2 × 15, so retired keys alone always make room. Deleting a key the
+    /// contact still holds would silently lose every message they seal to it.
     ///
     /// - Precondition: no batch is pending. The caller checks `hasPendingBatch` first.
     func install(_ keys: [GeneratedKey], into record: inout PrekeyRecord, now: Date) {
@@ -175,9 +191,8 @@ struct PrekeyBookkeeper {
         ))
 
         var excess = record.ownBatches.reduce(0) { $0 + $1.keys.count } - Self.maxOwnKeys
-        let evictionOrder = record.ownBatches.indices.filter { record.ownBatches[$0].retiredAt != nil }
-                          + record.ownBatches.indices.filter { record.ownBatches[$0].retiredAt == nil && !record.ownBatches[$0].isPending }
-        for index in evictionOrder where excess > 0 {
+        let retired = record.ownBatches.indices.filter { record.ownBatches[$0].retiredAt != nil }
+        for index in retired where excess > 0 {
             let dropped = min(excess, record.ownBatches[index].keys.count)
             record.ownBatches[index].keys.removeFirst(dropped)
             excess -= dropped

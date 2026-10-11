@@ -28,27 +28,36 @@ private func ownKey(withPublicKey: Bool) -> PrekeyRecord.OwnKey {
 }
 
 /// A record at every limit the bookkeeper enforces at once (design §8, stage 1, "Size limits"): 48 own keys, the
-/// 16 in the pending batch still carrying their public keys; two inbound batches of 16 keys with 64-byte IDs; 8
-/// accepted batch IDs; every date set.
+/// 15 in the pending batch still carrying their public keys; two inbound batches at the per-batch limit, with
+/// key IDs at the length limit (stage 1 holds one, stage 4 two); 8 accepted batch IDs; every date set.
+///
+/// Every value is distinct. A binary plist stores a repeated value once, so repeated IDs or blobs would make this
+/// record look smaller than any real one; that is how an earlier version of this fixture passed at 13 KB while
+/// the limits it claimed to model needed 19.
 private func recordAtEveryLimit() -> PrekeyRecord {
     let now = Date()
-    let pending  = PrekeyRecord.OwnBatch(id: randomBytes(16), createdAt: now, retiredAt: nil,
-                                         isPending: true, keys: (0..<16).map { _ in ownKey(withPublicKey: true) })
-    let current  = PrekeyRecord.OwnBatch(id: randomBytes(16), createdAt: now, retiredAt: nil,
-                                         isPending: false, keys: (0..<16).map { _ in ownKey(withPublicKey: false) })
-    let retired  = PrekeyRecord.OwnBatch(id: randomBytes(16), createdAt: now, retiredAt: now,
-                                         isPending: false, keys: (0..<16).map { _ in ownKey(withPublicKey: false) })
+    let ownBatch = { (count: Int, pending: Bool, retired: Bool) in
+        PrekeyRecord.OwnBatch(id: randomBytes(16), createdAt: now, retiredAt: retired ? now : nil,
+                              isPending: pending, keys: (0..<count).map { _ in ownKey(withPublicKey: pending) })
+    }
     let inbound = { PrekeyRecord.InboundBatch(
         id: randomBytes(16),
-        keys: (0..<16).map { _ in PrekeyRecord.InboundKey(id: String(repeating: "k", count: 64), publicKey: randomBytes(65)) }
+        keys: (0..<PrekeyBookkeeper.maxInboundKeysPerBatch).map { _ in
+            PrekeyRecord.InboundKey(
+                id: UUID().uuidString.padding(toLength: PrekeyBookkeeper.maxInboundKeyIDBytes, withPad: "x", startingAt: 0),
+                publicKey: randomBytes(65)
+            )
+        }
     ) }
-    return PrekeyRecord(
-        ownBatches: [retired, current, pending],
+    let record = PrekeyRecord(
+        ownBatches: [ownBatch(18, false, true), ownBatch(15, false, false), ownBatch(15, true, false)],
         inboundBatches: [inbound(), inbound()],
         acceptedBatchIDs: (0..<8).map { _ in randomBytes(16) },
         latestInboundGeneratedAt: now,
         legacyKeys: .retired(since: now)
     )
+    precondition(record.ownBatches.reduce(0) { $0 + $1.keys.count } == PrekeyBookkeeper.maxOwnKeys)
+    return record
 }
 
 @Suite("PrekeyRecordCodec — fixed-size format")

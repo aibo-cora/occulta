@@ -169,8 +169,9 @@ nothing: on the first failure it throws, and the keys already made vanish with i
 - **Without an ID** (an older build): the date rule, accepted only if newer than the last one accepted without an
   ID.
 - Accepting replaces the keys held from that contact.
-- Outside the limits → `Errors.invalidPrekeySyncBatch`: an ID that isn't 16 bytes, more than 30 keys, a key that
-  isn't 65 bytes, a key ID over 64 bytes.
+- Outside the limits → `Errors.invalidPrekeySyncBatch`: an ID that isn't 16 bytes, more than 15 keys, a key that
+  isn't 65 bytes, a key ID over 36 bytes (a UUID string). No build sends anything larger; the launch migration
+  drops a carried-over batch outside them.
 
 ---
 
@@ -195,13 +196,15 @@ The bookkeeper keeps the record within what 16 KB is budgeted for, so the codec 
 
 | Limit | Value | Enforced in |
 |---|---|---|
-| Our own keys | 48 | `install`: oldest retired keys go first, then the oldest still in use; never the pending batch |
-| Their keys per batch | 30 | `accept` |
-| Their key ID | 64 bytes | `accept` |
+| Our own keys | 48 | `install`: oldest retired keys first; never a key not yet retired, which are at most 2 × 15 |
+| Their keys per batch | 15 | `accept` |
+| Their key ID | 36 bytes | `accept` |
 | Accepted batch IDs | 8 | `accept` |
 
-Worst case measured 13,307 bytes, normal use 5,808. The codec throws `overCapacity` past 16 KB, which can only mean
-a broken invariant.
+Stage 1 holds one batch of theirs; the budget allows two, for stage 4. Worst case, 48 own keys and two full batches
+of theirs, measures 14,351 bytes. The codec throws `overCapacity` past 16 KB, which can only mean a broken invariant.
+Measure with distinct values: a binary plist stores a repeated value once, so a fixture with repeated IDs or blobs
+understates the size (mistake 19).
 
 ---
 
@@ -296,6 +299,9 @@ relationship graph. The receiver supplies its own. `OccultaTests/Interop/Interop
 17. **A record whose length tracked activity (Bug 161)**, and whose NULL separated contacts never written to.
 18. **Prekey deleted only after every check (§2.2).** A bundle that opened and was then rejected left its key
     alive.
+19. **A size budget measured with repeated values.** The worst-case fixture repeated one inbound key ID, which a
+    binary plist stores once, and used 16-key batches against a 30-key limit. It passed at 13 KB; the real limits
+    needed 19 KB, past the 16 KB record. Fixed by distinct values and tighter inbound limits.
 
 ---
 
