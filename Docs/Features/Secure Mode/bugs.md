@@ -13162,3 +13162,93 @@ The first is a reasonable interim step whichever structural fix is chosen.
 
 None yet. Needed: a trustee's display and stored rows for an owner are the same whether that owner has one
 depth with a backup or several.
+
+## Bug 163 — A lost or late `.replace` leaves the trustee holding the piece it replaced
+
+**Status:** Open — fix needs a decision. Found 2026-10-12 working out the replay matrix for prekey continuity's D5
+(stage 2): no ordering rule on the trustee's side makes custody converge, because of what's described here.
+
+**Target:** `v2.0.0`. Present since `.replace` replaced implicit revoke (`bugs.md` Bug 141, 2026-09-27).
+
+### Severity: Medium (a stale piece outlives a re-split; with a new key, it's a piece of a key the re-split retired)
+
+### What happens
+
+A re-split of one depth's backup key sends each trustee kept on it a `.replace` naming the new piece and the
+one piece it replaces: the trustee's piece in that depth's current record (`distributeBackup`, `previousIDs`). The
+trustee removes exactly that piece (`handleReplace`); nothing else ever removes a same-key piece, since implicit
+revoke is gone. And before queuing the new pieces, the re-split deletes the previous split's queued operations
+(`deleteQueuedAndWatchRows`, Bug 142). So a `.replace` that never reaches the trustee is never sent again once a
+later re-split has run.
+
+Three pieces in a row for one trustee: B1 carries `.distribute(P1)`, B2 `.replace(P2 ← P1)`, B3 `.replace(P3 ← P2)`.
+
+- **B2 lost, and Alice re-splits again before Bob confirms P2.** B2's operation is dropped from Alice's queue at
+  the second re-split. B3 removes P2, which Bob never had. **Bob keeps P1 and P3**, for good.
+- **B2 late: B1, B3, B2.** B3 removes P2 (not held) and adds P3; B2 then adds P2 and removes P1. **Bob keeps P2
+  and P3.** A stale piece again, this time the newer stale one.
+
+In-order delivery leaves P3 alone. In both cases Bob holds two pieces of one depth's backup:
+
+- **Same key re-split:** both are shares of the same secret from different splits. They don't combine with each
+  other, but each still counts toward its own split's threshold together with other trustees' stale pieces.
+- **New key re-split** (a trustee was dropped, Bugs 141, 144): the stale piece belongs to the retired key, which
+  still opens backups exported under it. Stale pieces at several trustees, with the dropped trustee's, can reach
+  the old threshold, which is exactly what the new key was meant to prevent.
+- It also inflates the piece count Bug 162 describes.
+
+### Why no trustee-side rule closes it
+
+The trustee can't tell which pieces belong together: pieces carry no lineage, a re-split mints a new `entryID`
+(Bug 124), and one owner's pieces from different depths are indistinguishable (the D5 alternatives in
+`Docs/Features/Prekey Continuity/DESIGN.md` §3.1 record why a signed lineage ID was rejected). A `.replace` names
+only its immediate predecessor. So when the operation that would remove a piece is lost, or dropped as stale, nothing
+names that piece again. Ordering bundles (applying only the newest) fixes the late case's resurrection but not the
+lost case, and on its own turns the late case into the lost one.
+
+### Fix — open, needs a decision
+
+To be worked out (2026-10-12). Directions so far:
+
+- **The owner carries forward what it still owes.** A re-split's `.replace` also names every earlier piece of
+  that trustee's the owner hasn't seen confirmed gone, instead of only the last.
+- **A lineage per owner depth and trustee,** so a `.replace` means "whatever you hold for this lineage". Simple
+  and order-proof, but a wire change, and it lets the trustee link pieces, which D5 rejected; Bug 162 shows the
+  count is already exposed.
+- **Bug 162's one-piece-per-owner-and-trustee fix** would make this moot: a single fixed-size piece, replaced
+  whole, can't leave a predecessor behind.
+
+### Guard
+
+None yet. Needed: every delivery order of a run of re-splits, with any one bundle lost, leaves the trustee holding
+only the newest piece.
+
+## Bug 164 — On a one-to-one bundle, a fallback slot's piece operations and manifest aren't dropped on receipt
+
+**Status:** Open. Found 2026-10-12. A fix is written in prekey continuity stage 2's work in progress
+(`v2.0.0/prekey-stage-2`, not yet committed): `openGroup` strips the shared payload too.
+
+**Target:** `v2.0.0`. Present since one-to-one bundles moved to the group format (1.9.0).
+
+### Severity: Low today; Medium once last-resort keys ship (stage 2), since their bundles can be redelivered
+
+### What happens
+
+The receiver is meant to drop piece operations and custody manifests from a slot opened on the long-term path,
+"regardless of what the sender claims" (`ContactManager.openGroup`). It drops them from the per-recipient payload
+only. A one-to-one bundle carries them in the shared payload instead, and the caller falls back to that when the
+per-recipient fields are empty (`OccultaApp`, `recipShardOps ?? sealed.shardOperations`). So on a one-to-one
+bundle only the sender's own gate keeps them off a long-term slot; the receiver's check doesn't apply.
+
+Prekey continuity stage 2 relies on the same check to keep piece operations off last-resort slots, whose bundles
+open again on every redelivery (D5): with it ineffective for one-to-one bundles, a sender bug that attached them
+would make them replayable.
+
+The existing tests cover the per-recipient fields (`openGroupStripsOnFallbackSlot`) and the legacy single-recipient
+path (`decryptSealedStripsOnFallback`), not a one-to-one group-format bundle.
+
+### Guard
+
+None yet. Needed: a one-to-one group-format bundle with piece operations and a manifest in its shared payload,
+opened on a long-term slot and on a last-resort slot, returns neither.
+
