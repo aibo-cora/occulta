@@ -13158,6 +13158,26 @@ many of the owner's depths have backups" (`DESIGN.md` §3.1, D5). The count show
 
 The first is a reasonable interim step whichever structural fix is chosen.
 
+**The container, worked out 2026-10-12, and deferred: too large a change for now.** Bug 162 stays open.
+
+- Alice's phone keeps one fixed-size container per trustee, one slot per possible depth (`AppLayerConfig`
+  allows 32), filler in every slot no depth uses. Each depth that names the trustee writes only its own slot.
+  Whenever a slot changes, the whole container goes to the trustee, signed and dated.
+- Bob holds exactly one row per owner, always the same size, so he can't count anything. A newer container
+  replaces the one held, and an older one is ignored. That also closes Bug 163: there is no separate per-depth
+  piece to leave behind, whatever the order or loss.
+- **Requires:**
+  - Depth isolation inside the container: each slot is sealed under its own depth's key, so a duress depth
+    rewriting its slot carries the others as opaque bytes and can't read or reveal them.
+  - A key a new phone can rebuild, so a restore can open its depth's slot after Alice loses her phone: that
+    depth's passphrase (v2.0.0 step 1), or a key stored with the depth's exported backup file, which a restore
+    needs anyway.
+  - Resealing the whole container on every write (v2.0.0 step 4), so snapshots don't show which slot changed.
+  - A new wire and storage format, with interop vectors and handling for trustees on older builds.
+- **Costs:** about 5 KB per container (32 slots of roughly 150 bytes), sent until confirmed and stored once per
+  owner; and a rework of distribution, custody storage, manifests (one container date instead of piece IDs) and
+  restore. A feature, not a fix.
+
 ### Guard
 
 None yet. Needed: a trustee's display and stored rows for an owner are the same whether that owner has one
@@ -13208,15 +13228,18 @@ lost case, and on its own turns the late case into the lost one.
 
 ### Fix — open, needs a decision
 
-To be worked out (2026-10-12). Directions so far:
+**Decided 2026-10-12: fix it now, on its own.** Bug 162's container would close it too (see Bug 162), but that is
+deferred as too large a change. The fix being worked out is the lineage below.
+
+Directions considered:
 
 - **The owner carries forward what it still owes.** A re-split's `.replace` also names every earlier piece of
   that trustee's the owner hasn't seen confirmed gone, instead of only the last.
 - **A lineage per owner depth and trustee,** so a `.replace` means "whatever you hold for this lineage". Simple
   and order-proof, but a wire change, and it lets the trustee link pieces, which D5 rejected; Bug 162 shows the
   count is already exposed.
-- **Bug 162's one-piece-per-owner-and-trustee fix** would make this moot: a single fixed-size piece, replaced
-  whole, can't leave a predecessor behind.
+- **Bug 162's container** (one fixed-size piece per owner and trustee, a slot per depth) would make this moot: a
+  single piece, replaced whole, can't leave a predecessor behind. Deferred with Bug 162.
 
 ### Guard
 
