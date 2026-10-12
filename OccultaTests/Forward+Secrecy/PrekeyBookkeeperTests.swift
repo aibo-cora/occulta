@@ -505,3 +505,113 @@ struct PrekeyBookkeeperLastResortTests {
         #expect(record == .empty)
     }
 }
+
+@Suite("PrekeyBookkeeper — receiving on a last-resort key (stage 2, §3.1's table)")
+struct PrekeyBookkeeperLastResortUseTests {
+
+    let bookkeeper = PrekeyBookkeeper()
+
+    private func idString(_ bytes: Data) -> String {
+        let b = [UInt8](bytes)
+        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])).uuidString
+    }
+
+    private func lastResortID(ofBatchAt index: Int, in record: PrekeyRecord) throws -> String {
+        self.idString(try #require(record.ownBatches[index].lastResort?.id))
+    }
+
+    /// Batch 0 delivered (its first key used), batch 1 pending; each with a last-resort key.
+    private func deliveredThenPending(now: Date) throws -> PrekeyRecord {
+        var record = PrekeyRecord.empty
+        self.bookkeeper.install(generated(3), lastResort: randomBytes(143), into: &record, now: now)
+        let first = try #require(self.bookkeeper.pendingBatch(in: record)?.prekeys.first?.id)
+        self.bookkeeper.consume(prekeyID: first, in: &record, now: now)
+        self.bookkeeper.install(generated(3), lastResort: randomBytes(143), into: &record, now: now)
+        // As if legacy keys were still in use, so the tests can see a last-resort use retire them.
+        record.legacyKeys = .inUse
+        return record
+    }
+
+    @Test("The pending batch's own last-resort key delivers it and calls for a new batch")
+    func pendingOwnKeyDeliversAndGenerates() throws {
+        let now = Date()
+        var record = try self.deliveredThenPending(now: now)
+        let keyID = try self.lastResortID(ofBatchAt: 1, in: record)
+
+        #expect(self.bookkeeper.useLastResort(keyID: keyID, in: &record, now: now))
+        #expect(!self.bookkeeper.hasPendingBatch(record), "the contact has it, and has used all its one-time keys")
+        #expect(record.ownBatches[1].id == nil)
+        #expect(record.ownBatches[0].retiredAt == now, "the older batch retires, as for a one-time key")
+        #expect(record.legacyKeys == .retired(since: now))
+        #expect(record.ownBatches[1].lastResort != nil, "the last-resort key stays")
+    }
+
+    @Test("The newest delivered batch's last-resort key, with nothing pending, calls for a new batch")
+    func newestDeliveredGenerates() throws {
+        let now = Date()
+        var record = PrekeyRecord.empty
+        self.bookkeeper.install(generated(1), lastResort: randomBytes(143), into: &record, now: now)
+        let first = try #require(self.bookkeeper.pendingBatch(in: record)?.prekeys.first?.id)
+        self.bookkeeper.consume(prekeyID: first, in: &record, now: now)
+
+        #expect(self.bookkeeper.useLastResort(keyID: try self.lastResortID(ofBatchAt: 0, in: record), in: &record, now: now))
+    }
+
+    @Test("An older last-resort key while a batch is pending leaves it riding")
+    func olderKeyKeepsPendingRiding() throws {
+        let now = Date()
+        var record = try self.deliveredThenPending(now: now)
+
+        #expect(!self.bookkeeper.useLastResort(keyID: try self.lastResortID(ofBatchAt: 0, in: record), in: &record, now: now))
+        #expect(self.bookkeeper.hasPendingBatch(record), "the contact hasn't received it yet")
+    }
+
+    /// D5: only the current last-resort key signals "out of keys".
+    @Test("A repeat delivery sealed to an older batch's last-resort key generates nothing")
+    func repeatGeneratesNothing() throws {
+        let now = Date()
+        var record = try self.deliveredThenPending(now: now)
+        let older = try self.lastResortID(ofBatchAt: 0, in: record)
+        _ = self.bookkeeper.useLastResort(keyID: try self.lastResortID(ofBatchAt: 1, in: record), in: &record, now: now)
+        #expect(!self.bookkeeper.hasPendingBatch(record))
+
+        #expect(!self.bookkeeper.useLastResort(keyID: older, in: &record, now: now))
+    }
+
+    @Test("A key that isn't one of our last-resort keys changes nothing")
+    func unknownKeyChangesNothing() throws {
+        var record = try self.deliveredThenPending(now: Date())
+        let before = record
+        #expect(!self.bookkeeper.useLastResort(keyID: UUID().uuidString, in: &record, now: Date()))
+        #expect(record == before)
+    }
+
+    @Test("A derived prekey ID is matched to its batch's last-resort key, and nothing else is")
+    func derivedIDMatching() throws {
+        let record = try self.deliveredThenPending(now: Date())
+        let ephemeral = randomBytes(65)
+        for index in 0..<2 {
+            let keyID = try self.lastResortID(ofBatchAt: index, in: record)
+            let derived = try #require(OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: keyID, ephemeralPublicKey: ephemeral))
+            let match = try #require(self.bookkeeper.lastResort(matchingPrekeyID: derived, ephemeralPublicKey: ephemeral, in: record))
+            #expect(match.keyID == keyID)
+            #expect(match.blob == record.ownBatches[index].lastResort?.blob)
+            #expect(self.bookkeeper.lastResort(matchingPrekeyID: derived, ephemeralPublicKey: randomBytes(65), in: record) == nil,
+                    "another ephemeral key gives another ID")
+            #expect(self.bookkeeper.lastResort(matchingPrekeyID: keyID, ephemeralPublicKey: ephemeral, in: record) == nil,
+                    "the key's own ID is never what a bundle carries")
+        }
+    }
+
+    @Test("The contact's last-resort key is what we seal to once their one-time keys are gone")
+    func lastResortForSending() throws {
+        var record = PrekeyRecord.empty
+        let lastResort = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: [], lastResort: lastResort, into: &record)
+
+        let prekey = try #require(self.bookkeeper.lastResortPrekey(in: record, contactID: "contact"))
+        #expect(prekey.id == lastResort.id && prekey.publicKey == lastResort.publicKey && prekey.contactID == "contact")
+    }
+}
+

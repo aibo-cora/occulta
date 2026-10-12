@@ -105,16 +105,18 @@ material is on file.
 
 1. Load the record. `PrekeyBookkeeper.takeInboundPrekey` takes the contact's oldest key and removes it.
 2. A key → forward-secret slot (`forwardSecret`, or `forwardSecretNoPQ` without ML-KEM): an ephemeral key pair in
-   memory, ECDH against the prekey. No key → long-term slot (`longTermFallback` / `longTermNoPQ`): ECDH between
-   the identity keys.
+   memory, ECDH against the prekey. No one-time key, but the contact's last-resort key (stage 2), in group format →
+   the same forward-secret slot sealed to it, its `prekeyID` the derived value (`lastResortPrekeyID`), and the key
+   not removed. Neither → long-term slot (`longTermFallback` / `longTermNoPQ`): ECDH between the identity keys.
 3. Attach our pending batch, if any, with its ID (`pendingBatchForWire`). It rides every message until the contact
    uses a key from it.
 4. Store the record; the caller saves.
 
 Contacts on 1.9.0+ get the group bundle format with a one-entry recipient list; older ones get the single-recipient
-format. Shard content needs forward secrecy: with no key for the contact, it is dropped and the message goes on the
-long-term path, so delivery never waits on prekeys. The receiver drops it from long-term bundles too, whatever the
-sender did.
+format. Shard content needs a one-time key: without one it is dropped and the message goes on the last-resort key or
+the long-term path, so delivery never waits on prekeys. A last-resort bundle opens again on every redelivery, so a
+piece operation riding one could be replayed (D5). The receiver drops shard content from long-term and last-resort
+slots too, whatever the sender did.
 
 ---
 
@@ -124,7 +126,10 @@ sender did.
 
 1. Identify the sender by fingerprint. `senderPrekeys(for:)` sweeps their record (saved and flushed at once if it
    deleted anything) and returns a `SenderPrekeys` holding it.
-2. Derive the key and open: `deriveInboundKey`, or `findAndOpenRecipientSlot` trying each slot.
+2. Derive the key and open: `deriveInboundKey`, or `findAndOpenRecipientSlot` trying each slot. A `prekeyID` that
+   names no one-time key is tried against each last-resort key still in the sender's record, by recomputing its
+   derived ID (one HMAC each). Both report which key opened it (`InboundPrekeyUse`). A single-recipient bundle
+   naming a last-resort key is rejected: only the group format's sender signature authenticates one.
 3. **Consume the prekey the moment it has opened something** (§2.2 of `SECURITY_CHECKLIST.md`):
    `SenderPrekeys.consume` deletes a legacy key from the keychain, applies the bookkeeping below, stores, saves and
    checkpoints the write-ahead log, all before any later check can reject the bundle.
@@ -142,11 +147,19 @@ item whose `SecKey` is still referenced crashes on release (mistake 5).
 
 ---
 
-## New batches — one trigger
+## New batches — when the contact is out of our keys
 
-A long-term bundle from a contact with no batch of ours pending. A long-term bundle means they have none of our keys
-left. Nothing else generates: not `encryptBundle`, not a low count, not a first message. Two fallback messages each
-way bootstrap a new pair.
+`ContactManager.replenish(after:into:)` decides, after every check:
+- **A last-resort bundle** (stage 2), by §3.1's table (`PrekeyBookkeeper.useLastResort`): sealed to the pending
+  batch's own last-resort key, the batch is delivered and a new one made; to the newest delivered batch's with
+  nothing pending, a new one is made; to an older one, nothing, since either the pending batch hasn't reached them
+  or this is a repeat delivery (D5). The key stays.
+- **A long-term bundle** from a contact with no batch of ours pending: they hold none of our keys, last-resort
+  included.
+- **A one-time key**: never.
+
+Nothing else generates yet: not `encryptBundle`, not a first message. Two fallback messages each way bootstrap a new
+pair. Refilling at a low count is stage 4's.
 
 Generation runs **after every check that can reject the bundle** (Bug 159): a rejected bundle generates nothing.
 That also keeps Enclave key creation out of the ECDH call stack (mistake 4). `generateEnclaveKeys` is all or

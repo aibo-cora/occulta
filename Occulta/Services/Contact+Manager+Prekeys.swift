@@ -91,6 +91,23 @@ extension ContactManager {
         }
     }
 
+    /// A new batch if the bundle just opened shows the sender is out of our keys. Called after every check that can
+    /// reject the bundle (Bug 159), so a rejected one never makes us issue keys.
+    /// - Long-term: a sender holding no key of ours, when nothing is pending, as before stage 2.
+    /// - A last-resort key: as `PrekeyBookkeeper.useLastResort` decides (§3.1's table; a repeat generates nothing).
+    /// - A one-time key: never. Consuming it already applied its bookkeeping.
+    func replenish(after used: InboundPrekeyUse, into prekeys: SenderPrekeys) throws {
+        switch used {
+        case .oneTime:
+            return
+        case .longTerm:
+            guard !PrekeyBookkeeper().hasPendingBatch(prekeys.record) else { return }
+        case .lastResort(let keyID):
+            guard PrekeyBookkeeper().useLastResort(keyID: keyID, in: &prekeys.record, now: Date()) else { return }
+        }
+        try self.installFreshBatch(into: prekeys)
+    }
+
     /// Generates a batch in the Enclave and makes it the pending one: the answer to a long-term bundle from a
     /// sender who has no batch of ours waiting. CryptoKit leaves no keychain item, so if anything later fails,
     /// nothing is left behind.
@@ -165,6 +182,15 @@ final class SenderPrekeys: PrekeyPrivateKeys {
             return (try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob)).map(PrekeyPrivateKey.enclave)
         }
         return self.keychain.privateKey(forPrekeyID: prekeyID, contactID: contactID)
+    }
+
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
+        guard let (keyID, blob) = self.bookkeeper.lastResort(
+                  matchingPrekeyID: prekeyID, ephemeralPublicKey: ephemeralPublicKey, in: self.record
+              ),
+              let key = try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob)
+        else { return nil }
+        return (keyID, .enclave(key))
     }
 
     func consume(prekeyID: String, contactID: String) {

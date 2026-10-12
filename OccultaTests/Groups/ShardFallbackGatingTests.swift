@@ -437,3 +437,129 @@ private func insertContact(
                 "the trustee can now reply forward-secret, so its manifest is no longer dropped")
     }
 }
+
+// MARK: - 4. Out of one-time keys: the contact's last-resort key (prekey continuity stage 2)
+
+/// A contact's last-resort private half as a software key: the recipient holds an Enclave blob, but these tests run
+/// without an Enclave. Found as the receive path finds it, by the prekey ID derived from it.
+private struct SoftwareLastResort: PrekeyPrivateKeys {
+    let keyID = UUID().uuidString
+    let privateKey: SecKey
+    let publicKey: Data
+
+    init() throws {
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeySizeInBits as String: 256
+        ]
+        var error: Unmanaged<CFError>?
+        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error),
+              let publicKey = SecKeyCopyPublicKey(key),
+              let x963 = SecKeyCopyExternalRepresentation(publicKey, &error) as Data?
+        else { throw TestSetupError.seUnavailable }
+        self.privateKey = key
+        self.publicKey  = x963
+    }
+
+    func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey? { nil }
+    func consume(prekeyID: String, contactID: String) {}
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
+        OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: self.keyID, ephemeralPublicKey: ephemeralPublicKey) == prekeyID
+            ? (self.keyID, .keychain(self.privateKey))
+            : nil
+    }
+}
+
+@Suite("encryptBundle — out of one-time keys, the contact's last-resort key (stage 2)")
+@MainActor struct SendToLastResortTests {
+
+    /// A 1.9.0+ trustee holding none of our one-time keys from them, only their last-resort key.
+    private func trusteeWithOnlyLastResort(in cm: ContactManager) throws -> (TestKeyManager, SoftwareLastResort) {
+        let recipientKM = TestKeyManager()
+        let trustee = try insertContact(identifier: "trustee", publicKey: try recipientKM.retrieveIdentity(), in: cm)
+        let lastResort = try SoftwareLastResort()
+        var record = PrekeyRecord.empty
+        record.inboundLastResort = PrekeyRecord.InboundKey(id: lastResort.keyID, publicKey: lastResort.publicKey)
+        trustee.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
+        return (recipientKM, lastResort)
+    }
+
+    private func open(
+        _ encoded: Data, as recipientKM: TestKeyManager, with lastResort: SoftwareLastResort
+    ) throws -> (bundle: OccultaBundle, used: InboundPrekeyUse, mode: OccultaBundle.Mode, sealed: OccultaBundle.SealedPayload) {
+        let bundle = try OccultaBundle.decoded(from: encoded)
+        let recipientCrypto = Manager.Crypto(keyManager: recipientKM)
+        let (payload, used, mode) = try recipientCrypto.findAndOpenRecipientSlot(
+            in: bundle, blind: try #require(bundle.group).blind,
+            senderContactID: "self", senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(),
+            quantumMaterial: syntheticQuantumMaterial(), prekeys: lastResort
+        )
+        let sealed = try WireHandle.decode(
+            payload: try recipientCrypto.openGroupCiphertext(bundle, using: SymmetricKey(data: payload.sessionKey))
+        )
+        return (bundle, used, mode, sealed)
+    }
+
+    @Test("Sealed forward-secret to the last-resort key, under a derived prekey ID, which stays held", .ambientTestKeyManager)
+    func sealsToLastResort() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+
+        let opened = try self.open(
+            try cm.encryptBundle(basket: Basket(files: []), for: "trustee"), as: recipientKM, with: lastResort
+        )
+
+        #expect(opened.used == .lastResort(keyID: lastResort.keyID))
+        #expect(opened.mode == .forwardSecret, "not the long-term path")
+        let prekeyID = try #require(opened.bundle.group?.recipients.first?.secrecyContext.prekeyID)
+        #expect(prekeyID != lastResort.keyID, "the key's own ID never goes in the clear")
+        let held = try #require(try cm.fetchContact(by: "trustee"))
+        #expect(try cm.prekeyRecord(for: held).inboundLastResort?.id == lastResort.keyID, "not removed by use")
+    }
+
+    @Test("Two messages to the same last-resort key carry different prekey IDs", .ambientTestKeyManager)
+    func prekeyIDsDiffer() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+
+        let ids = try (0..<2).map { _ in
+            try #require(try self.open(
+                try cm.encryptBundle(basket: Basket(files: []), for: "trustee"), as: recipientKM, with: lastResort
+            ).bundle.group?.recipients.first?.secrecyContext.prekeyID)
+        }
+        #expect(ids[0] != ids[1])
+    }
+
+    @Test("A group message to a member out of one-time keys goes to their last-resort key", .ambientTestKeyManager)
+    func groupSendUsesLastResort() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+        let group = try cm.createGroup(name: "G")
+        try group.addMember("trustee", atDepth: 0)
+
+        let opened = try self.open(
+            try cm.encryptGroupBundle(basket: Basket(files: []), groupID: try #require(group.readID())),
+            as: recipientKM, with: lastResort
+        )
+
+        #expect(opened.used == .lastResort(keyID: lastResort.keyID))
+        #expect(opened.bundle.group?.recipients.first?.secrecyContext.prekeyID != lastResort.keyID)
+    }
+
+    /// D5: a last-resort bundle opens again on every redelivery, so a piece operation riding one could be replayed.
+    @Test("A piece and a manifest don't ride a last-resort key", .ambientTestKeyManager)
+    func noShardContentOnLastResort() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+        let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
+
+        let opened = try self.open(
+            try cm.encryptBundle(basket: Basket(files: []), for: "trustee", shardOperations: [op], custodyManifest: [UUID()]),
+            as: recipientKM, with: lastResort
+        )
+
+        #expect(opened.used == .lastResort(keyID: lastResort.keyID))
+        #expect(opened.sealed.shardOperations == nil)
+        #expect(opened.sealed.custodyManifest == nil)
+    }
+}
+

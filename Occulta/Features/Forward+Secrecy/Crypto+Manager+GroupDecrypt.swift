@@ -66,8 +66,8 @@ extension Manager.Crypto {
     /// Once a slot opens, its prekey is consumed through `prekeys` before this function returns (out of the
     /// sender's record, which is saved at once, or out of the keychain for a legacy key),
     /// on **every** exit — the success path and the signature-mismatch throw alike. The
-    /// returned `Prekey?` therefore reports what *was* consumed; it is not an instruction to
-    /// the caller to consume it.
+    /// returned `InboundPrekeyUse` therefore reports what *was* used; it is not an instruction to
+    /// the caller to consume it. A last-resort key is never consumed (prekey continuity §3.1).
     ///
     /// The moment a slot opens is the moment forward secrecy is spent: the private key has
     /// already derived the wrapping key, and anything that happens afterwards is a judgement
@@ -90,7 +90,7 @@ extension Manager.Crypto {
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
         prekeys: PrekeyPrivateKeys
-    ) throws -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?, mode: OccultaBundle.Mode) {
+    ) throws -> (payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode) {
         guard let recipients = bundle.group?.recipients else {
             throw GroupDecryptError.noGroupEnvelope
         }
@@ -103,9 +103,9 @@ extension Manager.Crypto {
         }
 
         // Set only once a slot has actually opened, and consumed on the way out no matter which
-        // exit is taken. Nil for fallback-mode slots, which use no prekey, and for the
-        // trial-decryption misses above — an entry that never opened belongs to another member
-        // and its prekey is not ours to destroy.
+        // exit is taken. Nil for fallback-mode slots, which use no prekey, for last-resort slots,
+        // whose key stays, and for the trial-decryption misses above — an entry that never opened
+        // belongs to another member and its prekey is not ours to destroy.
         var usedPrekey: Prekey?
         defer {
             if let usedPrekey {
@@ -114,7 +114,7 @@ extension Manager.Crypto {
         }
 
         for entry in recipients {
-            guard let (wrappingKey, consumable) = try? self.deriveInboundKey(
+            guard let (wrappingKey, used) = try? self.deriveInboundKey(
                 secrecy: entry.secrecyContext,
                 senderContactID: senderContactID,
                 senderPublicKey: senderPublicKey,
@@ -129,7 +129,7 @@ extension Manager.Crypto {
 
             // Our slot, and the prekey has now done its work. Recorded before the signature
             // check below so that a rejection destroys it too.
-            usedPrekey = consumable
+            usedPrekey = used.consumable
 
             // The wrapping key already decrypted correctly, so this is genuinely our
             // slot — a signature mismatch here is forgery, not slot ambiguity, and
@@ -146,7 +146,7 @@ extension Manager.Crypto {
                     senderPublicKey: senderPublicKey
                 ) else { throw GroupDecryptError.senderEphemeralSignatureMismatch }
             }
-            return (payload, consumable, entry.secrecyContext.mode)
+            return (payload, used, entry.secrecyContext.mode)
         }
         throw GroupDecryptError.recipientSlotNotFound
     }

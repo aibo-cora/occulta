@@ -67,6 +67,12 @@ struct PrekeyBookkeeper {
         return Prekey(id: key.id, contactID: contactID, publicKey: key.publicKey)
     }
 
+    /// The contact's last-resort key, for when `takeInboundPrekey` finds none left. Not removed: it may be sealed
+    /// to again until their next batch replaces it (§3.1).
+    func lastResortPrekey(in record: PrekeyRecord, contactID: String) -> Prekey? {
+        record.inboundLastResort.map { Prekey(id: $0.id, contactID: contactID, publicKey: $0.publicKey) }
+    }
+
     /// The batch we're still waiting to deliver, to attach to every message to this contact.
     ///
     /// The record doesn't store the public keys of keys it holds a blob for; `publicKeyOfBlob` derives them, which
@@ -142,6 +148,22 @@ struct PrekeyBookkeeper {
         return nil
     }
 
+    /// One of our last-resort keys that a bundle's derived `prekeyID` names, with its own ID and blob. Tried
+    /// newest batch first; one HMAC per batch and no Enclave work, so cheap even for a large group bundle.
+    func lastResort(
+        matchingPrekeyID prekeyID: String, ephemeralPublicKey: Data, in record: PrekeyRecord
+    ) -> (keyID: String, blob: Data)? {
+        for batch in record.ownBatches.reversed() {
+            guard let key = batch.lastResort, let blob = key.blob else { continue }
+            let keyID = Self.uuidString(key.id)
+            if OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: keyID, ephemeralPublicKey: ephemeralPublicKey)
+                == prekeyID {
+                return (keyID, blob)
+            }
+        }
+        return nil
+    }
+
     /// Records that the contact used one of our prekeys: the key is removed, and what its use proves is applied.
     ///
     /// - A key from the pending batch proves they received it, so it stops being pending and its ID and public
@@ -157,7 +179,28 @@ struct PrekeyBookkeeper {
         else { return }
 
         let key = record.ownBatches[batchIndex].keys.remove(at: keyIndex)
+        Self.applyUse(ofBatchAt: batchIndex, recordHeld: key.blob != nil, in: &record, now: now)
+        record.ownBatches.removeAll(where: Self.isSpent)
+    }
 
+    /// Records that the contact sealed to one of our last-resort keys, which means they had no one-time key of ours
+    /// left (§3.1, "Bookkeeping on receipt"). The key stays. What its use proves is applied as for a one-time key:
+    /// its batch, if pending, is delivered; older batches retire; the legacy keys retire.
+    ///
+    /// - Returns: whether to generate a new batch. Only for the newest batch's key, and only with nothing pending
+    ///   once that's applied: the pending batch's own key means the contact has it and has used it up; the newest
+    ///   delivered batch's key means they've used everything; an older key means either the pending batch hasn't
+    ///   reached them yet or this is a repeat delivery, and a repeat must not generate (D5).
+    func useLastResort(keyID: String, in record: inout PrekeyRecord, now: Date) -> Bool {
+        guard let id = Self.idBytes(keyID),
+              let batchIndex = record.ownBatches.firstIndex(where: { $0.lastResort?.id == id })
+        else { return false }
+        Self.applyUse(ofBatchAt: batchIndex, recordHeld: true, in: &record, now: now)
+        return batchIndex == record.ownBatches.indices.last && !self.hasPendingBatch(record)
+    }
+
+    /// What using a key from the batch at `batchIndex` proves (`consume`, `useLastResort`).
+    private static func applyUse(ofBatchAt batchIndex: Int, recordHeld: Bool, in record: inout PrekeyRecord, now: Date) {
         if record.ownBatches[batchIndex].isPending {
             record.ownBatches[batchIndex].isPending = false
             record.ownBatches[batchIndex].id = nil
@@ -170,11 +213,9 @@ struct PrekeyBookkeeper {
             record.ownBatches[index].retiredAt = now
         }
 
-        if key.blob != nil, record.legacyKeys == .inUse {
+        if recordHeld, record.legacyKeys == .inUse {
             record.legacyKeys = .retired(since: now)
         }
-
-        record.ownBatches.removeAll(where: Self.isSpent)
     }
 
     /// Whether a batch is waiting to reach the contact. Until one has, no new one is generated.

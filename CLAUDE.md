@@ -134,7 +134,7 @@ Every gate on the local DB key alone is converted. Still gated, because they gen
 Enclave — they exercise the real `Manager.Key` or create prekeys through `PrekeySecretsManager`, whose
 private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `DuressModePrekeyTests`, `PrekeySecretsManagerTests`, `ForwardSecrecyIntegrationTests`,
-`PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the four suites in that file),
+`PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the five suites in that file),
 `PrekeyGenerationMeasurementTests`, the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
 and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch

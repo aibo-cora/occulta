@@ -18,9 +18,13 @@ struct GroupRecipient {
     /// Used for fingerprinting and ECDH on the longTermFallback path.
     let publicKey: Data
     let quantumMaterial: QuantumKeyMaterial?
-    /// Contact's oldest stored inbound prekey, popped by the caller before this call.
+    /// Contact's oldest stored inbound prekey, popped by the caller before this call, or their last-resort key.
     /// Non-nil → forward-secret path; nil → longTermFallback.
     let contactPrekey: Prekey?
+    /// Whether `contactPrekey` is the contact's last-resort key (prekey continuity §3.1): its ID is then never
+    /// written in the slot's `prekeyID`, a value derived from it and the ephemeral key is. Defaults to `false`,
+    /// a one-time key.
+    let contactPrekeyIsLastResort: Bool
     /// Outbound prekey batch to include in this recipient's `RecipientPayload`, or nil.
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
 
@@ -49,6 +53,7 @@ struct GroupRecipient {
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
         contactPrekey: Prekey?,
+        contactPrekeyIsLastResort: Bool = false,
         pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?,
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false
@@ -56,6 +61,7 @@ struct GroupRecipient {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
         self.contactPrekey           = contactPrekey
+        self.contactPrekeyIsLastResort = contactPrekeyIsLastResort
         self.pendingBatch            = pendingBatch
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
@@ -183,6 +189,7 @@ extension Manager.Crypto {
 
         let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(
             contactPrekey: r.contactPrekey,
+            isLastResort: r.contactPrekeyIsLastResort,
             recipientPublicKey: r.publicKey,
             quantumMaterial: r.quantumMaterial
         )

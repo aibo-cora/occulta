@@ -1048,6 +1048,9 @@ extension ContactManager {
         //               attach pending batch too (Bug 152).
         // Shard mode (old path, <1.9.0): skip prekey — keep longTermFallback.
         var contactPrekey: Prekey? = nil
+        // The contact's last-resort key, when they have no one-time key of ours left (prekey continuity §3.1).
+        // Kept apart from `contactPrekey`, so everything that requires a one-time key still sees none.
+        var lastResortPrekey: Prekey? = nil
         var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
 
         // ── 3. Resolve target wire format for this contact ────────────────
@@ -1074,6 +1077,9 @@ extension ContactManager {
             contactPrekey = PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: contact.identifier)
             if contactPrekey != nil {
                 try self.store(record, for: contact)
+            } else if targetVersion.supportsGroups {
+                // Group format only: there the sender's ephemeral signature authenticates the slot.
+                lastResortPrekey = PrekeyBookkeeper().lastResortPrekey(in: record, contactID: contact.identifier)
             }
             // Attached whether or not a piece rides along: a queued piece goes with every
             // message until the trustee confirms it, and the trustee can only confirm in a
@@ -1118,7 +1124,8 @@ extension ContactManager {
                 recipients:    [GroupRecipient(
                     publicKey:       recipientMaterial,
                     quantumMaterial: quantumMaterial,
-                    contactPrekey:   contactPrekey,
+                    contactPrekey:   contactPrekey ?? lastResortPrekey,
+                    contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                     pendingBatch:    outboundBatch,
                     prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
                 )]
@@ -1167,6 +1174,7 @@ private struct PendingGroupRecipient {
     let publicKey: Data
     let quantumMaterial: QuantumKeyMaterial?
     let contactPrekey: Prekey?
+    let contactPrekeyIsLastResort: Bool
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
     let realShardOperations: [OccultaBundle.ShardOperation]
     /// Whether this member's build verifies the domain-separated ephemeral signature.
@@ -1245,6 +1253,11 @@ extension ContactManager {
                 try self.store(record, for: contact)
                 prekeyConsumed = true
             }
+            // Out of one-time keys: their last-resort key (prekey continuity §3.1), never removed by use. Shard
+            // content below still requires a one-time key, so a last-resort slot carries none (D5).
+            let lastResortPrekey = contactPrekey == nil
+                ? PrekeyBookkeeper().lastResortPrekey(in: record, contactID: contact.identifier)
+                : nil
 
             let pendingBatch = self.pendingBatchForWire(in: record)
 
@@ -1269,7 +1282,8 @@ extension ContactManager {
             return PendingGroupRecipient(
                 publicKey:              recipientMaterial,
                 quantumMaterial:        quantumMaterial,
-                contactPrekey:          contactPrekey,
+                contactPrekey:          contactPrekey ?? lastResortPrekey,
+                contactPrekeyIsLastResort: lastResortPrekey != nil,
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
                 prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
@@ -1285,6 +1299,7 @@ extension ContactManager {
                 publicKey:              p.publicKey,
                 quantumMaterial:        p.quantumMaterial,
                 contactPrekey:          p.contactPrekey,
+                contactPrekeyIsLastResort: p.contactPrekeyIsLastResort,
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
                 prefixesEphemeralSignature: p.prefixesEphemeralSignature
@@ -1569,19 +1584,22 @@ extension ContactManager {
         let quantumMaterial = try self.resolveQuantumMaterial(mode: bundle.secrecy.mode, for: sender, using: cryptoOps)
         let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
 
-        let (sessionKey, consumable) = try cryptoOps.deriveInboundKey(
+        let (sessionKey, used) = try cryptoOps.deriveInboundKey(
             secrecy: bundle.secrecy,
             senderContactID: sender.identifier,
             senderPublicKey: senderPublicKey,
             quantumMaterial: quantumMaterial,
             prekeys: prekeys
         )
+        // A last-resort key is only ever sealed to in group format, where the sender's ephemeral signature
+        // authenticates it (prekey continuity §3.1). A single-recipient bundle naming one is no bundle of a sender's.
+        if case .lastResort = used { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
         let payloadData = try cryptoOps.open(bundle, using: sessionKey)
 
         // ── 3. Consume the prekey ────────────────────────────────────────
         // Now, before anything below can reject the bundle: the key has done its work, and a
         // rejection must not leave it alive (§2.2). `SenderPrekeys` saves the record at once.
-        if let consumable {
+        if let consumable = used.consumable {
             #if DEBUG
             debugPrint("Opened bundle using prekey = \(consumable), consuming key...")
             #endif
@@ -1614,12 +1632,10 @@ extension ContactManager {
             )
         }
 
-        // ── 5. A new batch for a long-term bundle ────────────────────────
+        // ── 5. A new batch if the sender is out of our keys ──────────────
         // After every check that can throw (`bugs.md` Bug 159). Clearing the pending batch is no
         // longer here: using a key from it already did, at consumption (Bug 157).
-        if consumable == nil, !PrekeyBookkeeper().hasPendingBatch(prekeys.record) {
-            try self.installFreshBatch(into: prekeys)
-        }
+        try self.replenish(after: used, into: prekeys)
 
         // ── 6. Persist ───────────────────────────────────────────────────
         try self.store(prekeys.record, for: sender)
@@ -1786,7 +1802,7 @@ extension ContactManager {
         let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
 
         // ── 3. Trial-decrypt: find our slot and open it ─────────────────
-        let (recipientPayload, consumable, recipientMode) = try cryptoOps.findAndOpenRecipientSlot(
+        let (recipientPayload, used, recipientMode) = try cryptoOps.findAndOpenRecipientSlot(
             in: bundle,
             blind: envelope.blind,
             senderContactID: sender.identifier,
@@ -1828,7 +1844,7 @@ extension ContactManager {
         }
 
         #if DEBUG
-        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumed: \(consumable != nil), sender pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
+        debugPrint("Opening group bundle, recipient mode: \(recipientMode), used: \(used), sender pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
         #endif
 
         // ── 5. Open shared ciphertext ────────────────────────────────────
@@ -1856,14 +1872,12 @@ extension ContactManager {
         #endif
         try self.acceptInboundBatch(recipientPayload.prekeyBatch, into: prekeys)
 
-        // ── 6.5. A new batch for a long-term slot ────────────────────────
-        // The prekey itself is already gone — `findAndOpenRecipientSlot` consumes it the moment
+        // ── 6.5. A new batch if the sender is out of our keys ────────────
+        // A one-time prekey is already gone — `findAndOpenRecipientSlot` consumes it the moment
         // the slot opens, and `SenderPrekeys` saves that and its bookkeeping at once (§2.2;
         // delivery of the pending batch, Bug 157). Generating stays behind every check above that
         // can throw (`bugs.md` Bug 159), so a rejected bundle can't make us issue keys.
-        if consumable == nil, !PrekeyBookkeeper().hasPendingBatch(prekeys.record) {
-            try self.installFreshBatch(into: prekeys)
-        }
+        try self.replenish(after: used, into: prekeys)
         try self.store(prekeys.record, for: sender)
         try self.modelContext.save()
 
@@ -1879,7 +1893,9 @@ extension ContactManager {
         // slot used the long-term-key fallback path, treat any shard-protocol fields
         // as untrusted/unexpected and drop them here — regardless of what the sender
         // claims — rather than relying on the sender to have gated correctly.
-        let isFallback = recipientMode == .longTermFallback || recipientMode == .longTermNoPQ
+        // A last-resort slot is treated the same: its key stays, so the bundle opens again
+        // on every redelivery, and a replayed piece operation could undo a newer one (D5).
+        let isFallback = recipientMode == .longTermFallback || recipientMode == .longTermNoPQ || used.isLastResort
         let recipOps = isFallback ? [] : recipientPayload.shardOperations.filter { $0.kind != .unsupported }
 
         // custodyManifest: `custodyManifestCount == 0` is genuinely ambiguous on its

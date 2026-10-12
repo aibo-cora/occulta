@@ -736,7 +736,9 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
 - *Commits:* record and wire (done 2026-10-11: `PrekeySyncBatch.lastResort`, the derived prekey ID in
   `OccultaFormats` with a known-answer test, our last-resort key on each own batch and the contact's on the
   record, generated and sent with every new batch but not yet used, two new interop vectors); sending and
-  receiving with the bookkeeping table; D5's replay guards with the custody-row migration; D2's indicator.
+  receiving with the bookkeeping table (done 2026-10-12, with D5's first guard: piece operations and manifests
+  off last-resort slots, on both sides; a single-recipient bundle naming a last-resort key is rejected); D5's
+  remaining guards, G1 and G2′, with the custody-row migration and the replay matrix; D2's indicator.
 - *Migration:* pairs get a last-resort key with their next batch. Existing custody rows have no "supersedes"
   field (G2′): one pass re-seals each with a random filler ID, the same re-seal `deleteCustodyShards`
   already does, so no row is distinguishable by having been migrated.
