@@ -228,6 +228,7 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 
 - **No delivery confirmation.** The sender cannot know if any recipient imported and decrypted the bundle. Recipients on older builds receive the bundle but see "requires a newer version" — the sender is not informed.
 - **Duress layer group setup requires user initiative.** No in-app prompting or setup flow. Future work: secure mode setup wizard.
+- **A member can rewrite the body behind another member's slot** (found 2026-10-12, `Secure Mode/bugs.md` Bug 165). Step 8's `senderProof` is computable by every recipient, and no slot commits to the ciphertext, so a recipient can re-encrypt a body of their own under the session key and keep the sender's slots to the others. Open; the proposed fix puts a digest of the body in each `RecipientPayload`.
 
 ---
 

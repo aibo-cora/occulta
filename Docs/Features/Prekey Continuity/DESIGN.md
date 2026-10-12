@@ -348,10 +348,13 @@ files.
   `openGroup` already opened and checked, instead of re-deriving the long-term key in `openIdentityBundle`.
   `openGroup`'s checks replace that defense-in-depth. The slot only opens with our own prekey or long-term key.
   For a forward-secret slot, `senderEphemeralSignature` is verified and, at this tier, required. And
-  `senderProof` binds the routing fields.
-- **Authentication is unchanged in strength.** The challenge was authenticated by long-term ECDH; it is now
-  authenticated by an identity-key signature over the slot's ephemeral key. Both need the contact's identity
-  private key. The response stays signed by the identity key after the contact approves it.
+  `senderProof` binds the routing fields, against outsiders only: in a bundle with several recipients each of
+  them can compute it (Bug 165).
+- **Authentication is unchanged in strength,** for a bundle with one recipient. The challenge was authenticated
+  by long-term ECDH; it is now authenticated by an identity-key signature over the slot's ephemeral key. Both
+  need the contact's identity private key. The response stays signed by the identity key after the contact
+  approves it. With several recipients, a slot doesn't bind the body, so another recipient can rewrite it; see
+  the review below.
 - **Version gate.** Contacts below the tier keep today's long-term path, unchanged. The tier is shared with
   step 17a's negotiation rather than adding another.
 - **Bonus.** Challenge contents, including the typed context note, get forward secrecy instead of being
@@ -360,6 +363,26 @@ files.
   Long-term challenges from contacts below the tier still would, so `decryptSealed` also skips batch generation
   when the payload carries `identityChallenge`. That needs Bug 159's reordering first, since generation runs
   before decoding today.
+
+**Security review, 2026-10-12.** `openIdentityBundle`'s long-term reopening, which this section replaces, is
+today the only check stopping a group member from forging a challenge: a slot doesn't bind the body it unlocks,
+so a co-recipient can rewrite a group bundle's body behind the sender's genuine slot (Bug 165, confirmed by
+`GroupBodyBindingTests`). Stage 3 therefore needs, before it ships:
+- **Bug 165's fix:** each slot carries a digest of the body. Required for any group-format challenge or
+  response whatever the sender's recorded tier, and from senders at the tier for everything else. It can share
+  this section's tier.
+- **The slot signature required for a challenge,** on a forward-secret slot, whatever tier is recorded.
+  `openGroup` accepts an unsigned forward-secret slot from a sender with no tier recorded; every build that sends
+  challenges in group format signs.
+- **The one-to-one path unchanged.** A challenge outside the group format keeps `openIdentityBundle`'s long-term
+  reopening. `decryptSealed`'s forward-secret bundles carry no sender binding (finding #8's residual), so a
+  challenge it decrypted is never trusted as it stands.
+- **Bug 166's fix:** a response shows a result only if it names a challenge still waiting for that contact.
+- **One send path.** Challenges go through `encryptBundle`, so their slot padding, prekey batch and shard fields
+  match a message's, and D5 holds: no piece operations or manifests ride them.
+
+Still open, needs a decision: challenges are recognisable by size whatever key seals them (Bug 167), so the
+format change alone doesn't stop them standing out.
 
 ---
 
@@ -505,7 +528,7 @@ replaced. 17a is unchanged: the identity key stays in the keychain.
 
 | Observer | Today | After |
 |---|---|---|
-| Holds the `.occ` files | Sees which bundles are long-term: the first message, ~1 in 16, challenges | Long-term only to or from older builds, and before a new contact's first reply. Last-resort bundles look like one-time ones. With §3.4(a), challenges don't stand out. |
+| Holds the `.occ` files | Sees which bundles are long-term: the first message, ~1 in 16, challenges | Long-term only to or from older builds, and before a new contact's first reply. Last-resort bundles look like one-time ones. With §3.4(a), challenges don't stand out by key; they still do by size (Bug 167, open). |
 | Images the keychain | ~15 keys per contact plus an unbounded number of leftovers (Bug 156), each with a creation date | No prekey items once legacy keys retire (D9) |
 | Images the device repeatedly | Keys disappear as messages are read | Rows change, covered by step 4 as any other write (D9) |
 | Coerces an unlock at a duress depth | Sees the forward-secrecy indicator for contacts at that depth | The same. The indicator must not depend on depth. |
@@ -787,8 +810,11 @@ with step 17a.
 - *Migration:* none. A challenge already in flight uses the old path, which stays.
 - *Tests:* a challenge and its response to a new-tier contact go in group format and verify end to end; with
   no prekeys held for the contact, they still go through, on the long-term slot; to an older contact,
-  long-term as today; a group-format challenge with a bad or missing ephemeral signature is rejected; a
-  long-term challenge from an older contact creates no prekey batch (Bug 155).
+  long-term as today; a group-format challenge with a bad or missing ephemeral signature is rejected, including
+  from a contact with no tier recorded; a long-term challenge from an older contact creates no prekey batch (Bug
+  155). From the 2026-10-12 review (§3.4): a challenge in a body rewritten by another recipient is rejected (Bug
+  165); a challenge in a one-to-one forward-secret bundle is rejected; a reopened response shows nothing, and one
+  naming our challenge with a bad signature still fails (Bug 166).
 
 **Stage 4 — refill and append (§3.3).** D4 is decided (15/5).
 - *Migration:* none beyond stage 1's.
