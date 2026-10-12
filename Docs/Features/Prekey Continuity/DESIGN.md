@@ -1,7 +1,7 @@
 # Prekey Continuity — Design
 
 **Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stage 1 built
-2026-10-10, in review (PR #93); stage 2 built 2026-10-12 on `v2.0.0/prekey-stage-2`, not yet in a PR; stages 3–4 not
+2026-10-10, in review (PR #94, replacing #93); stage 2 built 2026-10-12, in review (PR #97); stages 3–4 not
 started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
