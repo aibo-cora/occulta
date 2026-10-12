@@ -13141,6 +13141,12 @@ means Alice has at least three depths with a backup, two of them hidden.
 The prekey continuity design rejected a signed lineage ID partly because it "would let a trustee … count how
 many of the owner's depths have backups" (`DESIGN.md` §3.1, D5). The count shown today already allows that.
 
+**The pieces' dates point at the active depth (added 2026-10-12).** Each held piece carries its signed
+`createdAt`, and a depth's piece is replaced on every re-split, so each date shows when that depth last re-split.
+The newest among an owner's pieces hints at the depth in daily use, the activity-profile leak v2.0.0's step 4
+guards against on the owner's own phone, here readable by a contact. The container below hides it: one date for
+the whole container, which changes when any depth re-splits and says nothing about which.
+
 ### Fix — open, needs a decision
 
 - **Stop showing the count.** Show that pieces are held for an owner, not how many. Cheap, and it removes the
@@ -13158,7 +13164,163 @@ many of the owner's depths have backups" (`DESIGN.md` §3.1, D5). The count show
 
 The first is a reasonable interim step whichever structural fix is chosen.
 
+**The container, worked out 2026-10-12, and deferred: too large a change for now.** Bug 162 stays open.
+
+- Alice's phone keeps one fixed-size container per trustee, one slot per possible depth (`AppLayerConfig`
+  allows 32), filler in every slot no depth uses. Each depth that names the trustee writes only its own slot.
+  Whenever a slot changes, the whole container goes to the trustee, signed and dated.
+- Bob holds exactly one row per owner, always the same size, so he can't count anything. A newer container
+  replaces the one held, and an older one is ignored. That also closes Bug 163: there is no separate per-depth
+  piece to leave behind, whatever the order or loss.
+- **Requires:**
+  - Depth isolation inside the container: each slot is sealed under its own depth's key, so a duress depth
+    rewriting its slot carries the others as opaque bytes and can't read or reveal them.
+  - A key a new phone can rebuild, so a restore can open its depth's slot after Alice loses her phone: that
+    depth's passphrase (v2.0.0 step 1), or a key stored with the depth's exported backup file, which a restore
+    needs anyway.
+  - Resealing the whole container on every write (v2.0.0 step 4), so snapshots don't show which slot changed.
+  - A new wire and storage format, with interop vectors and handling for trustees on older builds.
+- **Costs:** about 5 KB per container (32 slots of roughly 150 bytes), sent until confirmed and stored once per
+  owner; and a rework of distribution, custody storage, manifests (one container date instead of piece IDs) and
+  restore. A feature, not a fix.
+
 ### Guard
 
 None yet. Needed: a trustee's display and stored rows for an owner are the same whether that owner has one
 depth with a backup or several.
+
+## Bug 163 — A lost or late `.replace` leaves the trustee holding the piece it replaced
+
+**Status:** Open — fix needs a decision. Found 2026-10-12 working out the replay matrix for prekey continuity's D5
+(stage 2): no ordering rule on the trustee's side makes custody converge, because of what's described here.
+
+**Target:** `v2.0.0`. Present since `.replace` replaced implicit revoke (`bugs.md` Bug 141, 2026-09-27).
+
+### Severity: Medium (a stale piece outlives a re-split; with a new key, it's a piece of a key the re-split retired)
+
+### What happens
+
+A re-split of one depth's backup key sends each trustee kept on it a `.replace` naming the new piece and the
+one piece it replaces: the trustee's piece in that depth's current record (`distributeBackup`, `previousIDs`). The
+trustee removes exactly that piece (`handleReplace`); nothing else ever removes a same-key piece, since implicit
+revoke is gone. And before queuing the new pieces, the re-split deletes the previous split's queued operations
+(`deleteQueuedAndWatchRows`, Bug 142). So a `.replace` that never reaches the trustee is never sent again once a
+later re-split has run.
+
+Three pieces in a row for one trustee: B1 carries `.distribute(P1)`, B2 `.replace(P2 ← P1)`, B3 `.replace(P3 ← P2)`.
+
+- **B2 lost, and Alice re-splits again before Bob confirms P2.** B2's operation is dropped from Alice's queue at
+  the second re-split. B3 removes P2, which Bob never had. **Bob keeps P1 and P3**, for good.
+- **B2 late: B1, B3, B2.** B3 removes P2 (not held) and adds P3; B2 then adds P2 and removes P1. **Bob keeps P2
+  and P3.** A stale piece again, this time the newer stale one.
+
+In-order delivery leaves P3 alone. In both cases Bob holds two pieces of one depth's backup:
+
+- **Same key re-split:** both are shares of the same secret from different splits. They don't combine with each
+  other, but each still counts toward its own split's threshold together with other trustees' stale pieces.
+- **New key re-split** (a trustee was dropped, Bugs 141, 144): the stale piece belongs to the retired key, which
+  still opens backups exported under it. Stale pieces at several trustees, with the dropped trustee's, can reach
+  the old threshold, which is exactly what the new key was meant to prevent.
+- It also inflates the piece count Bug 162 describes.
+
+### Why no trustee-side rule closes it
+
+The trustee can't tell which pieces belong together: pieces carry no lineage, a re-split mints a new `entryID`
+(Bug 124), and one owner's pieces from different depths are indistinguishable (the D5 alternatives in
+`Docs/Features/Prekey Continuity/DESIGN.md` §3.1 record why a signed lineage ID was rejected). A `.replace` names
+only its immediate predecessor. So when the operation that would remove a piece is lost, or dropped as stale, nothing
+names that piece again. Ordering bundles (applying only the newest) fixes the late case's resurrection but not the
+lost case, and on its own turns the late case into the lost one.
+
+### Fix — open, needs a decision
+
+**Decided 2026-10-12: fix it on its own, with the lineage below, not with Bug 162's container,** which would close
+it too but is deferred as too large a change. **Then deferred the same day:** it is in v1.11.1 already, so waiting
+changes nothing for current users, and prekey continuity stage 2 doesn't make it worse, since piece operations never
+ride a last-resort slot (`Docs/Features/Prekey Continuity/DESIGN.md` §3.1, D5, "Revised 2026-10-12").
+
+Directions considered:
+
+- **The owner carries forward what it still owes.** A re-split's `.replace` also names every earlier piece of
+  that trustee's the owner hasn't seen confirmed gone, instead of only the last.
+- **A lineage per owner depth and trustee,** so a `.replace` means "whatever you hold for this lineage". Simple
+  and order-proof, but a wire change, and it lets the trustee link pieces, which D5 rejected; Bug 162 shows the
+  count is already exposed.
+- **Bug 162's container** (one fixed-size piece per owner and trustee, a slot per depth) would make this moot: a
+  single piece, replaced whole, can't leave a predecessor behind. Deferred with Bug 162.
+
+**The lineage, worked out 2026-10-12. Not built.**
+
+- **The rule (trustee).** A piece operation carries a lineage: which owner depth it belongs to, for this
+  trustee. The trustee holds at most one piece per lineage. A piece with a newer signed `createdAt` replaces the
+  one held in its lineage; the same or older is ignored. Lost bundles, any order and any number of re-splits end
+  on the newest piece delivered. A `.replace`'s removal of the piece it names still runs, which is how the first
+  lineage-carrying piece clears the lineage-less one held before it.
+- **Lineage (owner).** `HMAC(depth seed, trustee tag)`. The seed is 16 random bytes minted once per depth and
+  kept across every re-split, same key or new. Each trustee gets a different lineage for the same depth, stable
+  over time, and two trustees can't match theirs. A trustee removed and re-added gets the same lineage back, so
+  their old piece is replaced rather than left.
+- **Order (owner).** The piece's signed `createdAt`, which the owner keeps strictly increasing per depth by
+  storing the last piece's date, so a clock going back can't make a newer piece look older (Bug 158's lesson).
+- **Storage (owner).** The seed and the last date go in the backup key payload's header, carved out of the
+  existing fixed width by taking one trustee slot (255 → 254), so every row stays the same size. The version
+  tag is inside the sealed payload.
+- **Wire.** `ShardOperation` gains an optional `lineage`, omitted when nil, in the operation rather than the
+  signed piece: changing the signed payload would make older trustees reject every piece. The bundle
+  authenticates it, as it does the replaced-piece ID. Existing interop vectors keep their bytes.
+- **Compatibility.** An older trustee ignores the lineage and keeps today's behaviour, so this bug stays possible
+  there. An older owner sends none, and the trustee behaves as today.
+- **What the trustee learns.** That pieces of one lineage belong together. It holds one per lineage, so that
+  labels only what Bug 162's count already shows. Lineages differ per trustee, so trustees can't correlate.
+
+**Rejected within it:**
+- **A lineage stored per piece record.** About 4 KB more per depth (255 slots × 16 bytes); derived from one seed
+  instead.
+- **A generation counter instead of the date.** It would tell the trustee how many times each of the owner's
+  depths has re-split ("14" against "1"), pointing at the depth in daily use. The date is already in every piece,
+  so ordering by it adds nothing the trustee couldn't read.
+- **A larger header, as a new payload size.** A depth's row is re-encoded only when that depth re-splits, so for
+  a while the rows rewritten since the update would be longer than the rest, pointing at the depths in use.
+
+**Still open:**
+- **Wiping a depth's backup and setting it up again** mints a new seed, so trustees keep the old lineage's piece,
+  as they keep any piece today. Keeping the seed through a wipe would fix it, but a wipe is meant to start fresh.
+- ~~Prekey continuity stage 2's "newest used key" cut~~ **Dropped 2026-10-12** with the decision to defer this
+  bug: without lineages there was nothing for it to make converge. Stale manifests, which it would still have
+  ordered, only flip a status until the next manifest.
+
+### Guard
+
+None yet. Needed: every delivery order of a run of re-splits, with any bundle lost or delivered twice, leaves the
+trustee holding only the newest piece delivered; and the owner's backup key rows stay the same size.
+
+## Bug 164 — On a one-to-one bundle, a fallback slot's piece operations and manifest aren't dropped on receipt
+
+**Status:** Fixed 2026-10-12 on `v2.0.0/prekey-stage-2` (`36cac4d`, prekey continuity stage 2, 3/4), not yet
+merged: `openGroup` strips the shared payload too. Found 2026-10-12.
+
+**Target:** `v2.0.0`. Present since one-to-one bundles moved to the group format (1.9.0).
+
+### Severity: Low today; Medium once last-resort keys ship (stage 2), since their bundles can be redelivered
+
+### What happens
+
+The receiver is meant to drop piece operations and custody manifests from a slot opened on the long-term path,
+"regardless of what the sender claims" (`ContactManager.openGroup`). It drops them from the per-recipient payload
+only. A one-to-one bundle carries them in the shared payload instead, and the caller falls back to that when the
+per-recipient fields are empty (`OccultaApp`, `recipShardOps ?? sealed.shardOperations`). So on a one-to-one
+bundle only the sender's own gate keeps them off a long-term slot; the receiver's check doesn't apply.
+
+Prekey continuity stage 2 relies on the same check to keep piece operations off last-resort slots, whose bundles
+open again on every redelivery (D5): with it ineffective for one-to-one bundles, a sender bug that attached them
+would make them replayable.
+
+The existing tests cover the per-recipient fields (`openGroupStripsOnFallbackSlot`) and the legacy single-recipient
+path (`decryptSealedStripsOnFallback`), not a one-to-one group-format bundle.
+
+### Guard
+
+`ReceiverShardFallbackTests.openGroupStripsSharedOnFallbackSlot` (long-term slot) and
+`LastResortReceiveTests.lastResortSlotDropsSharedShardContent` (last-resort slot dropped, one-time slot kept). Both
+fail with the fix removed. Enclave-gated, so skipped on CI.
+
