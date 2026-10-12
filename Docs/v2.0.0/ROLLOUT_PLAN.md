@@ -116,6 +116,19 @@ complete only after that.
 The remaining depth-stamped records: `BackupEncryptionKey`, custody shards, and pending and completed
 restore records. Then 7b and 16.
 
+**Also the owner's queue and watch rows, added 2026-10-12:** `PendingShardDistribute` (pieces queued for a
+trustee) and `PotentiallyLostShard` (pieces watched for loss). They are sealed under the device-wide custody key
+and are depth-blind by design (`bugs.md` Bug 141): a manifest from a trustee, processed at whatever depth is
+current, updates every depth's rows, and an outbound message to a trustee carries pieces queued at any depth.
+So at a duress depth, code on the phone can read which trustees the real depth's backup uses, possibly contacts
+hidden there. Sealing them per depth means a manifest arriving at depth M can no longer update depth N's rows,
+so each depth would have to process its own, as it already does for statuses: **open, needs a decision.**
+`PendingShardStatusUpdate` leaves the schema instead (`decisions.md`, 2026-09-26/27).
+
+**And the trustee's piece count (`bugs.md` Bug 162):** a trustee holds one piece per owner depth with a backup,
+which tells the trustee, and anyone with their phone, how many of the owner's depths have one. Stamping custody
+rows with the trustee's depth doesn't change that. Open, needs a decision; the bug lists the options.
+
 ## Required before Stages 2 and 3 count as done
 
 Each needs tests and a no-data-loss migration plan before it counts as done. The plan must cover:

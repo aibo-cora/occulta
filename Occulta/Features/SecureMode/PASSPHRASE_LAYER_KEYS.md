@@ -159,7 +159,9 @@ specifically. It is not a complexity discount.
 to whether content-partitioning itself is airtight.** Checked directly across every per-depth-keyed object
 currently shipped (`BackupEncryptionKey` rows; `AppLayerConfig`'s `sealedNormalVerifiers`/
 `sealedDuressVerifiers`/`pinEnabledPerDepth` arrays; `VaultEntry.visibleThroughDepth`/`.deletionToken`;
-`Contact.Profile`'s depth fields; `CustodyShard`/`ReconstructShard`/`PendingShardDistribute` rows):
+`Contact.Profile`'s depth fields; `CustodyShard`/`ReconstructShard`/`PendingShardDistribute` rows; *corrected
+2026-10-12: the custody rows and `PendingShardDistribute` aren't per-depth-keyed at all, but sealed under the
+device-wide custody key and depth-blind, see `Docs/v2.0.0/ROLLOUT_PLAN.md` stage 4*):
 **writing one depth's data never touches any other depth's stored bytes.** Exactly one thing currently
 shipped does the opposite — `backup-export-meta.dat` (`ExportMetaSlotCodec`, `Vault+Manager+Backup.swift`),
 which re-encodes and reseals its entire 32-slot blob under one fresh nonce on every write, so every byte

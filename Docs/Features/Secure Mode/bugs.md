@@ -13202,3 +13202,57 @@ trims), `PrekeyBookkeeperTests` (eviction of the oldest retired keys first), `Pr
 imported and a deleted contact all have the field at the same length) and `PrekeyRecordMigrationTests` (after the
 pass every row's field has that length, whatever it started with). Still needed when step 3 is built: a filler
 row's field matches a real one's length.
+
+## Bug 162 — A trustee's piece count for an owner tells how many of the owner's depths have a backup
+
+**Status:** Open — fix needs a decision. Found 2026-10-12 reviewing custody for depth leaks.
+
+**Target:** `v2.0.0`. Present since per-entry splitting was retired (`decisions.md`, 2026-09-26/27), which left
+the backup key as the only split secret, one per depth.
+
+### Severity: High (coercion; reaches the owner's hidden depths without the owner's phone)
+
+### What happens
+
+Each of an owner's depths that sets up a backup splits its own backup key and sends each of its trustees one
+piece (`ShardCustodyManager.distributeBackup`, `SignedAttribute.backupKeyPieceLabel`). A later re-split sends a
+`.replace`, which deletes the trustee's old piece (`handleReplace`), so the trustee holds one piece per depth.
+Every piece carries the owner's identity in its sealed row (`ownerContactIdentifier`, `ownerKeyFingerprint`),
+which the trustee needs to return it.
+
+So Bob, a trustee of Alice's, holds one piece for each of Alice's depths that names him, and his Vault tab says
+so: "Held for Others" lists Alice with "3 pieces held for them" (`heldShards`, `Vault+Tab.swift`). Three pieces
+means Alice has at least three depths with a backup, two of them hidden.
+
+- **Who learns it:** Bob, who is a contact, not the owner; and anyone who gets into Bob's phone, at whichever of
+  Bob's depths shows Alice. Alice's phone isn't needed, and neither is any of her secrets.
+- **What blurs it, temporarily:** pieces from the retired per-entry splits still count until they're cleaned up
+  (`decisions.md`, "A trustee's 'held for this contact' count still includes old per-entry pieces").
+- **What doesn't help:** the trustee-depth stamping decided for custody rows
+  (`RECOVERY_BUFFER_LAYERING.md` §6 item 7) protects Bob's own depths, not Alice's. Rows stamped with Bob's
+  depth still number one per depth of Alice's.
+
+The prekey continuity design rejected a signed lineage ID partly because it "would let a trustee … count how
+many of the owner's depths have backups" (`DESIGN.md` §3.1, D5). The count shown today already allows that.
+
+### Fix — open, needs a decision
+
+- **Stop showing the count.** Show that pieces are held for an owner, not how many. Cheap, and it removes the
+  number from the screen a coercer would look at, but not from Bob's database: anyone running code on Bob's
+  unlocked phone can still count rows per owner.
+- **Pad the count on the owner's side.** Every owner sends each trustee a fixed number of pieces whatever its
+  depth count, the unused ones filler that can't be told from a real piece. Hides the count structurally, at a
+  cost of rows and traffic per trustee, and the filler must be indistinguishable to the trustee, who verifies
+  each piece's signature.
+- **One piece per owner and trustee.** The owner keeps, per trustee, one fixed-size array with a slot per depth,
+  each depth writing only its own slot under its own key and filler elsewhere, as `BackupEncryptionKey` already
+  does on the owner's side (`VAULT_KEY_LAYERING.md`), and sends the whole array as one piece. The trustee holds
+  one opaque blob per owner. Needs the slot array to be resealed whole on every write (v2.0.0 step 4) and a wire
+  change for the piece format.
+
+The first is a reasonable interim step whichever structural fix is chosen.
+
+### Guard
+
+None yet. Needed: a trustee's display and stored rows for an owner are the same whether that owner has one
+depth with a backup or several.
