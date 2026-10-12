@@ -13283,9 +13283,9 @@ Directions considered:
 **Still open:**
 - **Wiping a depth's backup and setting it up again** mints a new seed, so trustees keep the old lineage's piece,
   as they keep any piece today. Keeping the seed through a wipe would fix it, but a wipe is meant to start fresh.
-- **Prekey continuity stage 2's "newest used key" cut** (written, not committed, on `v2.0.0/prekey-stage-2`) was
-  for ordering piece operations; with lineages they don't need it. It would still order custody manifests, where
-  a stale one only flips a status until the next manifest. Keep it for manifests or drop it.
+- ~~Prekey continuity stage 2's "newest used key" cut~~ **Dropped 2026-10-12** with the decision to defer this
+  bug: without lineages there was nothing for it to make converge. Stale manifests, which it would still have
+  ordered, only flip a status until the next manifest.
 
 ### Guard
 
@@ -13294,8 +13294,8 @@ trustee holding only the newest piece delivered; and the owner's backup key rows
 
 ## Bug 164 — On a one-to-one bundle, a fallback slot's piece operations and manifest aren't dropped on receipt
 
-**Status:** Open. Found 2026-10-12. A fix is written in prekey continuity stage 2's work in progress
-(`v2.0.0/prekey-stage-2`, not yet committed): `openGroup` strips the shared payload too.
+**Status:** Fixed 2026-10-12 on `v2.0.0/prekey-stage-2` (`36cac4d`, prekey continuity stage 2, 3/4), not yet
+merged: `openGroup` strips the shared payload too. Found 2026-10-12.
 
 **Target:** `v2.0.0`. Present since one-to-one bundles moved to the group format (1.9.0).
 
@@ -13318,6 +13318,7 @@ path (`decryptSealedStripsOnFallback`), not a one-to-one group-format bundle.
 
 ### Guard
 
-None yet. Needed: a one-to-one group-format bundle with piece operations and a manifest in its shared payload,
-opened on a long-term slot and on a last-resort slot, returns neither.
+`ReceiverShardFallbackTests.openGroupStripsSharedOnFallbackSlot` (long-term slot) and
+`LastResortReceiveTests.lastResortSlotDropsSharedShardContent` (last-resort slot dropped, one-time slot kept). Both
+fail with the fix removed. Enclave-gated, so skipped on CI.
 
