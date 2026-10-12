@@ -1622,14 +1622,7 @@ extension ContactManager {
         // untrusted/unexpected and drop them here — regardless of what the sender
         // claims — rather than relying on the sender to have gated correctly.
         if bundle.secrecy.mode == .longTermFallback || bundle.secrecy.mode == .longTermNoPQ {
-            decodedPayload = OccultaBundle.SealedPayload(
-                message:           decodedPayload.message,
-                prekeyBatch:       decodedPayload.prekeyBatch,
-                identityChallenge: decodedPayload.identityChallenge,
-                appVersion:        decodedPayload.appVersion,
-                senderProof:       decodedPayload.senderProof,
-                groupID:           decodedPayload.groupID
-            )
+            decodedPayload = Self.withoutShardContent(decodedPayload)
         }
 
         // ── 5. A new batch if the sender is out of our keys ──────────────
@@ -1655,6 +1648,18 @@ extension ContactManager {
 // MARK: - Decrypt helpers (private)
 
 extension ContactManager {
+
+    /// `payload` without its piece operations and custody manifest, for a bundle that mustn't carry them.
+    static func withoutShardContent(_ payload: OccultaBundle.SealedPayload) -> OccultaBundle.SealedPayload {
+        OccultaBundle.SealedPayload(
+            message:           payload.message,
+            prekeyBatch:       payload.prekeyBatch,
+            identityChallenge: payload.identityChallenge,
+            appVersion:        payload.appVersion,
+            senderProof:       payload.senderProof,
+            groupID:           payload.groupID
+        )
+    }
 
     private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
         guard
@@ -1914,8 +1919,11 @@ extension ContactManager {
             ? Array(recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount))
             : nil
 
+        // The shared payload too: a one-to-one bundle carries its piece operations and manifest there, not per
+        // recipient, and the caller falls back to them. Stripping only the per-recipient fields left those applied
+        // on a fallback slot (`bugs.md` Bug 164).
         return (
-            decoded,
+            isFallback ? Self.withoutShardContent(decoded) : decoded,
             sender.identifier,
             groupID,
             recipOps.isEmpty ? nil : recipOps,

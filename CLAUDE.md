@@ -137,7 +137,7 @@ private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the five suites in that file),
 `PrekeyGenerationMeasurementTests`, the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
-and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
+and four tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
 (`decryptSealed` calls `installFreshBatch` when a fallback message arrives with no
 pending batch). A test that reaches that receive path needs the gate, not the trait.
 The share-staging key (`ShareStagingKeyManager`) has its own, simpler seam: `ShareSession` takes

@@ -302,6 +302,31 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(result.recipientCustodyManifest == nil, "custody manifest must be dropped when this recipient's slot used the fallback path")
     }
 
+    /// Bug 164: a one-to-one bundle carries its piece operations and manifest in the shared payload, which the caller
+    /// falls back to when the per-recipient fields are empty. They must go on a fallback slot too.
+    @Test("openGroup drops a one-to-one bundle's shared piece operations and manifest on a fallback slot", .enabled(if: secureEnclaveAvailable()))
+    func openGroupStripsSharedOnFallbackSlot() throws {
+        let cm       = try makeContactManager()
+        let senderKM = TestKeyManager()
+        try registerSender(senderKM, identifier: "sender", in: cm)
+        let selfPub  = try Manager.Key().retrieveIdentity()
+
+        let realOp = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: senderKM))
+        let bundle = try Manager.Crypto(keyManager: senderKM).seal(
+            sealedPayload: OccultaBundle.SealedPayload(
+                message: Data("hi".utf8), shardOperations: [realOp], custodyManifest: [UUID()]
+            ),
+            groupID:    UUID(),
+            recipients: [GroupRecipient(publicKey: selfPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)]
+        )
+
+        let result = try cm.openGroup(bundle: bundle, ownerID: "sender")
+
+        #expect(result.sealed.shardOperations == nil)
+        #expect(result.sealed.custodyManifest == nil)
+        #expect(result.sealed.message == Data("hi".utf8), "the message itself still opens")
+    }
+
     @Test("decryptSealed drops shard content on the legacy single-recipient path when the bundle used fallback", .enabled(if: secureEnclaveAvailable()))
     func decryptSealedStripsOnFallback() throws {
         let cm       = try makeContactManager()

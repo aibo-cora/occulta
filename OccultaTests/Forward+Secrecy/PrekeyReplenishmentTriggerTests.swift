@@ -138,6 +138,30 @@ private struct Fixture {
         )
     }
 
+    /// A one-to-one bundle from the sender carrying a piece operation and a manifest in its shared payload, as
+    /// `encryptBundle` sends them, sealed to `prekey`.
+    func oneToOneBundleWithShardContent(prekey: Prekey, lastResort: Bool) throws -> OccultaBundle {
+        let value = Data((0..<33).map { _ in UInt8.random(in: .min ... .max) })
+        let (id, entryID, createdAt) = (UUID(), UUID(), Date())
+        let signature = try self.senderKM.signData(SignedAttribute.signingPayload(
+            id: id, category: .shard, value: value, entryID: entryID, createdAt: createdAt, expiresAt: nil
+        ))
+        let piece = SignedAttribute(
+            id: id, label: SignedAttribute.backupKeyPieceLabel, value: value, category: .shard,
+            signature: signature, createdAt: createdAt, expiresAt: nil, entryID: entryID
+        )
+        return try Manager.Crypto(keyManager: self.senderKM).seal(
+            sealedPayload: OccultaBundle.SealedPayload(
+                message: Data("hi".utf8),
+                shardOperations: [OccultaBundle.ShardOperation(kind: .distribute, attribute: piece)],
+                custodyManifest: [UUID()]
+            ),
+            groupID: UUID(),
+            recipients: [GroupRecipient(publicKey: self.selfPub, quantumMaterial: nil, contactPrekey: prekey,
+                                        contactPrekeyIsLastResort: lastResort, pendingBatch: nil)]
+        )
+    }
+
     /// The last-resort key of the batch we're waiting to deliver, as the sender would hold it.
     func pendingLastResort() throws -> Prekey {
         let wire = try #require(try self.pendingBatch?.lastResort)
@@ -515,6 +539,33 @@ private struct Fixture {
 
         #expect(try f.pendingBatch == pending, "no new batch while one is pending")
         #expect(try f.savedRecord.ownBatches.count == 2)
+    }
+
+    /// D5: a last-resort bundle opens again on every redelivery, so its piece operations and manifest are dropped on
+    /// receipt whatever the sender did. Bug 164: on a one-to-one bundle they ride the shared payload, so that's where
+    /// they must go. A one-time slot, the control, keeps them.
+    @Test("A last-resort slot's shared piece operations and manifest are dropped; a one-time slot's are kept",
+          .enabled(if: secureEnclaveAvailable()))
+    func lastResortSlotDropsSharedShardContent() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let oneTime    = try f.firstPendingPrekey()
+        let lastResort = try f.pendingLastResort()
+
+        let kept = try f.cm.openGroup(
+            bundle: try f.oneToOneBundleWithShardContent(prekey: oneTime, lastResort: false), ownerID: f.senderID
+        )
+        #expect(kept.sealed.shardOperations?.count == 1)
+        #expect(kept.sealed.custodyManifest != nil)
+
+        let dropped = try f.cm.openGroup(
+            bundle: try f.oneToOneBundleWithShardContent(prekey: lastResort, lastResort: true), ownerID: f.senderID
+        )
+        #expect(dropped.sealed.shardOperations == nil)
+        #expect(dropped.sealed.custodyManifest == nil)
+        #expect(dropped.sealed.message == Data("hi".utf8))
     }
 
     @Test("A single-recipient bundle sealed to a last-resort key is rejected", .enabled(if: secureEnclaveAvailable()))

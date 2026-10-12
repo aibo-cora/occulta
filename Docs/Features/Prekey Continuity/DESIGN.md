@@ -189,15 +189,18 @@ What a repeat delivery would do:
 | Old `.distribute` / `.replace` after a newer one (trustee) | **Brings back a piece the owner replaced**, undoing a rotation. With `newKey`, that rotation exists to revoke a dropped trustee's piece (Bugs 141, 144) |
 | Custody manifest (owner) | Can flip a piece's status from a stale report |
 
-**Decided: (a), with two guards on the trustee side and a test matrix.**
+**Decided: (a), with two guards on the trustee side and a test matrix.** *Revised 2026-10-12: G2′ and the matrix
+are replaced by Bug 163's lineage, deferred; see "Revised 2026-10-12" below.*
 - **Backup-piece operations and custody manifests ride only on one-time keys.** The sender doesn't attach them
   when it seals to the last-resort key. The receiver drops them from a slot opened with a last-resort key,
   as it already does on long-term slots. A trustee on the last-resort key confirms later, as on long-term
-  today, which refilling makes rare.
+  today, which refilling makes rare. *Built 2026-10-12. The receiver's drop didn't reach a one-to-one bundle,
+  which carries them in the shared payload (`bugs.md` Bug 164); it does now, on long-term and last-resort
+  slots alike.*
 - **Only the current last-resort key signals "out of keys".** A repeat delivery sealed to an older one
   generates nothing.
 - **G1: `.replace` skips a piece it already holds,** as `.distribute` does (protocol case 15). This stops
-  duplicate rows.
+  duplicate rows. *Built 2026-10-12.*
 - **G2′: each custody row carries a "supersedes" field,** the ID the piece replaced, taken from the
   `.replace` that installed it. While the row is held, an operation carrying that ID is rejected, which
   blocks the most damaging replay: undoing the latest rotation. The field is inside the existing sealed row,
@@ -207,6 +210,26 @@ What a repeat delivery would do:
 - **The replay matrix is the main safety net.** Every case in `Occulta/Features/Vault/SHARD_PROTOCOL_CASES.md`
   is run with each operation delivered twice and in every order. Custody state must match a single in-order
   delivery.
+
+**Revised 2026-10-12: G2′ and the matrix are dropped; ordering is Bug 163's, deferred.** Working out the matrix
+showed that no rule on the trustee's side can make custody match in-order delivery, replay or not. A `.replace`
+names only the piece it replaces, a re-split drops the previous split's unsent operations, and the trustee can't
+tell which pieces belong together. So one lost or late `.replace` leaves a stale piece behind, and ordinary
+out-of-order delivery of one-time-key bundles already does that today (`bugs.md` Bug 163, present in v1.11.1).
+What was tried, each failing for that reason:
+- **G2′**, one superseded ID per row: covers one generation; two re-splits arriving in reverse still leave the
+  first piece.
+- **A chain of the last N superseded IDs:** fails at N + 1.
+- **Applying only the newest bundle's operations**, ordered by which of the receiver's one-time keys each bundle
+  used (a "newest used key" position kept in the prekey record): stops an older piece coming back after a newer
+  one, but drops a late `.replace` that was the only thing that would remove its predecessor.
+- **Letting a late bundle only remove, never add:** converges when nothing is lost, but not when a bundle is.
+
+The fix that works is a lineage per owner depth and trustee, so the trustee holds one piece per lineage and the
+newest replaces the rest. It is worked out in Bug 163 and deferred, with Bug 162's container, which would close
+both. **What stands for replay:** piece operations and manifests never ride a last-resort slot, on either side, so a
+redelivered last-resort bundle carries nothing to replay; and one-time-key bundles can't be replayed, since their
+key is gone once used. The matrix's promise, every order matching in-order delivery, waits for Bug 163.
 
 **Considered and rejected:**
 - **A replay cache of opened last-resort bundles.** It is a stored list that grows with traffic from a
@@ -738,10 +761,10 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   record, generated and sent with every new batch but not yet used, two new interop vectors); sending and
   receiving with the bookkeeping table (done 2026-10-12, with D5's first guard: piece operations and manifests
   off last-resort slots, on both sides; a single-recipient bundle naming a last-resort key is rejected); D5's
-  remaining guards, G1 and G2′, with the custody-row migration and the replay matrix; D2's indicator.
-- *Migration:* pairs get a last-resort key with their next batch. Existing custody rows have no "supersedes"
-  field (G2′): one pass re-seals each with a random filler ID, the same re-seal `deleteCustodyShards`
-  already does, so no row is distinguishable by having been migrated.
+  remaining guards (done 2026-10-12: G1, and the receiver's drop extended to one-to-one bundles' shared payload,
+  Bug 164; G2′ and the replay matrix dropped for Bug 163's lineage, deferred); D2's indicator.
+- *Migration:* pairs get a last-resort key with their next batch. (No custody-row migration: G2′ was dropped,
+  2026-10-12.)
 - *Tests:* sender falls back to last-resort, not long-term, when out; the derived `prekeyID` differs per
   bundle, matches the UUID format, and never equals the last-resort key's own ID; recipient opens it without consuming it; the three bookkeeping rows in
   §3.1; an old-format batch leaves the sender on long-term; interop vectors for a batch that carries it; the
@@ -749,8 +772,8 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   last-resort key, neither) and to the same state at every depth. Replay (D5): no piece operation or
   manifest is attached when sealing to the last-resort key; a last-resort slot carrying them has them dropped;
   a repeat delivery sealed to an older last-resort key generates no batch; a repeated `.replace` stores
-  nothing (G1); a replayed operation carrying a held row's "supersedes" ID is rejected (G2′); the "supersedes"
-  field encodes to the same size with and without a real ID; and the replay matrix over every protocol case.
+  nothing (G1); a one-to-one bundle's shared piece operations and manifest are dropped on a long-term and on a
+  last-resort slot (Bug 164). The replay matrix waits for Bug 163.
 
 **Stage 3 — identity challenges (§3.4).** D3 is decided (group format at the new tier). Needs the tier, shared
 with step 17a.
