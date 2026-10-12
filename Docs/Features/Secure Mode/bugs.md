@@ -13234,8 +13234,10 @@ lost case, and on its own turns the late case into the lost one.
 
 ### Fix — open, needs a decision
 
-**Decided 2026-10-12: fix it now, on its own.** Bug 162's container would close it too (see Bug 162), but that is
-deferred as too large a change. The fix being worked out is the lineage below.
+**Decided 2026-10-12: fix it on its own, with the lineage below, not with Bug 162's container,** which would close
+it too but is deferred as too large a change. **Then deferred the same day:** it is in v1.11.1 already, so waiting
+changes nothing for current users, and prekey continuity stage 2 doesn't make it worse, since piece operations never
+ride a last-resort slot (`Docs/Features/Prekey Continuity/DESIGN.md` §3.1, D5, "Revised 2026-10-12").
 
 Directions considered:
 
