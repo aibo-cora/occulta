@@ -21,6 +21,9 @@ let package = Package(
     ],
     targets: [
         .target(name: "OccultaCore"),
-        .target(name: "OccultaFormats")
+        .target(name: "OccultaFormats"),
+        // Uses OccultaCore as another app would: no `@testable`, no OccultaFormats. The app's
+        // own tests can't show this, since the app links both modules.
+        .testTarget(name: "OccultaCoreAPITests", dependencies: ["OccultaCore"])
     ]
 )
