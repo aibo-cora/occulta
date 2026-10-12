@@ -13,6 +13,16 @@ import SwiftData
 import OccultaCore
 import OccultaFormats
 
+/// How the next message to a contact will be sealed (prekey continuity D2).
+enum NextSendSecrecy: Equatable {
+    /// One of their one-time keys: opens once, then can't be opened from saved copies.
+    case forwardSecret
+    /// Only their last-resort key: opens again until it expires, 30 days or more after they move on.
+    case temporaryKey
+    /// The long-term keys of both sides, with no time limit.
+    case longTerm
+}
+
 extension ContactManager {
 
     // MARK: - Load and store
@@ -44,9 +54,17 @@ extension ContactManager {
 
     // MARK: - Sending
 
-    /// Whether the next message to `contact` can be forward secret. Read by the compose indicator.
-    func hasPrekeyAvailable(for contact: Contact.Profile) -> Bool {
-        (try? self.prekeyRecord(for: contact))?.inboundBatches.isEmpty == false
+    /// How the next message to `contact` will be sealed, as `encryptBundle` chooses: one of their one-time keys if
+    /// we hold one; else their last-resort key, used only in the group format; else the long-term keys. Read by the
+    /// compose indicator (D2). Per contact and never per depth, so a coerced duress session sees what any depth would.
+    func nextSendSecrecy(for contact: Contact.Profile) -> NextSendSecrecy {
+        guard let record = try? self.prekeyRecord(for: contact) else { return .longTerm }
+        if !record.inboundBatches.isEmpty { return .forwardSecret }
+        if record.inboundLastResort != nil,
+           Self.resolveTargetVersion(for: contact, using: Manager.Crypto()).supportsGroups {
+            return .temporaryKey
+        }
+        return .longTerm
     }
 
     /// The batch to attach to every message to the contact until they use a key from it, in wire form.

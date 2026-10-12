@@ -450,9 +450,6 @@ private struct ComposeHeroV2: View {
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
 
-                    if let isForwardSecret = self.contacts.first.map(self.contactManager.hasPrekeyAvailable) {
-                        SecrecyIndicator(isForwardSecret: isForwardSecret)
-                    }
                 }
                 Spacer()
                 Button(action: self.encryptAction) {
@@ -475,6 +472,12 @@ private struct ComposeHeroV2: View {
                 .buttonStyle(.plain)
             }
             .padding(.top, 10)
+
+            // Its own line, below the size and the Encrypt button, with its description (D2).
+            if let secrecy = self.contacts.first.map(self.contactManager.nextSendSecrecy) {
+                SecrecyIndicator(secrecy: secrecy)
+                    .padding(.top, 10)
+            }
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))

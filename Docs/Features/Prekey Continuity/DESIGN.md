@@ -1,7 +1,8 @@
 # Prekey Continuity — Design
 
-**Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 built (PR #87, open); stage 1 built
-2026-10-10 on `v2.0.0/prekey-stage-1`, not yet merged; stages 2–4 not started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
+**Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stage 1 built
+2026-10-10, in review (PR #93); stage 2 built 2026-10-12 on `v2.0.0/prekey-stage-2`, not yet in a PR; stages 3–4 not
+started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
 **Downgrades ruled out by release order** (D6, 2026-10-07). **Seeding at the exchange (§3.2,
@@ -546,6 +547,11 @@ have updated but not yet sent a batch from the new build; and the edges (a stran
 downgrade under D6, a reset of our stored copy of their keys), and every new contact until their first reply,
 since seeding at the exchange (stage 5) is deferred.
 
+**Built 2026-10-12** (stage 2, 4/4): `SecrecyIndicator` in `ComposeHeroV3.swift`, fed by
+`ContactManager.nextSendSecrecy(for:)`, which chooses as `encryptBundle` does, so a last-resort key held for a
+contact below the group format shows the long-term state, since that is what the message will use. The blue is
+`Color.occultaTemporary`.
+
 The description is plain language, with no claim beyond what the mode delivers (register §E). The state is
 per contact and doesn't depend on depth, so a coercer at the compose screen learns at most that the contact
 hasn't sent a batch recently, which today's amber state already shows. It is designed together with v2.0.0
@@ -762,7 +768,8 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   receiving with the bookkeeping table (done 2026-10-12, with D5's first guard: piece operations and manifests
   off last-resort slots, on both sides; a single-recipient bundle naming a last-resort key is rejected); D5's
   remaining guards (done 2026-10-12: G1, and the receiver's drop extended to one-to-one bundles' shared payload,
-  Bug 164; G2′ and the replay matrix dropped for Bug 163's lineage, deferred); D2's indicator.
+  Bug 164; G2′ and the replay matrix dropped for Bug 163's lineage, deferred); D2's indicator (done
+  2026-10-12).
 - *Migration:* pairs get a last-resort key with their next batch. (No custody-row migration: G2′ was dropped,
   2026-10-12.)
 - *Tests:* sender falls back to last-resort, not long-term, when out; the derived `prekeyID` differs per
