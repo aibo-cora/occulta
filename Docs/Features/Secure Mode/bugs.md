@@ -13141,6 +13141,12 @@ means Alice has at least three depths with a backup, two of them hidden.
 The prekey continuity design rejected a signed lineage ID partly because it "would let a trustee … count how
 many of the owner's depths have backups" (`DESIGN.md` §3.1, D5). The count shown today already allows that.
 
+**The pieces' dates point at the active depth (added 2026-10-12).** Each held piece carries its signed
+`createdAt`, and a depth's piece is replaced on every re-split, so each date shows when that depth last re-split.
+The newest among an owner's pieces hints at the depth in daily use, the activity-profile leak v2.0.0's step 4
+guards against on the owner's own phone, here readable by a contact. The container below hides it: one date for
+the whole container, which changes when any depth re-splits and says nothing about which.
+
 ### Fix — open, needs a decision
 
 - **Stop showing the count.** Show that pieces are held for an owner, not how many. Cheap, and it removes the
@@ -13241,10 +13247,50 @@ Directions considered:
 - **Bug 162's container** (one fixed-size piece per owner and trustee, a slot per depth) would make this moot: a
   single piece, replaced whole, can't leave a predecessor behind. Deferred with Bug 162.
 
+**The lineage, worked out 2026-10-12. Not built.**
+
+- **The rule (trustee).** A piece operation carries a lineage: which owner depth it belongs to, for this
+  trustee. The trustee holds at most one piece per lineage. A piece with a newer signed `createdAt` replaces the
+  one held in its lineage; the same or older is ignored. Lost bundles, any order and any number of re-splits end
+  on the newest piece delivered. A `.replace`'s removal of the piece it names still runs, which is how the first
+  lineage-carrying piece clears the lineage-less one held before it.
+- **Lineage (owner).** `HMAC(depth seed, trustee tag)`. The seed is 16 random bytes minted once per depth and
+  kept across every re-split, same key or new. Each trustee gets a different lineage for the same depth, stable
+  over time, and two trustees can't match theirs. A trustee removed and re-added gets the same lineage back, so
+  their old piece is replaced rather than left.
+- **Order (owner).** The piece's signed `createdAt`, which the owner keeps strictly increasing per depth by
+  storing the last piece's date, so a clock going back can't make a newer piece look older (Bug 158's lesson).
+- **Storage (owner).** The seed and the last date go in the backup key payload's header, carved out of the
+  existing fixed width by taking one trustee slot (255 → 254), so every row stays the same size. The version
+  tag is inside the sealed payload.
+- **Wire.** `ShardOperation` gains an optional `lineage`, omitted when nil, in the operation rather than the
+  signed piece: changing the signed payload would make older trustees reject every piece. The bundle
+  authenticates it, as it does the replaced-piece ID. Existing interop vectors keep their bytes.
+- **Compatibility.** An older trustee ignores the lineage and keeps today's behaviour, so this bug stays possible
+  there. An older owner sends none, and the trustee behaves as today.
+- **What the trustee learns.** That pieces of one lineage belong together. It holds one per lineage, so that
+  labels only what Bug 162's count already shows. Lineages differ per trustee, so trustees can't correlate.
+
+**Rejected within it:**
+- **A lineage stored per piece record.** About 4 KB more per depth (255 slots × 16 bytes); derived from one seed
+  instead.
+- **A generation counter instead of the date.** It would tell the trustee how many times each of the owner's
+  depths has re-split ("14" against "1"), pointing at the depth in daily use. The date is already in every piece,
+  so ordering by it adds nothing the trustee couldn't read.
+- **A larger header, as a new payload size.** A depth's row is re-encoded only when that depth re-splits, so for
+  a while the rows rewritten since the update would be longer than the rest, pointing at the depths in use.
+
+**Still open:**
+- **Wiping a depth's backup and setting it up again** mints a new seed, so trustees keep the old lineage's piece,
+  as they keep any piece today. Keeping the seed through a wipe would fix it, but a wipe is meant to start fresh.
+- **Prekey continuity stage 2's "newest used key" cut** (written, not committed, on `v2.0.0/prekey-stage-2`) was
+  for ordering piece operations; with lineages they don't need it. It would still order custody manifests, where
+  a stale one only flips a status until the next manifest. Keep it for manifests or drop it.
+
 ### Guard
 
-None yet. Needed: every delivery order of a run of re-splits, with any one bundle lost, leaves the trustee holding
-only the newest piece.
+None yet. Needed: every delivery order of a run of re-splits, with any bundle lost or delivered twice, leaves the
+trustee holding only the newest piece delivered; and the owner's backup key rows stay the same size.
 
 ## Bug 164 — On a one-to-one bundle, a fallback slot's piece operations and manifest aren't dropped on receipt
 
