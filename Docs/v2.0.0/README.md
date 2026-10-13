@@ -65,7 +65,7 @@ depends on.
 | Bug 163 | A lost or late `.replace` leaves the trustee holding the piece it replaced | Open; fix worked out (a lineage per owner depth and trustee), deferred | none yet |
 | Bug 164 | A one-to-one bundle's fallback slot keeps its piece operations on receipt | Fixed in stage 2, merged into `v2.0.0/prekey-refactor` | prekey continuity stage 2 |
 | Bug 165 | A group member can rewrite another member's message to the rest of the group | Fixed (PR #100), merged into `v2.0.0/prekey-refactor`; senders below 2.0.0 stay open until they update | none; needed before prekey continuity stage 3 |
-| Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Fixed on `v2.0.0/challenge-unsolicited-response`, not merged | prekey continuity stage 3 |
+| Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Fixed (PR #102), merged into `v2.0.0/prekey-refactor` | none |
 | Bug 167 | Identity challenges and responses can be recognised by their size | Open, needs a decision | prekey continuity stage 3 |
 
 Steps 6, 7, 10, 13, 15, 16 and 17 are not tracked anywhere else yet.

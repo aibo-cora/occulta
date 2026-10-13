@@ -13500,8 +13500,8 @@ With the three receiver checks disabled (the mismatch moved after consumption), 
 
 ## Bug 166 — A response we aren't waiting for shows "Verification failed — this may not be <contact>"
 
-**Status:** Fixed 2026-10-13 on `v2.0.0/challenge-unsolicited-response`, not yet merged; ships in v2.0.0. Found
-2026-10-12 in the security review of prekey continuity stage 3, confirmed by
+**Status:** Fixed 2026-10-13 (PR #102), merged into `v2.0.0/prekey-refactor`, not yet in the release branch; ships
+in v2.0.0. Found 2026-10-12 in the security review of prekey continuity stage 3, confirmed by
 `IdentityChallengeUnsolicitedResponseTests`.
 
 **Target:** `v2.0.0`. Present since identity challenges shipped.

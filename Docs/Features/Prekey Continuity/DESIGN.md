@@ -379,7 +379,7 @@ so a co-recipient can rewrite a group bundle's body behind the sender's genuine 
   reopening. `decryptSealed`'s forward-secret bundles carry no sender binding (finding #8's residual), so a
   challenge it decrypted is never trusted as it stands.
 - **Bug 166's fix:** a response shows a result only if it names a challenge still waiting for that contact.
-  **Built 2026-10-13** (`v2.0.0/challenge-unsolicited-response`).
+  **Built 2026-10-13** (PR #102).
 - **One send path.** Challenges go through `encryptBundle`, so their slot padding, prekey batch and shard fields
   match a message's, and D5 holds: no piece operations or manifests ride them.
 
