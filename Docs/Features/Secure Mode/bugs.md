@@ -13419,3 +13419,143 @@ path (`decryptSealedStripsOnFallback`), not a one-to-one group-format bundle.
 `LastResortReceiveTests.lastResortSlotDropsSharedShardContent` (last-resort slot dropped, one-time slot kept). Both
 fail with the fix removed. Enclave-gated, so skipped on CI.
 
+## Bug 165 — A group member can rewrite another member's message to the rest of the group
+
+**Status:** Fixed 2026-10-13 on `v2.0.0/group-body-binding`, not yet merged; ships in v2.0.0. Found 2026-10-12 in
+the security review of prekey continuity stage 3 (`Docs/Features/Prekey Continuity/DESIGN.md` §3.4), confirmed by
+`GroupBodyBindingTests`.
+
+**Target:** `v2.0.0`. Present since group bundles shipped (1.9.0).
+
+### Severity: High (forgery of a contact's messages by another contact)
+
+### What happens
+
+A group bundle encrypts its body once, under a random content key, and gives each recipient a slot wrapping that
+key (`Manager.Crypto.seal(sealedPayload:groupID:recipients:)`). A slot is bound to `blind`, a random value per
+bundle, and to nothing else: no slot commits to the body. `senderProof`, the body's check that the sender sealed
+it, is `HMAC(content key, sender's public key)`, and every recipient has both.
+
+So when Alice sends to Bob and Carol, Bob can write a body of his own, compute its `senderProof`, encrypt it under
+the same key with the same `blind`, and keep Alice's slot to Carol. Carol's `openGroup` opens it as Alice's: the
+slot is genuine, and on a forward-secret slot Alice's signature over the ephemeral key verifies, because it is
+Alice's.
+
+- **When:** any time, if Carol's slot is long-term or last-resort, since neither key is used up. If it used a
+  one-time key, only until Carol opens the original. Bob usually has the same file Carol does, at the same time.
+- **What Bob can forge in Alice's name, to Carol:**
+  - any message in the group;
+  - `appVersion`, which `updateMaxVersion` records, raising Alice's capability tier on Carol's phone. Carol then
+    sends Alice what her build may not open;
+  - piece operations and manifests. A multi-recipient bundle's per-recipient manifest is never marked attempted,
+    so the caller falls back to the body's fields (`buildOwnedBasket`), and so do empty per-recipient operations.
+    A forged `.handback` replaces the piece Alice returned in Carol's return buffer (`absorbShard`: a later share
+    from the same sender replaces the first), so Carol's restore can fail. A forged manifest marks Carol's pieces
+    with Alice present or absent. In shipped builds the body's shard content isn't dropped on long-term slots, so
+    this works at any time. Bug 164's fix (`v2.0.0/prekey-stage-2`) drops it on long-term and last-resort slots,
+    which leaves the race on a one-time slot.
+- **Not reachable today:** identity challenges, because `openIdentityBundle` reopens each with the long-term key
+  and a group bundle never opens that way. Prekey continuity stage 3 as first planned would remove that check
+  and expose them. A forged *response* still can't pass, since passing needs Alice's signature over Carol's
+  nonce, but see Bug 166.
+- **Not affected:** bundles with one recipient. Only the sender and that recipient know the content key.
+
+### Fix — built 2026-10-13
+
+Every slot carries `RecipientPayload.bodyDigest`, the SHA-256 of the bundle's ciphertext
+(`Manager.Crypto.seal(sealedPayload:groupID:recipients:)`). The slot is encrypted under a key only the sender
+could have built (a signed ephemeral key, or long-term key agreement between sender and recipient), so the digest
+inside it is the sender's. The ciphertext alone is enough: its GCM tag covers the outer associated data, so
+changing either changes the ciphertext. Every build since 1.9.0 ignores the unknown key, so the sender sends it to
+everyone, with no tier check.
+
+The receiver:
+- **rejects a mismatch** (`bodyDigestMismatch`) in `findAndOpenRecipientSlot`, before the slot's one-time key is
+  recorded as used. Decided 2026-10-13: the slot is the sender's own, for a message not opened yet, and consuming
+  would let the forger, by delivering first, make the genuine message unopenable. Keeping the key leaves it as it
+  was before the forgery arrived, which withholding the bundle achieves anyway. The one exception to consuming at
+  open (`SECURITY_CHECKLIST.md` §2.2, amended);
+- **rejects a missing digest** (`missingBodyDigest`) from a sender recorded at the new tier, `.bodyDigestCapable`
+  (2.0.0, marker byte 0x09). A tier only rises, so a claim can't switch it off;
+- **accepts a missing digest** below the tier, with no tier recorded, and with a stranded marker. Decided
+  2026-10-13: refusing a stranded marker would block 1.10.2–1.11.x contacts as Bug 81 does, and refusing only
+  there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their first bundle at the tier repairs it;
+- **rejects an identity challenge in a group body without a digest,** whatever the tier: stage 3's requirement.
+
+Both rejections show the existing "couldn't confirm this message came from this contact" message, so they add no
+string to tell apart. A new interop vector, `recipientPayload.bodyDigest`; the existing ones are unchanged.
+
+**Left open:** bundles from senders below the tier stay forgeable until they update, and a sender Carol has never
+heard from is forgeable on their first bundle, as with the signature gate.
+
+### Guard
+
+`GroupBodyBindingTests`: the digest is in every slot; a rewritten body is rejected; a mismatch leaves the one-time
+key and the genuine bundle opens; a missing digest is refused only at the tier (all four recorded states); a
+challenge without one is refused below the tier, and one with it opens. `PrekeyRecordWiringTests.
+digestMismatchKeepsThePrekey` (Enclave-gated) does the mismatch end to end against the record.
+`consumptionSavedBeforeRejection` now rejects through a bad signature, since a corrupted body no longer consumes.
+With the three receiver checks disabled (the mismatch moved after consumption), each one's test failed.
+
+## Bug 166 — A response we aren't waiting for shows "Verification failed — this may not be <contact>"
+
+**Status:** Open — fix proposed, not built. Found 2026-10-12 in the security review of prekey continuity stage 3,
+confirmed by `IdentityChallengeUnsolicitedResponseTests`.
+
+**Target:** `v2.0.0`. Present since identity challenges shipped.
+
+### Severity: Medium (a false impersonation warning about a contact)
+
+### What happens
+
+`IdentityChallenge.Coordinator.handleInboundChallenge` shows the red result sheet for any response that fails,
+and `verifyResponse` returns a failure for a response whose nonce names no challenge we're waiting for. The sheet
+says "Verification failed" and "This may not be <contact>. If they may have lost their device, re-exchange keys
+in person."
+
+- **Reopening a genuine response file** after it passed is enough: its nonce was used up when it passed. No
+  attacker needed.
+- **A group member can trigger it** through Bug 165: a response envelope in a rewritten group body fails to open
+  in `openIdentityBundle`, and a failure to open shows the sheet too.
+- **The contact can, at any time,** which matters less: they can lie to us anyway.
+
+### Fix — proposed
+
+Show a result only for a response that opens, is authenticated, and names a challenge still waiting for that
+contact; drop anything else without a sheet. A response that names our challenge and fails the signature or the
+time window still shows "Verification failed": that's the case the sheet is for. Nobody but the contact can learn
+the waiting nonce, so nobody else can reach the sheet.
+
+### Guard
+
+`IdentityChallengeUnsolicitedResponseTests.reopenedResponseShowsNothing` (known issue until the fix). Needed with
+the fix: a response that won't open shows nothing; one naming our challenge with a bad signature still fails.
+
+## Bug 167 — Identity challenges and responses can be recognised by their size
+
+**Status:** Open — needs a decision. Found 2026-10-12 in the security review of prekey continuity stage 3.
+
+**Target:** `v2.0.0`. Present since identity challenges shipped.
+
+### Severity: Low (forensic)
+
+### What happens
+
+A challenge is meant to look like an ordinary long-term message (`IdentityChallenge+Manager.swift`, header).
+Message bodies aren't padded, and a challenge without a note always has the same body: the fixed fallback text,
+a 72-byte payload and the same fixed fields. A response's varies only with its DER signature, by a few bytes.
+Anyone collecting `.occ` files can therefore pick them out by size, whichever key sealed them.
+
+Prekey continuity stage 3 moves challenges to the group format so they stop standing out once long-term bundles
+are rare (§3.4). That change alone doesn't achieve it, because of the size.
+
+### Fix — open, needs a decision
+
+- **Pad every bundle body to size buckets.** Hides challenges among messages of the same bucket, and message
+  lengths generally. Costs traffic, and touches every send path.
+- **Drop the fallback text from group-format challenges.** Only new-tier contacts receive those, so the text
+  serves no one. Makes the body smaller, not less recognisable; useful only alongside padding.
+
+### Guard
+
+None yet.

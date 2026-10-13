@@ -48,6 +48,13 @@ enum GroupDecryptError: Error, Equatable {
     /// distinct from the case above. Conflating the two would tell a genuine impersonation
     /// victim to go ask their friend to update. See Bug 81.
     case senderSignatureCapabilityUnknown
+    /// Our slot's `RecipientPayload.bodyDigest` doesn't match the bundle's ciphertext: another recipient,
+    /// who holds the same session key, rewrote the body behind the sender's slot (`bugs.md` Bug 165).
+    case bodyDigestMismatch
+    /// The slot carries no `bodyDigest`, from a sender recorded at `.bodyDigestCapable`, or around an identity
+    /// challenge, which no sender puts in a group body without one. Either way the body could be another
+    /// recipient's (`bugs.md` Bug 165).
+    case missingBodyDigest
 }
 
 // MARK: - Group-decrypt crypto helpers
@@ -65,9 +72,14 @@ extension Manager.Crypto {
     ///
     /// Once a slot opens, its prekey is consumed through `prekeys` before this function returns (out of the
     /// sender's record, which is saved at once, or out of the keychain for a legacy key),
-    /// on **every** exit — the success path and the signature-mismatch throw alike. The
+    /// on **every** exit but one — the success path and the signature-mismatch throw alike. The
     /// returned `InboundPrekeyUse` therefore reports what *was* used; it is not an instruction to
     /// the caller to consume it. A last-resort key is never consumed (prekey continuity §3.1).
+    ///
+    /// The exception is a body that doesn't match the slot's `bodyDigest` (Bug 165). The slot is the
+    /// sender's own, for a message not opened yet, and another recipient put a body of theirs behind it.
+    /// Consuming the key would let them, by delivering first, make the sender's genuine message unopenable.
+    /// Keeping it leaves the key exactly as it was before the forgery arrived, still covered by retirement.
     ///
     /// The moment a slot opens is the moment forward secrecy is spent: the private key has
     /// already derived the wrapping key, and anything that happens afterwards is a judgement
@@ -127,7 +139,13 @@ extension Manager.Crypto {
                   let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
             else { continue }
 
-            // Our slot, and the prekey has now done its work. Recorded before the signature
+            // Our slot. A body other than the one the sender sealed fails here, before the prekey is
+            // recorded as used: the genuine bundle, still to come, needs it (Bug 165).
+            if let bodyDigest = payload.bodyDigest, bodyDigest != Data(SHA256.hash(data: bundle.ciphertext)) {
+                throw GroupDecryptError.bodyDigestMismatch
+            }
+
+            // The prekey has now done its work. Recorded before the signature
             // check below so that a rejection destroys it too.
             usedPrekey = used.consumable
 
