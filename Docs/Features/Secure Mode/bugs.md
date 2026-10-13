@@ -13481,22 +13481,46 @@ The receiver:
 - **accepts a missing digest** below the tier, with no tier recorded, and with a stranded marker. Decided
   2026-10-13: refusing a stranded marker would block 1.10.2–1.11.x contacts as Bug 81 does, and refusing only
   there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their first bundle at the tier repairs it;
-- **rejects an identity challenge in a group body without a digest,** whatever the tier: stage 3's requirement.
+- **rejects an identity challenge in a group body without a digest,** whatever the tier: stage 3's requirement;
+- **rejects a body without a digest that claims app version 2.0.0 or later** (added 2026-10-13), whatever the
+  tier. Every build at that version sends the digest, so the claim and its absence contradict each other: the
+  body is a rewrite of an older bundle. Refused before `updateMaxVersion` reads the claim, so a rewriter can't
+  raise the sender's recorded tier and change how we send to them.
 
 Both rejections show the existing "couldn't confirm this message came from this contact" message, so they add no
 string to tell apart. A new interop vector, `recipientPayload.bodyDigest`; the existing ones are unchanged.
 
-**Left open:** bundles from senders below the tier stay forgeable until they update, and a sender Carol has never
-heard from is forgeable on their first bundle, as with the signature gate.
+**Left open — builds before 2.0.0, on either side:**
+- **Senders.** A bundle sealed by a build before 2.0.0 has no digest, so its body can be rewritten (though no
+  longer to carry a challenge or a 2.0.0 claim). Once Carol has recorded Alice at the tier, even Alice's
+  pre-update bundles are refused.
+- **Receivers.** A build before 2.0.0 ignores the digest. Only updating closes it.
+
+(Corrected 2026-10-13: this said a sender Carol has never heard from was forgeable on their first bundle. It
+isn't, if that sender is on 2.0.0: Alice seals her slot to Carol with the digest inside, and a rewriter can't
+remove it, so the comparison catches the rewrite whatever Carol has recorded. The tier rule only matters for
+bundles sealed before Alice updated.)
+
+**Closing the sender half — open, needs a decision.** A later release could refuse every group bundle without a
+digest, making 2.0.0 the minimum version a contact can send from. One-to-one messages use the group format too,
+so contacts who haven't updated could then send nothing, and would see the existing "ask them to update"
+message. It's a matter of timing, against how much of the population is on 2.0.0, like retiring the unprefixed
+ephemeral signature (`verifySenderEphemeralSignature`). Refusing only piece operations and manifests in bodies
+without a digest was considered and rejected: older contacts send their one-to-one piece operations in the
+body, so custody with them would break, and a rewriter can strip a bundle to one slot, so group and one-to-one
+bundles can't be told apart.
 
 ### Guard
 
 `GroupBodyBindingTests`: the digest is in every slot; a rewritten body is rejected; a mismatch leaves the one-time
 key and the genuine bundle opens; a missing digest is refused only at the tier (all four recorded states); a
-challenge without one is refused below the tier, and one with it opens. `PrekeyRecordWiringTests.
+challenge without one is refused below the tier, and one with it opens; a body claiming 2.0.0 or later without
+one is refused and leaves the recorded tier where it was, while the same claim with it opens, and a 1.11.1 claim
+without it opens. `PrekeyRecordWiringTests.
 digestMismatchKeepsThePrekey` (Enclave-gated) does the mismatch end to end against the record.
 `consumptionSavedBeforeRejection` now rejects through a bad signature, since a corrupted body no longer consumes.
-With the three receiver checks disabled (the mismatch moved after consumption), each one's test failed.
+With the three receiver checks disabled (the mismatch moved after consumption), each one's test failed, and so
+did the claim test with its rule disabled.
 
 ## Bug 166 — A response we aren't waiting for shows "Verification failed — this may not be <contact>"
 
