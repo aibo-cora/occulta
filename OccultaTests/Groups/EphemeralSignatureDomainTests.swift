@@ -196,10 +196,10 @@ struct PrefixedSignatureTierTests {
         #expect(top.supportsGroups == true)
     }
 
-    @Test func wireByteIsDistinctAndHighest() {
+    @Test func wireByteIsDistinct() {
         #expect(OccultaBundle.Version.prefixedSenderSignatureCapable.wireByte == 0x08)
-        #expect(OccultaBundle.Version.highestKnownWireByte == 0x08)
-        #expect(OccultaBundle.Version.mostCapable == .prefixedSenderSignatureCapable)
+        #expect(OccultaBundle.Version.highestKnownWireByte > 0x08)
+        #expect(OccultaBundle.Version.mostCapable.isAtLeast(.prefixedSenderSignatureCapable))
     }
 
     /// Tripwire for a footgun this tier walked straight into. A capability tier's marker byte
@@ -214,7 +214,7 @@ struct PrefixedSignatureTierTests {
     /// Asserting the round trip catches it for every tier at once, including the next one.
     @Test func everyTierRoundTripsThroughItsMarkerByte() {
         let tiers: [OccultaBundle.Version] = [
-            .prefixedSenderSignatureCapable, .senderSignatureCapable,
+            .bodyDigestCapable, .prefixedSenderSignatureCapable, .senderSignatureCapable,
             .groupShardCapable, .groupCapable, .v4
         ]
         for tier in tiers {

@@ -163,6 +163,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let custodyManifestCount: Int?
     let shardMetadataAttempted: Bool?
     let senderEphemeralSignature: String?
+    let bodyDigest: String?
 
     // signingPayload
     let attribute: AttributeInput?
@@ -353,7 +354,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                 custodyManifest:          try (self.custodyManifest ?? []).map(Self.uuid),
                 custodyManifestCount:     self.custodyManifestCount ?? 0,
                 shardMetadataAttempted:   self.shardMetadataAttempted ?? false,
-                senderEphemeralSignature: try self.senderEphemeralSignature.map(Self.bytes)
+                senderEphemeralSignature: try self.senderEphemeralSignature.map(Self.bytes),
+                bodyDigest:               try self.bodyDigest.map(Self.bytes)
             )
             // Mirrors `wrapRecipient` (Crypto+Manager+GroupEncrypt.swift), which encodes the
             // payload with a sorted-keys JSONEncoder before wrapping it. Keep the two in step.

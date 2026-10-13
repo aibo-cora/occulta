@@ -1848,6 +1848,19 @@ extension ContactManager {
             }
         }
 
+        // ── 3.6. Require the body digest once the sender is known to send it ──
+        // Every recipient holds the session key, so without the digest the body could be another
+        // recipient's (`bugs.md` Bug 165); a matching one was checked as the slot opened. Required only from a
+        // sender recorded at the tier, which only rises, so a claim can't switch it off. A stranded marker
+        // accepts, unlike the signature gate above: refusing would block 1.10.2–1.11.x contacts whose marker
+        // was stranded, and refusing only there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their
+        // first bundle from the tier repairs the marker.
+        if recipientPayload.bodyDigest == nil,
+           case .readable(let version) = Self.bundleVersionState(for: sender, using: cryptoOps),
+           version.isAtLeast(.bodyDigestCapable) {
+            throw GroupDecryptError.missingBodyDigest
+        }
+
         #if DEBUG
         debugPrint("Opening group bundle, recipient mode: \(recipientMode), used: \(used), sender pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
         #endif
@@ -1856,6 +1869,12 @@ extension ContactManager {
         let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
         let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
         let decoded     = try WireHandle.decode(payload: payloadData)
+
+        // An identity challenge in a group body always needs the digest: no sender puts one there without it
+        // (prekey continuity §3.4), and an older sender's group bundle is exactly what a recipient would rewrite.
+        if decoded.identityChallenge != nil, recipientPayload.bodyDigest == nil {
+            throw GroupDecryptError.missingBodyDigest
+        }
 
         // ── 5.5. Verify sender proof ─────────────────────────────────────
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields

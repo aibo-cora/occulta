@@ -185,14 +185,24 @@ private struct Fixture {
         )
     }
 
-    /// `bundle` with its shared ciphertext corrupted: its slot still opens (it is keyed to `blind`,
-    /// not to the shared ciphertext), and the shared ciphertext then fails authentication.
+    /// `bundle` with its shared ciphertext corrupted: its slot still opens, and the body then fails against the
+    /// slot's digest (`bugs.md` Bug 165). A one-time key survives that rejection, so use `misSigned` to test
+    /// one that consumes it.
     func corrupted(_ bundle: OccultaBundle) -> OccultaBundle {
         var ciphertext = bundle.ciphertext
         ciphertext[ciphertext.index(before: ciphertext.endIndex)] ^= 0x01
         return OccultaBundle(
             version: bundle.version, secrecy: bundle.secrecy, ciphertext: ciphertext,
             fingerprintNonce: bundle.fingerprintNonce, senderFingerprint: bundle.senderFingerprint, group: bundle.group
+        )
+    }
+
+    /// A group-format bundle sealed to `prekey` by someone holding it who isn't the sender: its slot opens, and the
+    /// sender's signature over its ephemeral key then fails.
+    func misSigned(prekey: Prekey) throws -> OccultaBundle {
+        try Manager.Crypto(keyManager: TestKeyManager()).seal(
+            message: Data("hi".utf8), groupID: UUID(),
+            recipients: [GroupRecipient(publicKey: self.selfPub, quantumMaterial: nil, contactPrekey: prekey, pendingBatch: nil)]
         )
     }
 
@@ -395,12 +405,35 @@ private struct Fixture {
         _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
         let prekey = try f.firstPendingPrekey()
 
-        let bundle = f.corrupted(try f.groupBundle(prekey: prekey))
-        #expect(throws: (any Error).self) { _ = try f.cm.openGroup(bundle: bundle, ownerID: f.senderID) }
+        let bundle = try f.misSigned(prekey: prekey)
+        #expect(throws: GroupDecryptError.senderEphemeralSignatureMismatch) {
+            _ = try f.cm.openGroup(bundle: bundle, ownerID: f.senderID)
+        }
 
         let saved = try f.savedRecord
         #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: saved) == nil)
         #expect(!PrekeyBookkeeper().hasPendingBatch(saved))
+    }
+
+    /// The exception (`bugs.md` Bug 165): a body that isn't the one the slot was sealed around is someone else's,
+    /// put behind the sender's slot. Using the key up would make the sender's genuine message unopenable.
+    @Test("A body that fails the slot's digest leaves the prekey, and the genuine bundle then opens", .enabled(if: secureEnclaveAvailable()))
+    func digestMismatchKeepsThePrekey() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let prekey  = try f.firstPendingPrekey()
+        let genuine = try f.groupBundle(prekey: prekey)
+
+        #expect(throws: GroupDecryptError.bodyDigestMismatch) {
+            _ = try f.cm.openGroup(bundle: f.corrupted(genuine), ownerID: f.senderID)
+        }
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: try f.savedRecord) != nil)
+        #expect(PrekeyBookkeeper().hasPendingBatch(try f.savedRecord), "nothing was delivered")
+
+        #expect(try f.cm.openGroup(bundle: genuine, ownerID: f.senderID).sealed.message == Data("hi".utf8))
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: try f.savedRecord) == nil)
     }
 
     /// D1: a retired batch's leftover keys are kept 30 days for files sealed to them and still on their way. The
