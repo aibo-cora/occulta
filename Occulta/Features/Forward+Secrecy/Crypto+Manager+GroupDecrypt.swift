@@ -51,9 +51,9 @@ enum GroupDecryptError: Error, Equatable {
     /// Our slot's `RecipientPayload.bodyDigest` doesn't match the bundle's ciphertext: another recipient,
     /// who holds the same session key, rewrote the body behind the sender's slot (`bugs.md` Bug 165).
     case bodyDigestMismatch
-    /// The slot carries no `bodyDigest`, from a sender recorded at `.bodyDigestCapable`, or around an identity
-    /// challenge, which no sender puts in a group body without one. Either way the body could be another
-    /// recipient's (`bugs.md` Bug 165).
+    /// The slot carries no `bodyDigest`, from a sender recorded at `.bodyDigestCapable`, around an identity
+    /// challenge, or under a body claiming an app version at that tier. No sender puts any of those in a group
+    /// bundle without one, so the body could be another recipient's (`bugs.md` Bug 165).
     case missingBodyDigest
 }
 
