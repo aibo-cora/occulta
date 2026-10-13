@@ -13260,9 +13260,9 @@ depth with a backup or several.
 
 ## Bug 165 — A group member can rewrite another member's message to the rest of the group
 
-**Status:** Open — fix proposed, not built. Found 2026-10-12 in the security review of prekey continuity stage 3
-(`Docs/Features/Prekey Continuity/DESIGN.md` §3.4), confirmed by `GroupBodyBindingTests`. (Bugs 163 and 164 are
-filed on `v2.0.0/custody-replace-ordering`.)
+**Status:** Fixed 2026-10-13 on `v2.0.0/group-body-binding`, not yet merged; ships in v2.0.0. Found 2026-10-12 in
+the security review of prekey continuity stage 3 (`Docs/Features/Prekey Continuity/DESIGN.md` §3.4), confirmed by
+`GroupBodyBindingTests`. (Bugs 163 and 164 are filed on `v2.0.0/custody-replace-ordering`.)
 
 **Target:** `v2.0.0`. Present since group bundles shipped (1.9.0).
 
@@ -13299,22 +13299,42 @@ Alice's.
   nonce, but see Bug 166.
 - **Not affected:** bundles with one recipient. Only the sender and that recipient know the content key.
 
-### Fix — proposed
+### Fix — built 2026-10-13
 
-Each slot's payload carries a digest of the body: SHA-256 over the outer associated data and the ciphertext. The
-slot is encrypted under a key only the sender could have built (a signed ephemeral key, or long-term key agreement
-between sender and recipient), so the digest inside it is the sender's. The receiver checks it when present, and
-requires it from senders recorded at the tier that introduces it; a sender's tier only rises, so the requirement
-can't be switched off by a claim. Identity challenges in group format require it always (prekey continuity
-stage 3). A new optional `RecipientPayload` field, so an interop vector; it can share stage 3's tier.
+Every slot carries `RecipientPayload.bodyDigest`, the SHA-256 of the bundle's ciphertext
+(`Manager.Crypto.seal(sealedPayload:groupID:recipients:)`). The slot is encrypted under a key only the sender
+could have built (a signed ephemeral key, or long-term key agreement between sender and recipient), so the digest
+inside it is the sender's. The ciphertext alone is enough: its GCM tag covers the outer associated data, so
+changing either changes the ciphertext. Every build since 1.9.0 ignores the unknown key, so the sender sends it to
+everyone, with no tier check.
 
-Bundles from senders below that tier stay forgeable this way until they update.
+The receiver:
+- **rejects a mismatch** (`bodyDigestMismatch`) in `findAndOpenRecipientSlot`, before the slot's one-time key is
+  recorded as used. Decided 2026-10-13: the slot is the sender's own, for a message not opened yet, and consuming
+  would let the forger, by delivering first, make the genuine message unopenable. Keeping the key leaves it as it
+  was before the forgery arrived, which withholding the bundle achieves anyway. The one exception to consuming at
+  open (`SECURITY_CHECKLIST.md` §2.2, amended);
+- **rejects a missing digest** (`missingBodyDigest`) from a sender recorded at the new tier, `.bodyDigestCapable`
+  (2.0.0, marker byte 0x09). A tier only rises, so a claim can't switch it off;
+- **accepts a missing digest** below the tier, with no tier recorded, and with a stranded marker. Decided
+  2026-10-13: refusing a stranded marker would block 1.10.2–1.11.x contacts as Bug 81 does, and refusing only
+  there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their first bundle at the tier repairs it;
+- **rejects an identity challenge in a group body without a digest,** whatever the tier: stage 3's requirement.
+
+Both rejections show the existing "couldn't confirm this message came from this contact" message, so they add no
+string to tell apart. A new interop vector, `recipientPayload.bodyDigest`; the existing ones are unchanged.
+
+**Left open:** bundles from senders below the tier stay forgeable until they update, and a sender Carol has never
+heard from is forgeable on their first bundle, as with the signature gate.
 
 ### Guard
 
-`GroupBodyBindingTests.rewrittenBodyIsRejected` (known issue until the fix). Needed with the fix: the digest is
-required at the tier and for a challenge whatever the tier; a bundle without it from a sender below the tier
-still opens.
+`GroupBodyBindingTests`: the digest is in every slot; a rewritten body is rejected; a mismatch leaves the one-time
+key and the genuine bundle opens; a missing digest is refused only at the tier (all four recorded states); a
+challenge without one is refused below the tier, and one with it opens. `PrekeyRecordWiringTests.
+digestMismatchKeepsThePrekey` (Enclave-gated) does the mismatch end to end against the record.
+`consumptionSavedBeforeRejection` now rejects through a bad signature, since a corrupted body no longer consumes.
+With the three receiver checks disabled (the mismatch moved after consumption), each one's test failed.
 
 ## Bug 166 — A response we aren't waiting for shows "Verification failed — this may not be <contact>"
 

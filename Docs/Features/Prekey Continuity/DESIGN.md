@@ -369,8 +369,9 @@ today the only check stopping a group member from forging a challenge: a slot do
 so a co-recipient can rewrite a group bundle's body behind the sender's genuine slot (Bug 165, confirmed by
 `GroupBodyBindingTests`). Stage 3 therefore needs, before it ships:
 - **Bug 165's fix:** each slot carries a digest of the body. Required for any group-format challenge or
-  response whatever the sender's recorded tier, and from senders at the tier for everything else. It can share
-  this section's tier.
+  response whatever the sender's recorded tier, and from senders at the tier for everything else. **Built
+  2026-10-13** (`v2.0.0/group-body-binding`), with the tier `.bodyDigestCapable` (2.0.0, byte 0x09), which this
+  section shares.
 - **The slot signature required for a challenge,** on a forward-secret slot, whatever tier is recorded.
   `openGroup` accepts an unsigned forward-secret slot from a sender with no tier recorded; every build that sends
   challenges in group format signs.
