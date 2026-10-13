@@ -12904,7 +12904,17 @@ and assert none is created.
 
 ## Bug 156 — Unused prekeys are never removed from the Secure Enclave
 
-**Status:** Open — fix decided 2026-10-06, not yet built: delete retired keys 30 days after retirement.
+**Status:** Fixed 2026-10-10 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged; ships with
+the contacts slice. Retired keys, and legacy keychain keys once retired, are deleted 30 days after retirement.
+**Residual — open, needs a decision:** the clock starts at retirement, and a batch retires only when the contact
+uses a newer one. In the batch a contact is still using, a key whose message was lost stays until they move on to
+the next batch, so for a contact who goes quiet it has no time limit; the same holds for legacy keys of a contact
+who never uses a record-held batch. Those are the "contact who goes quiet" this fix chose a time limit for. It
+exposes a file only to someone who kept a copy of it from transit and later has the unlocked phone; an unread file
+that did arrive is readable by design, as in any messenger. Two ways to narrow it were weighed on 2026-10-11 and
+not taken (design §8, stage 1): retiring a batch's skipped keys when a later key is used costs a record entry per
+skip, which the contact controls; and a lifetime both sides honour costs messages from contacts on older builds
+who return after it. Signal accepts the second trade (libsignal's 30-day `MAX_UNACKNOWLEDGED_SESSION_AGE`).
 
 **Target:** `v2.0.0`. Pruning existed (`d16ec10c`, 2026-03-18) and was removed in `efb0b199` (2026-03-29);
 every release with forward secrecy is affected.
@@ -12954,11 +12964,15 @@ hold as one retired-on-first-use batch (design §8, stage 1).
 
 ### Guard
 
-None yet.
+`PrekeyBookkeeperTests` (retirement, the sweep, eviction), `PrekeyLifecycleTests` (`PrekeySweepTests`: deleted
+after 30 days and not before; legacy keys marked gone once; the unlock sweep covers visible contacts only) and
+`PrekeyRecordWiringTests.receiptSweepsBeforeRejection` (the sweep on receipt deletes legacy keychain keys and is
+saved even when the bundle is rejected).
 
 ## Bug 157 — Using any of our prekeys clears the pending batch, even one from an older batch
 
-**Status:** Open.
+**Status:** Fixed 2026-10-09 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged: the pending
+batch stops being pending only when the key used belongs to it (`PrekeyBookkeeper.consume`).
 
 **Target:** `v2.0.0`. Present since the pending batch was introduced (`8ec81d8a`, 2026-03-23).
 
@@ -12984,11 +12998,14 @@ no format change is needed.
 
 ### Guard
 
-None yet. Needed: the sequence above through `decryptSealed`, asserting batch 2 is still pending after m15.
+`PrekeyBookkeeperTests`: out-of-order arrival keeps the pending batch. Through `decryptSealed` and `openGroup`,
+`PrekeyReplenishmentTriggerTests` checks that a key from the pending batch delivers it.
 
 ## Bug 158 — A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely
 
-**Status:** Open — fix needs a decision.
+**Status:** Fixed 2026-10-09 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged: a batch
+carries a 16-byte ID and is deduplicated by it, whatever its date (the first option below). A batch without an ID,
+from a sender on an older build, keeps the date rule, so that sender keeps the bug until they update.
 
 **Target:** `v2.0.0`. Present since `latestPrekeysGeneratedAt` was introduced (`efb0b199`, 2026-03-29).
 
@@ -13024,7 +13041,9 @@ them unopenable. Any replacement has to keep rejecting that copy. Options:
 
 ### Guard
 
-None yet.
+`PrekeyBookkeeperTests`: an older-dated batch with a new ID is accepted, a repeated ID is dropped, and a batch
+without an ID keeps the date rule. The interop vectors `payload.prekeyBatchWithID` and
+`recipientPayload.prekeyBatchWithID` pin the wire field.
 
 ## Bug 159 — A fresh prekey batch is generated before the bundle has passed every check
 
@@ -13108,6 +13127,82 @@ drops by five.
 
 The tests above. They assert the trigger's effects directly (a stored batch, its 15 Enclave keys, the batch
 cleared), so removing the trigger from either method would fail them.
+
+## Bug 161 — A contact's sealed prekey record changes size with their message activity
+
+**Status:** Fixed 2026-10-10 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1,
+`Docs/Features/Prekey Continuity/DESIGN.md` §8), not yet merged; ships with the contacts slice. Found planning
+that stage. Step 3's filler rows don't exist yet; they must use the same sealed size.
+
+**Target:** `v2.0.0`. Present since `forwardSecrecyEncrypted` was introduced (forward secrecy, 2026-03).
+
+### Severity: Medium (forensic, once v2.0.0 seals records per depth; subsumed today)
+
+Today the passcode alone opens the local DB key, so whoever can read the file can read everything, and this adds
+nothing. Once steps 1–5 of v2.0.0 seal each depth's records under its own key, a record's *length* is still
+readable without any key, so it becomes a leak.
+
+### What happens
+
+`Contact.Profile.forwardSecrecyEncrypted` is `encrypt(JSONEncoder().encode(ForwardSecrecy))`
+(`Contact+Model+Profile.swift`). Its plaintext holds the contact's public prekeys we can still use
+(`encodedPrekeys`, 0–15 entries, each a JSON-encoded `Prekey`) and the batch we're waiting to deliver
+(`pendingOutboundBatch`, present or absent). AES-GCM preserves length, so the ciphertext's size tracks both:
+- it shrinks by one prekey each time we send them a message, and jumps back when their batch arrives;
+- it grows by a batch when their long-term message arrives, and shrinks when they use a key from it.
+
+Anyone with the database file and no key can therefore read, per contact row, roughly how many of their keys we
+hold and whether a batch is pending. Comparing two images shows how many messages went each way in between.
+That holds for hidden contacts too: their rows exist, and step 3's filler only hides them if every row's field has
+the same length. Prekey continuity stage 1 makes this worse, since the record will also hold our own private
+blobs (D9), 143 bytes each.
+
+**The field's presence leaks too (added 2026-10-09).** `forwardSecrecyEncrypted` is optional and stays `nil`
+until `configureForwardSecrecy` creates it, which happens only on the first send (`encryptBundle`,
+`encryptGroupBundle`) or the first receive (`decryptSealed`, `openGroup`). SQLite records NULL structurally,
+independent of encryption. So a plain `WHERE forwardSecrecyEncrypted IS NULL` query, with no key, separates
+contacts the user has exchanged messages with from those never written to. That is the same class as Bug 112's
+`deletionToken`.
+
+Other variable-length sealed fields on `Contact.Profile` were not checked for the same problem. Steps 3–5's
+fixed-width rule applies to them as well.
+
+### Fix — decided 2026-10-08
+
+Pad the encoded record to a **fixed capacity of 16 KB** before sealing, for every contact and for step 3's filler
+rows alike, so the field's length never varies. The capacity is sized for stages 2 and 4 as well, so it never has
+to grow:
+- worst case (48 of our own keys in as many entries as they can form, the pending batch and 33 one-key entries;
+  two full batches of theirs; 8 accepted batch IDs) measures 15,683 bytes (15,874 with stage 2's last-resort keys)
+  in a compact binary layout, with each
+  batch's ID dropped once delivered (16,508 with them kept, past the capacity; found 2026-10-11), and would be far larger as JSON with
+  base64. So the record moves to a compact layout; JSON doesn't fit. (The first estimate, about 11.5 KB with
+  30-key inbound batches and 64-byte key IDs, was wrong: measured with distinct values those limits need 19,751
+  bytes. Corrected 2026-10-11 by limiting inbound batches to 15 keys and 36-byte IDs; design §8, "Size limits".)
+- the record can't exceed the capacity: prekey continuity's bookkeeper caps what it holds (48 own keys, 15 keys
+  per inbound batch, 36-byte inbound key IDs, 8 accepted batch IDs), and when installing a batch would pass the
+  own-key cap it deletes the oldest retired keys, never keys not yet retired. That can lose a file sealed to a
+  retired key and not yet opened, within the 30-day grace, but only when more than 18 such keys are waiting. The codec itself never drops data; it throws on a record past capacity
+  (decided 2026-10-09, design stage 1).
+
+**Never null (added 2026-10-09).** The field is written, as an empty record at the fixed size, when the contact is
+created, so no contact ever has it null. Deletion overwrites it with filler of the same size rather than clearing
+it (stage 1).
+
+**Migration (decided 2026-10-09).** One pass over every contact row at launch, before v2.0.0 reseals records per
+depth, moves each record into a **new field** at its fixed size, gives contacts that had none an empty one, and
+sets `forwardSecrecyEncrypted` to `nil` on every row. The old field is then uniformly null, which leaks nothing,
+and is made private (not deprecated, which warned on every build through `@Model`'s generated code). Migrating lazily, row by row as records were opened, was rejected: migrated and
+unmigrated rows are distinguishable without a key, and after the reseal the rows left unmigrated during duress
+use would be the hidden contacts.
+
+### Guard
+
+`PrekeyRecordCodecTests` (exactly the capacity, empty and with every cap reached at once; throws rather than
+trims), `PrekeyBookkeeperTests` (eviction of the oldest retired keys first), `PrekeyLifecycleTests` (a saved, an
+imported and a deleted contact all have the field at the same length) and `PrekeyRecordMigrationTests` (after the
+pass every row's field has that length, whatever it started with). Still needed when step 3 is built: a filler
+row's field matches a real one's length.
 
 ## Bug 162 — A trustee's piece count for an owner tells how many of the owner's depths have a backup
 
@@ -13324,3 +13419,143 @@ path (`decryptSealedStripsOnFallback`), not a one-to-one group-format bundle.
 `LastResortReceiveTests.lastResortSlotDropsSharedShardContent` (last-resort slot dropped, one-time slot kept). Both
 fail with the fix removed. Enclave-gated, so skipped on CI.
 
+## Bug 165 — A group member can rewrite another member's message to the rest of the group
+
+**Status:** Fixed 2026-10-13 on `v2.0.0/group-body-binding`, not yet merged; ships in v2.0.0. Found 2026-10-12 in
+the security review of prekey continuity stage 3 (`Docs/Features/Prekey Continuity/DESIGN.md` §3.4), confirmed by
+`GroupBodyBindingTests`.
+
+**Target:** `v2.0.0`. Present since group bundles shipped (1.9.0).
+
+### Severity: High (forgery of a contact's messages by another contact)
+
+### What happens
+
+A group bundle encrypts its body once, under a random content key, and gives each recipient a slot wrapping that
+key (`Manager.Crypto.seal(sealedPayload:groupID:recipients:)`). A slot is bound to `blind`, a random value per
+bundle, and to nothing else: no slot commits to the body. `senderProof`, the body's check that the sender sealed
+it, is `HMAC(content key, sender's public key)`, and every recipient has both.
+
+So when Alice sends to Bob and Carol, Bob can write a body of his own, compute its `senderProof`, encrypt it under
+the same key with the same `blind`, and keep Alice's slot to Carol. Carol's `openGroup` opens it as Alice's: the
+slot is genuine, and on a forward-secret slot Alice's signature over the ephemeral key verifies, because it is
+Alice's.
+
+- **When:** any time, if Carol's slot is long-term or last-resort, since neither key is used up. If it used a
+  one-time key, only until Carol opens the original. Bob usually has the same file Carol does, at the same time.
+- **What Bob can forge in Alice's name, to Carol:**
+  - any message in the group;
+  - `appVersion`, which `updateMaxVersion` records, raising Alice's capability tier on Carol's phone. Carol then
+    sends Alice what her build may not open;
+  - piece operations and manifests. A multi-recipient bundle's per-recipient manifest is never marked attempted,
+    so the caller falls back to the body's fields (`buildOwnedBasket`), and so do empty per-recipient operations.
+    A forged `.handback` replaces the piece Alice returned in Carol's return buffer (`absorbShard`: a later share
+    from the same sender replaces the first), so Carol's restore can fail. A forged manifest marks Carol's pieces
+    with Alice present or absent. In shipped builds the body's shard content isn't dropped on long-term slots, so
+    this works at any time. Bug 164's fix (`v2.0.0/prekey-stage-2`) drops it on long-term and last-resort slots,
+    which leaves the race on a one-time slot.
+- **Not reachable today:** identity challenges, because `openIdentityBundle` reopens each with the long-term key
+  and a group bundle never opens that way. Prekey continuity stage 3 as first planned would remove that check
+  and expose them. A forged *response* still can't pass, since passing needs Alice's signature over Carol's
+  nonce, but see Bug 166.
+- **Not affected:** bundles with one recipient. Only the sender and that recipient know the content key.
+
+### Fix — built 2026-10-13
+
+Every slot carries `RecipientPayload.bodyDigest`, the SHA-256 of the bundle's ciphertext
+(`Manager.Crypto.seal(sealedPayload:groupID:recipients:)`). The slot is encrypted under a key only the sender
+could have built (a signed ephemeral key, or long-term key agreement between sender and recipient), so the digest
+inside it is the sender's. The ciphertext alone is enough: its GCM tag covers the outer associated data, so
+changing either changes the ciphertext. Every build since 1.9.0 ignores the unknown key, so the sender sends it to
+everyone, with no tier check.
+
+The receiver:
+- **rejects a mismatch** (`bodyDigestMismatch`) in `findAndOpenRecipientSlot`, before the slot's one-time key is
+  recorded as used. Decided 2026-10-13: the slot is the sender's own, for a message not opened yet, and consuming
+  would let the forger, by delivering first, make the genuine message unopenable. Keeping the key leaves it as it
+  was before the forgery arrived, which withholding the bundle achieves anyway. The one exception to consuming at
+  open (`SECURITY_CHECKLIST.md` §2.2, amended);
+- **rejects a missing digest** (`missingBodyDigest`) from a sender recorded at the new tier, `.bodyDigestCapable`
+  (2.0.0, marker byte 0x09). A tier only rises, so a claim can't switch it off;
+- **accepts a missing digest** below the tier, with no tier recorded, and with a stranded marker. Decided
+  2026-10-13: refusing a stranded marker would block 1.10.2–1.11.x contacts as Bug 81 does, and refusing only
+  there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their first bundle at the tier repairs it;
+- **rejects an identity challenge in a group body without a digest,** whatever the tier: stage 3's requirement.
+
+Both rejections show the existing "couldn't confirm this message came from this contact" message, so they add no
+string to tell apart. A new interop vector, `recipientPayload.bodyDigest`; the existing ones are unchanged.
+
+**Left open:** bundles from senders below the tier stay forgeable until they update, and a sender Carol has never
+heard from is forgeable on their first bundle, as with the signature gate.
+
+### Guard
+
+`GroupBodyBindingTests`: the digest is in every slot; a rewritten body is rejected; a mismatch leaves the one-time
+key and the genuine bundle opens; a missing digest is refused only at the tier (all four recorded states); a
+challenge without one is refused below the tier, and one with it opens. `PrekeyRecordWiringTests.
+digestMismatchKeepsThePrekey` (Enclave-gated) does the mismatch end to end against the record.
+`consumptionSavedBeforeRejection` now rejects through a bad signature, since a corrupted body no longer consumes.
+With the three receiver checks disabled (the mismatch moved after consumption), each one's test failed.
+
+## Bug 166 — A response we aren't waiting for shows "Verification failed — this may not be <contact>"
+
+**Status:** Open — fix proposed, not built. Found 2026-10-12 in the security review of prekey continuity stage 3,
+confirmed by `IdentityChallengeUnsolicitedResponseTests`.
+
+**Target:** `v2.0.0`. Present since identity challenges shipped.
+
+### Severity: Medium (a false impersonation warning about a contact)
+
+### What happens
+
+`IdentityChallenge.Coordinator.handleInboundChallenge` shows the red result sheet for any response that fails,
+and `verifyResponse` returns a failure for a response whose nonce names no challenge we're waiting for. The sheet
+says "Verification failed" and "This may not be <contact>. If they may have lost their device, re-exchange keys
+in person."
+
+- **Reopening a genuine response file** after it passed is enough: its nonce was used up when it passed. No
+  attacker needed.
+- **A group member can trigger it** through Bug 165: a response envelope in a rewritten group body fails to open
+  in `openIdentityBundle`, and a failure to open shows the sheet too.
+- **The contact can, at any time,** which matters less: they can lie to us anyway.
+
+### Fix — proposed
+
+Show a result only for a response that opens, is authenticated, and names a challenge still waiting for that
+contact; drop anything else without a sheet. A response that names our challenge and fails the signature or the
+time window still shows "Verification failed": that's the case the sheet is for. Nobody but the contact can learn
+the waiting nonce, so nobody else can reach the sheet.
+
+### Guard
+
+`IdentityChallengeUnsolicitedResponseTests.reopenedResponseShowsNothing` (known issue until the fix). Needed with
+the fix: a response that won't open shows nothing; one naming our challenge with a bad signature still fails.
+
+## Bug 167 — Identity challenges and responses can be recognised by their size
+
+**Status:** Open — needs a decision. Found 2026-10-12 in the security review of prekey continuity stage 3.
+
+**Target:** `v2.0.0`. Present since identity challenges shipped.
+
+### Severity: Low (forensic)
+
+### What happens
+
+A challenge is meant to look like an ordinary long-term message (`IdentityChallenge+Manager.swift`, header).
+Message bodies aren't padded, and a challenge without a note always has the same body: the fixed fallback text,
+a 72-byte payload and the same fixed fields. A response's varies only with its DER signature, by a few bytes.
+Anyone collecting `.occ` files can therefore pick them out by size, whichever key sealed them.
+
+Prekey continuity stage 3 moves challenges to the group format so they stop standing out once long-term bundles
+are rare (§3.4). That change alone doesn't achieve it, because of the size.
+
+### Fix — open, needs a decision
+
+- **Pad every bundle body to size buckets.** Hides challenges among messages of the same bucket, and message
+  lengths generally. Costs traffic, and touches every send path.
+- **Drop the fallback text from group-format challenges.** Only new-tier contacts receive those, so the text
+  serves no one. Makes the body smaller, not less recognisable; useful only alongside padding.
+
+### Guard
+
+None yet.

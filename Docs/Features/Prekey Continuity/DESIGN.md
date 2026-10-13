@@ -1,6 +1,8 @@
 # Prekey Continuity — Design
 
-**Status:** Proposed, 2026-10-06. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
+**Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stage 1 built
+2026-10-10, in review (PR #94, replacing #93); stage 2 built 2026-10-12, in review (PR #97); stages 3–4 not
+started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
 **Downgrades ruled out by release order** (D6, 2026-10-07). **Seeding at the exchange (§3.2,
@@ -32,7 +34,7 @@ us more by sending us something. So we fall back to the **long-term** mode (`.lo
 `.longTermNoPQ`), which derives the key from the two identity keys:
 
 1. **The first message in each direction.** The in-person exchange carries no prekeys.
-2. **After 15 messages without a reply.** `PrekeyManager.defaultBatchSize` is 15. A new batch is generated
+2. **After 15 messages without a reply.** `PrekeySecretsManager.defaultBatchSize` is 15. A new batch is generated
    only when a long-term bundle arrives, and travels only on the recipient's next message. In a two-way
    conversation that is about 1 in 16 of each side's messages; in a one-way burst, every message past the 15th.
 3. **Every identity challenge and response.** They are sealed long-term on purpose
@@ -70,14 +72,14 @@ case so §3.1 is rarely used; §3.4 keeps identity challenges from standing out 
 Each batch carries one extra prekey that may be used more than once. When the sender runs out of one-time
 prekeys, it seals to the last-resort key instead of the identity keys.
 
-**Generation (recipient, B).** Generated with the batch, with the same Enclave attributes and tag scheme as a
-one-time prekey, so the keychain can't tell them apart. Which of our keys is the last-resort one is recorded
-in the contact's record, not in the tag.
+**Generation (recipient, B).** Generated with the batch: one more CryptoKit Enclave key, with the same access
+control, held in the record as a blob like the one-time keys (D9), with its public key derived from the blob
+when the batch is sent. The batch records which of its keys is the last-resort one.
 
 **Wire.** `PrekeySyncBatch` gains one optional field, inside the sealed payload:
 
 ```
-lastResort: { publicKey: 65 bytes (x963), idKey: 32 random bytes }   // absent from older builds
+lastResort: WirePrekey { id, publicKey }   // the same type as the one-time keys; absent from older builds
 ```
 
 Synthesized `Codable` omits a nil optional and ignores an unknown key, so older builds decode a batch that
@@ -85,29 +87,38 @@ carries it, and batches without it encode exactly as today; the existing interop
 vectors cover a batch that carries it.
 
 **Sending (A).** On accepting a batch, A stores its `lastResort` in the contact's record, replacing the
-previous one. When `popOldestPrekeyData()` returns nil and a last-resort key is stored, A seals in the normal
-forward-secret mode with a fresh ephemeral key, as for a one-time prekey, with two differences:
+previous one, and keeps it when the one-time keys run out. When `takeInboundPrekey` finds none left and a
+last-resort key is stored, A seals in the normal forward-secret mode with a fresh ephemeral key, as for a
+one-time prekey, with two differences:
 
 - the key is **not** removed after use;
-- the cleartext `prekeyID` is not a stored ID. It is `HMAC-SHA256(idKey, ephemeralPublicKey)`, truncated to
-  16 bytes, with the UUID version-4 and variant bits set, formatted as `UUID().uuidString` formats one.
+- the cleartext `prekeyID` is not the key's ID. It is `HMAC-SHA256(lastResortID, ephemeralPublicKey)`,
+  truncated to 16 bytes, with the UUID version-4 and variant bits set, formatted as `UUID().uuidString` formats
+  one. The HMAC key is the last-resort key's own ID as raw bytes.
 
-The `prekeyID` is why the `idKey` exists. A fixed ID would appear in the clear on every bundle sealed to that
-key and link them all. The derived ID changes with every ephemeral key, can't be computed without the
-`idKey`, and has the same format as a real one. Mode, sizes and the sender's ephemeral signature are those
-of a one-time forward-secret bundle, so the two can't be told apart on the wire.
+A fixed ID would appear in the clear on every bundle sealed to that key and link them all. The ephemeral public
+key is new for every message and already in the bundle, so it serves as the nonce; the derived ID changes with
+it, can't be computed without the last-resort key's ID, and has the same format as a real one. Mode, sizes and
+the sender's ephemeral signature are those of a one-time forward-secret bundle, so the two can't be told apart
+on the wire.
+
+**The last-resort key's ID is its secret (decided 2026-10-11).** It has 122 random bits, travels only inside
+the sealed batch, and unlike a one-time key's ID is never written in a bundle's `prekeyID`: only the derived
+value is. So it can key the HMAC, and a separate 32-byte `idKey`, the first design, was dropped from the wire
+and both records. The condition is that the real ID never appears in the clear; a test checks that a
+last-resort bundle's `prekeyID` never equals it and differs on every send.
 
 Used only when the bundle goes out in group format (`targetVersion.supportsGroups`), so the
 `senderEphemeralSignature` authenticates it. A contact who sends a last-resort key is on a new build, so this
 always holds unless their recorded version is stranded; in that case A falls back to long-term, as today.
 
-**Receiving (B).** In `deriveInboundKey`'s forward-secret branch, when no stored prekey matches the
+**Receiving (B).** In `deriveInboundKey`'s forward-secret branch, when no stored one-time prekey matches the
 `prekeyID`, B computes the derived ID for each last-resort key it still holds for this sender and uses the one
-that matches. There are at most three: the delivered batch's, the pending batch's, and one retired but still
-within its grace period. That is one HMAC per candidate and no extra Enclave operation, so a 32-slot group
-bundle costs at most 96 HMACs. The last-resort key is **not**
-consumed. `findAndOpenRecipientSlot` consumes whatever key opened the slot (its `defer`), so it needs to know
-which kind of key it used.
+that matches; none matching rejects the bundle with the generic error, like any other unknown ID. The
+candidates are one per batch still in the record: the pending one, the delivered one, and retired ones within
+their grace period. That is one HMAC per candidate and no Enclave operation; a 32-slot group bundle against the
+largest record is about a thousand HMACs. The last-resort key is **not** consumed. `findAndOpenRecipientSlot`
+consumes whatever key opened the slot (its `defer`), so it needs to know which kind of key it used.
 
 **Bookkeeping on receipt.** A last-resort bundle means "the sender is out of one-time prekeys". It replaces
 today's long-term trigger:
@@ -148,6 +159,12 @@ Retirement time is stored per batch in the contact's record. Consequences that c
   after the 30 days, together. That burst is step 17's open "repeated images" item, not a new kind of change.
 - **The clock is the recipient's.** Moving it forward deletes early, which loses messages and exposes
   nothing; moving it back keeps keys longer, which needs the unlocked phone.
+- **Deleting at retirement, with no grace, was rejected (2026-10-11).** A new batch replaces the old one in the
+  contact's store, so once they use the new one, nothing new can be sealed to the old keys: deleting them at
+  once would never delete a key the contact holds. But a file sealed to an old key just before the switch and
+  opened after a newer one would be lost, with the generic error. That is a message lost that was never lost in
+  transit, so the grace stays. Deleting earlier keys of the batch still in use was rejected for the same reason,
+  and more strongly: it loses any two files opened out of order, not only those either side of a batch change.
 
 **Without a reply.** A last-resort key retires only when the sender uses a key from a newer batch, and only
 the recipient can send one. A recipient who never replies keeps the key, and every message sealed to it stays
@@ -173,15 +190,18 @@ What a repeat delivery would do:
 | Old `.distribute` / `.replace` after a newer one (trustee) | **Brings back a piece the owner replaced**, undoing a rotation. With `newKey`, that rotation exists to revoke a dropped trustee's piece (Bugs 141, 144) |
 | Custody manifest (owner) | Can flip a piece's status from a stale report |
 
-**Decided: (a), with two guards on the trustee side and a test matrix.**
+**Decided: (a), with two guards on the trustee side and a test matrix.** *Revised 2026-10-12: G2′ and the matrix
+are replaced by Bug 163's lineage, deferred; see "Revised 2026-10-12" below.*
 - **Backup-piece operations and custody manifests ride only on one-time keys.** The sender doesn't attach them
   when it seals to the last-resort key. The receiver drops them from a slot opened with a last-resort key,
   as it already does on long-term slots. A trustee on the last-resort key confirms later, as on long-term
-  today, which refilling makes rare.
+  today, which refilling makes rare. *Built 2026-10-12. The receiver's drop didn't reach a one-to-one bundle,
+  which carries them in the shared payload (`bugs.md` Bug 164); it does now, on long-term and last-resort
+  slots alike.*
 - **Only the current last-resort key signals "out of keys".** A repeat delivery sealed to an older one
   generates nothing.
 - **G1: `.replace` skips a piece it already holds,** as `.distribute` does (protocol case 15). This stops
-  duplicate rows.
+  duplicate rows. *Built 2026-10-12.*
 - **G2′: each custody row carries a "supersedes" field,** the ID the piece replaced, taken from the
   `.replace` that installed it. While the row is held, an operation carrying that ID is rejected, which
   blocks the most damaging replay: undoing the latest rotation. The field is inside the existing sealed row,
@@ -191,6 +211,26 @@ What a repeat delivery would do:
 - **The replay matrix is the main safety net.** Every case in `Occulta/Features/Vault/SHARD_PROTOCOL_CASES.md`
   is run with each operation delivered twice and in every order. Custody state must match a single in-order
   delivery.
+
+**Revised 2026-10-12: G2′ and the matrix are dropped; ordering is Bug 163's, deferred.** Working out the matrix
+showed that no rule on the trustee's side can make custody match in-order delivery, replay or not. A `.replace`
+names only the piece it replaces, a re-split drops the previous split's unsent operations, and the trustee can't
+tell which pieces belong together. So one lost or late `.replace` leaves a stale piece behind, and ordinary
+out-of-order delivery of one-time-key bundles already does that today (`bugs.md` Bug 163, present in v1.11.1).
+What was tried, each failing for that reason:
+- **G2′**, one superseded ID per row: covers one generation; two re-splits arriving in reverse still leave the
+  first piece.
+- **A chain of the last N superseded IDs:** fails at N + 1.
+- **Applying only the newest bundle's operations**, ordered by which of the receiver's one-time keys each bundle
+  used (a "newest used key" position kept in the prekey record): stops an older piece coming back after a newer
+  one, but drops a late `.replace` that was the only thing that would remove its predecessor.
+- **Letting a late bundle only remove, never add:** converges when nothing is lost, but not when a bundle is.
+
+The fix that works is a lineage per owner depth and trustee, so the trustee holds one piece per lineage and the
+newest replaces the rest. It is worked out in Bug 163 and deferred, with Bug 162's container, which would close
+both. **What stands for replay:** piece operations and manifests never ride a last-resort slot, on either side, so a
+redelivered last-resort bundle carries nothing to replay; and one-time-key bundles can't be replayed, since their
+key is gone once used. The matrix's promise, every order matching in-order delivery, waits for Bug 163.
 
 **Considered and rejected:**
 - **A replay cache of opened last-resort bundles.** It is a stored list that grows with traffic from a
@@ -228,7 +268,7 @@ below is kept as the design to return to.
 secret as the comparison words: the identity ECDH, the ML-KEM secrets and both nonces, under a separate HKDF
 label. Send it right after the ML-KEM step and before the words appear, then hold it in memory and store it
 only on Confirm. Matching words then prove the batch came from the person checked. Sealing also keeps the
-last-resort key's `idKey` confidential end to end, which signing alone would leave to the unauthenticated
+last-resort key's ID, which keys its derived prekey IDs, confidential end to end, which signing alone would leave to the unauthenticated
 session's encryption. If the batch hasn't arrived by Confirm, the contact is saved without it. Mixing the
 batch into the words was rejected as fragile. Waiting for step 8 binds nothing unless step 8 adds session
 certificates.
@@ -236,7 +276,7 @@ certificates.
 **Likely direction when this returns (owner's note, 2026-10-07).** Exchange the prekeys, or any other data the
 pair needs at setup, **after** both users confirm the comparison words, authenticated with a key derived from
 the confirmed secret. That key is symmetric, so it gives a MAC or AEAD rather than a signature; sealing with
-AEAD also covers the `idKey`'s confidentiality. Nothing is accepted until the human check has passed. What it
+AEAD also covers the confidentiality of the last-resort key's ID. Nothing is accepted until the human check has passed. What it
 changes: today each phone's Confirm is local and tears its session down at once (`finish()` in
 `KeyExchange.swift`). The session would have to stay up until both sides have confirmed and exchanged, and
 the timeout and one-side-cancels cases would need defining. That replaces the send-before-the-words timing
@@ -268,7 +308,7 @@ A recipient knows how many of its one-time prekeys a contact still holds. It sen
 run out, so a two-way conversation never reaches the last-resort key.
 
 **Refill (B).** When the contact holds `≤ T` unused one-time keys from batches they have received, and no
-batch is pending, B generates a batch and attaches it. `T` replaces `PrekeyManager.replenishThreshold`, which
+batch is pending, B generates a batch and attaches it. `T` replaces `PrekeySecretsManager.replenishThreshold`, which
 is unused today. **`T` = 5, with batches of 15 (D4, decided 2026-10-06, §4.1).**
 
 The count comes from the per-batch records in the contact's record, not from `remainingCount(for:)`. That
@@ -308,10 +348,13 @@ files.
   `openGroup` already opened and checked, instead of re-deriving the long-term key in `openIdentityBundle`.
   `openGroup`'s checks replace that defense-in-depth. The slot only opens with our own prekey or long-term key.
   For a forward-secret slot, `senderEphemeralSignature` is verified and, at this tier, required. And
-  `senderProof` binds the routing fields.
-- **Authentication is unchanged in strength.** The challenge was authenticated by long-term ECDH; it is now
-  authenticated by an identity-key signature over the slot's ephemeral key. Both need the contact's identity
-  private key. The response stays signed by the identity key after the contact approves it.
+  `senderProof` binds the routing fields, against outsiders only: in a bundle with several recipients each of
+  them can compute it (Bug 165).
+- **Authentication is unchanged in strength,** for a bundle with one recipient. The challenge was authenticated
+  by long-term ECDH; it is now authenticated by an identity-key signature over the slot's ephemeral key. Both
+  need the contact's identity private key. The response stays signed by the identity key after the contact
+  approves it. With several recipients, a slot doesn't bind the body, so another recipient can rewrite it; see
+  the review below.
 - **Version gate.** Contacts below the tier keep today's long-term path, unchanged. The tier is shared with
   step 17a's negotiation rather than adding another.
 - **Bonus.** Challenge contents, including the typed context note, get forward secrecy instead of being
@@ -320,6 +363,27 @@ files.
   Long-term challenges from contacts below the tier still would, so `decryptSealed` also skips batch generation
   when the payload carries `identityChallenge`. That needs Bug 159's reordering first, since generation runs
   before decoding today.
+
+**Security review, 2026-10-12.** `openIdentityBundle`'s long-term reopening, which this section replaces, is
+today the only check stopping a group member from forging a challenge: a slot doesn't bind the body it unlocks,
+so a co-recipient can rewrite a group bundle's body behind the sender's genuine slot (Bug 165, confirmed by
+`GroupBodyBindingTests`). Stage 3 therefore needs, before it ships:
+- **Bug 165's fix:** each slot carries a digest of the body. Required for any group-format challenge or
+  response whatever the sender's recorded tier, and from senders at the tier for everything else. **Built
+  2026-10-13** (`v2.0.0/group-body-binding`), with the tier `.bodyDigestCapable` (2.0.0, byte 0x09), which this
+  section shares.
+- **The slot signature required for a challenge,** on a forward-secret slot, whatever tier is recorded.
+  `openGroup` accepts an unsigned forward-secret slot from a sender with no tier recorded; every build that sends
+  challenges in group format signs.
+- **The one-to-one path unchanged.** A challenge outside the group format keeps `openIdentityBundle`'s long-term
+  reopening. `decryptSealed`'s forward-secret bundles carry no sender binding (finding #8's residual), so a
+  challenge it decrypted is never trusted as it stands.
+- **Bug 166's fix:** a response shows a result only if it names a challenge still waiting for that contact.
+- **One send path.** Challenges go through `encryptBundle`, so their slot padding, prekey batch and shard fields
+  match a message's, and D5 holds: no piece operations or manifests ride them.
+
+Still open, needs a decision: challenges are recognisable by size whatever key seals them (Bug 167), so the
+format change alone doesn't stop them standing out.
 
 ---
 
@@ -451,8 +515,7 @@ and the "padding range" and "pruning deletes Enclave keys" bullets below describ
 replaced. 17a is unchanged: the identity key stays in the keychain.
 
 - **17b's random tags and the map in the contact's record** are where this design keeps its per-batch records:
-  which keys belong to which batch, which is the last-resort key, retirement times, the last-resort `idKey`,
-  and accepted batch IDs. Design the record format once, for both.
+  which keys belong to which batch, which is the last-resort key, retirement times, and accepted batch IDs. Design the record format once, for both.
 - **17b's padding range** has to account for the new per-contact count. During a grace period, a contact
   holds up to `T` keys of the old batch, the 15 of the new one, and up to three last-resort keys. At `T = 5`
   that is about 23, against about 15 today. With Bug 156 fixed, the count is also bounded, which it isn't today.
@@ -466,7 +529,7 @@ replaced. 17a is unchanged: the identity key stays in the keychain.
 
 | Observer | Today | After |
 |---|---|---|
-| Holds the `.occ` files | Sees which bundles are long-term: the first message, ~1 in 16, challenges | Long-term only to or from older builds, and before a new contact's first reply. Last-resort bundles look like one-time ones. With §3.4(a), challenges don't stand out. |
+| Holds the `.occ` files | Sees which bundles are long-term: the first message, ~1 in 16, challenges | Long-term only to or from older builds, and before a new contact's first reply. Last-resort bundles look like one-time ones. With §3.4(a), challenges don't stand out by key; they still do by size (Bug 167, open). |
 | Images the keychain | ~15 keys per contact plus an unbounded number of leftovers (Bug 156), each with a creation date | No prekey items once legacy keys retire (D9) |
 | Images the device repeatedly | Keys disappear as messages are read | Rows change, covered by step 4 as any other write (D9) |
 | Coerces an unlock at a duress depth | Sees the forward-secrecy indicator for contacts at that depth | The same. The indicator must not depend on depth. |
@@ -508,6 +571,11 @@ have updated but not yet sent a batch from the new build; and the edges (a stran
 downgrade under D6, a reset of our stored copy of their keys), and every new contact until their first reply,
 since seeding at the exchange (stage 5) is deferred.
 
+**Built 2026-10-12** (stage 2, 4/4): `SecrecyIndicator` in `ComposeHeroV3.swift`, fed by
+`ContactManager.nextSendSecrecy(for:)`, which chooses as `encryptBundle` does, so a last-resort key held for a
+contact below the group format shows the long-term state, since that is what the message will use. The blue is
+`Color.occultaTemporary`.
+
 The description is plain language, with no claim beyond what the mode delivers (register §E). The state is
 per contact and doesn't depend on depth, so a coercer at the compose screen learns at most that the contact
 hasn't sent a batch recently, which today's amber state already shows. It is designed together with v2.0.0
@@ -519,50 +587,235 @@ other OS store (v2.0.0 step 9).
 ## 8. Stages, tests, migration
 
 Each stage ships with its tests and a migration that loses no message. Enclave-backed tests use
-`.enabled(if: secureEnclaveAvailable())`, since they create prekeys through `PrekeyManager`.
+`.enabled(if: secureEnclaveAvailable())`, since they create prekeys through `PrekeySecretsManager`.
 
 **Stage 0 — tests on today's code (Bug 160). Done 2026-10-08:** `PrekeyReplenishmentTriggerTests.swift`, Bug 159
 fixed; full suite 985 tests, 0 failed, 6 skipped (all `KeychainMigrationSETests`). End to end through `decryptSealed` and `openGroup`: a long-term
 bundle creates a pending batch; a forward-secret bundle clears it; the full cycle back to forward secrecy.
 These pin current behaviour before anything changes. Also fix Bug 159 (generate after the last check).
 
-**Stage 1 — prekeys into the record, per-batch records, retirement, batch IDs (D9; Bugs 156, 157, 158).**
-D1 and D9 are decided.
-- *Change:* new batches are CryptoKit Enclave keys whose blobs go in a fixed-width field of the contact's sealed
-  record. The receive path looks a prekey up in the record first, then in the keychain for legacy keys.
-- *Migration:* on first launch, each contact's existing keychain prekeys (by tag) become "batch 0" in the
-  record, retired when a key from a newer batch is first used, and deleted from the keychain after the grace
-  period. After that no prekey keychain items remain. A's stored `encodedPrekeys` become one batch with no
-  `id`. Messages already sealed to keychain prekeys still open throughout.
+**Stage 1 — prekeys into the record, per-batch records, retirement, batch IDs (D9; Bugs 156, 157, 158, 161).**
+D1 and D9 are decided; the three points below were settled 2026-10-08.
+- *Shape (decided 2026-10-09):* a value and two workers, after reviewing how Signal-iOS and libsignal split
+  prekey work.
+  - `PrekeyRecord` is the value: data only.
+  - `PrekeyRecordCodec` owns the 16 KB format and reading today's JSON. It is lossless: it never drops data, and
+    throws if a record exceeds capacity, which can only mean a broken invariant.
+  - `PrekeyBookkeeper` owns the rules: oldest-first, batch IDs, Bug 157, retirement, the sweep, and the size
+    limits, eviction included (below).
+  - Both workers are stateless structs and pure, so their tests need no Enclave.
+  - `PrekeySecretsManager`, renamed from `PrekeyManager`, keeps only the Enclave and keychain work.
+  - `ContactManager` is the only reader and writer of the record: it loads, calls the workers and the Enclave,
+    stores, saves and flushes the log.
+  - `Contact.Profile` only stores the field; its prekey helpers go. The compose indicator asks `ContactManager`
+    instead of the profile. The live screen is `Contact.DetailsV2`; `ContactDetailV3` is never constructed.
+- *Change:*
+  - **Record** (`PrekeyRecord`, built 2026-10-09). Our own batches: ID, created and retired times, an
+    `isPending` flag, and each key's 16-byte ID and 143-byte Enclave blob. A key's public key isn't stored: it is
+    derived from the blob when the pending batch is sent, 0.2–0.3 ms a key and 3–6 ms for a batch of 16 on the
+    Simulator across runs (decided 2026-10-11; an iPhone figure is still needed, from the TestFlight run). Only a pending batch
+    carried over from before stage 1, whose keys have no blob, stores public keys. The size budget still leaves
+    room to store them, so that if a device shows deriving is too slow, storing them again, or caching them in
+    memory, needs no format change. Their
+    batches: each batch's ID and its keys' IDs and public keys. The IDs of batches already accepted, the date
+    rule's last date, and `legacyKeys`. The pending batch is marked by `isPending` on its own batch,
+    not referenced by ID: a pending batch carried over from today's format has no ID and must keep travelling
+    without one, since a peer that accepted it under the date rule would accept it again if it reappeared with
+    one. The bookkeeper keeps at most one batch pending.
+  - **Legacy keys are not listed in the record (decided 2026-10-09).** Our prekeys from before stage 1 are
+    keychain Enclave keys, and the keychain never returns an Enclave key's wrapped blob, so they can't be moved
+    into the record: they stay in the keychain until retired. A message naming a prekey ID the record doesn't
+    hold is looked up in the keychain; deletion goes by the contact's tag prefix. The one exception is a pending
+    batch carried over from today's format, which still has to be sent: it stays an own batch whose keys have no
+    blob. An earlier plan listed every legacy key as a "batch 0" with an `isLegacy` flag; it was dropped as
+    redundant (a missing blob already says "keychain") and as space the record doesn't need to spend.
+  - **`legacyKeys` (decided 2026-10-09; a three-state field since the bookkeeper was built).** When the
+    contact first uses a key from one of our record-held batches, the legacy keys we issued them are retired; the
+    sweep deletes them by tag 30 days later (D1). States: `none` (a contact added after stage 1, or deleted),
+    `inUse` (every record converted from today's format starts here), `retired(since:)`. A plain date was the
+    first form; it couldn't say the keys were already gone, so every later sweep would delete by tag again, and
+    clearing it would read as "not retired yet" and be set again by the next message. Three states delete exactly
+    once. It is per contact because each contact switches at a different time. Alternatives rejected: deleting
+    legacy keys only when consumed leaves unused ones forever (Bug 156); deleting at the switch loses messages
+    still in transit; one deadline for everyone breaks rarely-writing contacts who still hold legacy keys;
+    waiting for our first record-held batch to expire is safe but one batch late, and never happens for a contact
+    who stops before a second batch. Legacy tags name the contact in the keychain (step 17's leak), so they should
+    go as early as is safe.
+  - **Fixed size (Bug 161).** The record is encoded in a compact binary layout and padded to a fixed 16 KB
+    for every contact, so its length never tracks activity.
+  - **Size limits, eviction in the bookkeeper (decided 2026-10-09, corrected 2026-10-11).** Overflow is made
+    impossible by construction rather than handled by the codec. The bookkeeper enforces, at the only moments the
+    record grows: at most 48 of our own keys (pending, current and retired leftovers, plus last-resort keys from
+    stage 2), deleting the oldest retired keys when installing a batch would exceed it; inbound batches of at most
+    15 keys with key IDs of at most 36 bytes (a UUID string), anything larger making the batch malformed; at most
+    8 accepted batch IDs. Stage 1 holds one inbound batch, since accepting replaces; the budget allows two, for
+    stage 4's append. Every field then has a maximum size, but the limits bound keys, not the entries they sit
+    in, and each own-batch entry costs about 45 bytes beyond its keys. So the worst case is 48 own keys in as
+    many entries as they can form: the pending batch, then 33 one-key entries, which a chatty contact losing one
+    file per batch leaves within 30 days. With two full inbound batches it measures 15,683 bytes, and a test
+    encodes that record within 16 KB with at least 512 bytes to spare, counting the pending batch's public keys as
+    stored, though they are now derived. It fits because a batch drops its 16-byte ID once delivered: the ID is
+    needed only on the wire. Kept, the IDs took the same
+    record to 16,508 bytes, past the 16,379 available (found 2026-10-11; it needed about 30 batches in 30 days).
+    - **With stage 2's last-resort keys** (one per own batch, counted in the 48, and the contact's one) the same
+      shape, now the pending batch's 16 keys plus 32 one-key entries, measures 15,874 bytes. The test's margin
+      went from 512 to 256 bytes to fit it rather than giving up the room kept for storing public keys again
+      (decided 2026-10-11): any per-key field across 48 keys is still well over 256. Counting public keys as
+      derived, as the code does, about 1.5 KB is left.
+    - **Corrected 2026-10-11.** The limits were first 30 keys per inbound batch and 64-byte IDs, with the worst
+      case put at 13,307 bytes. That figure came from a test fixture with 16-key batches and one repeated ID,
+      which a binary plist stores once. Measured with distinct values those limits need 19,751 bytes, past
+      16 KB with two batches. Stage 1 still fitted (one batch: 15,152), but stage 4 would not have. No build
+      sends more than 15 keys or anything but UUID IDs, so the tighter limits refuse nothing real; the launch
+      migration drops a carried-over batch outside them.
+    - **Only retired keys are evicted (decided 2026-10-11).** Keys not yet retired are the pending batch and the
+      one before it, at most 2 × 15, so evicting retired keys alone always makes room. The fallback that evicted
+      keys still in use when that wasn't enough could not run, and if it ever did it would silently lose every
+      message the contact sealed to them; it was removed, and a test pins the two-batch bound so a stage that
+      changes it (stage 2's last-resort key) has to do so on purpose. Evicting a retired key loses only a file
+      sealed before the contact moved on and not yet opened, and only when more than 18 such keys are waiting.
+    - **No retiring of skipped keys within a batch (rejected 2026-10-11).** Since the contact uses keys oldest
+      first, using key 7 shows keys 1–6 were taken earlier; retiring them then would start their 30 days without
+      waiting for the batch to retire, closing part of Bug 156's residual. Rejected: it splits a retired entry off
+      the batch at each skip, the contact controls the skips, and every entry has a fixed cost, so a contact
+      sealing to every other key could fill the record in about 75 messages. The window it closes needs a copy of
+      a file lost in transit and the unlocked phone. The skipped keys stay with their batch and retire with it.
+    Eviction in the codec
+    was rejected: a codec should translate without loss, the rule would sit apart from every other rule about
+    which keys exist, and keys would vanish whenever a record happened to be saved.
+    It is also never null: an empty fixed-size record is written when the contact is created, because a null
+    field (today, until the first message) tells contacts who've exchanged messages from those who haven't,
+    with no key needed. Built 2026-10-10, in both places a contact is created (`save(contact:)` and
+    `createContacts(from:)`).
+  - **Wire.** `PrekeySyncBatch` gains an optional 16-byte `id`, with new interop vectors; batches without one
+    keep the date rule. Built 2026-10-09: omitted from the encoding when `nil`, so every existing vector kept
+    its bytes, and two new ones (`payload.prekeyBatchWithID`, `recipientPayload.prekeyBatchWithID`) each differ
+    from their base vector by exactly the `id` field. The bookkeeper rejects an ID that isn't 16 bytes: the
+    sender chooses it and the record stores it.
+  - **Generation.** 15 CryptoKit Enclave keys, the same access control as today, blobs into a new own-batch
+    record. Built 2026-10-09 (`PrekeySecretsManager.generateEnclaveKeys`, installed by
+    `ContactManager.installFreshBatch`); it stays after every check that can reject the bundle (Bug 159).
+  - **Lookup.** The receive path checks the record's blobs first, then the keychain for legacy keys. The key
+    manager's forward-secret derivation splits into "raw shared secret" and "session key from it", so a
+    CryptoKit key and a `SecKey` go through the same derivation. Built 2026-10-09: the receive path takes a
+    `PrekeyPrivateKeys`, which `SenderPrekeys` implements over the sender's record and the keychain.
+  - **Where it is read.** `ContactManager.prekeyRecord(for:)` reads the new field only. Between the wiring commit
+    and the migration commit it fell back to the old field in today's format; the migration commit removed that.
+  - **Consumption.** Removing a blob from the record is saved immediately, before anything that can still
+    reject the bundle, as the keychain delete was (§2.2). The write-ahead log is then checkpointed, so the
+    consumed blob doesn't survive there until SQLite's next checkpoint. Built 2026-10-09: `SenderPrekeys`
+    applies the bookkeeping below at the same moment and saves both together, so a bundle rejected after its
+    slot opens still delivers the pending batch it used (Bug 157) and retires older keys. That is the same
+    fail-secure trade as consumption itself: only the holder of our batch can open the slot, and all it gains is
+    retiring our keys early.
+  - **Bookkeeping.** The pending batch clears only when the key used belongs to it (Bug 157). The first use of
+    a newer batch retires older ones, and the first use of any record-held batch retires the legacy keys (`legacyKeys`). A
+    sweep deletes retired blobs, and the contact's legacy keychain keys by tag, 30 days after the respective
+    retirement, on receipt and at unlock for the contacts that depth can read (D1, Bug 156). Built 2026-10-10
+    (`ContactManager.sweepPrekeys`): on receipt it runs before the bundle is opened and is saved and flushed at
+    once, like a used key, so a rejected bundle still leaves expired keys deleted; at unlock it covers the contacts
+    visible at the authenticated depth, runs at every depth, and is flushed by the checkpoint every unlock already
+    takes. Inbound batches
+    are dropped by ID (Bug 158). Accepting a batch still replaces the keys held from that contact, as today;
+    appending is stage 4's.
+  - **No manifest of live keys (rejected 2026-10-10).** The record keeps keys the contact may or may not still
+    hold, so the contact could report which of ours it holds and we delete the rest. Rejected. Our keys in the
+    record are of three kinds: live (unused, in their store), used (sealed to a message we haven't opened), and
+    discarded (dropped unused when their store was replaced). A manifest can only identify the discarded ones,
+    and those expose nothing, since nothing was sealed to them; the record's fixed size means they leak nothing
+    either. The used ones are the forward-secrecy exposure, and the contact can't report on them: it knows it
+    used a key, not whether the file arrived. Against that small gain: deleting whatever a manifest omits would
+    delete a whole live batch whenever a manifest written before the contact received that batch arrived late;
+    its length would track activity unless padded; and it is a wire change older builds don't send. Removing
+    what creates discarded keys is better: stage 4's append (so the threshold must not ship ahead of it), Bug
+    155's decided fix, and older builds as they update.
+  - **Contact deletion.** The record is overwritten with filler of the same size, since the row is only
+    soft-deleted, as well as deleting legacy keychain keys. Built 2026-10-10: the filler is the sealed empty
+    record, for the reason `deleteContact` seals benign depth stamps rather than random bytes: the rest of the
+    row still decrypts, so a field that didn't would read as something deliberately destroyed.
+- *Migration (decided 2026-10-09):* **one pass over every contact row at launch, as the first step of the
+  contacts slice's one-way migration, before records are resealed per depth.** Every record is readable then,
+  because all are sealed under the same local DB key, so the pass treats every row alike.
+  - **Lazy migration was rejected.** Whether a row is migrated is visible without any key (variable JSON
+    against a fixed 16 KB record, or null against present). Converting a row only when its record is first
+    opened would, after the reseal, leave hidden contacts, readable only at their own depth, as the rows still
+    unconverted while the user spends time at a duress depth.
+  - **The record moves to a new field** on `Contact.Profile`; `forwardSecrecyEncrypted` is set to `nil` on every
+    row in the same pass, so it is uniformly null and leaks nothing. The old field is made `private`, so nothing
+    reads or writes it again outside the migrations, which reach it through `retiredForwardSecrecyEncrypted`
+    (changed 2026-10-10 from `@available(*, deprecated)`: `@Model`'s generated schema names every stored
+    property, so the deprecation warned on every build, where it would have been ignored; `private` makes any
+    other use a compile error instead). The new field is never null: written empty at contact creation,
+    overwritten with same-size filler on deletion.
+  - **Built 2026-10-10** as `DatabaseMigration.migratePrekeyRecords`, in the launch migrations after
+    `migrateToV2`. The per-depth reseal doesn't exist yet, so "before the reseal" is a constraint on that work:
+    it must run after this pass. What each row gets:
+    - A live row's record is converted by the codec. One that won't decrypt, decode or fit in 16 KB (nothing
+      bounded an inbound key ID before stage 1) becomes empty with `legacyKeys` in use, as an unreadable record
+      is read at run time: the keys held from that contact are lost until their next long-term message. No old
+      record means no message was ever exchanged: empty, no legacy keys.
+    - A soft-deleted row gets an empty record, by readability as the deleted rows' depth stamps are scrubbed:
+      sealed when its `deletionToken` decrypts, random bytes at the sealed size when it doesn't.
+    - A row still on the v1 scheme is skipped and `migrateToV2` retries it first: its old field isn't under the
+      current key yet, so converting it would discard it. Such a row already shows through its plaintext
+      `encryptionScheme`, so its missing new field adds nothing.
+    - A row with a new field and no old one is left byte-identical, so ordinary launches rewrite nothing.
+  - Existing keychain prekeys stay in the keychain, unlisted, until 30 days after they retire (`legacyKeys`); after
+    that no prekey keychain items remain for that contact. The prekeys we hold for them become one inbound batch
+    with no `id`, and a pending batch becomes a pending own batch with no `id` and no blobs. Messages already
+    sealed to keychain prekeys still open throughout.
+- *Shipping order:* a build that stores blob prekeys can't be downgraded without losing the messages sealed
+  to them, as with D6. Stage 1 can be built and merged now but ships no earlier than the one-way migration
+  release (rollout stage 3, the contacts slice), which D9 already ties it to.
+- *Commits:* the key-manager split (pure refactor, existing tests unchanged); fixed-size record (Bug 161);
+  record format and wire `id` with interop vectors; generation, lookup, consumption with its immediate save and
+  checkpoint, Bug 157 (done 2026-10-09, with the compose indicator moved to `ContactManager` and the profile's
+  prekey helpers removed); retirement, sweep and the contact-deletion overwrite (done 2026-10-10, with the
+  empty record at creation); migration (done 2026-10-10).
 - *Tests:* creating a CryptoKit Enclave key adds no keychain item (count before and after); a blob-backed prekey
-  opens a message and its blob is gone from the record afterwards; the record field's size doesn't change with
-  how many blobs it holds; a legacy keychain prekey still opens a message after migration; out-of-order
-  arrival keeps the pending batch (157); an older-dated batch with a new `id` is accepted, and a repeated `id`
-  is dropped (158); retired keys are deleted after the grace period and not before; a message sealed to a
-  retired key within the grace period still opens.
+  opens a message and its blob is gone from the record afterwards; a bundle rejected after it opens still leaves
+  its blob deleted and saved; the record encodes to exactly 16 KB empty and with every limit reached at once;
+  installing a batch past the own-key limit deletes the oldest retired keys first and never a key not yet retired,
+  and those keys never exceed two batches; an inbound batch with too many keys or an over-long key ID is rejected; the codec throws rather than trims a record past
+  capacity; a newly created contact, one never written to, and a deleted one all have the
+  field present at that same size; after the migration pass every row's new field is present at 16 KB and every
+  row's `forwardSecrecyEncrypted` is `nil`, whatever state the row started in; a deleted contact's record holds no blobs; a legacy keychain prekey and a
+  record-held one both open messages; out-of-order arrival keeps the pending batch (157); an older-dated batch
+  with a new `id` is accepted, and a repeated `id` is dropped (158); retired keys are deleted after the grace
+  period and not before; a message sealed to a retired key within the grace period still opens.
 
 **Stage 2 — last-resort key (§3.1).** D2's indicator and D5's replay guards ship with it. Ships no earlier
 than the release that does the one-way migration (rollout stage 3, D6), and never ahead of stage 1.
-- *Migration:* pairs get a last-resort key with their next batch. Existing custody rows have no "supersedes"
-  field (G2′): one pass re-seals each with a random filler ID, the same re-seal `deleteCustodyShards`
-  already does, so no row is distinguishable by having been migrated.
+- *Commits:* record and wire (done 2026-10-11: `PrekeySyncBatch.lastResort`, the derived prekey ID in
+  `OccultaFormats` with a known-answer test, our last-resort key on each own batch and the contact's on the
+  record, generated and sent with every new batch but not yet used, two new interop vectors); sending and
+  receiving with the bookkeeping table (done 2026-10-12, with D5's first guard: piece operations and manifests
+  off last-resort slots, on both sides; a single-recipient bundle naming a last-resort key is rejected); D5's
+  remaining guards (done 2026-10-12: G1, and the receiver's drop extended to one-to-one bundles' shared payload,
+  Bug 164; G2′ and the replay matrix dropped for Bug 163's lineage, deferred); D2's indicator (done
+  2026-10-12).
+- *Migration:* pairs get a last-resort key with their next batch. (No custody-row migration: G2′ was dropped,
+  2026-10-12.)
 - *Tests:* sender falls back to last-resort, not long-term, when out; the derived `prekeyID` differs per
-  bundle and matches the UUID format; recipient opens it without consuming it; the three bookkeeping rows in
+  bundle, matches the UUID format, and never equals the last-resort key's own ID; recipient opens it without consuming it; the three bookkeeping rows in
   §3.1; an old-format batch leaves the sender on long-term; interop vectors for a batch that carries it; the
   indicator resolves to each of its three states from the matching key state (one-time key held, only the
   last-resort key, neither) and to the same state at every depth. Replay (D5): no piece operation or
   manifest is attached when sealing to the last-resort key; a last-resort slot carrying them has them dropped;
   a repeat delivery sealed to an older last-resort key generates no batch; a repeated `.replace` stores
-  nothing (G1); a replayed operation carrying a held row's "supersedes" ID is rejected (G2′); the "supersedes"
-  field encodes to the same size with and without a real ID; and the replay matrix over every protocol case.
+  nothing (G1); a one-to-one bundle's shared piece operations and manifest are dropped on a long-term and on a
+  last-resort slot (Bug 164). The replay matrix waits for Bug 163.
 
 **Stage 3 — identity challenges (§3.4).** D3 is decided (group format at the new tier). Needs the tier, shared
 with step 17a.
 - *Migration:* none. A challenge already in flight uses the old path, which stays.
 - *Tests:* a challenge and its response to a new-tier contact go in group format and verify end to end; with
   no prekeys held for the contact, they still go through, on the long-term slot; to an older contact,
-  long-term as today; a group-format challenge with a bad or missing ephemeral signature is rejected; a
-  long-term challenge from an older contact creates no prekey batch (Bug 155).
+  long-term as today; a group-format challenge with a bad or missing ephemeral signature is rejected, including
+  from a contact with no tier recorded; a long-term challenge from an older contact creates no prekey batch (Bug
+  155). From the 2026-10-12 review (§3.4): a challenge in a body rewritten by another recipient is rejected (Bug
+  165); a challenge in a one-to-one forward-secret bundle is rejected; a reopened response shows nothing, and one
+  naming our challenge with a bad signature still fails (Bug 166).
 
 **Stage 4 — refill and append (§3.3).** D4 is decided (15/5).
 - *Migration:* none beyond stage 1's.
@@ -604,7 +857,7 @@ findings below don't support that.
    has `cdat` and `mdat`, set to the current date automatically and returned as attributes, an
    insertion-ordered `rowid`, the public-key hash `klbl`, `tkid` and `agrp`. This settles §4.1's open
    question: yes. **Confirmed on a device keychain 2026-10-06** (the probe below, Simulator on Apple
-   Silicon): a prekey created by `PrekeyManager.generateBatch` returns `cdat`, `mdat`, `klbl`, `sha1`,
+   Silicon): a prekey created by `PrekeySecretsManager.generateBatch` returns `cdat`, `mdat`, `klbl`, `sha1`,
    `tkid = com.apple.setoken` and the app's `agrp` through the ordinary `kSecReturnAttributes` query.
 4. **The keychain doesn't scrub deleted rows.** It runs in WAL mode with incremental auto-vacuum, and nothing
    in Apple's Security source sets `secure_delete`

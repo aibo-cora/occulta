@@ -5,7 +5,7 @@
 //  ⚠️  DEVICE ONLY — requires Secure Enclave.
 //
 //  End-to-end forward secrecy tests using real SE keys and real AES-GCM.
-//  Exercises PrekeyManager + Manager.Crypto together.
+//  Exercises PrekeySecretsManager + Manager.Crypto together.
 //  Does NOT test ContactManager (that layer requires full SwiftData contact setup). The batch
 //  replenishment cycle it drives is tested through it in `PrekeyReplenishmentTriggerTests`.
 //
@@ -95,7 +95,7 @@ private func openBundle(
 @Suite("Integration — FS roundtrip")
 @MainActor struct FSRoundtripTests {
 
-    let pm     = Manager.PrekeyManager()
+    let pm     = Manager.PrekeySecretsManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
     @Test(.enabled(if: secureEnclaveAvailable())) func roundtrip_singleMessage() throws {
@@ -198,7 +198,7 @@ private func openBundle(
 @Suite("Integration — Forward secrecy guarantee")
 @MainActor struct ForwardSecrecyGuaranteeTests {
 
-    let pm     = Manager.PrekeyManager()
+    let pm     = Manager.PrekeySecretsManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
     @Test(.enabled(if: secureEnclaveAvailable())) func consumedKey_cannotDecryptAgain_nocrash() throws {
@@ -242,7 +242,7 @@ private func openBundle(
 @Suite("Integration — Pool isolation")
 @MainActor struct PoolIsolationTests {
 
-    let pm     = Manager.PrekeyManager()
+    let pm     = Manager.PrekeySecretsManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
     @Test(.enabled(if: secureEnclaveAvailable())) func bobPool_isIsolatedFromJakePool() throws {
@@ -298,7 +298,7 @@ private func openBundle(
 @Suite("Integration — AAD tamper with real crypto")
 @MainActor struct IntegrationAADTamperTests {
 
-    let pm     = Manager.PrekeyManager()
+    let pm     = Manager.PrekeySecretsManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
     @Test(.enabled(if: secureEnclaveAvailable())) func tamper_prekeyID_throwsOnOpen() throws {

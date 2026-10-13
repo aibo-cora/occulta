@@ -153,6 +153,11 @@ final class ShardCustodyManager {
             throw CustodyError.keyDerivationFailed
         }
 
+        // G1 (prekey continuity D5): a piece already held is skipped, as `.distribute` skips it (Case 15), so a
+        // repeated `.replace` adds no second row. The first one already removed what it replaced.
+        let held = try self.decryptAllCustodyShards(using: custodyKey)
+        guard !held.contains(where: { $0.payload.signedAttribute.id == attribute.id }) else { return }
+
         let rowID   = UUID()
         let newFP   = Self.fingerprint(of: senderPublicKey)
         let payload = CustodyShard.Payload(

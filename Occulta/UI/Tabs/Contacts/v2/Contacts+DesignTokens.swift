@@ -11,6 +11,9 @@ nonisolated extension Color {
     static let occultaAccent   = Color(red: 0xD3/255, green: 0x4F/255, blue: 0x2C/255)
     static let occultaVerified = Color(red: 0x2E/255, green: 0x7D/255, blue: 0x5B/255)
     static let occultaWarn     = Color(red: 0xC0/255, green: 0x8A/255, blue: 0x2B/255)
+    /// The compose indicator's middle state, a message sealed to the contact's last-resort key (prekey continuity
+    /// D2). Blue, not red: `occultaDanger` is too close to `occultaAccent`, the Encrypt button beside it.
+    static let occultaTemporary = Color(red: 0x3D/255, green: 0x74/255, blue: 0xA8/255)
     static let occultaDanger   = Color(red: 0xD0/255, green: 0x48/255, blue: 0x40/255)
 }
 

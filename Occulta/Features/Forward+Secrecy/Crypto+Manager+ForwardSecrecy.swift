@@ -82,6 +82,31 @@ extension Manager.Crypto {
         }
     }
 
+    /// Derive a session key from a CryptoKit key agreement: the prekey side of the forward-secret exchange
+    /// when the prekey is held as a CryptoKit key (an Enclave blob in the contact's record, Prekey Continuity
+    /// D9), not as a keychain `SecKey`.
+    ///
+    /// CryptoKit's `SharedSecret` is the raw ECDH output, whereas the `SecKey` path uses
+    /// `.ecdhKeyExchangeCofactorX963SHA256`: ECDH followed by the X9.63 KDF over SHA-256 with no shared info.
+    /// So the same KDF step is applied here first; from there both paths share
+    /// `Manager.Key.forwardSecretSessionKey`, and produce identical keys.
+    ///
+    /// - Parameters:
+    ///   - sharedSecret:      `ownKey.sharedSecretFromKeyAgreement(with: peer)`.
+    ///   - ownPublicKey:      `ownKey.publicKey.x963Representation`.
+    ///   - recipientMaterial: The peer's x963 public key, the same value the agreement was made with.
+    func deriveSessionKey(
+        sharedSecret: SharedSecret, ownPublicKey: Data, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil
+    ) -> SymmetricKey? {
+        let ecdhOutput = sharedSecret
+            .x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32)
+            .withUnsafeBytes { Data($0) }
+        return Manager.Key.forwardSecretSessionKey(
+            ecdhOutput: ecdhOutput, ownPublicKey: ownPublicKey, peerMaterial: recipientMaterial,
+            quantumMaterial: quantumMaterial
+        )
+    }
+
     /// Derive a session key using the long-term identity key.
     func deriveSessionKey(using material: Data, quantumMaterial: QuantumKeyMaterial? = nil) -> SymmetricKey? {
         if let quantumMaterial {

@@ -229,7 +229,7 @@ shardMode = data == nil || shardOperations.contains { $0.attribute != nil }
 - `data` defaults to a human-readable fallback for old builds.
 
 **Message mode** (no `attribute`-carrying ops, `data` non-nil):
-- Normal v3fs path: `configureForwardSecrecy`, prekey pop (→ `.forwardSecret`
+- Normal v3fs path: prekey record load, prekey pop (→ `.forwardSecret`
   when a prekey is available, `.longTermFallback` when exhausted), pending
   prekey sync batch attached, prekey state saved.
 

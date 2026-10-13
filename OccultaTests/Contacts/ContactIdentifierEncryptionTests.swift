@@ -47,7 +47,7 @@ private func makeContactManager() throws -> ContactManager {
 @Suite("ContactManager.save — identifier encryption")
 struct ContactIdentifierEncryptionTests {
 
-    @Test func newContact_identifierIsEncryptedNotStoredVerbatim() throws {
+    @Test(.ambientTestKeyManager) func newContact_identifierIsEncryptedNotStoredVerbatim() throws {
         let contacts = try makeContactManager()
         let crypto   = Manager.Crypto(keyManager: TestKeyManager())
         let rawIdentifier = UUID().uuidString
@@ -71,7 +71,7 @@ struct ContactIdentifierEncryptionTests {
     // Encrypting it again before the lookup (rather than only when first creating it)
     // would never match the stored ciphertext, turning every edit into a
     // duplicate-creating "not found" instead of an update.
-    @Test func editingExistingContact_updatesInPlace_doesNotCreateDuplicate() throws {
+    @Test(.ambientTestKeyManager) func editingExistingContact_updatesInPlace_doesNotCreateDuplicate() throws {
         let contacts = try makeContactManager()
         let crypto   = Manager.Crypto(keyManager: TestKeyManager())
         let rawIdentifier = UUID().uuidString
