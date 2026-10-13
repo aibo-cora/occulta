@@ -13,6 +13,16 @@ import SwiftData
 import OccultaCore
 import OccultaFormats
 
+/// How the next message to a contact will be sealed (prekey continuity D2).
+enum NextSendSecrecy: Equatable {
+    /// One of their one-time keys: opens once, then can't be opened from saved copies.
+    case forwardSecret
+    /// Only their last-resort key: opens again until it expires, 30 days or more after they move on.
+    case temporaryKey
+    /// The long-term keys of both sides, with no time limit.
+    case longTerm
+}
+
 extension ContactManager {
 
     // MARK: - Load and store
@@ -44,15 +54,25 @@ extension ContactManager {
 
     // MARK: - Sending
 
-    /// Whether the next message to `contact` can be forward secret. Read by the compose indicator.
-    func hasPrekeyAvailable(for contact: Contact.Profile) -> Bool {
-        (try? self.prekeyRecord(for: contact))?.inboundBatches.isEmpty == false
+    /// How the next message to `contact` will be sealed, as `encryptBundle` chooses: one of their one-time keys if
+    /// we hold one; else their last-resort key, used only in the group format; else the long-term keys. Read by the
+    /// compose indicator (D2). Per contact and never per depth, so a coerced duress session sees what any depth would.
+    func nextSendSecrecy(for contact: Contact.Profile) -> NextSendSecrecy {
+        guard let record = try? self.prekeyRecord(for: contact) else { return .longTerm }
+        if !record.inboundBatches.isEmpty { return .forwardSecret }
+        if record.inboundLastResort != nil,
+           Self.resolveTargetVersion(for: contact, using: Manager.Crypto()).supportsGroups {
+            return .temporaryKey
+        }
+        return .longTerm
     }
 
     /// The batch to attach to every message to the contact until they use a key from it, in wire form.
     func pendingBatchForWire(in record: PrekeyRecord) -> OccultaBundle.SealedPayload.PrekeySyncBatch? {
         PrekeyBookkeeper().pendingBatch(in: record, publicKeyOfBlob: Manager.PrekeySecretsManager.publicKey(ofBlob:)).map {
-            OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: $0.generatedAt, prekeys: $0.prekeys, id: $0.id)
+            OccultaBundle.SealedPayload.PrekeySyncBatch(
+                generatedAt: $0.generatedAt, prekeys: $0.prekeys, id: $0.id, lastResort: $0.lastResort
+            )
         }
     }
 
@@ -81,19 +101,40 @@ extension ContactManager {
         guard let batch else { return }
         do {
             _ = try PrekeyBookkeeper().accept(
-                id: batch.id, generatedAt: batch.generatedAt, prekeys: batch.prekeys, into: &prekeys.record
+                id: batch.id, generatedAt: batch.generatedAt, prekeys: batch.prekeys, lastResort: batch.lastResort,
+                into: &prekeys.record
             )
         } catch PrekeyBookkeeper.BookkeeperError.malformedBatch {
             throw Errors.invalidPrekeySyncBatch
         }
     }
 
+    /// A new batch if the bundle just opened shows the sender is out of our keys. Called after every check that can
+    /// reject the bundle (Bug 159), so a rejected one never makes us issue keys.
+    /// - Long-term: a sender holding no key of ours, when nothing is pending, as before stage 2.
+    /// - A last-resort key: as `PrekeyBookkeeper.useLastResort` decides (§3.1's table; a repeat generates nothing).
+    /// - A one-time key: never. Consuming it already applied its bookkeeping.
+    func replenish(after used: InboundPrekeyUse, into prekeys: SenderPrekeys) throws {
+        switch used {
+        case .oneTime:
+            return
+        case .longTerm:
+            guard !PrekeyBookkeeper().hasPendingBatch(prekeys.record) else { return }
+        case .lastResort(let keyID):
+            guard PrekeyBookkeeper().useLastResort(keyID: keyID, in: &prekeys.record, now: Date()) else { return }
+        }
+        try self.installFreshBatch(into: prekeys)
+    }
+
     /// Generates a batch in the Enclave and makes it the pending one: the answer to a long-term bundle from a
     /// sender who has no batch of ours waiting. CryptoKit leaves no keychain item, so if anything later fails,
     /// nothing is left behind.
     func installFreshBatch(into prekeys: SenderPrekeys) throws {
-        let blobs = try Manager.PrekeySecretsManager().generateEnclaveKeys()
-        PrekeyBookkeeper().install(blobs, into: &prekeys.record, now: Date())
+        let batchSize = Manager.PrekeySecretsManager.defaultBatchSize
+        // One more than the batch: the last-resort key (prekey continuity §3.1), the same kind of Enclave key.
+        let blobs = try Manager.PrekeySecretsManager().generateEnclaveKeys(count: batchSize + 1)
+        PrekeyBookkeeper().install(Array(blobs.prefix(batchSize)), lastResort: blobs[batchSize],
+                                   into: &prekeys.record, now: Date())
     }
 
     // MARK: - Sweep
@@ -159,6 +200,15 @@ final class SenderPrekeys: PrekeyPrivateKeys {
             return (try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob)).map(PrekeyPrivateKey.enclave)
         }
         return self.keychain.privateKey(forPrekeyID: prekeyID, contactID: contactID)
+    }
+
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
+        guard let (keyID, blob) = self.bookkeeper.lastResort(
+                  matchingPrekeyID: prekeyID, ephemeralPublicKey: ephemeralPublicKey, in: self.record
+              ),
+              let key = try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob)
+        else { return nil }
+        return (keyID, .enclave(key))
     }
 
     func consume(prekeyID: String, contactID: String) {

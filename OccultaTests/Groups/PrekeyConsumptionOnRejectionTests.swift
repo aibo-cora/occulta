@@ -66,7 +66,7 @@ private func secureEnclaveAvailable() -> Bool {
         }
 
         func open(senderPublicKey: Data) throws
-        -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?, mode: OccultaBundle.Mode) {
+        -> (payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode) {
             try self.recipientCrypto.findAndOpenRecipientSlot(
                 in: self.bundle,
                 blind: self.bundle.group!.blind,
@@ -111,10 +111,10 @@ private func secureEnclaveAvailable() -> Bool {
         defer { f.cleanUp() }
 
         #expect(f.privateKeyStillPresent)
-        let (_, consumable, mode) = try f.open(senderPublicKey: f.senderPub)
+        let (_, used, mode) = try f.open(senderPublicKey: f.senderPub)
 
         #expect(mode == .forwardSecretNoPQ)
-        #expect(consumable != nil, "the returned prekey reports what was consumed")
+        #expect(used.consumable != nil, "the returned prekey reports what was consumed")
         #expect(!f.privateKeyStillPresent)
     }
 

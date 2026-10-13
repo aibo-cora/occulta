@@ -178,3 +178,82 @@ struct PrekeySweepTests {
         #expect(try saved(hidden.identifier) == record)
     }
 }
+
+// MARK: - Compose indicator (D2)
+
+@MainActor
+@Suite("Prekey record — what the compose indicator shows (D2)", .serialized)
+struct NextSendSecrecyTests {
+
+    /// A contact on the group format, the only one a last-resort key is used in.
+    private func contact(groupCapable: Bool, in cm: ContactManager) throws -> Contact.Profile {
+        let profile = try insertProfile(in: cm)
+        if groupCapable, let byte = OccultaBundle.Version.groupCapable.wireByte {
+            profile.maxBundleVersion = try Data([byte]).encrypt()
+        }
+        return profile
+    }
+
+    private func record(oneTimeKeys: Int, lastResort: Bool) -> PrekeyRecord {
+        var record = PrekeyRecord.empty
+        if oneTimeKeys > 0 {
+            record.inboundBatches = [.init(id: nil, keys: (0..<oneTimeKeys).map { _ in
+                .init(id: UUID().uuidString, publicKey: Data.randomBytes(65))
+            })]
+        }
+        if lastResort { record.inboundLastResort = .init(id: UUID().uuidString, publicKey: Data.randomBytes(65)) }
+        return record
+    }
+
+    @Test("A one-time key held: forward secret, whatever else", .ambientTestKeyManager)
+    func oneTimeKey() throws {
+        let (cm, _) = try makeContactManager()
+        let contact = try self.contact(groupCapable: true, in: cm)
+        try cm.store(self.record(oneTimeKeys: 1, lastResort: true), for: contact)
+        #expect(cm.nextSendSecrecy(for: contact) == .forwardSecret)
+    }
+
+    @Test("Only the last-resort key, on the group format: temporary key", .ambientTestKeyManager)
+    func lastResortOnly() throws {
+        let (cm, _) = try makeContactManager()
+        let contact = try self.contact(groupCapable: true, in: cm)
+        try cm.store(self.record(oneTimeKeys: 0, lastResort: true), for: contact)
+        #expect(cm.nextSendSecrecy(for: contact) == .temporaryKey)
+    }
+
+    /// `encryptBundle` seals to a last-resort key only in the group format, so a contact it doesn't send that format
+    /// to gets the long-term keys, and the indicator must say so.
+    @Test("Only the last-resort key, below the group format: long-term key", .ambientTestKeyManager)
+    func lastResortWithoutGroupFormat() throws {
+        let (cm, _) = try makeContactManager()
+        let contact = try self.contact(groupCapable: false, in: cm)
+        try cm.store(self.record(oneTimeKeys: 0, lastResort: true), for: contact)
+        #expect(cm.nextSendSecrecy(for: contact) == .longTerm)
+    }
+
+    @Test("Neither: long-term key", .ambientTestKeyManager)
+    func neither() throws {
+        let (cm, _) = try makeContactManager()
+        let contact = try self.contact(groupCapable: true, in: cm)
+        try cm.store(.empty, for: contact)
+        #expect(cm.nextSendSecrecy(for: contact) == .longTerm)
+    }
+
+    /// The indicator must not depend on depth: a coerced duress session sees what any depth would.
+    @Test("The same state at a duress depth", .ambientTestKeyManager)
+    func sameAtEveryDepth() throws {
+        let (cm, _) = try makeContactManager()
+        let states: [(Int, Bool)] = [(1, true), (0, true), (0, false)]
+        let contacts = try states.map { (keys, lastResort) in
+            let contact = try self.contact(groupCapable: true, in: cm)
+            try cm.store(self.record(oneTimeKeys: keys, lastResort: lastResort), for: contact)
+            return contact
+        }
+        let atRealDepth = contacts.map(cm.nextSendSecrecy)
+
+        cm.security.applyVerifyState(for: .duress)
+        #expect(cm.security.currentDepth != 0, "precondition: a duress depth")
+        #expect(contacts.map(cm.nextSendSecrecy) == atRealDepth)
+    }
+}
+

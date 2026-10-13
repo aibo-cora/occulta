@@ -454,14 +454,14 @@ private struct DecryptPair {
 
         // Inbound: recipient derives wrapping key from sender
         let recipientCrypto = Manager.Crypto(keyManager: recipientKM)
-        let (inboundKey, consumable) = try recipientCrypto.deriveInboundKey(
+        let (inboundKey, used) = try recipientCrypto.deriveInboundKey(
             secrecy: context,
             senderContactID: "test",
             senderPublicKey: senderPub,
             quantumMaterial: nil,
             prekeys: Manager.PrekeySecretsManager()
         )
-        #expect(consumable == nil)
+        #expect(used == .longTerm)
 
         // Both sides derive the same key (ECDH symmetry + XOR salt symmetry in TestKeyManager)
         let outboundBytes = outboundKey.withUnsafeBytes { Data($0) }

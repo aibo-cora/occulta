@@ -19,6 +19,11 @@ struct PrekeyRecord: Codable, Equatable {
     /// Keys this contact issued to us, oldest first. We seal messages to them with these.
     var inboundBatches: [InboundBatch]
 
+    /// The last-resort key from the contact's latest batch: what we seal to once `inboundBatches` runs out,
+    /// never removed by use (prekey continuity §3.1, stage 2). Held apart from the batches so it outlives their
+    /// one-time keys, and replaced by the next batch accepted.
+    var inboundLastResort: InboundKey? = nil
+
     /// IDs of inbound batches already accepted, so a repeat is dropped (Bug 158).
     var acceptedBatchIDs: [Data]
 
@@ -74,6 +79,11 @@ struct PrekeyRecord: Codable, Equatable {
         var isPending: Bool
         /// The keys not yet used. Using one removes it.
         var keys: [OwnKey]
+        /// This batch's last-resort key, which the contact may seal to more than once once `keys` are used up
+        /// (prekey continuity §3.1, stage 2). Never removed by use: it goes with its batch, 30 days after the batch
+        /// retires. A batch keeps its entry while it holds one, even with no `keys` left. `nil` for batches made
+        /// before stage 2 and those carried over from before stage 1.
+        var lastResort: OwnKey? = nil
     }
 
     struct OwnKey: Codable, Equatable {

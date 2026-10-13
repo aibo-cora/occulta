@@ -47,7 +47,7 @@ struct PrekeyBookkeeperSendingTests {
     func takeOldestFirst() throws {
         var record = PrekeyRecord.empty
         let keys = wire(3)
-        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: keys, into: &record))
+        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: keys, lastResort: nil, into: &record))
 
         for expected in keys {
             let prekey = try #require(self.bookkeeper.takeInboundPrekey(from: &record, contactID: "contact"))
@@ -110,24 +110,24 @@ struct PrekeyBookkeeperAcceptTests {
     func dedupeByID() throws {
         var record = PrekeyRecord.empty
         let first = randomBytes(16)
-        #expect(try self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), into: &record))
+        #expect(try self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, into: &record))
 
         let second = wire(15)
-        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: second, into: &record),
+        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: second, lastResort: nil, into: &record),
                 "a sender whose clock went back must not be stuck")
         #expect(record.inboundBatches.first?.keys.map(\.id) == second.map(\.id))
 
-        #expect(try !self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), into: &record))
+        #expect(try !self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), lastResort: nil, into: &record))
         #expect(record.inboundBatches.first?.keys.map(\.id) == second.map(\.id), "a repeat must not bring back used keys")
     }
 
     @Test("A batch without an ID keeps the date rule")
     func noIDKeepsDateRule() throws {
         var record = PrekeyRecord.empty
-        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), into: &record))
-        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), into: &record))
-        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: wire(15), into: &record))
-        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), into: &record))
+        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, into: &record))
+        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, into: &record))
+        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: wire(15), lastResort: nil, into: &record))
+        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), lastResort: nil, into: &record))
     }
 
     @Test("Only the 8 most recent accepted IDs are kept")
@@ -135,7 +135,7 @@ struct PrekeyBookkeeperAcceptTests {
         var record = PrekeyRecord.empty
         let ids = (0..<10).map { _ in randomBytes(16) }
         for id in ids {
-            _ = try self.bookkeeper.accept(id: id, generatedAt: Date(), prekeys: wire(1), into: &record)
+            _ = try self.bookkeeper.accept(id: id, generatedAt: Date(), prekeys: wire(1), lastResort: nil, into: &record)
         }
         #expect(record.acceptedBatchIDs == Array(ids.suffix(PrekeyBookkeeper.maxAcceptedBatchIDs)))
     }
@@ -150,13 +150,13 @@ struct PrekeyBookkeeperAcceptTests {
         )]
         for prekeys in [tooMany, badKey, longID] {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
-                try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: prekeys, into: &record)
+                try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: prekeys, lastResort: nil, into: &record)
             }
         }
         // A batch ID is stored in the record, so a sender can't choose its size.
         for badID in [randomBytes(15), randomBytes(17), randomBytes(1024)] {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
-                try self.bookkeeper.accept(id: badID, generatedAt: Date(), prekeys: wire(1), into: &record)
+                try self.bookkeeper.accept(id: badID, generatedAt: Date(), prekeys: wire(1), lastResort: nil, into: &record)
             }
         }
         #expect(record == .empty, "a rejected batch must change nothing")
@@ -291,7 +291,7 @@ struct PrekeyBookkeeperLimitTests {
             self.bookkeeper.consume(prekeyID: first, in: &record, now: now)
         }
         self.bookkeeper.install(generated(15), into: &record, now: now)
-        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: now, prekeys: wire(PrekeyBookkeeper.maxInboundKeysPerBatch), into: &record)
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: now, prekeys: wire(PrekeyBookkeeper.maxInboundKeysPerBatch), lastResort: nil, into: &record)
         #expect(throws: Never.self) { try PrekeyRecordCodec().encode(record) }
     }
 
@@ -349,9 +349,9 @@ struct PrekeyBookkeeperEvictionTests {
     /// always meet `maxOwnKeys`. This is the arithmetic that makes that true; a stage that adds to those keys (a
     /// last-resort key, a bigger batch) has to change it on purpose.
     @MainActor
-    @Test("Two batches fit within the own-key limit")
+    @Test("Two batches, each with its last-resort key, fit within the own-key limit")
     func twoBatchesFitTheLimit() {
-        #expect(2 * Manager.PrekeySecretsManager.defaultBatchSize <= PrekeyBookkeeper.maxOwnKeys)
+        #expect(2 * (Manager.PrekeySecretsManager.defaultBatchSize + 1) <= PrekeyBookkeeper.maxOwnKeys)
     }
 
     /// Batch after batch, the contact uses some keys of each and loses some files, and a new batch is sometimes made
@@ -362,16 +362,16 @@ struct PrekeyBookkeeperEvictionTests {
         var record = PrekeyRecord.empty
         let now = Date()
         for cycle in 0..<30 {
-            self.bookkeeper.install(generated(15), into: &record, now: now)
+            self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: now)
             let ids = try #require(self.bookkeeper.pendingBatch(in: record)).prekeys.map(\.id)
             // The contact uses the first key, then a varying share of the rest; the others are lost files, or keys
             // still in their store when the next batch is made.
             for id in ids.prefix(1 + cycle % 15) where cycle % 3 != 0 || id == ids[0] {
                 self.bookkeeper.consume(prekeyID: id, in: &record, now: now)
             }
-            let unretired = record.ownBatches.filter { $0.retiredAt == nil }.reduce(0) { $0 + $1.keys.count }
-            #expect(unretired <= 30)
-            #expect(record.ownBatches.reduce(0) { $0 + $1.keys.count } <= PrekeyBookkeeper.maxOwnKeys)
+            let unretired = record.ownBatches.filter { $0.retiredAt == nil }.reduce(0) { $0 + PrekeyBookkeeper.keyCount($1) }
+            #expect(unretired <= 32)
+            #expect(record.ownBatches.reduce(0) { $0 + PrekeyBookkeeper.keyCount($1) } <= PrekeyBookkeeper.maxOwnKeys)
         }
     }
 
@@ -393,3 +393,225 @@ struct PrekeyBookkeeperEvictionTests {
         #expect(record.ownBatches.reduce(0) { $0 + $1.keys.count } == 55)
     }
 }
+
+@Suite("PrekeyBookkeeper — last-resort keys (stage 2)")
+struct PrekeyBookkeeperLastResortTests {
+
+    let bookkeeper = PrekeyBookkeeper()
+
+    @Test("A batch's last-resort key goes out with it, its public key derived from its blob")
+    func lastResortGoesOut() throws {
+        var record = PrekeyRecord.empty
+        let lastResort = randomBytes(143)
+        self.bookkeeper.install(generated(15), lastResort: lastResort, into: &record, now: Date())
+
+        let batch = try #require(self.bookkeeper.pendingBatch(in: record))
+        let wired = try #require(batch.lastResort)
+        #expect(wired.publicKey == fakePublicKey(ofBlob: lastResort))
+        #expect(UUID(uuidString: wired.id) != nil)
+        #expect(!batch.prekeys.map(\.id).contains(wired.id))
+        #expect(record.ownBatches.last?.lastResort?.publicKey == nil, "public keys aren't stored")
+    }
+
+    /// The last-resort key is what the contact seals to once the one-time keys are gone, so it must outlive them.
+    @Test("A batch whose one-time keys are all used keeps its entry for its last-resort key")
+    func lastResortKeepsItsBatch() throws {
+        var record = PrekeyRecord.empty
+        self.bookkeeper.install(generated(2), lastResort: randomBytes(143), into: &record, now: Date())
+        let ids = try #require(self.bookkeeper.pendingBatch(in: record)).prekeys.map(\.id)
+        for id in ids { self.bookkeeper.consume(prekeyID: id, in: &record, now: Date()) }
+
+        #expect(record.ownBatches.count == 1)
+        #expect(record.ownBatches.first?.keys.isEmpty == true)
+        #expect(record.ownBatches.first?.lastResort != nil)
+    }
+
+    /// Its real ID is never written in a bundle, so a bundle naming it is no key of ours.
+    @Test("The last-resort key isn't found by its own ID, nor consumed by it")
+    func notFoundByItsOwnID() throws {
+        var record = PrekeyRecord.empty
+        self.bookkeeper.install(generated(1), lastResort: randomBytes(143), into: &record, now: Date())
+        let id = try #require(self.bookkeeper.pendingBatch(in: record)?.lastResort?.id)
+
+        #expect(self.bookkeeper.blob(forPrekeyID: id, in: record) == nil)
+        let before = record
+        self.bookkeeper.consume(prekeyID: id, in: &record, now: Date())
+        #expect(record == before)
+    }
+
+    @Test("Eviction counts last-resort keys, and takes a retired batch's one-time keys before its last-resort key")
+    func evictionCountsLastResort() {
+        let now = Date()
+        let key = { PrekeyRecord.OwnKey(id: randomBytes(16), blob: randomBytes(143), publicKey: nil) }
+        let retired = PrekeyRecord.OwnBatch(id: nil, createdAt: now, retiredAt: now, isPending: false,
+                                            keys: [key(), key()], lastResort: key())
+        // A batch in use big enough that, with the 16 installed, the record is `over` keys past the limit. Only the
+        // retired batch's 3 keys may go.
+        let record = { (over: Int) -> PrekeyRecord in
+            var record = PrekeyRecord.empty
+            let inUse = PrekeyBookkeeper.maxOwnKeys + over - 3 - 16 - 1
+            record.ownBatches = [retired, PrekeyRecord.OwnBatch(
+                id: nil, createdAt: now, retiredAt: nil, isPending: false,
+                keys: (0..<inUse).map { _ in key() }, lastResort: key()
+            )]
+            self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: now)
+            return record
+        }
+
+        let twoOver = record(2)
+        #expect(twoOver.ownBatches.first?.keys.isEmpty == true, "the retired batch's one-time keys went first")
+        #expect(twoOver.ownBatches.first?.lastResort == retired.lastResort, "its last-resort key stayed")
+
+        let threeOver = record(3)
+        #expect(threeOver.ownBatches.allSatisfy { $0.retiredAt == nil }, "then the last-resort key, and the batch with it")
+        #expect(threeOver.ownBatches.reduce(0) { $0 + PrekeyBookkeeper.keyCount($1) } == PrekeyBookkeeper.maxOwnKeys)
+    }
+
+    @Test("The contact's last-resort key is stored, outlives their one-time keys, and is replaced by their next batch")
+    func inboundLastResort() throws {
+        var record = PrekeyRecord.empty
+        let first = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
+                                       lastResort: first, into: &record)
+        #expect(record.inboundLastResort?.id == first.id)
+
+        _ = self.bookkeeper.takeInboundPrekey(from: &record, contactID: "contact")
+        #expect(record.inboundBatches.isEmpty)
+        #expect(record.inboundLastResort?.id == first.id, "running out of one-time keys keeps it")
+
+        let second = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
+                                       lastResort: second, into: &record)
+        #expect(record.inboundLastResort?.id == second.id)
+
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
+                                       lastResort: nil, into: &record)
+        #expect(record.inboundLastResort == nil, "a batch replaces everything held from the contact")
+    }
+
+    @Test("A last-resort key that isn't a 65-byte key with a UUID ID makes the batch malformed")
+    func malformedLastResortRejected() {
+        var record = PrekeyRecord.empty
+        let bad = [
+            OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(64)),
+            OccultaBundle.WirePrekey(id: "not-a-uuid", publicKey: randomBytes(65)),
+        ]
+        for lastResort in bad {
+            #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
+                try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
+                                           lastResort: lastResort, into: &record)
+            }
+        }
+        #expect(record == .empty)
+    }
+}
+
+@Suite("PrekeyBookkeeper — receiving on a last-resort key (stage 2, §3.1's table)")
+struct PrekeyBookkeeperLastResortUseTests {
+
+    let bookkeeper = PrekeyBookkeeper()
+
+    private func idString(_ bytes: Data) -> String {
+        let b = [UInt8](bytes)
+        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])).uuidString
+    }
+
+    private func lastResortID(ofBatchAt index: Int, in record: PrekeyRecord) throws -> String {
+        self.idString(try #require(record.ownBatches[index].lastResort?.id))
+    }
+
+    /// Batch 0 delivered (its first key used), batch 1 pending; each with a last-resort key.
+    private func deliveredThenPending(now: Date) throws -> PrekeyRecord {
+        var record = PrekeyRecord.empty
+        self.bookkeeper.install(generated(3), lastResort: randomBytes(143), into: &record, now: now)
+        let first = try #require(self.bookkeeper.pendingBatch(in: record)?.prekeys.first?.id)
+        self.bookkeeper.consume(prekeyID: first, in: &record, now: now)
+        self.bookkeeper.install(generated(3), lastResort: randomBytes(143), into: &record, now: now)
+        // As if legacy keys were still in use, so the tests can see a last-resort use retire them.
+        record.legacyKeys = .inUse
+        return record
+    }
+
+    @Test("The pending batch's own last-resort key delivers it and calls for a new batch")
+    func pendingOwnKeyDeliversAndGenerates() throws {
+        let now = Date()
+        var record = try self.deliveredThenPending(now: now)
+        let keyID = try self.lastResortID(ofBatchAt: 1, in: record)
+
+        #expect(self.bookkeeper.useLastResort(keyID: keyID, in: &record, now: now))
+        #expect(!self.bookkeeper.hasPendingBatch(record), "the contact has it, and has used all its one-time keys")
+        #expect(record.ownBatches[1].id == nil)
+        #expect(record.ownBatches[0].retiredAt == now, "the older batch retires, as for a one-time key")
+        #expect(record.legacyKeys == .retired(since: now))
+        #expect(record.ownBatches[1].lastResort != nil, "the last-resort key stays")
+    }
+
+    @Test("The newest delivered batch's last-resort key, with nothing pending, calls for a new batch")
+    func newestDeliveredGenerates() throws {
+        let now = Date()
+        var record = PrekeyRecord.empty
+        self.bookkeeper.install(generated(1), lastResort: randomBytes(143), into: &record, now: now)
+        let first = try #require(self.bookkeeper.pendingBatch(in: record)?.prekeys.first?.id)
+        self.bookkeeper.consume(prekeyID: first, in: &record, now: now)
+
+        #expect(self.bookkeeper.useLastResort(keyID: try self.lastResortID(ofBatchAt: 0, in: record), in: &record, now: now))
+    }
+
+    @Test("An older last-resort key while a batch is pending leaves it riding")
+    func olderKeyKeepsPendingRiding() throws {
+        let now = Date()
+        var record = try self.deliveredThenPending(now: now)
+
+        #expect(!self.bookkeeper.useLastResort(keyID: try self.lastResortID(ofBatchAt: 0, in: record), in: &record, now: now))
+        #expect(self.bookkeeper.hasPendingBatch(record), "the contact hasn't received it yet")
+    }
+
+    /// D5: only the current last-resort key signals "out of keys".
+    @Test("A repeat delivery sealed to an older batch's last-resort key generates nothing")
+    func repeatGeneratesNothing() throws {
+        let now = Date()
+        var record = try self.deliveredThenPending(now: now)
+        let older = try self.lastResortID(ofBatchAt: 0, in: record)
+        _ = self.bookkeeper.useLastResort(keyID: try self.lastResortID(ofBatchAt: 1, in: record), in: &record, now: now)
+        #expect(!self.bookkeeper.hasPendingBatch(record))
+
+        #expect(!self.bookkeeper.useLastResort(keyID: older, in: &record, now: now))
+    }
+
+    @Test("A key that isn't one of our last-resort keys changes nothing")
+    func unknownKeyChangesNothing() throws {
+        var record = try self.deliveredThenPending(now: Date())
+        let before = record
+        #expect(!self.bookkeeper.useLastResort(keyID: UUID().uuidString, in: &record, now: Date()))
+        #expect(record == before)
+    }
+
+    @Test("A derived prekey ID is matched to its batch's last-resort key, and nothing else is")
+    func derivedIDMatching() throws {
+        let record = try self.deliveredThenPending(now: Date())
+        let ephemeral = randomBytes(65)
+        for index in 0..<2 {
+            let keyID = try self.lastResortID(ofBatchAt: index, in: record)
+            let derived = try #require(OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: keyID, ephemeralPublicKey: ephemeral))
+            let match = try #require(self.bookkeeper.lastResort(matchingPrekeyID: derived, ephemeralPublicKey: ephemeral, in: record))
+            #expect(match.keyID == keyID)
+            #expect(match.blob == record.ownBatches[index].lastResort?.blob)
+            #expect(self.bookkeeper.lastResort(matchingPrekeyID: derived, ephemeralPublicKey: randomBytes(65), in: record) == nil,
+                    "another ephemeral key gives another ID")
+            #expect(self.bookkeeper.lastResort(matchingPrekeyID: keyID, ephemeralPublicKey: ephemeral, in: record) == nil,
+                    "the key's own ID is never what a bundle carries")
+        }
+    }
+
+    @Test("The contact's last-resort key is what we seal to once their one-time keys are gone")
+    func lastResortForSending() throws {
+        var record = PrekeyRecord.empty
+        let lastResort = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: [], lastResort: lastResort, into: &record)
+
+        let prekey = try #require(self.bookkeeper.lastResortPrekey(in: record, contactID: "contact"))
+        #expect(prekey.id == lastResort.id && prekey.publicKey == lastResort.publicKey && prekey.contactID == "contact")
+    }
+}
+

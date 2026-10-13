@@ -98,7 +98,7 @@ struct ContactDetailV3: View {
                             vm:              self.composeVM,
                             headerRight:     "→ TO \(self.givenName.uppercased())",
                             encryptLabel:    "Encrypt",
-                            isForwardSecret: self.profile.map(cm.hasPrekeyAvailable),
+                            secrecy:         self.profile.map(cm.nextSendSecrecy),
                             onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm) }
                         )
                     }

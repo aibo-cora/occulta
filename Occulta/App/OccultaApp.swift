@@ -898,8 +898,13 @@ struct RootView: View {
         // this device has never heard from, not one it is hiding — and a contact who has never
         // sent anything holds no prekey of ours and cannot send forward-secret traffic at all.
         // No duress state is recoverable from it.
+        //
+        // The body-digest refusals (`bugs.md` Bug 165) share it too: each says the same thing, that the
+        // message can't be tied to this contact, and a separate string would only add a third to tell apart.
         } catch GroupDecryptError.senderSignatureCapabilityUnknown,
-                GroupDecryptError.missingSenderEphemeralSignature {
+                GroupDecryptError.missingSenderEphemeralSignature,
+                GroupDecryptError.bodyDigestMismatch,
+                GroupDecryptError.missingBodyDigest {
             self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be using an older version — ask them to update, or verify them another way."
             self.showError = true
         } catch {

@@ -132,6 +132,14 @@ public struct OccultaBundle: Codable {
         /// see `wrapRecipient`. Receivers accept both forms; see
         /// `verifySenderEphemeralSignature`.
         case prefixedSenderSignatureCapable
+        /// Capability watermark: contact's build puts `RecipientPayload.bodyDigest` in every group slot, binding
+        /// the slot to the shared ciphertext, so a co-recipient can't rewrite the body behind it (`bugs.md`
+        /// Bug 165). Never written to the wire `version` field; stored only in `Contact.Profile.maxBundleVersion`
+        /// as byte 0x09.
+        ///
+        /// The receiver requires the digest from a contact recorded at this tier (`ContactManager.openGroup`).
+        /// The sender needs no gate: every build since 1.9.0 ignores the unknown key.
+        case bodyDigestCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -149,6 +157,7 @@ public struct OccultaBundle: Codable {
             case .groupShardCapable: return "1.9.1"
             case .senderSignatureCapable: return "1.10.0"
             case .prefixedSenderSignatureCapable: return "1.10.2"
+            case .bodyDigestCapable: return "2.0.0"
             default:                return nil
             }
         }
@@ -162,6 +171,7 @@ public struct OccultaBundle: Codable {
             case .groupShardCapable: return 0x06
             case .senderSignatureCapable: return 0x07
             case .prefixedSenderSignatureCapable: return 0x08
+            case .bodyDigestCapable: return 0x09
             default:                 return nil
             }
         }
@@ -188,6 +198,7 @@ public struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
+            .bodyDigestCapable, // 2.0.0+  — every group slot carries the body's digest
             .prefixedSenderSignatureCapable, // 1.10.2+ — domain-separated ephemeral signature
             .senderSignatureCapable, // 1.10.0+ — signs FS-mode group recipients' ephemeral key
             .groupShardCapable, // 1.9.1+  — per-recipient shard fields on RecipientPayload
@@ -463,11 +474,19 @@ public struct OccultaBundle: Codable {
             /// before. Omitted from the encoding when `nil`, so a batch without one encodes exactly as it always
             /// did, and builds that don't know the field ignore it.
             public let id: Data?
+            /// A key the sender may seal to more than once, when it has none of `prekeys` left (prekey continuity
+            /// §3.1, stage 2). Its `id` is never written in a bundle's `prekeyID`: a bundle sealed to it carries
+            /// `SecrecyContext.lastResortPrekeyID(keyID:ephemeralPublicKey:)` instead, keyed with that `id`, so
+            /// the `id` must stay inside sealed payloads.
+            ///
+            /// Absent from batches sent before stage 2. Omitted from the encoding when `nil`, like `id`.
+            public let lastResort: WirePrekey?
 
-            public init(generatedAt: Date, prekeys: [WirePrekey], id: Data? = nil) {
+            public init(generatedAt: Date, prekeys: [WirePrekey], id: Data? = nil, lastResort: WirePrekey? = nil) {
                 self.generatedAt = generatedAt
                 self.prekeys     = prekeys
                 self.id          = id
+                self.lastResort  = lastResort
             }
         }
     }
@@ -509,6 +528,25 @@ public struct OccultaBundle: Codable {
             input.append(nonce)
             
             return Data(SHA256.hash(data: input))
+        }
+
+        /// The `prekeyID` of a bundle sealed to a last-resort key (prekey continuity §3.1).
+        ///
+        /// A last-resort key is sealed to more than once, so its own ID in the clear would link every bundle
+        /// sealed to it. Instead each bundle carries HMAC-SHA256 of its ephemeral public key, keyed with the
+        /// last-resort key's ID as raw UUID bytes, truncated to 16 bytes with the UUID version-4 and variant bits
+        /// set, and formatted as `UUID().uuidString` formats one. A new ephemeral key gives a new ID; it can't be
+        /// computed or matched without the key's ID; and it looks like a one-time key's.
+        ///
+        /// - Returns: `nil` if `keyID` isn't a UUID string.
+        public static func lastResortPrekeyID(keyID: String, ephemeralPublicKey: Data) -> String? {
+            guard let uuid = UUID(uuidString: keyID) else { return nil }
+            let key = SymmetricKey(data: withUnsafeBytes(of: uuid.uuid) { Data($0) })
+            var b = [UInt8](Data(HMAC<SHA256>.authenticationCode(for: ephemeralPublicKey, using: key)).prefix(16))
+            b[6] = (b[6] & 0x0F) | 0x40
+            b[8] = (b[8] & 0x3F) | 0x80
+            return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                               b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])).uuidString
         }
 
         /// 16 cryptographically random bytes.
@@ -646,6 +684,14 @@ public struct OccultaBundle: Codable {
         /// real sender's private key. Added in v1.10.0.
         public let senderEphemeralSignature: Data?
 
+        /// SHA-256 of the bundle's `ciphertext`, the shared body. Every recipient holds the content key, so
+        /// without this a recipient could write a body of their own under it and keep the sender's slots to
+        /// the others (`bugs.md` Bug 165). The slot is sealed under a key only the sender could have built,
+        /// so the digest inside it is the sender's. Covering the ciphertext is enough: its GCM tag covers the
+        /// outer associated data, so changing either changes the ciphertext. `nil` from builds before
+        /// `.bodyDigestCapable`. Added in v2.0.0.
+        public let bodyDigest: Data?
+
         public init(
             sessionKey: Data,
             prekeyBatch: SealedPayload.PrekeySyncBatch? = nil,
@@ -653,7 +699,8 @@ public struct OccultaBundle: Codable {
             custodyManifest: [UUID] = [],
             custodyManifestCount: Int = 0,
             shardMetadataAttempted: Bool = false,
-            senderEphemeralSignature: Data? = nil
+            senderEphemeralSignature: Data? = nil,
+            bodyDigest: Data? = nil
         ) {
             self.sessionKey               = sessionKey
             self.prekeyBatch              = prekeyBatch
@@ -662,6 +709,7 @@ public struct OccultaBundle: Codable {
             self.custodyManifestCount     = custodyManifestCount
             self.shardMetadataAttempted   = shardMetadataAttempted
             self.senderEphemeralSignature = senderEphemeralSignature
+            self.bodyDigest               = bodyDigest
         }
 
         // Custom decoding: a payload from a pre-groupShardCapable sender simply
@@ -671,7 +719,7 @@ public struct OccultaBundle: Codable {
         // shardMetadataAttempted defaults to false for the same reason — a sender
         // old enough not to know about it never attempted anything.
         enum CodingKeys: String, CodingKey {
-            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature, bodyDigest
         }
 
         public init(from decoder: Decoder) throws {
@@ -683,6 +731,7 @@ public struct OccultaBundle: Codable {
             self.custodyManifestCount     = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
             self.shardMetadataAttempted   = try c.decodeIfPresent(Bool.self, forKey: .shardMetadataAttempted) ?? false
             self.senderEphemeralSignature = try c.decodeIfPresent(Data.self, forKey: .senderEphemeralSignature)
+            self.bodyDigest               = try c.decodeIfPresent(Data.self, forKey: .bodyDigest)
         }
     }
 

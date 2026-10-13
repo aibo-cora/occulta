@@ -29,13 +29,13 @@ private func ownKey(withPublicKey: Bool) -> PrekeyRecord.OwnKey {
 }
 
 /// The largest record the bookkeeper allows (design §8, stage 1, "Size limits"). 48 own keys spread over as many
-/// entries as they can form: the pending batch of 15, still carrying its ID and, deliberately, stored public keys
-/// (the record derives them from the blobs now, but the budget keeps room to store them again if a device shows
-/// deriving is too slow; decided 2026-10-11), then 33 entries of one
+/// entries as they can form: the pending batch of 15 and its last-resort key, still carrying its ID and,
+/// deliberately, stored public keys (the record derives them from the blobs now, but the budget keeps room to store
+/// them again if a device shows deriving is too slow; decided 2026-10-11), then 32 entries of one
 /// key each, as a chatty contact who loses one file per batch leaves them (the batch in use, and retired ones whose
 /// leftovers are within their 30 days). Each entry costs about 45 bytes beyond its key, so this shape, not three
 /// full batches, is the worst case. Two inbound batches at the per-batch limit, with key IDs at the length limit
-/// (stage 1 holds one, stage 4 two); 8 accepted batch IDs; every date set.
+/// (stage 1 holds one, stage 4 two), and the contact's last-resort key; 8 accepted batch IDs; every date set.
 ///
 /// Every value is distinct, dates included. A binary plist stores a repeated value once, so repeated IDs, blobs or
 /// dates would make this record look smaller than any real one; that is how an earlier version of this fixture
@@ -49,24 +49,27 @@ private func recordAtEveryLimit() -> PrekeyRecord {
                               isPending: false, keys: [ownKey(withPublicKey: false)])
     }
     let pending = PrekeyRecord.OwnBatch(id: randomBytes(16), createdAt: date(), retiredAt: nil, isPending: true,
-                                        keys: (0..<15).map { _ in ownKey(withPublicKey: true) })
+                                        keys: (0..<15).map { _ in ownKey(withPublicKey: true) },
+                                        lastResort: ownKey(withPublicKey: true))
+    let inboundKey = {
+        PrekeyRecord.InboundKey(
+            id: UUID().uuidString.padding(toLength: PrekeyBookkeeper.maxInboundKeyIDBytes, withPad: "x", startingAt: 0),
+            publicKey: randomBytes(65)
+        )
+    }
     let inbound = { PrekeyRecord.InboundBatch(
         id: randomBytes(16),
-        keys: (0..<PrekeyBookkeeper.maxInboundKeysPerBatch).map { _ in
-            PrekeyRecord.InboundKey(
-                id: UUID().uuidString.padding(toLength: PrekeyBookkeeper.maxInboundKeyIDBytes, withPad: "x", startingAt: 0),
-                publicKey: randomBytes(65)
-            )
-        }
+        keys: (0..<PrekeyBookkeeper.maxInboundKeysPerBatch).map { _ in inboundKey() }
     ) }
     let record = PrekeyRecord(
-        ownBatches: (0..<32).map { _ in oneKey(true) } + [oneKey(false), pending],
+        ownBatches: (0..<31).map { _ in oneKey(true) } + [oneKey(false), pending],
         inboundBatches: [inbound(), inbound()],
+        inboundLastResort: inboundKey(),
         acceptedBatchIDs: (0..<8).map { _ in randomBytes(16) },
         latestInboundGeneratedAt: date(),
         legacyKeys: .retired(since: date())
     )
-    precondition(record.ownBatches.reduce(0) { $0 + $1.keys.count } == PrekeyBookkeeper.maxOwnKeys)
+    precondition(record.ownBatches.reduce(0) { $0 + PrekeyBookkeeper.keyCount($1) } == PrekeyBookkeeper.maxOwnKeys)
     return record
 }
 
@@ -90,9 +93,11 @@ struct PrekeyRecordCodecFormatTests {
         #expect(plaintext.count == PrekeyRecordCodec.capacity)
         #expect(try self.codec.decode(plaintext) == record)
 
-        // This record measures about 15.7 KB of the 16 KB. Keep at least 512 bytes of headroom, so a field added
-        // without revisiting the limits fails here rather than on a device.
-        #expect(PrekeyRecordCodec.headerSize + payloadLength(of: plaintext) <= PrekeyRecordCodec.capacity - 512)
+        // This record measures about 15.9 KB of the 16 KB, counting the pending batch's public keys as stored
+        // (about 1 KB the record doesn't spend while it derives them). Keep at least 256 bytes of headroom, so a
+        // field added without revisiting the limits fails here rather than on a device; any per-key field across
+        // 48 keys is well over it. 512 until stage 2's last-resort keys (decided 2026-10-11).
+        #expect(PrekeyRecordCodec.headerSize + payloadLength(of: plaintext) <= PrekeyRecordCodec.capacity - 256)
     }
 
     @Test("A record's encoded length doesn't depend on what it holds")

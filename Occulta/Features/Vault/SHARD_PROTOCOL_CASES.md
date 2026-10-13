@@ -13,13 +13,16 @@ Actors: **Alice** = shard owner, **Bob** = trustee.
 > **Per-entry splitting was retired 2026-09-27** (`Docs/General/decisions.md`, "Retire per-entry splitting"): every piece
 > Alice distributes is a backup-key piece, and handed-back per-entry pieces are not banked.
 >
-> **Replay guards decided 2026-10-07, not yet built** (`Docs/Features/Prekey Continuity/DESIGN.md` §3.1, D5).
-> v2.0.0 adds a reusable "last-resort" prekey, so a bundle sealed to it can be delivered and processed more than
-> once. Piece operations and manifests therefore ride only on one-time keys and are dropped from last-resort
-> slots. Two trustee-side guards back that up: `.replace` skips a piece Bob already holds (the check Case 15
-> describes for `.distribute`), and each custody row records the ID it superseded, so replaying the operation
-> that installed the previous piece is rejected while the row is held. Every case here is to be tested with
-> each operation delivered twice and in every order.
+> **Replay guards** (`Docs/Features/Prekey Continuity/DESIGN.md` §3.1, D5; built 2026-10-12). v2.0.0 adds a
+> reusable "last-resort" prekey, so a bundle sealed to it can be delivered and processed more than once. Piece
+> operations and manifests therefore ride only on one-time keys, and the receiver drops them from long-term and
+> last-resort slots, one-to-one bundles' shared payload included (`bugs.md` Bug 164). `.replace` skips a piece Bob
+> already holds, the check Case 15 describes for `.distribute` (G1).
+>
+> **Not guarded: ordering** (`bugs.md` Bug 163, deferred). A `.replace` names only the piece it replaces, so a lost
+> or late one, across two re-splits before Bob confirms the first, leaves a stale piece behind. The superseded-ID
+> guard planned for this (G2′) was dropped: it covers one generation only. The fix worked out is a lineage per
+> owner depth and trustee, in Bug 163.
 
 ---
 

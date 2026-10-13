@@ -64,6 +64,9 @@ depends on.
 | Bug 162 | A trustee's piece count for an owner shows how many of the owner's depths have a backup | Open, needs a decision (2026-10-12) | none yet; rollout stage 4 |
 | Bug 163 | A lost or late `.replace` leaves the trustee holding the piece it replaced | Open; fix worked out (a lineage per owner depth and trustee), deferred | none yet |
 | Bug 164 | A one-to-one bundle's fallback slot keeps its piece operations on receipt | Fixed on `v2.0.0/prekey-stage-2`, not merged | prekey continuity stage 2 |
+| Bug 165 | A group member can rewrite another member's message to the rest of the group | Fixed on `v2.0.0/group-body-binding` (PR #100), not merged; senders below 2.0.0 stay open until they update | none; needed before prekey continuity stage 3 |
+| Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Open; fix proposed | prekey continuity stage 3 |
+| Bug 167 | Identity challenges and responses can be recognised by their size | Open, needs a decision | prekey continuity stage 3 |
 
 Steps 6, 7, 10, 13, 15, 16 and 17 are not tracked anywhere else yet.
 

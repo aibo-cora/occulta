@@ -330,6 +330,8 @@ enum PrekeyPrivateKey {
 /// the sender's record first and the keychain second, and saves at once when a key is used.
 protocol PrekeyPrivateKeys {
     func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey?
+    /// The last-resort key a derived `prekeyID` names, with its own ID (prekey continuity §3.1). It isn't consumed.
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)?
     /// Destroys it. Called the moment the slot opens, before anything can still reject the bundle (§2.2 of
     /// `SECURITY_CHECKLIST.md`), so it doesn't throw: by then the key has done its work either way.
     func consume(prekeyID: String, contactID: String)
@@ -343,6 +345,11 @@ extension Manager.PrekeySecretsManager: PrekeyPrivateKeys {
 
     func consume(prekeyID: String, contactID: String) {
         self.consume(prekey: Prekey(id: prekeyID, contactID: contactID, publicKey: Data()))
+    }
+
+    /// Last-resort keys live only in the record, never in the keychain.
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
+        nil
     }
 }
 

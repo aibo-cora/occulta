@@ -18,9 +18,13 @@ struct GroupRecipient {
     /// Used for fingerprinting and ECDH on the longTermFallback path.
     let publicKey: Data
     let quantumMaterial: QuantumKeyMaterial?
-    /// Contact's oldest stored inbound prekey, popped by the caller before this call.
+    /// Contact's oldest stored inbound prekey, popped by the caller before this call, or their last-resort key.
     /// Non-nil → forward-secret path; nil → longTermFallback.
     let contactPrekey: Prekey?
+    /// Whether `contactPrekey` is the contact's last-resort key (prekey continuity §3.1): its ID is then never
+    /// written in the slot's `prekeyID`, a value derived from it and the ephemeral key is. Defaults to `false`,
+    /// a one-time key.
+    let contactPrekeyIsLastResort: Bool
     /// Outbound prekey batch to include in this recipient's `RecipientPayload`, or nil.
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
 
@@ -49,6 +53,7 @@ struct GroupRecipient {
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
         contactPrekey: Prekey?,
+        contactPrekeyIsLastResort: Bool = false,
         pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?,
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false
@@ -56,6 +61,7 @@ struct GroupRecipient {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
         self.contactPrekey           = contactPrekey
+        self.contactPrekeyIsLastResort = contactPrekeyIsLastResort
         self.pendingBatch            = pendingBatch
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
@@ -103,6 +109,9 @@ extension Manager.Crypto {
     /// Binds the wrapped session key to this specific bundle. No cleartext recipient
     /// identity is included — receivers find their slot by trial-decryption, preventing
     /// passive observers from confirming membership without the wrapping key.
+    ///
+    /// `blind` doesn't bind the slot to the body, which every recipient can re-encrypt: the
+    /// slot's `RecipientPayload.bodyDigest` does (`bugs.md` Bug 165).
     ///
     /// ## Per-recipient key path
     /// `contactPrekey != nil` → FS: ECDH(senderEphemeral, contactPrekey.publicKey) [+ ML-KEM]
@@ -159,8 +168,12 @@ extension Manager.Crypto {
         let outerNonce = try OccultaBundle.SecrecyContext.generateNonce()
         let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
 
+        // Every recipient holds the session key, so each slot commits to the body it unlocks; without this a
+        // recipient could put a body of their own behind the others' slots (bugs.md Bug 165).
+        let bodyDigest = Data(SHA256.hash(data: ciphertext))
+
         let recipientEntries = try recipients.map { r in
-            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: blind)
+            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: bodyDigest)
         }
 
         let envelope = OccultaBundle.GroupEnvelope(blind: blind, blindNonce: blindNonce, recipients: recipientEntries)
@@ -177,12 +190,14 @@ extension Manager.Crypto {
     private func wrapRecipient(
         _ r: GroupRecipient,
         sessionKeyData: Data,
-        blind: Data
+        blind: Data,
+        bodyDigest: Data
     ) throws -> OccultaBundle.Recipient {
         guard r.publicKey.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
 
         let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(
             contactPrekey: r.contactPrekey,
+            isLastResort: r.contactPrekeyIsLastResort,
             recipientPublicKey: r.publicKey,
             quantumMaterial: r.quantumMaterial
         )
@@ -220,7 +235,8 @@ extension Manager.Crypto {
             // Always false: a v1.10.3 receiver reads true with no expected-shards list
             // as "delete every piece you hold from me" (bugs.md Bug 141).
             shardMetadataAttempted:   false,
-            senderEphemeralSignature: senderEphemeralSignature
+            senderEphemeralSignature: senderEphemeralSignature,
+            bodyDigest:               bodyDigest
         )
         // Sorted keys, so the same payload always encodes to the same bytes. It is sealed, so
         // the order was never observable, but a default JSONEncoder's order changes with every

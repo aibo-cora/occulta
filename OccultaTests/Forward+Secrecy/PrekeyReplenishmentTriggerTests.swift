@@ -130,21 +130,79 @@ private struct Fixture {
     }
 
     /// A group-format bundle from the sender with one slot, ours: long-term when `prekey` is nil.
-    func groupBundle(prekey: Prekey? = nil) throws -> OccultaBundle {
+    func groupBundle(prekey: Prekey? = nil, lastResort: Bool = false) throws -> OccultaBundle {
         try Manager.Crypto(keyManager: self.senderKM).seal(
             message: Data("hi".utf8), groupID: UUID(),
-            recipients: [GroupRecipient(publicKey: self.selfPub, quantumMaterial: nil, contactPrekey: prekey, pendingBatch: nil)]
+            recipients: [GroupRecipient(publicKey: self.selfPub, quantumMaterial: nil, contactPrekey: prekey,
+                                        contactPrekeyIsLastResort: lastResort, pendingBatch: nil)]
         )
     }
 
-    /// `bundle` with its shared ciphertext corrupted: its slot still opens (it is keyed to `blind`,
-    /// not to the shared ciphertext), and the shared ciphertext then fails authentication.
+    /// A one-to-one bundle from the sender carrying a piece operation and a manifest in its shared payload, as
+    /// `encryptBundle` sends them, sealed to `prekey`.
+    func oneToOneBundleWithShardContent(prekey: Prekey, lastResort: Bool) throws -> OccultaBundle {
+        let value = Data((0..<33).map { _ in UInt8.random(in: .min ... .max) })
+        let (id, entryID, createdAt) = (UUID(), UUID(), Date())
+        let signature = try self.senderKM.signData(SignedAttribute.signingPayload(
+            id: id, category: .shard, value: value, entryID: entryID, createdAt: createdAt, expiresAt: nil
+        ))
+        let piece = SignedAttribute(
+            id: id, label: SignedAttribute.backupKeyPieceLabel, value: value, category: .shard,
+            signature: signature, createdAt: createdAt, expiresAt: nil, entryID: entryID
+        )
+        return try Manager.Crypto(keyManager: self.senderKM).seal(
+            sealedPayload: OccultaBundle.SealedPayload(
+                message: Data("hi".utf8),
+                shardOperations: [OccultaBundle.ShardOperation(kind: .distribute, attribute: piece)],
+                custodyManifest: [UUID()]
+            ),
+            groupID: UUID(),
+            recipients: [GroupRecipient(publicKey: self.selfPub, quantumMaterial: nil, contactPrekey: prekey,
+                                        contactPrekeyIsLastResort: lastResort, pendingBatch: nil)]
+        )
+    }
+
+    /// The last-resort key of the batch we're waiting to deliver, as the sender would hold it.
+    func pendingLastResort() throws -> Prekey {
+        let wire = try #require(try self.pendingBatch?.lastResort)
+        return Prekey(id: wire.id, contactID: self.senderID, publicKey: wire.publicKey)
+    }
+
+    /// A single-recipient bundle sealed to a last-resort key under its derived ID, as `Manager.Crypto.seal` would
+    /// build one if it could. No sender does: the format has no sender signature to authenticate it.
+    func singleRecipientLastResortBundle(to prekey: Prekey) throws -> OccultaBundle {
+        let crypto = Manager.Crypto(keyManager: self.senderKM)
+        let nonce = try OccultaBundle.SecrecyContext.generateNonce()
+        let (key, secrecy) = try crypto.deriveOutboundKey(
+            contactPrekey: prekey, isLastResort: true, recipientPublicKey: self.selfPub, quantumMaterial: nil
+        )
+        let message = try WireHandle.encode(payload: .init(message: Data("hi".utf8)))
+        let aad = try OccultaBundle.computeAdditionalAuthentication(version: .v4, secrecy: secrecy)
+        let ciphertext = try #require(try AES.GCM.seal(message, using: key, nonce: AES.GCM.Nonce(), authenticating: aad).combined)
+        return OccultaBundle(
+            version: .v4, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: nonce,
+            senderFingerprint: OccultaBundle.SecrecyContext.fingerprint(for: try self.senderKM.retrieveIdentity(), nonce: nonce)
+        )
+    }
+
+    /// `bundle` with its shared ciphertext corrupted: its slot still opens, and the body then fails against the
+    /// slot's digest (`bugs.md` Bug 165). A one-time key survives that rejection, so use `misSigned` to test
+    /// one that consumes it.
     func corrupted(_ bundle: OccultaBundle) -> OccultaBundle {
         var ciphertext = bundle.ciphertext
         ciphertext[ciphertext.index(before: ciphertext.endIndex)] ^= 0x01
         return OccultaBundle(
             version: bundle.version, secrecy: bundle.secrecy, ciphertext: ciphertext,
             fingerprintNonce: bundle.fingerprintNonce, senderFingerprint: bundle.senderFingerprint, group: bundle.group
+        )
+    }
+
+    /// A group-format bundle sealed to `prekey` by someone holding it who isn't the sender: its slot opens, and the
+    /// sender's signature over its ephemeral key then fails.
+    func misSigned(prekey: Prekey) throws -> OccultaBundle {
+        try Manager.Crypto(keyManager: TestKeyManager()).seal(
+            message: Data("hi".utf8), groupID: UUID(),
+            recipients: [GroupRecipient(publicKey: self.selfPub, quantumMaterial: nil, contactPrekey: prekey, pendingBatch: nil)]
         )
     }
 
@@ -170,6 +228,7 @@ private struct Fixture {
 
         let batch = try #require(try f.pendingBatch)
         #expect(batch.prekeys.count == Manager.PrekeySecretsManager.defaultBatchSize)
+        #expect(batch.lastResort != nil, "a fresh batch carries a last-resort key")
         #expect(try f.ownPrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
         #expect(f.keychainPrekeyCount == 0)
     }
@@ -239,6 +298,7 @@ private struct Fixture {
 
         let batch = try #require(try f.pendingBatch)
         #expect(batch.prekeys.count == Manager.PrekeySecretsManager.defaultBatchSize)
+        #expect(batch.lastResort != nil, "a fresh batch carries a last-resort key")
         #expect(try f.ownPrekeyCount == Manager.PrekeySecretsManager.defaultBatchSize)
         #expect(f.keychainPrekeyCount == 0)
     }
@@ -315,6 +375,8 @@ private struct Fixture {
         let delivered = try #require(senderSlot.prekeyBatch)
         #expect(delivered.prekeys == pending.prekeys)
         #expect(delivered.id == pending.id)
+        #expect(delivered.lastResort == pending.lastResort)
+        #expect(delivered.lastResort != nil)
 
         // The sender's next message uses the first key it received.
         let wire   = try #require(delivered.prekeys.first)
@@ -343,12 +405,35 @@ private struct Fixture {
         _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
         let prekey = try f.firstPendingPrekey()
 
-        let bundle = f.corrupted(try f.groupBundle(prekey: prekey))
-        #expect(throws: (any Error).self) { _ = try f.cm.openGroup(bundle: bundle, ownerID: f.senderID) }
+        let bundle = try f.misSigned(prekey: prekey)
+        #expect(throws: GroupDecryptError.senderEphemeralSignatureMismatch) {
+            _ = try f.cm.openGroup(bundle: bundle, ownerID: f.senderID)
+        }
 
         let saved = try f.savedRecord
         #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: saved) == nil)
         #expect(!PrekeyBookkeeper().hasPendingBatch(saved))
+    }
+
+    /// The exception (`bugs.md` Bug 165): a body that isn't the one the slot was sealed around is someone else's,
+    /// put behind the sender's slot. Using the key up would make the sender's genuine message unopenable.
+    @Test("A body that fails the slot's digest leaves the prekey, and the genuine bundle then opens", .enabled(if: secureEnclaveAvailable()))
+    func digestMismatchKeepsThePrekey() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let prekey  = try f.firstPendingPrekey()
+        let genuine = try f.groupBundle(prekey: prekey)
+
+        #expect(throws: GroupDecryptError.bodyDigestMismatch) {
+            _ = try f.cm.openGroup(bundle: f.corrupted(genuine), ownerID: f.senderID)
+        }
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: try f.savedRecord) != nil)
+        #expect(PrekeyBookkeeper().hasPendingBatch(try f.savedRecord), "nothing was delivered")
+
+        #expect(try f.cm.openGroup(bundle: genuine, ownerID: f.senderID).sealed.message == Data("hi".utf8))
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: try f.savedRecord) == nil)
     }
 
     /// D1: a retired batch's leftover keys are kept 30 days for files sealed to them and still on their way. The
@@ -444,3 +529,89 @@ private struct Fixture {
         #expect(try f.sender.prekeyRecordEncrypted != nil)
     }
 }
+
+// MARK: - Last-resort key (stage 2)
+
+@Suite("Prekey replenishment trigger — last-resort key")
+@MainActor struct LastResortReceiveTests {
+
+    /// The second row of §3.1's table, end to end: the sender received our pending batch, used all of it, and
+    /// sealed to its last-resort key.
+    @Test("A slot sealed to the pending batch's last-resort key opens, keeps it, delivers the batch and makes a new one",
+          .enabled(if: secureEnclaveAvailable()))
+    func pendingLastResortDeliversAndReplenishes() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let first = try #require(try f.pendingBatch)
+        let lastResort = try f.pendingLastResort()
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(prekey: lastResort, lastResort: true), ownerID: f.senderID)
+
+        let record = try f.savedRecord
+        #expect(record.ownBatches.count == 2, "the delivered batch, and a new pending one")
+        #expect(record.ownBatches[0].isPending == false && record.ownBatches[0].lastResort != nil, "delivered, key kept")
+        let next = try #require(try f.pendingBatch)
+        #expect(next.id != first.id && next.lastResort != nil)
+    }
+
+    /// The key isn't consumed, so a second message to it opens; the batch it made is still pending, and an older
+    /// key while one is pending makes nothing (the third row).
+    @Test("A second message to the same last-resort key opens too, and makes no further batch", .enabled(if: secureEnclaveAvailable()))
+    func lastResortOpensAgain() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let lastResort = try f.pendingLastResort()
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(prekey: lastResort, lastResort: true), ownerID: f.senderID)
+        let pending = try #require(try f.pendingBatch)
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(prekey: lastResort, lastResort: true), ownerID: f.senderID)
+
+        #expect(try f.pendingBatch == pending, "no new batch while one is pending")
+        #expect(try f.savedRecord.ownBatches.count == 2)
+    }
+
+    /// D5: a last-resort bundle opens again on every redelivery, so its piece operations and manifest are dropped on
+    /// receipt whatever the sender did. Bug 164: on a one-to-one bundle they ride the shared payload, so that's where
+    /// they must go. A one-time slot, the control, keeps them.
+    @Test("A last-resort slot's shared piece operations and manifest are dropped; a one-time slot's are kept",
+          .enabled(if: secureEnclaveAvailable()))
+    func lastResortSlotDropsSharedShardContent() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let oneTime    = try f.firstPendingPrekey()
+        let lastResort = try f.pendingLastResort()
+
+        let kept = try f.cm.openGroup(
+            bundle: try f.oneToOneBundleWithShardContent(prekey: oneTime, lastResort: false), ownerID: f.senderID
+        )
+        #expect(kept.sealed.shardOperations?.count == 1)
+        #expect(kept.sealed.custodyManifest != nil)
+
+        let dropped = try f.cm.openGroup(
+            bundle: try f.oneToOneBundleWithShardContent(prekey: lastResort, lastResort: true), ownerID: f.senderID
+        )
+        #expect(dropped.sealed.shardOperations == nil)
+        #expect(dropped.sealed.custodyManifest == nil)
+        #expect(dropped.sealed.message == Data("hi".utf8))
+    }
+
+    @Test("A single-recipient bundle sealed to a last-resort key is rejected", .enabled(if: secureEnclaveAvailable()))
+    func singleRecipientLastResortRejected() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let before = try f.savedRecord
+        let bundle = try f.singleRecipientLastResortBundle(to: try f.pendingLastResort())
+
+        #expect(throws: (any Error).self) { _ = try f.cm.decryptSealed(bundle: bundle) }
+        #expect(try f.savedRecord == before, "nothing delivered, retired or generated")
+    }
+}
+
