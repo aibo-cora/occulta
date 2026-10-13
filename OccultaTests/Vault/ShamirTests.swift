@@ -303,4 +303,27 @@ struct SSSErrorTests {
             _ = try ShamirSecretSharing.reconstruct(shares: [s1, s2])
         }
     }
+
+    /// Pins what the internal `reconstruct(shares:)` warns about, and the reason the public
+    /// entry point takes a check: a bad share is not an error, just a wrong answer.
+    @Test("A bad share yields a wrong secret, not an error")
+    func noErrorDetection() throws {
+        let secret = Data((0..<32).map { UInt8($0) })
+        let other  = Data((0..<32).map { UInt8(255 - $0) })
+        let shares      = try ShamirSecretSharing.split(secret: secret, threshold: 2, shares: 3)
+        let otherShares = try ShamirSecretSharing.split(secret: other, threshold: 2, shares: 3)
+
+        let mixed = try ShamirSecretSharing.reconstruct(shares: [shares[0], otherShares[1]])
+        #expect(mixed != secret)
+        #expect(mixed != other)
+
+        var corrupted = shares[1]
+        corrupted[5] ^= 0x01
+        #expect(try ShamirSecretSharing.reconstruct(shares: [shares[0], corrupted]) != secret)
+
+        let threeOfFive = try ShamirSecretSharing.split(secret: secret, threshold: 3, shares: 5)
+        let tooFew = try ShamirSecretSharing.reconstruct(shares: [threeOfFive[0], threeOfFive[1]])
+        #expect(tooFew != secret)
+        #expect(tooFew.count == 32)
+    }
 }

@@ -21,9 +21,9 @@ struct ShamirPublicAPITests {
         let shares = try ShamirSecretSharing.split(secret: self.secret, threshold: 2, shares: 3)
 
         #expect(shares.count == 3)
-        #expect(try ShamirSecretSharing.reconstruct(shares: [shares[0], shares[1]]) == self.secret)
-        #expect(try ShamirSecretSharing.reconstruct(shares: [shares[1], shares[2]]) == self.secret)
-        #expect(try ShamirSecretSharing.reconstruct(shares: shares) == self.secret)
+        for subset in [[shares[0], shares[1]], [shares[1], shares[2]], shares] {
+            #expect(try ShamirSecretSharing.reconstruct(shares: subset) { $0 == self.secret } == self.secret)
+        }
     }
 
     @Test("Invalid input is reported through the public error cases")
@@ -36,7 +36,13 @@ struct ShamirPublicAPITests {
         }
         let shares = try ShamirSecretSharing.split(secret: self.secret, threshold: 2, shares: 3)
         #expect(throws: ShamirSecretSharing.Error.insufficientShares) {
-            try ShamirSecretSharing.reconstruct(shares: [shares[0]])
+            try ShamirSecretSharing.reconstruct(shares: [shares[0]]) { _ in true }
+        }
+        #expect(throws: ShamirSecretSharing.Error.invalidParameters) {
+            try ShamirSecretSharing.reconstruct(shares: shares, maxAttempts: 0) { _ in true }
+        }
+        #expect(throws: ShamirSecretSharing.Error.noVerifiedSubset) {
+            try ShamirSecretSharing.reconstruct(shares: shares) { _ in false }
         }
     }
 }
