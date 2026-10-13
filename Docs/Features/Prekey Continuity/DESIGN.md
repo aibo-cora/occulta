@@ -1,8 +1,8 @@
 # Prekey Continuity — Design
 
-**Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stage 1 built
-2026-10-10, in review (PR #94, replacing #93); stage 2 built 2026-10-12, in review (PR #97); stages 3–4 not
-started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
+**Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stages 1 and 2
+(PRs #94, #97) and Bug 165's fix (PR #100) merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release
+branch; stages 3–4 not started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
 **Downgrades ruled out by release order** (D6, 2026-10-07). **Seeding at the exchange (§3.2,
@@ -370,7 +370,7 @@ so a co-recipient can rewrite a group bundle's body behind the sender's genuine 
 `GroupBodyBindingTests`). Stage 3 therefore needs, before it ships:
 - **Bug 165's fix:** each slot carries a digest of the body. Required for any group-format challenge or
   response whatever the sender's recorded tier, and from senders at the tier for everything else. **Built
-  2026-10-13** (`v2.0.0/group-body-binding`), with the tier `.bodyDigestCapable` (2.0.0, byte 0x09), which this
+  2026-10-13** (PR #100), with the tier `.bodyDigestCapable` (2.0.0, byte 0x09), which this
   section shares.
 - **The slot signature required for a challenge,** on a forward-secret slot, whatever tier is recorded.
   `openGroup` accepts an unsigned forward-secret slot from a sender with no tier recorded; every build that sends
@@ -379,6 +379,7 @@ so a co-recipient can rewrite a group bundle's body behind the sender's genuine 
   reopening. `decryptSealed`'s forward-secret bundles carry no sender binding (finding #8's residual), so a
   challenge it decrypted is never trusted as it stands.
 - **Bug 166's fix:** a response shows a result only if it names a challenge still waiting for that contact.
+  **Built 2026-10-13** (`v2.0.0/challenge-unsolicited-response`).
 - **One send path.** Challenges go through `encryptBundle`, so their slot padding, prekey batch and shard fields
   match a message's, and D5 holds: no piece operations or manifests ride them.
 
