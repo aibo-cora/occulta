@@ -12904,7 +12904,7 @@ and assert none is created.
 
 ## Bug 156 — Unused prekeys are never removed from the Secure Enclave
 
-**Status:** Fixed 2026-10-10 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged; ships with
+**Status:** Fixed 2026-10-10 (prekey continuity stage 1, PR #94), merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch; ships with
 the contacts slice. Retired keys, and legacy keychain keys once retired, are deleted 30 days after retirement.
 **Residual — open, needs a decision:** the clock starts at retirement, and a batch retires only when the contact
 uses a newer one. In the batch a contact is still using, a key whose message was lost stays until they move on to
@@ -12971,7 +12971,7 @@ saved even when the bundle is rejected).
 
 ## Bug 157 — Using any of our prekeys clears the pending batch, even one from an older batch
 
-**Status:** Fixed 2026-10-09 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged: the pending
+**Status:** Fixed 2026-10-09 (prekey continuity stage 1, PR #94), merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch: the pending
 batch stops being pending only when the key used belongs to it (`PrekeyBookkeeper.consume`).
 
 **Target:** `v2.0.0`. Present since the pending batch was introduced (`8ec81d8a`, 2026-03-23).
@@ -13003,7 +13003,7 @@ no format change is needed.
 
 ## Bug 158 — A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely
 
-**Status:** Fixed 2026-10-09 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1), not yet merged: a batch
+**Status:** Fixed 2026-10-09 (prekey continuity stage 1, PR #94), merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch: a batch
 carries a 16-byte ID and is deduplicated by it, whatever its date (the first option below). A batch without an ID,
 from a sender on an older build, keeps the date rule, so that sender keeps the bug until they update.
 
@@ -13130,8 +13130,8 @@ cleared), so removing the trigger from either method would fail them.
 
 ## Bug 161 — A contact's sealed prekey record changes size with their message activity
 
-**Status:** Fixed 2026-10-10 on `v2.0.0/prekey-stage-1` (prekey continuity stage 1,
-`Docs/Features/Prekey Continuity/DESIGN.md` §8), not yet merged; ships with the contacts slice. Found planning
+**Status:** Fixed 2026-10-10 in prekey continuity stage 1 (`Docs/Features/Prekey Continuity/DESIGN.md` §8, PR #94),
+merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch; ships with the contacts slice. Found planning
 that stage. Step 3's filler rows don't exist yet; they must use the same sealed size.
 
 **Target:** `v2.0.0`. Present since `forwardSecrecyEncrypted` was introduced (forward secrecy, 2026-03).
@@ -13391,8 +13391,8 @@ trustee holding only the newest piece delivered; and the owner's backup key rows
 
 ## Bug 164 — On a one-to-one bundle, a fallback slot's piece operations and manifest aren't dropped on receipt
 
-**Status:** Fixed 2026-10-12 on `v2.0.0/prekey-stage-2` (`36cac4d`, prekey continuity stage 2, 3/4), not yet
-merged: `openGroup` strips the shared payload too. Found 2026-10-12.
+**Status:** Fixed 2026-10-12 in prekey continuity stage 2 (`36cac4d`, 3/4; PR #97), merged 2026-10-13 into
+`v2.0.0/prekey-refactor`, not yet in the release branch: `openGroup` strips the shared payload too. Found 2026-10-12.
 
 **Target:** `v2.0.0`. Present since one-to-one bundles moved to the group format (1.9.0).
 
@@ -13421,7 +13421,8 @@ fail with the fix removed. Enclave-gated, so skipped on CI.
 
 ## Bug 165 — A group member can rewrite another member's message to the rest of the group
 
-**Status:** Fixed 2026-10-13 on `v2.0.0/group-body-binding`, not yet merged; ships in v2.0.0. Found 2026-10-12 in
+**Status:** Fixed 2026-10-13 (PR #100), merged into `v2.0.0/prekey-refactor`, not yet in the release branch; ships
+in v2.0.0. Found 2026-10-12 in
 the security review of prekey continuity stage 3 (`Docs/Features/Prekey Continuity/DESIGN.md` §3.4), confirmed by
 `GroupBodyBindingTests`.
 
@@ -13499,8 +13500,9 @@ With the three receiver checks disabled (the mismatch moved after consumption), 
 
 ## Bug 166 — A response we aren't waiting for shows "Verification failed — this may not be <contact>"
 
-**Status:** Open — fix proposed, not built. Found 2026-10-12 in the security review of prekey continuity stage 3,
-confirmed by `IdentityChallengeUnsolicitedResponseTests`.
+**Status:** Fixed 2026-10-13 on `v2.0.0/challenge-unsolicited-response`, not yet merged; ships in v2.0.0. Found
+2026-10-12 in the security review of prekey continuity stage 3, confirmed by
+`IdentityChallengeUnsolicitedResponseTests`.
 
 **Target:** `v2.0.0`. Present since identity challenges shipped.
 
@@ -13515,21 +13517,29 @@ in person."
 
 - **Reopening a genuine response file** after it passed is enough: its nonce was used up when it passed. No
   attacker needed.
-- **A group member can trigger it** through Bug 165: a response envelope in a rewritten group body fails to open
-  in `openIdentityBundle`, and a failure to open shows the sheet too.
+- **A group member could trigger it** through Bug 165: a response envelope in a rewritten group body fails to open
+  in `openIdentityBundle`, and a failure to open showed the sheet too. Bug 165's fix closes this route for any
+  sender: a group body carrying a challenge or response without a digest is refused before the coordinator.
 - **The contact can, at any time,** which matters less: they can lie to us anyway.
 
-### Fix — proposed
+### Fix — built 2026-10-13
 
-Show a result only for a response that opens, is authenticated, and names a challenge still waiting for that
-contact; drop anything else without a sheet. A response that names our challenge and fails the signature or the
-time window still shows "Verification failed": that's the case the sheet is for. Nobody but the contact can learn
-the waiting nonce, so nobody else can reach the sheet.
+`verifyResponse` returns `.passed`, `.failed` or `.notOurs` instead of a yes or no. `.notOurs` is a response whose
+nonce names no challenge waiting for that contact: a replay, an old file reopened, or a challenge we sent someone
+else. The coordinator shows a result only for `.passed` and `.failed`, and nothing for `.notOurs` or a response
+that doesn't open. A response that names our challenge and fails the signature or the time window still shows
+"Verification failed": that's the case the sheet is for. Nobody but the contact can learn the waiting nonce, so
+nobody else can reach the sheet.
+
+A pending challenge is now settled only by a response that names it, from the contact it went to. One naming it
+from another contact used to remove it; it now leaves it waiting for the real answer. It still expires as before.
 
 ### Guard
 
-`IdentityChallengeUnsolicitedResponseTests.reopenedResponseShowsNothing` (known issue until the fix). Needed with
-the fix: a response that won't open shows nothing; one naming our challenge with a bad signature still fails.
+`IdentityChallengeUnsolicitedResponseTests`: a reopened response shows nothing; one that won't open shows nothing
+and leaves the challenge waiting, so the genuine one still passes; one naming our challenge with a bad signature
+still fails. `IdentityChallengeProtocolTests.verify_replayedResponse_returnsFalseOnSecondAttempt` checks the
+replay is `.notOurs`. With the coordinator showing failure for `.notOurs` again, the first two fail.
 
 ## Bug 167 — Identity challenges and responses can be recognised by their size
 

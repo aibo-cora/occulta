@@ -60,12 +60,12 @@ depends on.
 | Register §E | Language risk; `USER_GUIDE.md` overclaims and names authorities | Tier 3 P1 | 11 |
 | Register §I | A duress depth's content can look thin next to the real one | Accepted, 2026-09-07 | Residual; see the assessment |
 | Spec §2, message keys | Prekey tags name contacts; classical-only modes open with the passcode alone | Decided, 2026-10-04; open items listed in step 17 | 17 |
-| Bugs 155–161 | Prekey batch lifecycle: needless batches, keys never pruned, clock-based dedupe, any key clearing the pending batch, generation before checks, untested trigger, a record whose size tracks activity | 159, 160 fixed (stage 0, PR #87, merged); 156, 157, 158, 161 fixed on `v2.0.0/prekey-stage-1`, not merged, 156 with a residual open, needs a decision; 155 open, fix decided (D3) | 6, 17 (via [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), targeted at v2.0.0 on 2026-10-06; D1–D6, D8, D9 decided; step 6 and D7 deferred out of v2.0.0. D9 supersedes 17b for prekeys) |
+| Bugs 155–161 | Prekey batch lifecycle: needless batches, keys never pruned, clock-based dedupe, any key clearing the pending batch, generation before checks, untested trigger, a record whose size tracks activity | 159, 160 fixed (stage 0, PR #87, merged); 156, 157, 158, 161 fixed in stage 1, merged into `v2.0.0/prekey-refactor`, 156 with a residual open, needs a decision; 155 open, fix decided (D3) | 6, 17 (via [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), targeted at v2.0.0 on 2026-10-06; D1–D6, D8, D9 decided; step 6 and D7 deferred out of v2.0.0. D9 supersedes 17b for prekeys) |
 | Bug 162 | A trustee's piece count for an owner shows how many of the owner's depths have a backup | Open, needs a decision (2026-10-12) | none yet; rollout stage 4 |
 | Bug 163 | A lost or late `.replace` leaves the trustee holding the piece it replaced | Open; fix worked out (a lineage per owner depth and trustee), deferred | none yet |
-| Bug 164 | A one-to-one bundle's fallback slot keeps its piece operations on receipt | Fixed on `v2.0.0/prekey-stage-2`, not merged | prekey continuity stage 2 |
-| Bug 165 | A group member can rewrite another member's message to the rest of the group | Fixed on `v2.0.0/group-body-binding` (PR #100), not merged; senders below 2.0.0 stay open until they update | none; needed before prekey continuity stage 3 |
-| Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Open; fix proposed | prekey continuity stage 3 |
+| Bug 164 | A one-to-one bundle's fallback slot keeps its piece operations on receipt | Fixed in stage 2, merged into `v2.0.0/prekey-refactor` | prekey continuity stage 2 |
+| Bug 165 | A group member can rewrite another member's message to the rest of the group | Fixed (PR #100), merged into `v2.0.0/prekey-refactor`; senders below 2.0.0 stay open until they update | none; needed before prekey continuity stage 3 |
+| Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Fixed on `v2.0.0/challenge-unsolicited-response`, not merged | prekey continuity stage 3 |
 | Bug 167 | Identity challenges and responses can be recognised by their size | Open, needs a decision | prekey continuity stage 3 |
 
 Steps 6, 7, 10, 13, 15, 16 and 17 are not tracked anywhere else yet.
