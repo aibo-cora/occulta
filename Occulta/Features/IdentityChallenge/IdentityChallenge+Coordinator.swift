@@ -184,30 +184,32 @@ extension IdentityChallenge {
                 return true
 
             case .response:
-                do {
-                    let (ok, note) = try self.manager.verifyResponse(
-                        bundle:        bundle,
-                        senderKey:     senderKey,
-                        senderQuantum: senderQuantum,
-                        senderID:      senderID
-                    )
-                    if ok {
-                        self.verifiedAt[senderID] = Date()
-                    }
-                    self.verificationOutcome = VerificationOutcome(
-                        passed:      ok,
-                        contactID:   senderID,
-                        contactName: senderName,
-                        contextNote: note
-                    )
-                } catch {
-                    self.verificationOutcome = VerificationOutcome(
-                        passed:      false,
-                        contactID:   senderID,
-                        contactName: senderName,
-                        contextNote: nil
-                    )
+                // A result only for a response to our challenge to this contact. One that doesn't
+                // open, or names no challenge waiting for them, says nothing about them: showing
+                // "Verification failed" for it accused them over a reopened file (`bugs.md` Bug 166).
+                // Only the contact can produce a response that opens and names our nonce.
+                let passed: Bool
+                let note: String?
+                switch try? self.manager.verifyResponse(
+                    bundle:        bundle,
+                    senderKey:     senderKey,
+                    senderQuantum: senderQuantum,
+                    senderID:      senderID
+                ) {
+                case .passed(let contextNote)?:
+                    (passed, note) = (true, contextNote)
+                    self.verifiedAt[senderID] = Date()
+                case .failed(let contextNote)?:
+                    (passed, note) = (false, contextNote)
+                case .notOurs?, nil:
+                    return true
                 }
+                self.verificationOutcome = VerificationOutcome(
+                    passed:      passed,
+                    contactID:   senderID,
+                    contactName: senderName,
+                    contextNote: note
+                )
                 return true
             }
         }

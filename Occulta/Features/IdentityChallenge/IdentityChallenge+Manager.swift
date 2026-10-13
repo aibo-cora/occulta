@@ -6,7 +6,7 @@
 //    1. Challenger → createChallenge(recipientKey:recipientQuantum:contactID:)          → outbound OccultaBundle
 //    2. Responder  → decryptChallenge(bundle:senderKey:senderQuantum:senderID:senderName:) → PendingApproval
 //                  → respond(to:)                                                        → outbound OccultaBundle
-//    3. Challenger → verifyResponse(bundle:senderKey:senderQuantum:senderID:)           → Bool (pass/fail)
+//    3. Challenger → verifyResponse(bundle:senderKey:senderQuantum:senderID:)           → VerificationResult
 //
 //  Only the long-term key derivation path is used — identity verification must
 //  never fail because of prekey exhaustion.
@@ -41,6 +41,19 @@ extension IdentityChallenge {
         /// Optional freetext from the challenger. Plain text only — never
         /// rendered as markdown/HTML/attributed string.
         let contextNote:         String?
+    }
+
+    // MARK: - VerificationResult
+
+    /// What a response says about the challenge it names.
+    enum VerificationResult: Equatable {
+        /// It answers our challenge to this contact, signed by their identity key in time.
+        case passed(contextNote: String?)
+        /// It names our challenge to this contact, and the signature or the time window fails.
+        case failed(contextNote: String?)
+        /// It names no challenge waiting for this contact: an old response reopened, or one to a challenge we never
+        /// sent them. Says nothing about the contact, so it must show nothing (`bugs.md` Bug 166).
+        case notOurs
     }
 
     // MARK: - Errors
@@ -292,19 +305,21 @@ extension IdentityChallenge {
 
         // MARK: Phase 3 — challenger verifies the response
 
-        /// Verify an inbound response bundle. Returns `true` only on a complete,
-        /// in-window signature verification against the stored outstanding
-        /// challenge. Returns `false` on every other failure mode.
+        /// Verify an inbound response bundle. `.passed` only on a complete, in-window
+        /// signature verification against the stored outstanding challenge; `.failed`
+        /// when the response names that challenge and fails; `.notOurs` when it names
+        /// none waiting for this contact (`bugs.md` Bug 166).
         ///
         /// Removes the outstanding entry on both pass AND fail — a failed
         /// response consumes the one-shot rate-limit slot. This is intentional:
-        /// retry must start with a fresh nonce.
+        /// retry must start with a fresh nonce. `.notOurs` leaves it: the contact's
+        /// own response may still come.
         func verifyResponse(
             bundle:        OccultaBundle,
             senderKey:     Data,
             senderQuantum: QuantumKeyMaterial?,
             senderID:      String
-        ) throws -> (ok: Bool, contextNote: String?) {
+        ) throws -> VerificationResult {
             let envelope = try self.openIdentityBundle(
                 bundle:        bundle,
                 peerPublicKey: senderKey,
@@ -319,18 +334,14 @@ extension IdentityChallenge {
                 throw ManagerError.malformedBundle
             }
 
-            // Look up the outstanding challenge by nonce.
-            guard let entry = self.store.lookup(nonce: response.challengeNonce) else {
-                // No such challenge — replay, forgery, or expired & removed.
-                return (false, nil)
-            }
-
-            // Must come from the contact we issued the challenge to.
-            // Otherwise a different contact could respond to someone else's
-            // challenge and claim their identity.
-            guard entry.contactKeyID == senderID else {
-                self.store.remove(nonce: response.challengeNonce)
-                return (false, entry.contextNote)
+            // Look up the outstanding challenge by nonce, and it must be the one we issued to
+            // this contact. Otherwise a different contact could respond to someone else's
+            // challenge and claim their identity. Neither case is an answer from this contact
+            // — a replay, or a challenge already settled — so it says nothing about them, and
+            // the entry stays for the response that is.
+            guard let entry = self.store.lookup(nonce: response.challengeNonce),
+                  entry.contactKeyID == senderID else {
+                return .notOurs
             }
 
             // Hard verification window — `IdentityChallenge.timestampWindow`.
@@ -346,7 +357,7 @@ extension IdentityChallenge {
             }()
             guard delta < IdentityChallenge.timestampWindow else {
                 self.store.remove(nonce: response.challengeNonce)
-                return (false, entry.contextNote)
+                return .failed(contextNote: entry.contextNote)
             }
 
             // Reconstruct the exact bytes that were signed. Inner fingerprint
@@ -372,7 +383,7 @@ extension IdentityChallenge {
             // Construct a SecKey view over the responder's stored public key.
             guard let publicKey = Self.makePublicKey(x963: senderKey) else {
                 self.store.remove(nonce: response.challengeNonce)
-                return (false, entry.contextNote)
+                return .failed(contextNote: entry.contextNote)
             }
 
             let ok = self.crypto.verifyChallenge(signedData, signature: response.signature, publicKey: publicKey)
@@ -383,7 +394,7 @@ extension IdentityChallenge {
 
             // One-shot: consume the slot regardless of outcome.
             self.store.remove(nonce: response.challengeNonce)
-            return (ok, note)
+            return ok ? .passed(contextNote: note) : .failed(contextNote: note)
         }
 
         // MARK: - Private helpers
