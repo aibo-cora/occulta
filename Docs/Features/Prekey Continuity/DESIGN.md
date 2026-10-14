@@ -495,6 +495,9 @@ database at all. A contact who forces such a downgrade has an app that can't rea
 rollout plan's existing consequence, and nothing about it comes from this design. Only TestFlight testers
 moving between pre-release builds could meet the narrower failure.
 
+**Release fixed 2026-10-14:** the prekey refactor (stages 1 and 2, with Bugs 165 and 166) and the contacts slice
+both ship in 2.0.0, so the order holds within one release (`ROLLOUT_PLAN.md`, release mechanics).
+
 **Rejected: a "last reported version" marker for this decision.** Every message carries `appVersion`, so a
 second, overwritable marker could stop us sealing to the temporary key once a contact reports an older build.
 It would hand a lever to anyone with temporary use of the contact's identity key, such as someone holding
@@ -786,7 +789,8 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
   period and not before; a message sealed to a retired key within the grace period still opens.
 
 **Stage 2 — last-resort key (§3.1).** D2's indicator and D5's replay guards ship with it. Ships no earlier
-than the release that does the one-way migration (rollout stage 3, D6), and never ahead of stage 1.
+than the release that does the one-way migration (rollout stage 3, D6), and never ahead of stage 1. Both ship in
+2.0.0 (decided 2026-10-14).
 - *Commits:* record and wire (done 2026-10-11: `PrekeySyncBatch.lastResort`, the derived prekey ID in
   `OccultaFormats` with a known-answer test, our last-resort key on each own batch and the contact's on the
   record, generated and sent with every new batch but not yet used, two new interop vectors); sending and

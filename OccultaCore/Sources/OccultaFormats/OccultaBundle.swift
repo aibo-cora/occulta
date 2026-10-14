@@ -139,6 +139,10 @@ public struct OccultaBundle: Codable {
         ///
         /// The receiver requires the digest from a contact recorded at this tier (`ContactManager.openGroup`).
         /// The sender needs no gate: every build since 1.9.0 ignores the unknown key.
+        ///
+        /// ⚠️ Keyed on the app version, so no build numbered 2.0.0 or later may ship without the digest, TestFlight
+        /// included: every build that has it would refuse that build's messages (`ROLLOUT_PLAN.md`, release
+        /// mechanics).
         case bodyDigestCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an

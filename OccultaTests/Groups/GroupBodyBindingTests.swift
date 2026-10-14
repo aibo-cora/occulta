@@ -104,6 +104,7 @@ private func sealWithoutDigest(
     let sealedBody = try WireHandle.encode(payload: OccultaBundle.SealedPayload(
         message:           body.message,
         identityChallenge: body.identityChallenge,
+        appVersion:        body.appVersion,
         senderProof:       Data(HMAC<SHA256>.authenticationCode(for: senderPublicKey, using: contentKey)),
         groupID:           groupID
     ))
@@ -323,6 +324,45 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
         )
 
         #expect(throws: GroupDecryptError.missingBodyDigest) { try carolSide.openGroup(bundle: bundle, ownerID: "alice") }
+    }
+
+    /// A rewrite of an older sender's bundle can't raise their recorded tier: the claim and the missing digest
+    /// contradict each other. The same claim from an older build still opens, as does any claim with the digest.
+    @Test("A body claiming 2.0.0 or later without the digest is refused, whatever the sender's tier",
+          .ambientTestKeyManager, arguments: ["2.0.0", "2.1", "1.11.1"])
+    func claimWithoutTheDigest(appVersion: String) throws {
+        let carolSide = try makeContactManager()
+        try insertSender(identifier: "alice", publicKey: try self.alice.retrieveIdentity(),
+                         marker: try RecordedTier.belowTheTier.marker(), in: carolSide)
+        let bundle = try sealWithoutDigest(
+            OccultaBundle.SealedPayload(message: Data("Lunch at one.".utf8), appVersion: appVersion, groupID: UUID()),
+            from: self.alice, to: try Manager.Ambient.keyManager.retrieveIdentity()
+        )
+
+        if OccultaBundle.Version.max(forAppVersion: appVersion).isAtLeast(.bodyDigestCapable) {
+            #expect(throws: GroupDecryptError.missingBodyDigest) { try carolSide.openGroup(bundle: bundle, ownerID: "alice") }
+            let alice = try #require(try carolSide.fetchContact(by: "alice"))
+            #expect(ContactManager.resolveTargetVersion(for: alice, using: Manager.Crypto()) == .prefixedSenderSignatureCapable,
+                    "the recorded tier didn't move")
+        } else {
+            #expect(try carolSide.openGroup(bundle: bundle, ownerID: "alice").sealed.message == Data("Lunch at one.".utf8))
+        }
+    }
+
+    @Test("A body claiming 2.0.0 with the digest opens", .ambientTestKeyManager)
+    func claimWithTheDigestOpens() throws {
+        let carolSide = try makeContactManager()
+        try insertSender(identifier: "alice", publicKey: try self.alice.retrieveIdentity(), in: carolSide)
+        let bundle = try Manager.Crypto(keyManager: self.alice).seal(
+            sealedPayload: OccultaBundle.SealedPayload(message: Data("Lunch at one.".utf8), appVersion: "2.0.0"),
+            groupID: UUID(),
+            recipients: [GroupRecipient(
+                publicKey: try Manager.Ambient.keyManager.retrieveIdentity(), quantumMaterial: nil,
+                contactPrekey: nil, pendingBatch: nil
+            )]
+        )
+
+        #expect(try carolSide.openGroup(bundle: bundle, ownerID: "alice").sealed.message == Data("Lunch at one.".utf8))
     }
 
     @Test("An identity challenge in a group body with the digest opens", .ambientTestKeyManager)

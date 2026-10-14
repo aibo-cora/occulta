@@ -1876,6 +1876,14 @@ extension ContactManager {
             throw GroupDecryptError.missingBodyDigest
         }
 
+        // A body claiming a build that always sends the digest, without one, isn't from that build: it's a rewrite
+        // of an older bundle. Refused before `updateMaxVersion` below reads the claim, which would otherwise let the
+        // rewriter raise the sender's recorded tier and change how we send to them.
+        if recipientPayload.bodyDigest == nil, let appVersion = decoded.appVersion,
+           OccultaBundle.Version.max(forAppVersion: appVersion).isAtLeast(.bodyDigestCapable) {
+            throw GroupDecryptError.missingBodyDigest
+        }
+
         // ── 5.5. Verify sender proof ─────────────────────────────────────
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
