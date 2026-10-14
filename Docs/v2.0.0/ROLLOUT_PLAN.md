@@ -44,6 +44,12 @@ however the stages are cut.
   Continuity](../Features/Prekey%20Continuity/DESIGN.md) D6, 2026-10-07). An older build can't open a
   message sealed to one. This rule means any build that issues one has already migrated, so no working
   build can be downgraded below it.
+- **The prekey refactor ships in 2.0.0** (decided 2026-10-14), and nothing numbered 2.0.0 or later goes out
+  without it, TestFlight included. Bug 165's capability tier, `bodyDigestCapable`, is keyed on app version
+  2.0.0: a contact recorded at 2.0.0 must send the body digest, and a body claiming 2.0.0 without one is
+  refused. A build numbered 2.0.0 that predates the digest would have its group and one-to-one messages
+  refused by every build that has it. So `v2.0.0/prekey-refactor` merges into the release branch before the
+  version number reaches 2.0.0, and any earlier stage ships under a 1.x number.
 
 ## Stages
 

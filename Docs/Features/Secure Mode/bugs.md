@@ -13477,7 +13477,9 @@ The receiver:
   was before the forgery arrived, which withholding the bundle achieves anyway. The one exception to consuming at
   open (`SECURITY_CHECKLIST.md` §2.2, amended);
 - **rejects a missing digest** (`missingBodyDigest`) from a sender recorded at the new tier, `.bodyDigestCapable`
-  (2.0.0, marker byte 0x09). A tier only rises, so a claim can't switch it off;
+  (2.0.0, marker byte 0x09). A tier only rises, so a claim can't switch it off. Keyed on the app version, so no
+  build numbered 2.0.0 or later may ship without the digest, TestFlight included; the prekey refactor, which
+  carries it, ships in 2.0.0 (decided 2026-10-14, `ROLLOUT_PLAN.md`);
 - **accepts a missing digest** below the tier, with no tier recorded, and with a stranded marker. Decided
   2026-10-13: refusing a stranded marker would block 1.10.2–1.11.x contacts as Bug 81 does, and refusing only
   there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their first bundle at the tier repairs it;
