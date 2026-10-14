@@ -355,8 +355,9 @@ files.
   need the contact's identity private key. The response stays signed by the identity key after the contact
   approves it. With several recipients, a slot doesn't bind the body, so another recipient can rewrite it; see
   the review below.
-- **Version gate.** Contacts below the tier keep today's long-term path, unchanged. The tier is shared with
-  step 17a's negotiation rather than adding another.
+- **Version gate.** Contacts below the tier keep today's long-term path, unchanged. The tier is
+  `.bodyDigestCapable` (2.0.0, marker byte 0x09), added with Bug 165's fix and shared with it (decided
+  2026-10-13), rather than waiting for step 17a's negotiation, which isn't built.
 - **Bonus.** Challenge contents, including the typed context note, get forward secrecy instead of being
   openable from either phone indefinitely.
 - **Bug 155.** New-tier challenges no longer look like an exhausted sender, so they stop triggering batches.
@@ -508,8 +509,8 @@ TestFlight and sideload users. The rejection covers this use only. Bug 83's reme
 marker for the signature-prefix choice, where a forced downgrade only means signing the bare form, and that
 remains valid.
 
-**New capability tier** (name to choose), at the release that ships §3.4(a). §3.1 and §3.3 need none: a
-batch's own fields say what its sender supports.
+**New capability tier: `.bodyDigestCapable`** (2.0.0, marker byte 0x09; named 2026-10-13), added with Bug 165's
+fix and shared by §3.4(a). §3.1 and §3.3 need none: a batch's own fields say what its sender supports.
 
 ## 6. Interaction with v2.0.0 step 17
 
@@ -811,8 +812,8 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   nothing (G1); a one-to-one bundle's shared piece operations and manifest are dropped on a long-term and on a
   last-resort slot (Bug 164). The replay matrix waits for Bug 163.
 
-**Stage 3 — identity challenges (§3.4).** D3 is decided (group format at the new tier). Needs the tier, shared
-with step 17a.
+**Stage 3 — identity challenges (§3.4).** D3 is decided (group format at the new tier). The tier exists:
+`.bodyDigestCapable`, from Bug 165's fix. The 2026-10-12 review's requirements are in §3.4.
 - *Migration:* none. A challenge already in flight uses the old path, which stays.
 - *Tests:* a challenge and its response to a new-tier contact go in group format and verify end to end; with
   no prekeys held for the contact, they still go through, on the long-term slot; to an older contact,
@@ -939,8 +940,13 @@ would still not outweigh its unconditional metadata leaks.
 
 ## 10. Open decisions
 
-None is open for v2.0.0. D7 returns with stage 5. The exposure §2 names (messages before a new contact's
-first reply) is open, not accepted.
+Every design decision below is taken; D7 returns with stage 5. The exposure §2 names (messages before a new
+contact's first reply) is open, not accepted. Found since, and **open, needing a decision**, though none blocks a
+stage:
+- **Bug 156's residual:** a key whose message was lost stays until the contact moves to a newer batch.
+- **Bug 167:** identity challenges and responses are recognisable by size, whatever key seals them (§3.4).
+- **Making 2.0.0 the minimum sender** (Bug 165): refusing every group bundle without a body digest, which
+  closes the rewrite for senders before 2.0.0 and stops those contacts sending anything.
 
 | # | Decision | Where |
 |---|---|---|
@@ -948,8 +954,8 @@ first reply) is open, not accepted.
 | D2 | What the compose indicator shows when only the last-resort key is held. **Decided 2026-10-06: a third state in its own colour, and a description on every state.** Colour (blue middle state, amber long-term) and wording signed off 2026-10-07 | §7 |
 | D3 | Identity challenges. **Decided 2026-10-07: group format to contacts at the new tier (a)**; long-term to older contacts as today | §3.4 |
 | D4 | Batch size and refill threshold `T`. **Decided 2026-10-06: 15/5.** 50/15 revisited only with a measurement from an iPhone 11 holding no real data | §4.1 |
-| D5 | Replay of last-resort bundles. **Decided 2026-10-07: messages may reopen; piece operations and manifests only on one-time keys; trustee guards G1 (no duplicate `.replace`) and G2′ ("supersedes" field in the existing row); a replay matrix over every protocol case.** Replay cache, per-owner tombstones, timestamp ordering and a manifest counter rejected | §3.1 |
-| D6 | A contact who downgrades after sending a last-resort key. **Decided 2026-10-07: ruled out by release order**: last-resort keys ship no earlier than the one-way migration. A "last reported version" marker for this decision was rejected as a downgrade lever | §5 |
+| D5 | Replay of last-resort bundles. **Decided 2026-10-07: messages may reopen; piece operations and manifests only on one-time keys; trustee guard G1 (no duplicate `.replace`).** *Revised 2026-10-12:* G2′ ("supersedes" field) and the replay matrix dropped; ordering of `.replace` is Bug 163's, deferred. Replay cache, per-owner tombstones, timestamp ordering and a manifest counter rejected | §3.1 |
+| D6 | A contact who downgrades after sending a last-resort key. **Decided 2026-10-07: ruled out by release order**: last-resort keys ship no earlier than the one-way migration; both ship in 2.0.0 (2026-10-14). A "last reported version" marker for this decision was rejected as a downgrade lever | §5 |
 | D7 | Binding the seed batch. **Moot for v2.0.0: stage 5 deferred, 2026-10-07.** Kept in §3.2 for when it returns: authenticate with a key derived from the words' secret, most likely exchanging prekeys and other setup data after both users confirm the words (owner's note, 2026-10-07) | §3.2 |
-| D8 | Target release. **Decided 2026-10-06: v2.0.0**, alongside steps 6 and 17 | §8 |
+| D8 | Target release. **Decided 2026-10-06: v2.0.0**, alongside step 17 (step 6 deferred, 2026-10-07). Ships in the 2.0.0 release, with the contacts slice (2026-10-14) | §8 |
 | D9 | Where prekeys live. **Decided 2026-10-06: Enclave-wrapped blobs (CryptoKit) in the contact's sealed record**, not keychain items. Fallback to software keys in the record only with the owner's explicit, recorded sign-off | §9 |
