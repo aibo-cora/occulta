@@ -3,8 +3,9 @@
 **Status:** Proposal. No SPEC. The carrier route is blocked on D1, a product decision (Q-01). The direct route involves no third party and is not. Both routes depend on D2 (Q-02). Not scoped for a release.
 **Origin:** Design discussion, 2026-10-14. The question raised was whether a contact's *encryption* key could be vouched for, rather than their identity key, so that people we introduce can encrypt to them, marked unverified until they meet. It was assessed against the no-vouching rulings, Sweep 4's trust ladder and the shipped receive path, then reshaped into owner-issued, single-use cards.
 **Relation to earlier plans:** this is a worked design for Sweep 4 components 1 and 4 (`Friction/USER_ENGAGEMENT_FRICTION.md:284`). It replaces component 1's card and recasts component 4, so the mutual contact carries a card and asserts nothing. Every earlier plan it touches is listed in [Relationship to earlier plans](#relationship-to-earlier-plans), and each one points back here.
+**Decided so far (2026-10-14):** the carrier is never named on the recipient's phone (Q-07). A card may reach its recipient directly or through any number of carriers, and the issuer chooses a named or an open card when creating it (§4). Two ways of recording the route were considered and not adopted ([Considered and not adopted](#considered-and-not-adopted)). The badge design is undecided (Q-07).
 
-Names used below: **Bob** issues a card. **Carol** receives it and has never met Bob. **Alice** is a verified contact of both, and may carry the card.
+Names used below: **Bob** issues a card. **Carol** receives it and has never met Bob. **Alice** is a verified contact of Bob's who may carry the card. **Dave** is a later carrier whom Bob may not know.
 
 ---
 
@@ -51,7 +52,7 @@ Bob makes a single-use card for someone he hasn't met. He gives it to that perso
 Measured against D-03:
 
 1. A coerced Alice can still hand Carol a fake card. Every kind of introduction has this problem (see [Guarantees and limits](#guarantees-and-limits)). But Alice can't create real cards for Bob.
-2. Bob chooses every recipient, and each card works once.
+2. Bob chooses who gets a named card, or who first carries an open one (§4), and each card works once.
 3. No identity key and no name travel on the card.
 4. Bob's phone accepts a stranger only if they use a card Bob made.
 5. Each card carries its own one-time prekey.
@@ -107,26 +108,39 @@ What this preserves:
 
 ### 3. How a card is used
 
-1. **Bob creates a card** and labels it for himself, e.g. "for Carol, via Alice". It is stored as a pending card: an encrypted, fixed-size record. It holds the label and the private halves of the card key, prekey and ML-KEM key, as Enclave blobs (as prekeys are held under Prekey Continuity D9).
-2. **Bob delivers it**, through a contact or himself (§4).
+1. **Bob creates a card** and labels it for himself, e.g. "for Carol". The label is his own text, on his phone only. It is stored as a pending card: an encrypted, fixed-size record. It holds the label and the private halves of the card key, prekey and ML-KEM key, as Enclave blobs (as prekeys are held under Prekey Continuity D9).
+2. **Bob delivers it**, himself or through one or more carriers (§4).
 3. **Carol imports it.** A Not verified contact appears, and Carol names it.
 4. **Carol sends a first message.** It is sealed in forward-secret mode to the card's prekey, with ML-KEM encapsulated to the card's key. The payload carries Carol's own new card key, a prekey batch and an ML-KEM encapsulation key, all signed with her card key. That signature plays the role the sender's ephemeral signature plays for last-resort sealing in groups (`Prekey Continuity/DESIGN.md` §3.1). Without it, anyone holding the card could claim any card key, and §5 couldn't tell who wrote the first message.
 5. **Bob's phone recognises it.** When `identifyOwner` matches no contact, the receive path tries Bob's pending cards before failing. The number of pending cards is capped, so this is cheap. If a card opens, its prekey is consumed and the pending card removed, following the rule that a prekey is consumed as soon as it opens a bundle (`SECURITY_CHECKLIST.md` §2). A Not verified contact appears under Bob's label.
 6. **Bob replies.** He uses Carol's prekeys and encapsulates to her ML-KEM key. After these two messages the pair holds two ML-KEM secrets, as after a ceremony, and forward secrecy works per contact as it does for verified contacts.
 7. **They meet** (§5). Alternatively the card expires or Bob cancels it, and the pending record and its keys are deleted.
 
-### 4. Two delivery routes
+### 4. Delivery routes
 
-| | Through a contact (Alice) | Shared directly by Bob |
+| | Through carriers (Alice, and anyone after her) | Shared directly by Bob |
 |---|---|---|
-| Who could swap the card | Only Alice, or someone holding her unlocked phone | Anyone controlling the channel: the messaging app, the email account, a phone or cloud backup |
-| Where the card file ends up | Only inside Occulta bundles | The other app's storage and its cloud backups |
+| Who could swap the card | Any carrier on the route, or someone holding one of their unlocked phones | Anyone controlling the channel: the messaging app, the email account, a phone or cloud backup |
+| Where the card file ends up | Inside Occulta bundles, unless a carrier shares it outside Occulta (Q-13) | The other app's storage and its cloud backups |
 | Third party involved | Yes, so gated on D1 | No |
-| Best for | Someone Bob can't reach privately | In person, or a channel Bob already trusts |
+| Best for | Someone Bob can't reach privately, or doesn't know yet | In person, or a channel Bob already trusts |
 
-**Through a contact.** Bob sends the card to Alice inside an ordinary bundle. Alice's app shows Bob's request, and she chooses the recipient. The card is deleted from Alice's phone when she sends it.
+**Through carriers.** Bob sends the card to Alice inside an ordinary bundle. Whoever holds the card can use it or pass it on. Each holder's copy is deleted when they pass it on.
 
-**One badge for both routes, with the route shown as text.** With two near-identical badges, the stronger one starts to read as safe, and users can't weigh carrier risk against channel risk anyway. `CONSUMER_OPENING_AND_CEREMONY.md` D3 argues the opposite for two in-person rungs, but those differ in how rigorous the user's own check was. These two routes differ only in who could have swapped the card, and the user did no check on either.
+**The card is identical at every hop.** It's signed by Bob's card key, so a carrier can't add to it without breaking the signature. Nothing in it records who carried it or how many people did. Anyone holding a copy, at any point on the route, sees the same bytes.
+
+**Named and open cards (decided 2026-10-14).** Bob chooses one when he creates the card:
+
+- **Named:** meant for one person. Bob hands it over himself, or asks a carrier to give it to that person. Bob chooses the recipient.
+- **Open:** for whoever the carriers think should be able to reach Bob. Bob chooses only the first carrier, and the recipient is decided by people he may not know. Single use and the cap on pending cards (Q-05) still limit how many strangers can reach him at once.
+
+What this costs, stated plainly:
+
+- **Every carrier is someone who can swap the card.** The more carriers on the route, the more people the recipient's trust rests on, and none of them can be identified afterwards.
+- **For an open card, the recipient knows whose card it is only from what the person who gave it said,** and that may itself be second-hand. A card carries no name, so the owner's identity is relayed by word of mouth at every hop until the in-person check.
+- **The mode guides honest apps; it can't be enforced.** A modified app can pass on a named card. Single use is the real limit.
+
+**Badge design is undecided (Q-07).** The earlier recommendation was one badge for every route, with the route shown as text. With two near-identical badges, the stronger one starts to read as safe, and users can't weigh carrier risk against channel risk anyway. `CONSUMER_OPENING_AND_CEREMONY.md` D3 argues the opposite for two in-person rungs, but those differ in how rigorous the user's own check was. These routes differ only in who could have swapped the card, and the user did no check on any of them.
 
 ### 5. Meeting in person: linking the conversation
 
@@ -179,15 +193,15 @@ These carry over from earlier decisions:
 
 Placeholders:
 - `{Name}` is the user's own label for the contact.
-- `{route}` is "passed on by a contact" or "opened from a file". Q-07 explains why the carrier isn't named.
+- `{route}` is "passed on by a contact" or "opened from a file". The carrier is never named (Q-07). Whether the route is shown at all depends on the badge design, which is undecided.
 
 | # | Where | What can go wrong | Draft copy |
 |---|---|---|---|
-| W-01 | Creating a card (issuer) | Whoever uses the card first becomes "{Name}" to you | "Anyone who gets this card before {Name} can use it and pretend to be them. Give it only to {Name}, or to someone you'd trust to introduce you. It works once and stops working on {date}." |
+| W-01 | Creating a named card (issuer) | Whoever uses the card first becomes "{Name}" to you | "Anyone who gets this card before {Name} can use it and pretend to be them. Give it only to {Name}, or to someone you'd trust to introduce you. It works once and stops working on {date}." |
 | W-02 | Sharing it directly, before the share sheet (issuer) | The channel keeps a copy, and whoever controls it can use the card first | "The app you send this through may keep a copy, including in its backups. Anyone who can read that chat could use the card before {Name} does. Once the card is used or expired, a leftover copy is useless." |
-| W-03 | Asking a contact to pass it on (issuer) | The carrier gives {Name} a different card | "{Carrier} will be able to see this card and could give {Name} a different one. Only ask someone you'd trust to introduce you in person." |
-| W-04 | Carrying a card (carrier) | It goes to the wrong person | "{Sender} asked you to pass this card to {Name}. Whoever you send it to can message {Sender} once. It is removed from your phone when you send it." |
-| W-05 | Importing a card (recipient) | The card was swapped on the way | "Not verified. If this card was swapped on its way to you, your messages will go to whoever swapped it, and they'll be able to read them. Meet {Name} and verify in person before you send anything you wouldn't want a stranger to read." |
+| W-03 | Asking a contact to pass a named card on (issuer) | The carrier gives {Name} a different card | "{Carrier} will be able to see this card and could give {Name} a different one. Only ask someone you'd trust to introduce you in person." |
+| W-04 | Receiving a card from its issuer to pass on (first carrier) | It goes to the wrong person | "{Sender} asked you to pass this card on. Whoever you give it to can message {Sender} once. It is removed from your phone when you pass it on." |
+| W-05 | Importing a card (recipient) | The card was swapped on the way, or isn't whose you were told | "Not verified. You know whose card this is only from what the person who gave it to you said. If it was swapped on its way to you, your messages will go to whoever swapped it, and they'll be able to read them. Meet {Name} and verify in person before you send anything you wouldn't want a stranger to read." |
 | W-06 | Contact list, contact screen, compose, send (both); persistent | Same as W-05 | Badge: "Not verified · {route}". Description: "You haven't verified this contact in person. If the card was swapped, someone else is reading this conversation." |
 | W-07 | After the first send (recipient) | Someone used the card first, so no reply will come | "Waiting for the first reply. If none comes, someone may have used this card before you. Ask {Name} for a new one, in person or through someone you trust." |
 | W-08 | First message arrives (issuer) | Whoever used the card first wrote it | "First message on your card '{label}'. Whoever used the card first wrote it. That's probably {Name}, but you can't be sure until you verify in person." |
@@ -195,6 +209,8 @@ Placeholders:
 | W-10 | A blocked feature (both) | — | "{Feature} needs a contact you've verified in person, because it relies on knowing this key belongs to them. Meet {Name} to verify." |
 | W-11 | Mismatch at the in-person check (both) | The conversation was intercepted | "This isn't the person you were messaging as '{Name}'. Someone swapped the card on its way and could read everything in that conversation. Don't send anything more to that contact." |
 | W-12 | Match at the in-person check (both) | — | "Verified in person. Your earlier messages with {Name} went to this person." |
+| W-13 | Creating an open card (issuer) | The card goes to people you don't know, and any of them can swap it | "This card can be passed on by {Carrier} and by anyone they give it to. You won't know who ends up with it, and any of them could use it or swap it. It works once and stops working on {date}." |
+| W-14 | Receiving a card from a contact who isn't its issuer (holder) | The holder can't tell whose card it is | "This card was passed on to you. You know whose it is only from what you were told. You can use it yourself or pass it on. Whoever uses it can message its owner once." The carrier isn't named (Q-07); the message it arrived in shows its sender as any message does. |
 
 W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto — they social-engineer victims into the weak mode."* The weak mode here is a card. An attacker posing as someone can ask the user for one, so the moment the user creates a card is where the risk is stated.
 
@@ -205,7 +221,8 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 **Guaranteed, if built as above:**
 
 - No general way in. Only someone using a card Bob made can start a conversation with him.
-- Bob chooses every recipient. A card works once and expires.
+- Bob chooses who gets a named card, and who first carries an open one. A card works once and expires.
+- Nothing records the route. The card is identical at every hop, and no carrier's identity is written anywhere.
 - Forward secrecy for the first message, and hybrid post-quantum protection on iOS 26+.
 - Carriers and channels never see message content.
 - Bob's identity key never leaves his phone except in person.
@@ -216,6 +233,9 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 - **Whoever uses the card first wins.** Until they meet, the first message proves only that whoever used the card first sent it. Someone who uses an intercepted card becomes "{Name}". The real recipient's message then fails like any bundle that can't be opened, and the only sign is W-07. Anyone holding an unused card can also use it up.
 - **Verification doesn't undo exposure.** Messages sent before a mismatch was found were readable.
 - **Cards become what attackers ask for** (H5's downgrade point). Mitigated by W-01 and by the permanent badge. Not closed.
+- **More carriers, more people who can swap.** Each carrier on an open card's route is someone the recipient's trust rests on, and none can be identified afterwards (§4).
+- **Whose card it is travels by word of mouth.** A card carries no name. The recipient believes it's Bob's because the person who gave it said so, and on an open card that may be second-hand.
+- **Named versus open can't be enforced.** A modified app can pass on a named card. Single use is the only hard limit.
 - **No help for people who aren't on Occulta.**
 
 ---
@@ -227,9 +247,42 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 | Finds a card file (another app's backup, a Files folder) | Three public keys, an expiry and a signature. No name and no identity key. Whether the file reveals Occulta is Q-04. An unused, unexpired card can be used once. |
 | Seizes the recipient's phone | A Not verified contact under a card key, with only the route kind. It can't be connected to the issuer's identity key or to other cards. The seizer can message the issuer as that contact, as with any contact on a seized phone. |
 | Seizes two phones holding cards from the same issuer | Two unrelated keys. Verified contacts all hold one identity key, so cards are less linkable than verified contacts. |
-| Seizes the carrier's phone | Nothing of the card once it was sent. With the phone unlocked, they can give the carrier's contacts fake cards. That reach is limited to that contact list, and each fake is caught at its in-person check. |
+| Seizes a carrier's phone | Nothing of the card once it was passed on. With the phone unlocked, they can give the carrier's contacts fake cards. That reach is limited to that contact list, and each fake is caught at its in-person check. |
+| Holds a copy of a card anywhere on its route | The same bytes at every hop. Nothing shows who carried it or how many people did. |
 | Images the issuer's phone | Pending cards are encrypted, fixed-size rows. Their number is visible unless slots are preallocated (Q-05). |
 | Coerces the issuer at a duress depth | Q-03. |
+
+---
+
+## Considered and not adopted
+
+Both ideas below came up on 2026-10-14 as ways to know who passed a card on. Both fail the same way. **The record is either forgeable, so it proves nothing, or signed, which makes it vouching and leaves evidence.** And whoever needs to know already does, or can be told.
+
+### C-01 · The carrier's identity key inserted into the card
+
+The aim was for the recipient's or the issuer's phone to know which contact passed the card on.
+
+- **They already know.** On the carrier route, the card arrives inside an ordinary Occulta message, and the app identifies that message's sender as it does every message. Bob labelled the card when he handed it over, and each card works once, so the card that opens tells him its route.
+- **A bare public key proves nothing.** Anyone can write Alice's key into a field, so the app would have to ignore it.
+- **A signed entry is vouching.** An already-trusted key signing something that introduces a new key is the rejected pattern, and D-04's defence of carriers is that they assert nothing.
+- **A signature doesn't stop a dishonest or coerced carrier.** They sign their own fake card just as easily. The signature proves which phone did it, not which person.
+- **A signature is evidence.** An unsigned note is deniable, since anyone could have typed it. A signature from Alice's Secure Enclave key proves, to anyone who checks it, that Alice connected Bob and Carol.
+- **It invites a trust tier.** "Introduced by Alice ✓" reads as more trustworthy than a direct card. That's the Introduced rung again.
+
+### C-02 · An encrypted chain of carriers, readable only by the issuer
+
+The idea was that the card carries a public key belonging to Bob. Each carrier appends an entry encrypted to it, so only Bob can read the route the card took.
+
+- **Forgeable or signed.** Each carrier writes their own entry. Unsigned, any carrier can write anything or remove earlier entries, including the one who swapped the card, which is the only case where the chain would matter. Showing Bob a route that could be fake claims more than the design delivers. Signed, it's C-01's vouching and evidence, for every hop.
+- **Encrypting to Bob hides the chain from the wrong people.** Carriers and the recipient can't read it. But Occulta is built against someone who seizes or forces open a phone, and Bob's phone decrypts the chain for whoever unlocks it.
+- **It gathers every route in one place.** Every card Bob issues leaves its full route on his phone, which is often the most targeted one. For a journalist hearing from sources, the chain is a list of the people who helped a source reach them, and that list otherwise exists nowhere.
+- **It tells Bob about people he never met, without their choice.** An entry for Dave needs an identifier, and each option fails:
+  - Dave's identity key leaves his phone for someone he never met, which breaks §1's invariant and #22's premise.
+  - A fingerprint means nothing to Bob, but it's a stable identifier a coercer can match across seized phones.
+  - A name is self-declared and proves nothing.
+- **Its size reveals the number of carriers,** unless it's padded to a fixed maximum, which caps the route.
+
+**What replaces both:** nothing in the format. If Bob wants to know how someone reached him, the recipient can say so in their first message, in their own words. That's deniable, it's their choice, they can leave people out to protect them, and it isn't a stored record, since received messages aren't kept after closing (`Message Persistence/FINDINGS.md`). **That last point holds only while message history is unshipped,** so revisit this if it ships.
 
 ---
 
@@ -276,6 +329,10 @@ These versions have no ML-KEM, so cards to or from them are classical-only. Opti
 
 "Card via Alice" helps the user judge trust, but on a seized phone it's a recorded introduction. Recommendation: store only the route kind. The user can add the carrier to the contact's notes if they choose.
 
+**Decided 2026-10-14: the carrier is never named on the recipient's phone,** in the badge, the warnings or the stored record. C-01 and C-02 record two ways of recording the carrier that were considered and not adopted.
+
+**Still open: the badge design,** including whether the route kind ("passed on by a contact" / "opened from a file") is shown at all, and whether every route shares one badge (§4).
+
 ### Q-08 · Card key or identity key on the card? (confirm §1)
 
 This is the trade in §1. Recommendation: card key. It keeps the trust graph's meaning, cards unlinkable, and `#22`'s premise intact. It costs per-contact own keys throughout the send path, and the chance to catch a swapped card before meeting.
@@ -302,6 +359,14 @@ Where does the ML-KEM ciphertext go?
 
 Recommendation: the outer layer. New vectors in `OccultaTests/Interop/InteropVectors.json` either way.
 
+### Q-13 · Open-card details
+
+The two modes are decided (§4). These details are not:
+
+- **Can a carrier pass a card on outside Occulta?** If so, the card file reaches that channel's storage and backups, so the carrier needs W-02 too. They didn't create the card, so they're less likely to weigh that.
+- **How does a holder's app know a named card from an open one?** The simplest answer is a mode flag inside the signed card. That tells every holder the issuer's intent, a small disclosure, and a modified app can ignore it (§4).
+- **Is there a maximum number of carriers?** Nothing technical needs one, since the card doesn't grow. But each carrier is another person who could swap it. Without a route record, a limit couldn't be counted anyway.
+
 ---
 
 ## Relationship to earlier plans
@@ -310,7 +375,7 @@ Recommendation: the outer layer. New vectors in `OccultaTests/Interop/InteropVec
 |---|---|---|
 | `Friction/USER_ENGAGEMENT_FRICTION.md:284`, Sweep 4 component 1 | Multi-use contact card: long-term key + signed prekey batch, with static prekeys | Replaced by a single-use card with its own key and a one-time prekey (D-05) |
 | Same, component 3 (gossip audit) | Detects a first-contact swap as the graph fills in | Can't check card keys; detection waits for the meeting |
-| Same, component 4 (introductions) | A verified mutual forwards both keys, signed; a product-owner call | Recast: the mutual carries the issuer's card and asserts nothing (D-04). Still D1 (Q-01) |
+| Same, component 4 (introductions) | A verified mutual forwards both keys, signed; a product-owner call | Recast: contacts pass the issuer's card on, through any number of hops, asserting nothing and leaving no route record (D-04, §4). Still D1 (Q-01) |
 | Same, second open decision (D2) | Send-capable or import-only | Still open (Q-02); this design assumes send-capable |
 | Same, H5 | Key-in-bundle rejected; warning fatigue and downgrade risk | Not key-in-bundle (D-04); the warning rules follow H5 |
 | `Friction/CONSUMER_OPENING_AND_CEREMONY.md` §6–7 | Introduced and Unverified rungs; D1–D3 | Both rungs become one Not verified badge, with the route as text (§4) |
@@ -364,6 +429,7 @@ Recommendation: the outer layer. New vectors in `OccultaTests/Interop/InteropVec
   - every warning renders identically at every depth;
   - a prekey-only swap fails §5 (the §2 signature);
   - a second use of a card fails like an unopenable bundle;
+  - a card is byte-identical after every hop, and no carrier's identity is written anywhere (§4);
   - an expired or cancelled card leaves no keys behind.
 - Update `README.md` claims in the same change that makes the feature reachable (Q-01).
 
