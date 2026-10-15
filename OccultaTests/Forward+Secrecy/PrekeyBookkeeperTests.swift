@@ -659,3 +659,54 @@ struct PrekeyBookkeeperAppendTests {
         #expect(try PrekeyRecordCodec().encode(record).count == PrekeyRecordCodec.capacity)
     }
 }
+
+@Suite("PrekeyBookkeeper — refilling before the contact runs out (stage 4)")
+struct PrekeyBookkeeperRefillTests {
+
+    let bookkeeper = PrekeyBookkeeper()
+
+    /// A batch of ours installed and delivered: the contact used `used` of its keys, the first one delivering it.
+    private func delivered(using used: Int, in record: inout PrekeyRecord) throws {
+        self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: Date())
+        let batch = try #require(self.bookkeeper.pendingBatch(in: record))
+        for key in batch.prekeys.prefix(used) {
+            self.bookkeeper.consume(prekeyID: key.id, in: &record, now: Date())
+        }
+    }
+
+    @Test("Due once the contact holds 5 of our keys or fewer, not at 6")
+    func threshold() throws {
+        for used in [9, 10, 14, 15] {
+            var record = PrekeyRecord.empty
+            try self.delivered(using: used, in: &record)
+            #expect(self.bookkeeper.needsRefill(record) == (15 - used <= PrekeyBookkeeper.refillThreshold),
+                    "holding \(15 - used)")
+        }
+    }
+
+    @Test("Never while a batch is pending")
+    func notWhilePending() throws {
+        var record = PrekeyRecord.empty
+        try self.delivered(using: 12, in: &record)
+        #expect(self.bookkeeper.needsRefill(record))
+
+        self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: Date())
+        #expect(!self.bookkeeper.needsRefill(record), "one batch at a time")
+    }
+
+    /// Retired keys can't be sealed to any more by an up-to-date contact: they've moved on. They don't count.
+    @Test("Counts only delivered batches that haven't retired")
+    func countsOnlyCurrentBatch() throws {
+        var record = PrekeyRecord.empty
+        try self.delivered(using: 1, in: &record)          // the old batch: 14 left
+        self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: Date())
+        let newer = try #require(self.bookkeeper.pendingBatch(in: record))
+        for key in newer.prekeys.prefix(11) {              // delivers the new one, retires the old: 4 left
+            self.bookkeeper.consume(prekeyID: key.id, in: &record, now: Date())
+        }
+
+        #expect(record.ownBatches.first?.retiredAt != nil)
+        #expect(record.ownBatches.first?.keys.count == 14)
+        #expect(self.bookkeeper.needsRefill(record), "the retired batch's 14 leftovers don't count")
+    }
+}

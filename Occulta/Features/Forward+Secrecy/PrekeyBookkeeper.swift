@@ -38,6 +38,8 @@ struct PrekeyBookkeeper {
     /// A UUID string, which every build sends as a prekey ID. The contact chooses it, so it is bounded like the rest.
     static let maxInboundKeyIDBytes = 36
     static let maxAcceptedBatchIDs = 8
+    /// A new batch is due once the contact holds this many of our one-time keys or fewer (D4: 15/5, §3.3).
+    static let refillThreshold = 5
     /// A batch ID is chosen by the sender and stored in the record, twice, so its size is fixed.
     static let batchIDBytes = 16
 
@@ -233,6 +235,22 @@ struct PrekeyBookkeeper {
     /// Whether a batch is waiting to reach the contact. Until one has, no new one is generated.
     func hasPendingBatch(_ record: PrekeyRecord) -> Bool {
         record.ownBatches.contains(where: \.isPending)
+    }
+
+    /// Whether to generate a batch now, before the contact runs out (prekey continuity §3.3, stage 4): they hold
+    /// `refillThreshold` of our one-time keys or fewer, and none is pending. It then rides our next message, so a
+    /// two-way conversation never reaches the last-resort key.
+    ///
+    /// What they hold is counted from our side: the keys left in our delivered batches that haven't retired. A key is
+    /// removed as it's used, so a key used for a message that never reached us still counts, and the refill comes later
+    /// than it could; the last-resort key covers that. Nothing is generated while a batch is pending, so this makes one
+    /// batch at a time whoever triggers it, and keys not yet retired stay within two batches (`install`).
+    func needsRefill(_ record: PrekeyRecord) -> Bool {
+        guard !self.hasPendingBatch(record) else { return false }
+        let held = record.ownBatches
+            .filter { !$0.isPending && $0.retiredAt == nil }
+            .reduce(0) { $0 + $1.keys.count }
+        return held <= Self.refillThreshold
     }
 
     /// Adds a batch just generated in the Enclave as the pending one.

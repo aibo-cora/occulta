@@ -113,11 +113,12 @@ extension ContactManager {
     /// reject the bundle (Bug 159), so a rejected one never makes us issue keys.
     /// - Long-term: a sender holding no key of ours, when nothing is pending, as before stage 2.
     /// - A last-resort key: as `PrekeyBookkeeper.useLastResort` decides (§3.1's table; a repeat generates nothing).
-    /// - A one-time key: never. Consuming it already applied its bookkeeping.
+    /// - A one-time key: once it leaves the sender holding `PrekeyBookkeeper.refillThreshold` of ours or fewer, with
+    ///   nothing pending (§3.3, stage 4). Consuming it already applied its bookkeeping.
     func replenish(after used: InboundPrekeyUse, into prekeys: SenderPrekeys) throws {
         switch used {
         case .oneTime:
-            return
+            guard PrekeyBookkeeper().needsRefill(prekeys.record) else { return }
         case .longTerm:
             guard !PrekeyBookkeeper().hasPendingBatch(prekeys.record) else { return }
         case .lastResort(let keyID):
