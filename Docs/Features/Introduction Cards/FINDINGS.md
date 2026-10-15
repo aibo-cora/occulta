@@ -201,7 +201,7 @@ These are hard gates in code, not badges, following Remote Key Exchange D-06 and
 
 Storing card keys outside `contactPublicKeys` (§1) should make each of these refuse by default. Each still needs a test proving it does.
 
-The cipher suite matches verified contacts, so Sweep 4's invariant *"identical cipher suite at every rung"* holds, except on iOS 18.6–25 (Q-06).
+The cipher suite matches verified contacts, so Sweep 4's invariant *"identical cipher suite at every rung"* holds. Cards require iOS 26 at both ends (Q-06), so no classical-only card exists.
 
 ---
 
@@ -402,6 +402,16 @@ The cap and the expiry are product choices; 8 cards and 14 days are placeholders
 These versions have no ML-KEM, so cards to or from them are classical-only. Options:
 - Allow it, with the post-quantum status the secrecy indicator gains in v2.0.0 step 7.
 - Require iOS 26 at both ends.
+
+**Decided 2026-10-15: require iOS 26 at both ends.** The in-person exchange needs a U1 chip, so an iPhone 11 or later, and all of those can run iOS 26. The requirement only excludes people who haven't updated. In return:
+- there is one card format and one size, which the unbranded rule needs (Q-04);
+- there is no weaker mode for an attacker to push people into.
+
+On older iOS:
+- **Create card is disabled.**
+- **Importing a card fails.** The app still recognises the card, because the signature check is classical.
+
+Both say "Introduction cards need iOS 26 or later", and claim nothing more.
 
 ### Q-07 · Should the carrier be named on the recipient's phone?
 
