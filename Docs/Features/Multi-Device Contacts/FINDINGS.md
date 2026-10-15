@@ -165,6 +165,8 @@ The finding below (D-08) was reached in the course of designing R1's now-abandon
 
 Full mechanism, wire fields, and test plan: [ROADMAP.md](ROADMAP.md) R1 §2, §7, §9.
 
+> **Addendum (2026-10-14):** [Introduction Cards](../Introduction%20Cards/FINDINGS.md) is the "future, explicitly opt-in feature" anticipated above: asynchronous introduction under a weaker, labelled trust tier. It uses this finding's mechanism. A card carries a one-time prekey and an ML-KEM encapsulation key, and the first message encapsulates against it. It differs in one respect: the card is signed by a per-card key, not by an already-trusted device, so no trust travels by signature.
+
 ---
 
 ## Design Session 5 — Scope Narrowed: Bug Fix, Not Flagship Feature (2026-07-10)
