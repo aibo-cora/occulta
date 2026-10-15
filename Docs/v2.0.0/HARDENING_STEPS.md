@@ -12,7 +12,7 @@ Code references are against `3319fd7`. Line numbers drift, so re-check them befo
 1. Make a diceware phrase an input to every depth's key, including the vault's
 2. Use the Secure Enclave for every guess, not once
 3. Make every row open under every depth's key, with filler where the row doesn't belong
-4. Update every depth's slot on every write
+4. Update every depth's slot on every write (not achievable as written; open, 2026-10-15)
 5. Bind the small sealed fields to their row and field
 
 **B. Protect messages the adversary already holds**
@@ -90,7 +90,16 @@ it belongs, to filler everywhere else.
 **This is the open design problem** and most of the work. Contacts make it harder than the vault,
 because one contact can be visible at several depths.
 
-**Tracked:** spec §2 (unresolved); Bug 109.
+**Proposed 2026-10-15** (spec §2, "Proposed 2026-10-15: storage for per-depth keys"). Not decided. Each
+row is sealed under one key: that of the deepest depth that should see it. Each depth holds the key of the
+depth below it, so every depth above a row's depth can open it, which gives today's "visible at 0…N" from
+the keys alone. Contacts visible at every depth go under a shared key that every depth holds. Rows don't
+need to open cleanly under every depth's key. A row that opens completely or not at all says only "not
+mine", and those rows must be explainable as the depth's own deletions or as padding. The spec lists the
+requirements this brings: no absolute depth numbers inside a depth, one sealed blob per contact padded to
+fixed sizes, and no visible row referring to one the depth can't open (groups become one row per depth).
+
+**Tracked:** spec §2 (design proposed, not decided); Bug 109.
 
 ### 4. Update every depth's slot on every write
 
@@ -100,7 +109,19 @@ points at the real one. Each write must reseal every depth's slot with fresh non
 `backup-export-meta.dat` (`ExportMetaSlotCodec`) already works this way, and custody shards reseal the
 survivors on deletion since Bug 130. Everything else per-depth touches only its own depth's bytes.
 
-**Tracked:** Bug 120; spec §2, second requirement.
+**Not achievable as written, 2026-10-15** (spec §2, "Finding, 2026-10-15"). Open, needs a decision.
+- **Without a phrase,** per-depth keys alone hide which depth a changed row belongs to. The comparison
+  "without any key" above applies to containers where a slot's position names its depth, like the old
+  arrays. The storage proposed for step 3 has none.
+- **With a surrendered phrase,** rows that phrase can't open change during real use. Nothing the
+  surrendered depth does could have changed them, so they show that another depth exists and is in use.
+  A duress session can't rewrite rows it can't read without destroying them. Closing this needs
+  re-randomisable encryption, which CryptoKit doesn't offer, or the append-only design described in the
+  spec, which costs SwiftData and lets a coercer wipe the real depth by keeping a duress session open.
+- **Resealing every depth's rows on every write** fixes only the other half: the surrendered depth's own
+  rows never changing. That reveals the same fact, so resealing isn't proposed for v2.0.0.
+
+**Tracked:** Bug 120; spec §2, second requirement and its finding of 2026-10-15.
 
 ### 5. Row and field binding for the small sealed fields
 
@@ -318,6 +339,10 @@ background") must follow the same rule, and so must the session-cached `layerKey
 narrows the window. It does not defeat a full-device implant on an unlocked phone, and nothing an app
 does can.
 
+**Proposed 2026-10-15 for `layerKey_D`** (spec §4): drop it when the device locks or after an idle limit,
+not when the app goes to the background. Otherwise every app-lock user types seven words at every return to
+the app (rollout rule 3). Not decided.
+
 **Tracked:** new; related to register C2.
 
 ---
@@ -372,6 +397,10 @@ The phrase setup screen is the natural place to show this once. Its wording depe
 
 The guidance must also say that the transport keeps its own records. An ongoing exchange of `.occ` files
 with a hidden contact is visible in Messages history and its backups, whatever the app does (step 17).
+
+It must also say that a duress depth doesn't survive comparison across repeated images (step 4, open). An
+adversary who imaged the phone earlier and later gets a duress phrase can tell that another depth exists and
+is in use.
 
 ---
 

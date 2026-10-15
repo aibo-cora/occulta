@@ -90,6 +90,10 @@ bundles.
 for vault and contacts together, even though the vault ships first. Otherwise contacts, where one
 contact can be visible at several depths, may force the vault to be migrated a second time.
 
+**2026-10-15:** a design for §2 is proposed, not decided (spec §2, "Proposed 2026-10-15: storage for
+per-depth keys"). It covers vault and contacts together. Step 4 drops out of the slices: it can't be met
+against a surrendered phrase and is open, needs a decision.
+
 **Why the vault first:** it holds the most sensitive content (seed phrases, keys, passwords), and it
 already has fixed-count rows (`deletionToken` orphan-in-place, Bugs 110–114).
 

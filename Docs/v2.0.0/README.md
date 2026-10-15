@@ -48,9 +48,9 @@ depends on.
 |---|---|---|---|
 | Bug 62 | `pinCollision` PIN oracle; Gap 2 (no attempt limit) and Gap 1a still open | Open | 1 (removes the collision check entirely) |
 | Bug 82 | Identity-key change strands earlier messages; split 82a/82b | Open (82a P1, 82b P2) | 6 (the measurement that fallback fires first in each direction) |
-| Bug 109 | Per-depth keys leave an authentication-failure tell on rows the key doesn't own | Closed moot, 2026-09-10 | 3 (returns if per-depth keys ship without it) |
+| Bug 109 | Per-depth keys leave an authentication-failure tell on rows the key doesn't own | Closed moot, 2026-09-10 | 3 (returns if per-depth keys ship without it; the 2026-10-15 proposal, spec §2, argues a row that opens completely or not at all isn't this tell) |
 | Bug 119 | Vault key is device-level; one key opens every depth under AFU | Open | 1, 2 |
-| Bug 120 | Write frequency across snapshots reveals the real depth | Open | 4 |
+| Bug 120 | Write frequency across snapshots reveals the real depth | Open; can't be closed with per-depth keys against a surrendered phrase, needs a decision (2026-10-15) | 4 |
 | Bug 123 | Small sealed fields share one AAD, so ciphertext splices between rows | Closed, subsumed into 119 | 5 |
 | Register §B §3.2 | No `MCSession` peer authentication | P1 | 8 |
 | Register C2 | Hybrid local DB key re-derived per operation; a cache is planned | P1 | 13 (the cache must follow its rule) |
