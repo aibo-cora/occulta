@@ -3,7 +3,8 @@
 **Status:** Proposal. No SPEC. The carrier route is blocked on D1, a product decision (Q-01). The direct route involves no third party and is not. Both routes depend on D2 (Q-02). Not scoped for a release.
 **Origin:** Design discussion, 2026-10-14. The question raised was whether a contact's *encryption* key could be vouched for, rather than their identity key, so that people we introduce can encrypt to them, marked unverified until they meet. It was assessed against the no-vouching rulings, Sweep 4's trust ladder and the shipped receive path, then reshaped into owner-issued, single-use cards.
 **Relation to earlier plans:** this is a worked design for Sweep 4 components 1 and 4 (`Friction/USER_ENGAGEMENT_FRICTION.md:284`). It replaces component 1's card and recasts component 4, so the mutual contact carries a card and asserts nothing. Every earlier plan it touches is listed in [Relationship to earlier plans](#relationship-to-earlier-plans), and each one points back here.
-**Decided so far (2026-10-14):** the carrier is never named on the recipient's phone (Q-07). A card may reach its recipient directly or through any number of carriers, and the issuer chooses a named or an open card when creating it (§4). Two ways of recording the route were considered and not adopted ([Considered and not adopted](#considered-and-not-adopted)). The badge design is undecided (Q-07).
+**Decided so far (2026-10-14):** the carrier is never named on the recipient's phone (Q-07). A card may reach its recipient directly or through any number of carriers, and the issuer chooses a named or an open card when creating it (§4). Two ways of recording the route were considered and not adopted ([Considered and not adopted](#considered-and-not-adopted)).
+**Decided 2026-10-15:** one "Not verified" badge for every route, with no route text and no stored route kind (Q-07). For a Not verified contact the secrecy indicator drops its green and the trust line sits above it (Q-09).
 
 Names used below: **Bob** issues a card. **Carol** receives it and has never met Bob. **Alice** is a verified contact of Bob's who may carry the card. **Dave** is a later carrier whom Bob may not know.
 
@@ -151,7 +152,7 @@ What this costs, stated plainly:
 - **For an open card, the recipient knows whose card it is only from what the person who gave it said,** and that may itself be second-hand. A card carries no name, so the owner's identity is relayed by word of mouth at every hop until the in-person check.
 - **The mode guides honest apps; it can't be enforced.** A modified app can pass on a named card. Single use is the real limit.
 
-**Badge design is undecided (Q-07).** The earlier recommendation was one badge for every route, with the route shown as text. With two near-identical badges, the stronger one starts to read as safe, and users can't weigh carrier risk against channel risk anyway. `CONSUMER_OPENING_AND_CEREMONY.md` D3 argues the opposite for two in-person rungs, but those differ in how rigorous the user's own check was. These routes differ only in who could have swapped the card, and the user did no check on any of them.
+**One badge for every route, with no route text (decided 2026-10-15, Q-07).** The earlier recommendation showed the route as text; that part was dropped (Q-07 gives why). With two near-identical badges, the stronger one starts to read as safe, and users can't weigh carrier risk against channel risk anyway. `CONSUMER_OPENING_AND_CEREMONY.md` D3 argues the opposite for two in-person rungs, but those differ in how rigorous the user's own check was. These routes differ only in who could have swapped the card, and the user did no check on any of them.
 
 ### 5. Meeting in person: linking the conversation
 
@@ -197,14 +198,14 @@ These carry over from earlier decisions:
 - **Name the failure and the action.** Each warning says what could happen ("someone else could read these messages") and what to do ("verify in person before sending anything sensitive"). Never use "secure", "safe", "anonymous", shields or checkmarks.
 - **Claim no more than the design delivers** (`Docs/Audit/OPEN_LIMITATIONS.md` §E).
 - **Same text at every depth.** Text depends only on the contact's or card's own state, never on the current depth (`Prekey Continuity/DESIGN.md` §7).
-- **Secrecy and trust are separate lines.** A Not verified contact's next message can be forward-secret. The `SecrecyIndicator` green is the `occultaVerified` token, and Sweep 4 rules that *"nothing about an unverified contact may render green or 'secure'"*. So for a Not verified contact, the trust line comes first and the secrecy state isn't green (Q-09).
+- **Secrecy and trust are separate lines.** A Not verified contact's next message can be forward-secret. The `SecrecyIndicator` green is the `occultaVerified` token, and Sweep 4 rules that *"nothing about an unverified contact may render green or 'secure'"*. So for a Not verified contact, the trust line comes first and the secrecy state isn't green (Q-09, decided).
 - **The alarm can't fade into silence.** After W-11, the contact keeps a "Card swapped" state until it's deleted.
 
 ### Draft copy
 
 Placeholders:
 - `{Name}` is the user's own label for the contact.
-- `{route}` is "passed on by a contact" or "opened from a file". The carrier is never named (Q-07). Whether the route is shown at all depends on the badge design, which is undecided.
+- No route placeholder: neither the carrier nor the route kind is shown or stored (Q-07).
 
 | # | Where | What can go wrong | Draft copy |
 |---|---|---|---|
@@ -213,7 +214,7 @@ Placeholders:
 | W-03 | Asking a contact to pass a named card on (issuer) | The carrier gives {Name} a different card | "{Carrier} will be able to see this card and could give {Name} a different one. Only ask someone you'd trust to introduce you in person." |
 | W-04 | Receiving a card from its issuer to pass on (first carrier) | It goes to the wrong person | "{Sender} asked you to pass this card on. Whoever you give it to can message {Sender} once. It is removed from your phone when you pass it on." |
 | W-05 | Importing a card (recipient) | The card was swapped on the way, or isn't whose you were told | "Not verified. You know whose card this is only from what the person who gave it to you said. If it was swapped on its way to you, your messages will go to whoever swapped it, and they'll be able to read them. Meet {Name} and verify in person before you send anything you wouldn't want a stranger to read." |
-| W-06 | Contact list, contact screen, compose, send (both); persistent | Same as W-05 | Badge: "Not verified · {route}". Description: "You haven't verified this contact in person. If the card was swapped, someone else is reading this conversation." |
+| W-06 | Contact list, contact screen, compose, send (both); persistent | Same as W-05 | Badge: "Not verified". Description: "You haven't verified this contact in person. If the card was swapped, someone else is reading this conversation." |
 | W-07 | After the first send (recipient) | Someone used the card first, so no reply will come | "Waiting for the first reply. If none comes, someone may have used this card before you. Ask {Name} for a new one, in person or through someone you trust." |
 | W-08 | First message arrives (issuer) | Whoever used the card first wrote it | "First message on your card '{label}'. Whoever used the card first wrote it. That's probably {Name}, but you can't be sure until you verify in person." |
 | W-09 | Pending cards list (issuer) | A lost card can be used until it expires | "Not used yet. Anyone who has this card can use it until {date}. Cancel it if it might have reached the wrong person." |
@@ -256,7 +257,7 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 | Observer | What they learn |
 |---|---|
 | Finds a card file (another app's backup, a Files folder) | Three public keys, an expiry and a signature. No name and no identity key. Whether the file reveals Occulta is Q-04. An unused, unexpired card can be used once. |
-| Seizes the recipient's phone | A Not verified contact under a card key, with only the route kind. It can't be connected to the issuer's identity key or to other cards. The seizer can message the issuer as that contact, as with any contact on a seized phone. |
+| Seizes the recipient's phone | A Not verified contact under a card key, with no record of how the card arrived. It can't be connected to the issuer's identity key or to other cards. The seizer can message the issuer as that contact, as with any contact on a seized phone. |
 | Seizes two phones holding cards from the same issuer | Two unrelated keys. Verified contacts all hold one identity key, so cards are less linkable than verified contacts. |
 | Seizes a carrier's phone | Nothing of the card once it was passed on. With the phone unlocked, they can give the carrier's contacts fake cards. That reach is limited to that contact list, and each fake is caught at its in-person check. |
 | Holds a copy of a card anywhere on its route | The same bytes at every hop. Nothing shows who carried it or how many people did. |
@@ -342,7 +343,13 @@ These versions have no ML-KEM, so cards to or from them are classical-only. Opti
 
 **Decided 2026-10-14: the carrier is never named on the recipient's phone,** in the badge, the warnings or the stored record. C-01 and C-02 record two ways of recording the carrier that were considered and not adopted.
 
-**Still open: the badge design,** including whether the route kind ("passed on by a contact" / "opened from a file") is shown at all, and whether every route shares one badge (§4).
+**Decided 2026-10-15: one "Not verified" badge for every route, with no route text, and the route kind isn't stored.** Three reasons:
+
+- **The route kind can't be verified.** A carrier may have got the card from a file, and the app can't tell.
+- **Open cards make "passed on by a contact" close to meaningless.** It says nothing about who, or how many.
+- **A stored route kind is a record.** On a seized phone it shows that this contact came through an introduction.
+
+The user knows how they got a card. They can add it to the contact's notes if they want it written down.
 
 ### Q-08 · Card key or identity key on the card? (confirm §1)
 
@@ -351,6 +358,8 @@ This is the trade in §1. Recommendation: card key. It keeps the trust graph's m
 ### Q-09 · Secrecy indicator colour for Not verified contacts
 
 The `SecrecyIndicator`'s forward-secret state is green (`occultaVerified`), and Sweep 4 rules out green for unverified contacts. Recommendation: for Not verified contacts, keep the label and description, drop the green, and show the trust line above it.
+
+**Decided 2026-10-15,** as recommended.
 
 ### Q-10 · At the meeting: a wrong pick or a real mismatch?
 
@@ -389,7 +398,7 @@ The two modes are decided (§4). These details are not:
 | Same, component 4 (introductions) | A verified mutual forwards both keys, signed; a product-owner call | Recast: contacts pass the issuer's card on, through any number of hops, asserting nothing and leaving no route record (D-04, §4). Still D1 (Q-01) |
 | Same, second open decision (D2) | Send-capable or import-only | Still open (Q-02); this design assumes send-capable |
 | Same, H5 | Key-in-bundle rejected; warning fatigue and downgrade risk | Not key-in-bundle (D-04); the warning rules follow H5 |
-| `Friction/CONSUMER_OPENING_AND_CEREMONY.md` §6–7 | Introduced and Unverified rungs; D1–D3 | Both rungs become one Not verified badge, with the route as text (§4) |
+| `Friction/CONSUMER_OPENING_AND_CEREMONY.md` §6–7 | Introduced and Unverified rungs; D1–D3 | Both rungs become one Not verified badge, with no route text (§4, Q-07) |
 | [Remote Key Exchange/FINDINGS.md](../Remote%20Key%20Exchange/FINDINGS.md) D-06, Q-01, Q-04, Q-05 | No record of how a key arrived; two-tier claims; hard block for trustees and payment cards; introductions adjacent to vouching | The card key makes the block the default (§1, §6); Q-01 applies unchanged; Q-05 is answered here |
 | [Multi-Device Contacts/FINDINGS.md](../Multi-Device%20Contacts/FINDINGS.md) D-08 | ML-KEM can be introduced asynchronously, for a future opt-in, weaker trust model | This is that feature, using D-08's mechanism |
 | Same, "Rejected: self-vouching device certs"; `ROADMAP.md:140` | No trust for a new key without a UWB exchange | Kept: no trust is granted, and the identity key leaves the phone only in person |

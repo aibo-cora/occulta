@@ -189,8 +189,9 @@ Invariants carried over from Sweep 4:
 > **Addendum (2026-10-14):** D1 and D2 have a worked proposal in
 > [Introduction Cards](../Docs/Features/Introduction%20Cards/FINDINGS.md). Keys
 > that arrive by card are Not verified, whether carried or shared directly. The
-> carrier is never named. Whether the Introduced and Unverified rungs in §6
-> collapse into one badge is still undecided (its Q-07). D1 is still open there
+> carrier is never named. The Introduced and Unverified rungs in §6 collapse
+> into one "Not verified" badge with no route text (its Q-07, decided
+> 2026-10-15). D1 is still open there
 > (its Q-01). It also records that this doc lists D1 as open while
 > `Master Feature & Expansion Analysis.md` and the 2026-07-10 ideation pass
 > list verified introductions as off-limits.
