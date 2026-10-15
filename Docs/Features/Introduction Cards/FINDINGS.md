@@ -56,7 +56,7 @@ Measured against D-03:
 2. Bob chooses who gets each card (§3), and each card works once.
 3. No identity key and no name travel on the card.
 4. Bob's phone accepts a stranger only if they use a card Bob made.
-5. Each card carries its own one-time prekey.
+5. Each card carries its own one-time prekeys.
 
 Is this vouching? No third party signs or asserts anything, and no trust is granted: the contact stays Not verified until a UWB exchange. D1 rules that this keeps the carrier route on the right side of the line (Q-01, decided 2026-10-15).
 
@@ -66,7 +66,7 @@ It is also not H5's rejected "key-in-bundle" shortcut (`USER_ENGAGEMENT_FRICTION
 
 | | Sweep 4 contact card | Introduction card |
 |---|---|---|
-| Carries | Long-term public key + signed prekey batch | Its own card key + one one-time prekey + one ML-KEM key + expiry, signed by the card key |
+| Carries | Long-term public key + signed prekey batch | Its own card key + a batch of one-time prekeys + one ML-KEM key + expiry, signed by the card key |
 | Who can use it | Anyone holding it, repeatedly | The first person to use it, once |
 | First-message forward secrecy | Signed-prekey level (static prekeys) | Full (one-time prekey) |
 | Identity key leaves the phone | Yes | No |
@@ -100,7 +100,7 @@ What this preserves:
 - **Carol can't verify it.** She doesn't hold Bob's identity key until they meet.
 - **The signature exposes the key.** CryptoKit signs with ECDSA, and an ECDSA signature plus the signed message yields the signer's public key, up to a couple of candidates. So two seized cards link to each other and to Bob, and `#22` probing works again.
 - **It leaves proof on someone else's phone.** Carol's phone would hold a non-repudiable proof that Bob issued the card, outside his duress depths and checkable by anyone who holds his key.
-- **The nonce changes nothing.** It changes the signed message, not the key, so the key can still be recovered. A card doesn't need it to be unique either: the card key is new and the one-time prekey makes it single-use.
+- **The nonce changes nothing.** It changes the signed message, not the key, so the key can still be recovered. A card doesn't need it to be unique either: the card key is new, and redeeming it with its first prekey makes it single-use.
 
 The in-person check (§5) already makes this link, and makes it only when they meet.
 
@@ -111,7 +111,7 @@ A hiding commitment instead of a signature, `SHA-256(identityPub ‖ nonce)` wit
 | Field | Why |
 |---|---|
 | Card key, public half (P-256, Secure Enclave) | Bob's identity in this relationship until they meet |
-| One one-time prekey, public half | Forward secrecy for the first message, and what makes the card single-use |
+| A batch of one-time prekeys, public halves (`PrekeyManager.defaultBatchSize`, 15; decided 2026-10-15) | Forward secrecy for Carol's messages until Bob replies, so she doesn't have to wait for him. The first one used redeems the card and makes it single-use (§3). It costs about 1 KB of card size and as many Enclave keys as an ordinary batch |
 | One ML-KEM-1024 encapsulation key (iOS 26+) | Post-quantum protection from the first message (`Multi-Device Contacts/FINDINGS.md` D-08) |
 | Expiry | Limits how long a lost or intercepted card stays usable |
 | Card key's signature over all of the above, with its own domain-separation prefix | Without it, a carrier could swap just the prekey. They'd read the first message and re-seal it to Bob's real prekey, and the in-person check (§5) would still pass, because the card keys match |
@@ -125,9 +125,9 @@ A card belongs to a contact Bob already has but hasn't exchanged keys with. The 
 1. **Bob creates a card from the contact's details.** It is stored in a fixed-size encrypted field on the contact record, which every contact has (Q-05). The field holds the private halves of the card key, prekey and ML-KEM key, as Enclave blobs (as prekeys are held under Prekey Continuity D9). **A contact has at most one active card.** Creating a new one cancels the old one and deletes its record and keys. Otherwise two cards for Carol could both be used, one by Carol and one by whoever intercepted the other, and two conversations would claim the same contact.
 2. **Bob shares it** through any channel he chooses (§4, W-02).
 3. **Carol imports it.** She attaches it to one of her own pending contacts, or creates a new one. Either way the contact is Not verified.
-4. **Carol sends a first message.** It is sealed in forward-secret mode to the card's prekey, with ML-KEM encapsulated to the card's key. The payload carries Carol's own new card key, a prekey batch and an ML-KEM encapsulation key, all signed with her card key. That signature plays the role the sender's ephemeral signature plays for last-resort sealing in groups (`Prekey Continuity/DESIGN.md` §3.1). Without it, anyone holding the card could claim any card key, and §5 couldn't tell who wrote the first message.
-5. **Bob's phone recognises it.** When `identifyOwner` matches no contact, the receive path tries Bob's pending cards before failing. There is no cap on the number of active cards, but each one expires after a day, so few are active at once and the cost stays small (Q-05). If a card opens, its prekey is consumed and the pending card removed, following the rule that a prekey is consumed as soon as it opens a bundle (`SECURITY_CHECKLIST.md` §2). The conversation attaches to the contact the card was made from, which becomes Not verified.
-6. **Bob replies.** He uses Carol's prekeys and encapsulates to her ML-KEM key. After these two messages the pair holds two ML-KEM secrets, as after a ceremony, and forward secrecy works per contact as it does for verified contacts.
+4. **Carol sends a first message within the day.** The first message is what activates the card, and only its deadline is enforced (Q-05). It is sealed in forward-secret mode to one of the card's prekeys, with ML-KEM encapsulated to the card's key. The payload carries Carol's own new card key, a prekey batch and an ML-KEM encapsulation key, all signed with her card key. That signature plays the role the sender's ephemeral signature plays for last-resort sealing in groups (`Prekey Continuity/DESIGN.md` §3.1). Without it, anyone holding the card could claim any card key, and §5 couldn't tell who wrote the first message.
+5. **Bob's phone recognises it.** When `identifyOwner` matches no contact, the receive path tries Bob's pending cards before failing. There is no cap on the number of active cards, but each one expires after a day, so few are active at once and the cost stays small (Q-05). If a card opens, the prekey it used is consumed, following the rule that a prekey is consumed as soon as it opens a bundle (`SECURITY_CHECKLIST.md` §2), and the card is redeemed. The conversation attaches to the contact the card was made from, which becomes Not verified. **The card's remaining prekeys join that contact's pool.** They can only be reached by messages from Carol's card key: a message from any other sender matches no contact, finds no active card, and fails like any message that can't be opened. So the card still works exactly once.
+6. **Either of them writes, whenever they like.** With no time limit after the first message, Carol can send up to a batch of forward-secret messages before Bob ever replies. Past that, she falls back to last-resort sealing, which is what happens for a verified contact whose prekeys run out, and the secrecy indicator shows it. Bob has Carol's prekeys from her first message, so he can write at any time. Bob's first reply uses Carol's prekeys and encapsulates to her ML-KEM key. After these two messages the pair holds two ML-KEM secrets, as after a ceremony, and forward secrecy works per contact as it does for verified contacts.
 7. **The card is spent.** From here on the conversation runs on the two card keys and the prekeys exchanged inside it, until they meet (§5).
 8. **Ending without a meeting.** An unused card expires or Bob cancels it, and its record and keys are deleted. If Carol tells Bob, through another channel, that her message never arrived, then the message that did arrive came from someone else. **Bob resets the contact** (W-15): the card conversation's keys are deleted, the contact returns to pending, and he can make a new card.
 
@@ -394,7 +394,7 @@ The cap and the expiry are product choices; 8 cards and 14 days are placeholders
 
   Every row is the same size, so the number of active cards isn't visible on disk, and no separate table is needed. The structure itself enforces one active card per contact. The card also lives at the same depth as its contact, which helps with Q-03. (The comparison above to a "soft-delete cap" points to nothing defined in the docs or the code, so it no longer applies.)
 - **One active card per contact, with no limit across the app.** The limit covers unused cards only. Not verified contacts with a conversation in progress are ordinary contacts and aren't limited.
-- **Cards expire after 1 day, fixed, with no picker.** That day is how long Carol has to import the card and send her first message, and also how long someone who intercepted it has to use it. After the first message, the conversation has no time limit. Bob's phone enforces the expiry by deleting the card's keys, so a late first message fails like any message that can't be opened. If Carol misses the day, Bob makes a new card.
+- **Cards expire after 1 day, fixed, with no picker.** That day is how long Carol has to import the card and send her first message, and also how long someone who intercepted it has to use it. After the first message, the conversation has no time limit. The deadline is on the first message, not on importing. Importing happens only on Carol's phone, so Bob's phone can't see it. A deadline checked on Carol's phone can't be enforced, and Bob would have to keep the card's keys until something arrived, which would leave an intercepted card usable for that whole time. Bob's phone enforces the expiry by deleting the card's keys, so a late first message fails like any message that can't be opened. If Carol misses the day, Bob makes a new card.
 - **What the receive path costs.** With no overall cap, each message from an unknown sender is tried against every active card. The 1-day expiry keeps that number small in practice.
 
 ### Q-06 · iOS 18.6–25
@@ -469,7 +469,7 @@ The two modes are decided (§4). These details are not:
 
 | Document | What it said | What this changes |
 |---|---|---|
-| `Friction/USER_ENGAGEMENT_FRICTION.md:284`, Sweep 4 component 1 | Multi-use contact card: long-term key + signed prekey batch, with static prekeys | Replaced by a single-use card with its own key and a one-time prekey (D-05) |
+| `Friction/USER_ENGAGEMENT_FRICTION.md:284`, Sweep 4 component 1 | Multi-use contact card: long-term key + signed prekey batch, with static prekeys | Replaced by a single-use card with its own key and one-time prekeys (D-05) |
 | Same, component 3 (gossip audit) | Detects a first-contact swap as the graph fills in | Can't check card keys; detection waits for the meeting |
 | Same, component 4 (introductions) | A verified mutual forwards both keys, signed; a product-owner call | Recast: contacts pass the issuer's card on, through any number of hops, asserting nothing and leaving no route record (D-04, §4). Allowed under D1 (Q-01) |
 | Same, second open decision (D2) | Send-capable or import-only | Decided for cards 2026-10-15: send-capable (Q-02) |
@@ -525,6 +525,8 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
   - every warning renders identically at every depth;
   - a prekey-only swap fails §5 (the §2 signature);
   - a second use of a card fails like an unopenable bundle;
+  - after redemption, a message from a different sender on one of the card's remaining prekeys fails like an unopenable bundle (§3);
+  - the post-quantum secret from Carol's first message covers her later messages before Bob replies (SPEC detail);
   - a card is byte-identical after every hop, and no carrier's identity is written anywhere (§4);
   - an expired or cancelled card leaves no keys behind;
   - creating a new card for a contact cancels the old one and deletes its keys (§3);
