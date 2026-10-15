@@ -119,7 +119,7 @@ Binds the wrapped session key to this bundle's blind. A compromised wrapping key
    - Assemble `Recipient(secrecyContext, wrappedPayload)`
 6. Assemble `GroupEnvelope(version: 1, blind, blindNonce, recipients)`, attach to bundle, serialize
 
-`batchIfNeeded(for:)` follows the same threshold logic as single-recipient sends — include a fresh prekey batch when the contact's stored stock for this sender falls below the replenishment watermark, or when `secrecyContext.mode == .longTermFallback`.
+`batchIfNeeded(for:)` follows the same logic as single-recipient sends: include the batch pending for this contact, if any. One is made when the contact turns out to be out of our keys, or holding 5 or fewer (prekey continuity §3.3), and rides every message until they use a key from it.
 
 ### Decrypt
 

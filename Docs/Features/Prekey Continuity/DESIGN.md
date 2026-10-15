@@ -2,7 +2,8 @@
 
 **Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stages 1 and 2
 (PRs #94, #97) and Bug 165's fix (PR #100) merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release
-branch; stage 3 built 2026-10-15 on `v2.0.0/prekey-stage-3`, not yet merged; stage 4 not started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
+branch; stage 3 (PR #108) merged 2026-10-15 into it; stage 4 built 2026-10-15 on `v2.0.0/prekey-stage-4`, not
+yet merged. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
 **Downgrades ruled out by release order** (D6, 2026-10-07). **Seeding at the exchange (§3.2,
@@ -159,12 +160,25 @@ Retirement time is stored per batch in the contact's record. Consequences that c
   after the 30 days, together. That burst is step 17's open "repeated images" item, not a new kind of change.
 - **The clock is the recipient's.** Moving it forward deletes early, which loses messages and exposes
   nothing; moving it back keeps keys longer, which needs the unlocked phone.
-- **Deleting at retirement, with no grace, was rejected (2026-10-11).** A new batch replaces the old one in the
-  contact's store, so once they use the new one, nothing new can be sealed to the old keys: deleting them at
-  once would never delete a key the contact holds. But a file sealed to an old key just before the switch and
+- **Deleting at retirement, with no grace, was rejected (2026-10-11).** The contact uses keys oldest first (since
+  stage 4 a new batch is appended after the old one's keys rather than replacing them), so once they use the new
+  one, nothing new can be sealed to the old keys: deleting them at once would never delete a key the contact holds. But a file sealed to an old key just before the switch and
   opened after a newer one would be lost, with the generic error. That is a message lost that was never lost in
   transit, so the grace stays. Deleting earlier keys of the batch still in use was rejected for the same reason,
   and more strongly: it loses any two files opened out of order, not only those either side of a batch change.
+
+**No key is marked expired (recorded 2026-10-15).** Expiry is deletion: retirement is a date on our own batch, and
+the sweep deletes the batch, last-resort key included, 30 days after it. The contact's side marks nothing and
+can't, since it doesn't see our retirements; a timer there would be wrong anyway, expiring keys a contact who
+hasn't replied in months may still validly use. What keeps a sender off an expired key is structural: we retire a
+batch only when they first use a key from a newer one, and by then they hold none of the older batch's keys,
+since they use keys oldest first, and their last-resort key switched to the newer batch's when they accepted it.
+So every key a contact holds of ours is one we still hold, in a batch that hasn't retired; only a message already
+in transit can reach a retired key, which is what the grace is for. `PrekeyConversationSimulationTests` checks that
+after every step, through 40-day silences and sweeps; `PrekeyBookkeeperLastResortExpiryTests` and
+`PrekeyConversationTests.retiredLastResortGrace` check that a retired last-resort key opens for 30 days and not
+after. The one way around it, an older copy of the database put back, isn't open to a user: the store is excluded
+from iCloud and Finder backups (Bug 70), and nothing restores prekey records.
 
 **Without a reply.** A last-resort key retires only when the sender uses a key from a newer batch, and only
 the recipient can send one. A recipient who never replies keeps the key, and every message sealed to it stays
@@ -305,20 +319,33 @@ This is v2.0.0 step 6. It removes "the first message is always long-term". Addit
 ### 3.3 Refill before running out; append instead of replace
 
 A recipient knows how many of its one-time prekeys a contact still holds. It sends a new batch before they
-run out, so a two-way conversation never reaches the last-resort key.
+run out, so a two-way conversation doesn't reach the last-resort key, as long as no more than `T + 1` messages go
+one way between replies (below). **Built 2026-10-15 (stage 4).**
 
 **Refill (B).** When the contact holds `≤ T` unused one-time keys from batches they have received, and no
-batch is pending, B generates a batch and attaches it. `T` replaces `PrekeySecretsManager.replenishThreshold`, which
-is unused today. **`T` = 5, with batches of 15 (D4, decided 2026-10-06, §4.1).**
+batch is pending, B generates a batch, which rides its next message as any pending batch does.
+**`T` = 5, with batches of 15 (D4, decided 2026-10-06, §4.1).** `PrekeyBookkeeper.needsRefill` decides, and
+`ContactManager.replenish` calls it on receipt of a bundle sealed to a one-time key, after every check that can
+reject it (Bug 159). `PrekeySecretsManager.replenishThreshold` and `needsReplenishment`, which counted keychain
+items and had no caller, were removed.
 
-The count comes from the per-batch records in the contact's record, not from `remainingCount(for:)`. That
-function counts keychain items by tag. It includes keys that will never be used (Bug 156), and it stops
-working once tags no longer name the contact (step 17b).
+The count comes from the per-batch records in the contact's record, not from `remainingCount(for:)`: the keys
+left in our delivered batches that haven't retired, a key being removed as it's used. That function counts
+keychain items by tag. It includes keys that will never be used (Bug 156), and it stops working once tags no
+longer name the contact (step 17b). A key used for a message that never reached us still counts, so the refill
+then comes later than it could, and the last-resort key covers the gap. Nothing is generated while a batch is
+pending, so it makes one batch at a time, whoever triggers it.
 
-**Append (A).** `syncInboundPrekeys` appends a new batch after the keys already held, instead of replacing
-them, and `popOldestPrekeyData()` stays oldest first. That order is what makes the retirement rule in §3.1
-work. Cap the store at two batches. `storeInboundBatch` already rejects a batch of more than
-`2 × defaultBatchSize` keys.
+**The limit on bursts (found building it, 2026-10-15).** A batch reaches the contact only with our next message.
+At the start of a burst they may hold `T + 1` of our keys with no refill due, so a burst of up to `T + 1` = 6
+always stays on one-time keys; a longer one may reach the last-resort key for the rest of the burst, never the
+long-term key. `PrekeyConversationTests` and `PrekeyConversationSimulationTests` pin both.
+
+**Append (A).** `PrekeyBookkeeper.accept` adds a new batch after the keys already held, instead of replacing
+them, and `takeInboundPrekey` stays oldest first. That order is what makes the retirement rule in §3.1
+work: by the time the contact starts our newer batch, they've used every key of the older one, so a retired
+batch holds no unused key. At most two are kept (`maxInboundBatches`); a third, which shouldn't arrive, drops the
+oldest. The contact's last-resort key becomes the newest batch's.
 
 **Duplicates by ID, not date (Bug 158's fix).** Appending makes the duplicate check matter more: a late copy
 of a batch already used would add keys B has already deleted, and messages sealed to them could never be
@@ -851,9 +878,22 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   `IdentityChallengeGroupForwardSecretTests` is Enclave-gated.
 
 **Stage 4 — refill and append (§3.3).** D4 is decided (15/5).
+- *Commits (built 2026-10-15, `v2.0.0/prekey-stage-4`):* append (`accept` appends, two batches at most, a third
+  drops the oldest, decided 2026-10-15); refill (`needsRefill`, wired into `replenish`, the keychain-count check
+  removed); conversation tests; docs.
 - *Migration:* none beyond stage 1's.
 - *Tests:* refill fires at `T`; the sender appends and uses the oldest first; the first use of the new batch
-  retires the old one; a two-way conversation of 100 messages never reaches the last-resort key.
+  retires the old one; a two-way conversation of 100 messages never reaches the last-resort key. Built as unit tests
+  (`PrekeyBookkeeperAppendTests`, `PrekeyBookkeeperRefillTests`) and two layers of conversations: end to end, two
+  phones exchanging real bundles (`PrekeyConversationTests`, Enclave-gated) — alternating, bursts of 1, 5 and 6,
+  bursts of 10, one way, one message in seven lost, out of order, 100 or more keys each way; and through the
+  bookkeeper alone (`PrekeyConversationSimulationTests`, on CI too) — the same to 1,000 messages each way, plus
+  seeded random runs. Every message opens, both records stay within the fixed size's limits after every step, and
+  an in-order conversation leaves no unused key in a retired batch. With refill disabled, or append replaced by the
+  old replacement, the tests that should fail do. Added 2026-10-15, on expiry (§3.1, "No key is marked expired"):
+  every key a phone holds for the other is one the other still holds unretired, checked after every step through
+  40-day silences and sweeps; a retired batch's last-resort key opens for 30 days and is swept after, and a live
+  batch's never is. Keeping the old last-resort key on accept, or taking keys newest first, fails them.
 
 **Stage 5 — seed at the exchange (§3.2, v2.0.0 step 6). Deferred out of v2.0.0, 2026-10-07 (§3.2).** When it
 returns: D7's sealing as recorded in §3.2.
@@ -862,7 +902,8 @@ returns: D7's sealing as recorded in §3.2.
 
 **Expected result** between two current-build contacts after stage 4: no message uses the identity keys once
 the contact has first replied; before that, messages to a new contact are long-term and the indicator says so. A
-one-way burst past the keys held uses the last-resort key. It is exposed on the recipient's phone only, until
+burst of more than `T + 1` = 6 messages between replies may reach the last-resort key for its remainder, and a
+one-way run past the keys held does. It is exposed on the recipient's phone only, until
 the sender uses a key from the recipient's next batch, plus 30 days; with no reply, for as long as the
 recipient keeps the key (§3.1). To measure it, count long-term bundles in a scripted
 conversation before and after each stage.

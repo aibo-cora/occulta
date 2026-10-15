@@ -388,8 +388,9 @@ public struct OccultaBundle: Codable {
         /// know about the identity-challenge envelope.
         public let message: Data
         /// The sender's fresh prekeys for the recipient to store, or nil.
-        /// Non-nil on the fallback path (always), and on the FS path when
-        /// the sender's SE stock for this contact is below the replenishment threshold.
+        /// Non-nil while a batch is pending for the recipient: from when the sender
+        /// finds them out of its keys, or holding 5 or fewer (prekey continuity
+        /// §3.3), until they use a key from it.
         public let prekeyBatch: PrekeySyncBatch?
 
         /// Identity-challenge sub-envelope. `nil` means a regular message —

@@ -12945,7 +12945,8 @@ Two consequences:
 
 `remainingCount(for:)` counts these keys too, so it overstates how many prekeys the contact really holds. It
 has no production caller today, nor does `needsReplenishment`, which is built on it; wiring either up as-is
-would misfire.
+would misfire. (`needsReplenishment` was removed in prekey continuity stage 4, 2026-10-15; the refill rule is now
+`PrekeyBookkeeper.needsRefill`, counting from the record.)
 
 The comment in `PrekeyManager.generateBatch` ("A partial batch would prune old SE keys and increment the
 sequence") still describes the removed mechanism.
@@ -13108,7 +13109,8 @@ both `decryptSealed` and `openGroup`.
 
 The doc comment on `ContactManager.encryptGroupBundle` says a batch is attached when the member's "stock for this
 sender is below the replenishment threshold". It is attached whenever one is pending; the threshold
-(`PrekeyManager.replenishThreshold`) is not used anywhere in production.
+(`PrekeyManager.replenishThreshold`) is not used anywhere in production. (Removed in prekey continuity stage 4,
+2026-10-15.)
 
 ### Fix
 

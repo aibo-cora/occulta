@@ -265,25 +265,4 @@ struct PrekeySecretsManagerStockTests {
         pm.consume(prekey: prekeys[0])
         #expect(pm.remainingCount(for: cid) == 2)
     }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func needsReplenishment_falseAtOrAboveThreshold() throws {
-        let cid = String.testContactID()
-        defer { pm.deleteAllKeys(for: cid) }
-
-        _ = try pm.generateBatch(contactID: cid, count: Manager.PrekeySecretsManager.replenishThreshold)
-        #expect(pm.needsReplenishment(for: cid) == false)
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func needsReplenishment_trueBelowThreshold() throws {
-        let cid = String.testContactID()
-        defer { pm.deleteAllKeys(for: cid) }
-
-        _ = try pm.generateBatch(contactID: cid, count: Manager.PrekeySecretsManager.replenishThreshold - 1)
-        #expect(pm.needsReplenishment(for: cid) == true)
-    }
-
-    @Test func needsReplenishment_trueForNewContact() {
-        let cid = "never-used-\(UUID().uuidString)"
-        #expect(pm.needsReplenishment(for: cid) == true)
-    }
 }

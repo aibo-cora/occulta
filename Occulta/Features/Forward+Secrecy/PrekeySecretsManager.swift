@@ -18,7 +18,6 @@ extension Manager {
         // MARK: - Constants
 
         static let defaultBatchSize   = 15
-        static let replenishThreshold = 5
 
         // MARK: - Generation
 
@@ -250,11 +249,6 @@ extension Manager {
             }
             
             return tags
-        }
-
-        /// Whether a fresh batch should be generated for this contact.
-        func needsReplenishment(for contactID: String) -> Bool {
-            self.remainingCount(for: contactID) < Self.replenishThreshold
         }
 
         /// Delete ALL prekey private keys from the SE, across all contacts.
