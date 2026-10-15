@@ -33,6 +33,8 @@ struct PrekeyBookkeeper {
     /// Our batch size, and every build's: no build sends more. Holding two such batches from the contact (stage 4)
     /// next to `maxOwnKeys` of ours is what the codec's 16 KB is budgeted for.
     static let maxInboundKeysPerBatch = 15
+    /// The contact's batches the record may hold: the one we're using and the next, appended (stage 4, §3.3).
+    static let maxInboundBatches = 2
     /// A UUID string, which every build sends as a prekey ID. The contact chooses it, so it is bounded like the rest.
     static let maxInboundKeyIDBytes = 36
     static let maxAcceptedBatchIDs = 8
@@ -96,7 +98,12 @@ struct PrekeyBookkeeper {
 
     // MARK: - Receiving from the contact
 
-    /// Accepts a batch this contact sent us, replacing the keys we held from them, their last-resort key included.
+    /// Accepts a batch this contact sent us, after the keys we already hold from them, so they're still used oldest
+    /// first (prekey continuity §3.3, stage 4). Their retirement rule depends on that order: our first use of a key
+    /// from the new batch tells them we're done with the older one. At most `maxInboundBatches` are kept; a third
+    /// drops the oldest, which shouldn't happen, since they refill only once we've started their newest batch, and by
+    /// then we've used up the one before it. Dropping keys we hold loses nothing: they keep the private halves until
+    /// those retire, and we just won't seal to them. Their last-resort key becomes the new batch's.
     ///
     /// A batch with an ID is dropped if that ID was accepted before (Bug 158); its date doesn't matter, so a
     /// sender whose clock went back isn't stuck. A batch without one comes from an older build and keeps
@@ -126,7 +133,12 @@ struct PrekeyBookkeeper {
             record.latestInboundGeneratedAt = generatedAt
         }
 
-        record.inboundBatches = keys.isEmpty ? [] : [PrekeyRecord.InboundBatch(id: id, keys: keys)]
+        if !keys.isEmpty {
+            record.inboundBatches.append(PrekeyRecord.InboundBatch(id: id, keys: keys))
+            if record.inboundBatches.count > Self.maxInboundBatches {
+                record.inboundBatches.removeFirst(record.inboundBatches.count - Self.maxInboundBatches)
+            }
+        }
         record.inboundLastResort = lastResortKey
         return true
     }
