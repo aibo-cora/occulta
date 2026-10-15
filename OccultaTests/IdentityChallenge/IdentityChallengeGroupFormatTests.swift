@@ -469,3 +469,33 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
         #expect(try cm.prekeyRecord(for: profile).inboundBatches.first?.keys.count == 1)
     }
 }
+
+// MARK: - Bug 155
+
+@Suite("Identity challenge — a long-term one from an older contact makes no batch (Bug 155)")
+@MainActor struct IdentityChallengeMakesNoBatchTests {
+
+    /// Without the fix this generates 15 Enclave keys; with it, nothing touches the Enclave, so it runs anywhere.
+    @Test("A long-term challenge and response from a contact with no batch of ours pending create none",
+          .ambientTestKeyManager, arguments: [IdentityChallengeEnvelope.Kind.challenge, .response])
+    func noBatch(kind: IdentityChallengeEnvelope.Kind) throws {
+        let alice = TestKeyManager()
+        let cm = try makeContactManager()
+        let profile = try insertAlice(alice, pendingBatch: false, in: cm)
+        let envelope: IdentityChallengeEnvelope = kind == .challenge
+            ? try challengeFrom(alice)
+            : .response(payload: Data(count: 100))
+        let bundle = try Manager.Crypto(keyManager: alice).seal(
+            message: try WireHandle.encode(payload: OccultaBundle.SealedPayload(
+                message: Data(IdentityChallenge.challengeFallbackMessage.utf8), identityChallenge: envelope
+            )),
+            contactPrekey: nil, recipientMaterial: try Manager.Ambient.keyManager.retrieveIdentity(), quantumMaterial: nil,
+            version: .v4
+        )
+
+        let (sealed, _) = try cm.decryptSealed(bundle: bundle)
+
+        #expect(sealed.identityChallenge?.kind == kind)
+        #expect(!PrekeyBookkeeper().hasPendingBatch(try cm.prekeyRecord(for: profile)))
+    }
+}

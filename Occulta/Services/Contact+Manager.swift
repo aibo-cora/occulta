@@ -1654,7 +1654,14 @@ extension ContactManager {
         // ── 5. A new batch if the sender is out of our keys ──────────────
         // After every check that can throw (`bugs.md` Bug 159). Clearing the pending batch is no
         // longer here: using a key from it already did, at consumption (Bug 157).
-        try self.replenish(after: used, into: prekeys)
+        //
+        // Not for an identity challenge or response. An older contact seals those with the long-term key
+        // whatever keys of ours they hold, so it says nothing about their stock, and the batch would replace
+        // keys they haven't used (`bugs.md` Bug 155). A contact at `.bodyDigestCapable` sends them in group
+        // format, where a long-term slot does mean they're out, and `openGroup` makes the batch.
+        if decodedPayload.identityChallenge == nil {
+            try self.replenish(after: used, into: prekeys)
+        }
 
         // ── 6. Persist ───────────────────────────────────────────────────
         try self.store(prekeys.record, for: sender)
