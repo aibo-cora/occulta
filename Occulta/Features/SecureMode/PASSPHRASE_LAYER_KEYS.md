@@ -378,7 +378,7 @@ one image. Repeated images are the finding above.
 |---|---|---|---|
 | Enclave key | 1 per install | Keychain | Nothing directly. It is part of every phrase guess (§1, 2026-10-15) |
 | Depth key, `layerKey_D` | 1 per configured depth | Derived from that depth's phrase and the Enclave key. The depth above also keeps a copy, sealed under its own key | Contacts visible down to that depth; that depth's vault entries |
-| Shared key | 1 per install | A copy in every depth's header | Contacts visible at every depth |
+| Shared key | 1 per install | A copy in every depth's header | Unclassified contacts, and contacts created at a duress depth (shown according to the origin lists below) |
 
 They replace the local-DB key, the Secure Mode key and the vault key for the data they cover, and the PIN
 verifiers with them. The identity key, the prekey blobs and the share-staging key stay outside this scheme.
@@ -386,7 +386,8 @@ There are no per-row keys.
 
 *Headers.* 32 fixed slots in a random order per install, with filler in the unused ones. A depth's slot is
 sealed under its key and holds the canary, the key of the depth below it, and the shared key. Unlock tries
-every slot with the derived key, and the slot that opens is the depth.
+every slot with the derived key, and the slot that opens is the depth. Headers are written only when a depth
+is created (requirement 7).
 
 *The chain.* Each depth holds the key of the depth directly below it, so it reaches every depth below. The
 real depth can then classify contacts into duress depths without the user typing every phrase. No depth
@@ -399,6 +400,38 @@ above already holds that key through the chain, so today's ceiling ("visible at 
 every depth today, go under the shared key, so a depth added later sees them without a reseal. Vault
 entries go under their own depth's key. The depths above can decrypt them but don't show them, which
 matches today's exact-depth display (`VaultEntry.isVisible`).
+
+*Contacts created at a duress depth: origin lists.* Today these are visible at the depth that created them
+and every depth below it, and hidden above it (`originDepth`, floor semantics; `OriginDepthTests`,
+`bornAtDepth1_hiddenAtTheRealDepth`). The model's doc comment gives the reason for the depths below: they
+keep working when the operator goes deeper. The reason for hiding them above is in
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`: a contact the user is forced
+to add must never reach their real contact list. The chain can't carry this, because a depth below can't
+open its parent's key. So these contacts go under the shared key, and display is decided by lists:
+- **Each depth keeps an origin list:** the IDs of the shared-key contacts created at that depth, sealed
+  under its key. Contacts created at the real depth go on no list.
+- **The rule:** a shared-key contact is shown at a depth unless a depth below it created that contact.
+
+| A contact created at depth 2, viewed at | The rule gives | Today |
+|---|---|---|
+| Depth 0 or 1 | Hidden: depth 2 is below them and created it | Hidden |
+| Depth 2 | Shown: the creating depth is itself, not one below | Shown |
+| Depth 3 and deeper | Shown: the creating depth is above them | Shown |
+
+- **One write per creation.** Creating a contact changes only the creating depth's own list, and only at a
+  duress depth. Real-depth activity never touches a list.
+- **The real depth can apply the rule.** It holds every key below it, so at unlock it reads every list below
+  it and hides what they name.
+- **A surrendered depth sees nothing unexplained.** Every shared-key contact hidden from depth s is on the
+  list of a depth below s, which s can read. A contact created at a duress depth above s is on no list s can
+  read, so it reads as an ordinary contact created at the real depth.
+- **No marker on the row,** so no visible row carries a field a depth can't open.
+- **Lists are rows in the general pool,** padded like contact blobs, not part of the header (requirement 7).
+- **Deletion stays global, as today.** If a duress session only removed a contact from its own view, a
+  readable, intact contact that no list s can see accounts for would show that a depth above still keeps it.
+- **Unchanged:** contacts that predate `originDepth` were backfilled to 0, because nothing recorded which were
+  created under duress. They stay visible at the real depth, as they are today (the "retroactive gap" in the
+  oracle bug doc).
 
 *Why not filler that opens under every depth's key.* Earlier in this section, every row had to open cleanly
 under every depth's key. That isn't needed. Bug 109's tell was a visible row where most fields opened and
@@ -420,6 +453,12 @@ identity, a fake contact shown in place of the hidden one at duress depths, woul
 needs fake key material, since the real public key matches the hidden contact's files in the transport's
 records, and a story the user invents per contact. Across images, the real part also changes while the
 cover never does.
+
+*Why not a list per depth of every contact it shows.* This was the first form of the origin lists.
+Unclassified contacts would be on every depth's list, so adding one at the real depth rewrites one list per
+configured depth. Across repeated images, the number of rows that change together gives the number of
+depths, without any phrase. Kept in the fixed headers, it is worse: the slots that ever change are exactly
+the configured depths. Requirement 7 states the general rule.
 
 *Requirements.*
 1. **Nothing inside a depth names an absolute depth.** `currentDepth`, `visibleThroughDepth`,
@@ -443,15 +482,17 @@ cover never does.
    anything else that names a contact by ID. The model hasn't been swept for these yet.
 6. **Every sealed blob is bound to its row** with an AAD built from the row's `id`, as the 2026-09-26
    requirement above asks. Most of the fields it names are depth stamps, which requirement 1 drops.
+7. **Nothing per depth changes together with the depth count.** Any write that touches one container per
+   configured depth reveals, across repeated images and without any phrase, how many depths exist. That
+   is the number the 32-slot filler arrays were built to hide. Every later part of this design gets
+   checked against this rule. In particular, headers are written only when a depth is created, and
+   per-depth state that changes in use lives in rows in the general pool.
 
 *Open, needs a decision.*
-- **Contacts created at a duress depth.** Today they are visible at the depth they were created at and every
-  depth below it, and hidden above it (`originDepth`, floor). A depth below can't open its parent's key, so
-  they would go under the shared key. That keeps the reason `originDepth`'s doc comment gives (they keep
-  working when the operator goes deeper), but makes them visible at the real depth too. Keeping them hidden
-  there needs a marker the depths above can read and the ones below can't, and a visible contact carrying
-  a field a depth can't open is itself the tell. The doc comment gives no reason for hiding them above
-  their origin.
+- **Creating a depth shows across images.** The new depth's header slot changes from filler to a real
+  header, and its parent's slot gains the new key. Comparing images taken either side of that shows that a
+  depth was created between them, though not how many exist. A slot prepared in advance would need its
+  phrase in advance, and phrases are generated when the depth is set up.
 - **The padding range.** It sets exactly how many hidden contacts can pass in one image. A wide range costs
   storage; a narrow one covers only a few.
 - **The blob sizes** in requirement 4.

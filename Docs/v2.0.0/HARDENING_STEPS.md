@@ -93,11 +93,14 @@ because one contact can be visible at several depths.
 **Proposed 2026-10-15** (spec §2, "Proposed 2026-10-15: storage for per-depth keys"). Not decided. Each
 row is sealed under one key: that of the deepest depth that should see it. Each depth holds the key of the
 depth below it, so every depth above a row's depth can open it, which gives today's "visible at 0…N" from
-the keys alone. Contacts visible at every depth go under a shared key that every depth holds. Rows don't
-need to open cleanly under every depth's key. A row that opens completely or not at all says only "not
-mine", and those rows must be explainable as the depth's own deletions or as padding. The spec lists the
-requirements this brings: no absolute depth numbers inside a depth, one sealed blob per contact padded to
-fixed sizes, and no visible row referring to one the depth can't open (groups become one row per depth).
+the keys alone. Contacts visible at every depth go under a shared key that every depth holds. So do
+contacts created at a duress depth, which stay hidden above that depth as today: each depth lists the
+contacts it created, and a depth hides any listed by a depth below it. Rows don't need to open cleanly
+under every depth's key. A row that opens completely or not at all says only "not mine", and those rows
+must be explainable as the depth's own deletions or as padding. The spec lists the requirements this
+brings: no absolute depth numbers inside a depth, one sealed blob per contact padded to fixed sizes, no
+visible row referring to one the depth can't open (groups become one row per depth), and nothing per depth
+that changes together with the depth count.
 
 **Tracked:** spec §2 (design proposed, not decided); Bug 109.
 
