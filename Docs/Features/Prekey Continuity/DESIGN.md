@@ -2,8 +2,8 @@
 
 **Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stages 1 and 2
 (PRs #94, #97) and Bug 165's fix (PR #100) merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release
-branch; stage 3 (PR #108) merged 2026-10-15 into it; stage 4 built 2026-10-15 on `v2.0.0/prekey-stage-4`, not
-yet merged. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
+branch; stages 3 and 4 (PRs #108, #109) merged 2026-10-15 into it. The refactor is complete; it ships in 2.0.0,
+merged into the release branch before the version number reaches 2.0.0. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
 **Downgrades ruled out by release order** (D6, 2026-10-07). **Seeding at the exchange (§3.2,
