@@ -194,7 +194,9 @@ Invariants carried over from Sweep 4:
 > 2026-10-15). D1 is decided there (its Q-01, 2026-10-15): carried cards
 > are allowed, because the carrier asserts nothing and no trust is granted.
 > Verified introductions, as `Master Feature & Expansion Analysis.md` and the
-> 2026-07-10 ideation pass rule, stay off-limits.
+> 2026-07-10 ideation pass rule, stay off-limits. D2 is decided there too (its
+> Q-02, 2026-10-15): send-capable, since a remote code check proves nothing
+> between people who have never met.
 
 ---
 

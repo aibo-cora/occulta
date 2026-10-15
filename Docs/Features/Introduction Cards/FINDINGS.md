@@ -1,10 +1,10 @@
 # Introduction Cards — Design Findings
 
-**Status:** Proposal. No SPEC. D1 is decided: the carrier route is allowed (Q-01). Both routes depend on D2 (Q-02). Not scoped for a release.
+**Status:** Proposal. No SPEC. D1 is decided: the carrier route is allowed (Q-01). D2 is decided: send-capable (Q-02). Not scoped for a release.
 **Origin:** Design discussion, 2026-10-14. The question raised was whether a contact's *encryption* key could be vouched for, rather than their identity key, so that people we introduce can encrypt to them, marked unverified until they meet. It was assessed against the no-vouching rulings, Sweep 4's trust ladder and the shipped receive path, then reshaped into owner-issued, single-use cards.
 **Relation to earlier plans:** this is a worked design for Sweep 4 components 1 and 4 (`Friction/USER_ENGAGEMENT_FRICTION.md:284`). It replaces component 1's card and recasts component 4, so the mutual contact carries a card and asserts nothing. Every earlier plan it touches is listed in [Relationship to earlier plans](#relationship-to-earlier-plans), and each one points back here.
 **Decided so far (2026-10-14):** the carrier is never named on the recipient's phone (Q-07). A card may reach its recipient directly or through any number of carriers, and the issuer chooses a named or an open card when creating it (§4). Two ways of recording the route were considered and not adopted ([Considered and not adopted](#considered-and-not-adopted)).
-**Decided 2026-10-15:** the carrier route is allowed, because it grants no trust (Q-01). One "Not verified" badge for every route, with no route text and no stored route kind (Q-07). For a Not verified contact the secrecy indicator drops its green and the trust line sits above it (Q-09).
+**Decided 2026-10-15:** the carrier route is allowed, because it grants no trust (Q-01). A card contact can send before meeting (Q-02). One "Not verified" badge for every route, with no route text and no stored route kind (Q-07). For a Not verified contact the secrecy indicator drops its green and the trust line sits above it (Q-09).
 
 Names used below: **Bob** issues a card. **Carol** receives it and has never met Bob. **Alice** is a verified contact of Bob's who may carry the card. **Dave** is a later carrier whom Bob may not know.
 
@@ -321,6 +321,13 @@ The two off-limits entries now say that carried cards are outside them, and that
 
 This design assumes send-capable, with W-05 and W-06 carrying the risk. Import-only would require a remote SAS (the Confirmed rung, `Remote Key Exchange/FINDINGS.md`) before the first send. That removes the first-contact swap risk but loses the asynchronous first message. Still open.
 
+**Decided 2026-10-15: send-capable.** For cards, import-only has no purpose; it didn't lose a trade-off. D2 came from Sweep 4's multi-use contact card, where it means "save the long-term key now, and send once a code is compared on a call". That works between people who know each other's voices. For a card:
+
+- **The remote check proves nothing.** Carol has never heard Bob's voice. Whoever swapped the card can take the call, and the codes match, because the key really is theirs.
+- **Waiting to meet makes the card pointless.** The UWB ceremony exchanges the real keys anyway.
+
+The risk is carried by W-05, W-06 and W-07, as designed.
+
 ### Q-03 · Duress (open, needs a decision)
 
 The shipped rule says no bundle is rejected because of the current depth, and an unrecognised sender fails the same way at every depth (`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, final design 2026-08-08). Applied to cards:
@@ -403,7 +410,7 @@ The two modes are decided (§4). These details are not:
 | `Friction/USER_ENGAGEMENT_FRICTION.md:284`, Sweep 4 component 1 | Multi-use contact card: long-term key + signed prekey batch, with static prekeys | Replaced by a single-use card with its own key and a one-time prekey (D-05) |
 | Same, component 3 (gossip audit) | Detects a first-contact swap as the graph fills in | Can't check card keys; detection waits for the meeting |
 | Same, component 4 (introductions) | A verified mutual forwards both keys, signed; a product-owner call | Recast: contacts pass the issuer's card on, through any number of hops, asserting nothing and leaving no route record (D-04, §4). Allowed under D1 (Q-01) |
-| Same, second open decision (D2) | Send-capable or import-only | Still open (Q-02); this design assumes send-capable |
+| Same, second open decision (D2) | Send-capable or import-only | Decided for cards 2026-10-15: send-capable (Q-02) |
 | Same, H5 | Key-in-bundle rejected; warning fatigue and downgrade risk | Not key-in-bundle (D-04); the warning rules follow H5 |
 | `Friction/CONSUMER_OPENING_AND_CEREMONY.md` §6–7 | Introduced and Unverified rungs; D1–D3 | Both rungs become one Not verified badge, with no route text (§4, Q-07) |
 | [Remote Key Exchange/FINDINGS.md](../Remote%20Key%20Exchange/FINDINGS.md) D-06, Q-01, Q-04, Q-05 | No record of how a key arrived; two-tier claims; hard block for trustees and payment cards; introductions adjacent to vouching | The card key makes the block the default (§1, §6); Q-01 applies unchanged; Q-05 is answered here |
@@ -439,7 +446,7 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
 **Before any protocol work:**
 
 - ~~Answer Q-01 and align the four docs that disagree on D1.~~ Done 2026-10-15.
-- Answer Q-02 (D2).
+- ~~Answer Q-02 (D2).~~ Done 2026-10-15: send-capable.
 - Rule on Q-03 with the same discipline applied to `originDepth`.
 - Confirm Q-08.
 

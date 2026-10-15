@@ -366,8 +366,10 @@ carrier-blind; the choice only sets the authenticity floor.
 > each other. It recasts component 4 so contacts pass the owner's card on,
 > through any number of hops, asserting nothing and leaving no record of the
 > route. D1 is decided there (its Q-01, 2026-10-15): the carrier route is
-> allowed, since it grants no trust. Both routes still depend on the send-capable / import-only
-> decision above. Component 3 can't check card keys, so a swapped card is
+> allowed, since it grants no trust. D2 is decided there too (its Q-02,
+> 2026-10-15): send-capable. Import-only has no purpose for a single-use card,
+> because a code on a call proves nothing between people who have never met.
+> Component 3 can't check card keys, so a swapped card is
 > caught only at the in-person meeting.
 
 Evaluated and shelved: PAKE / wormhole codes (interactive, and CryptoKit
