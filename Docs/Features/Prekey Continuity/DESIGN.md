@@ -2,7 +2,7 @@
 
 **Status:** Proposed 2026-10-06; every decision taken except D7, deferred. Stage 0 merged (PR #87); stages 1 and 2
 (PRs #94, #97) and Bug 165's fix (PR #100) merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release
-branch; stages 3–4 not started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
+branch; stage 3 built 2026-10-15 on `v2.0.0/prekey-stage-3`, not yet merged; stage 4 not started. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
 **Downgrades ruled out by release order** (D6, 2026-10-07). **Seeding at the exchange (§3.2,
@@ -375,14 +375,32 @@ so a co-recipient can rewrite a group bundle's body behind the sender's genuine 
   section shares.
 - **The slot signature required for a challenge,** on a forward-secret slot, whatever tier is recorded.
   `openGroup` accepts an unsigned forward-secret slot from a sender with no tier recorded; every build that sends
-  challenges in group format signs.
+  challenges in group format signs. **Built 2026-10-15**, in the prefixed form only (below).
 - **The one-to-one path unchanged.** A challenge outside the group format keeps `openIdentityBundle`'s long-term
   reopening. `decryptSealed`'s forward-secret bundles carry no sender binding (finding #8's residual), so a
-  challenge it decrypted is never trusted as it stands.
+  challenge it decrypted is never trusted as it stands. **Built 2026-10-15:** see `Authenticated` below.
 - **Bug 166's fix:** a response shows a result only if it names a challenge still waiting for that contact.
   **Built 2026-10-13** (PR #102).
 - **One send path.** Challenges go through `encryptBundle`, so their slot padding, prekey batch and shard fields
-  match a message's, and D5 holds: no piece operations or manifests ride them.
+  match a message's, and D5 holds: no piece operations or manifests ride them. **Built 2026-10-15**:
+  `encryptBundle` refuses a challenge with other content, or to a contact below the tier.
+
+**Review of the build plan, 2026-10-14.** Two changes, both built 2026-10-15:
+- **The trusted path can't be fed anything else.** `openGroup` returns a challenge or response as
+  `IdentityChallenge.Authenticated`, whose initializer is private to `Contact+Manager.swift`, and runs the
+  challenge-only checks (digest, signature) where it builds one. `Coordinator.handleAuthenticatedChallenge` takes
+  only that type, so an envelope from `decryptSealed` can't reach the path that skips the long-term reopening;
+  it goes to `handleInboundChallenge(bundle:…)`, which reopens.
+- **The prefixed signature only.** A group-format challenge comes from a 2.0.0 build, which signs the prefixed
+  form for any recipient at 1.10.2 or later, so `verifySenderEphemeralSignature`'s bare arm is refused for
+  challenges (`acceptsBareForm: false`).
+
+Also checked then and found sound: a sender picks the format by the recipient's recorded tier, which only rises;
+old-format challenges stay accepted from contacts at the tier, since our record can lag their update, and they
+need a long-term key as today; a replay re-prompts only within the hour's window, as today; challenge files are
+named like message files, sent messages aren't stored, and prekey records are a fixed size, so a challenge send
+leaves the same traces as a message. Refusing a challenge in a bundle with more than one slot was rejected: the
+slot list isn't under the digest, so anyone handling the file could add one and get the challenge refused.
 
 Still open, needs a decision: challenges are recognisable by size whatever key seals them (Bug 167), so the
 format change alone doesn't stop them standing out.
@@ -814,6 +832,10 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
 
 **Stage 3 — identity challenges (§3.4).** D3 is decided (group format at the new tier). The tier exists:
 `.bodyDigestCapable`, from Bug 165's fix. The 2026-10-12 review's requirements are in §3.4.
+- *Commits (built 2026-10-15, `v2.0.0/prekey-stage-3`):* receiving (`IdentityChallenge.Authenticated` from
+  `openGroup`, the prefixed signature required on a forward-secret slot, the manager's checks shared by both
+  paths); sending (the coordinator picks the format by tier, `encryptBundle(identityChallenge:)`, `createChallenge`
+  and `respond` take a sealing closure); Bug 155 (`decryptSealed` makes no batch for a challenge); docs.
 - *Migration:* none. A challenge already in flight uses the old path, which stays.
 - *Tests:* a challenge and its response to a new-tier contact go in group format and verify end to end; with
   no prekeys held for the contact, they still go through, on the long-term slot; to an older contact,
@@ -821,7 +843,12 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   from a contact with no tier recorded; a long-term challenge from an older contact creates no prekey batch (Bug
   155). From the 2026-10-12 review (§3.4): a challenge in a body rewritten by another recipient is rejected (Bug
   165); a challenge in a one-to-one forward-secret bundle is rejected; a reopened response shows nothing, and one
-  naming our challenge with a bad signature still fails (Bug 166).
+  naming our challenge with a bad signature still fails (Bug 166). Built in `IdentityChallengeGroupFormatTests`,
+  with: our answer goes as a message and passes on the challenger's phone; a challenge goes to the last-resort key
+  once the one-time keys are out; a long-term challenge from a contact recorded at the tier is still accepted;
+  `encryptBundle` refuses a challenge with other content or below the tier, before taking a key; the checks after
+  opening still run on an authenticated challenge. The forward-secret cases need a prekey this device holds, so
+  `IdentityChallengeGroupForwardSecretTests` is Enclave-gated.
 
 **Stage 4 — refill and append (§3.3).** D4 is decided (15/5).
 - *Migration:* none beyond stage 1's.

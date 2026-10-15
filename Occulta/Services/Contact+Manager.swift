@@ -732,6 +732,12 @@ extension ContactManager {
         case trusteeLacksQuantumMaterial
         case groupIDMissing
         case groupHasNoMembers
+        /// An identity challenge or response travels alone: no basket, piece operations or manifest with it
+        /// (prekey continuity §3.4, D5).
+        case identityChallengeNotAlone
+        /// An identity challenge or response in group format, to a contact below `.bodyDigestCapable`, whose build
+        /// would refuse it. Those get the long-term format (prekey continuity §3.4).
+        case identityChallengeBelowTier
     }
 }
 
@@ -1012,7 +1018,10 @@ extension ContactManager {
     ///
     /// **< 1.9.0 → single-recipient legacy format (`seal(message:contactPrekey:...)`)**
     ///   - Shard ops on this path skip prekey pop and use longTermFallback (no FS mandate).
-    ///   - Identity challenge sends are always on this path regardless of version.
+    ///
+    /// ## Identity challenges (prekey continuity §3.4)
+    /// `identityChallenge` sends a challenge or response like a message, to a contact at `.bodyDigestCapable`
+    /// only: below it, `IdentityChallenge.Manager` seals the long-term format itself. It travels alone.
     ///
     /// ## Pending batch delivery guarantee (message mode)
     /// A pending batch is attached to every message until the contact sends back
@@ -1022,9 +1031,15 @@ extension ContactManager {
         basket: Basket? = nil,
         for identifier: String,
         shardOperations: [OccultaBundle.ShardOperation]? = nil,
-        custodyManifest: [UUID]? = nil
+        custodyManifest: [UUID]? = nil,
+        identityChallenge: IdentityChallengeEnvelope? = nil
     ) throws -> Data {
-        guard basket != nil || shardOperations != nil || custodyManifest != nil else { throw Errors.messageHasNoData }
+        guard basket != nil || shardOperations != nil || custodyManifest != nil || identityChallenge != nil else {
+            throw Errors.messageHasNoData
+        }
+        guard identityChallenge == nil || (basket == nil && shardOperations == nil && custodyManifest == nil) else {
+            throw Errors.identityChallengeNotAlone
+        }
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
@@ -1062,6 +1077,10 @@ extension ContactManager {
         // capability case to seal() would embed its own raw value in the AAD while
         // the receiver reconstructs "v4" → authentication failure.
         let wireVersion   = targetVersion.supportsGroups ? OccultaBundle.Version.v4 : targetVersion
+        // Before any prekey is taken below.
+        if identityChallenge != nil, !targetVersion.isAtLeast(.bodyDigestCapable) {
+            throw Errors.identityChallengeBelowTier
+        }
 
         // Pop a prekey for forward secrecy.
         // Message sends always attempt FS; shard sends on the group path require it.
@@ -1094,6 +1113,12 @@ extension ContactManager {
             messageData = wireVersion == .v4
                 ? try WireHandle.encode(basket: basket)
                 : try JSONEncoder().encode(basket)
+        } else if let identityChallenge {
+            // The same text the long-term format carries, for the same size. Nothing at this tier shows it: the
+            // receiver routes on the envelope (`bugs.md` Bug 167 holds the size question).
+            messageData = Data((identityChallenge.kind == .challenge
+                ? IdentityChallenge.challengeFallbackMessage
+                : IdentityChallenge.responseFallbackMessage).utf8)
         } else {
             messageData = Data("Occulta vault operation. Please update your app.".utf8)
         }
@@ -1111,12 +1136,13 @@ extension ContactManager {
             let onFallback       = hasShardContent && contactPrekey == nil
             // Shard-only bundles (basket == nil) use Data() as a sentinel so the
             // receiver can detect "no basket" without trying to parse the payload.
-            let groupMessage = basket != nil ? messageData : Data()
+            let groupMessage = basket != nil || identityChallenge != nil ? messageData : Data()
             let sealedPayload = OccultaBundle.SealedPayload(
-                message:         groupMessage,
-                shardOperations: onFallback ? nil : shardOperations,
-                custodyManifest: onFallback ? nil : custodyManifest,
-                appVersion:      Bundle.main.appVersion
+                message:           groupMessage,
+                identityChallenge: identityChallenge,
+                shardOperations:   onFallback ? nil : shardOperations,
+                custodyManifest:   onFallback ? nil : custodyManifest,
+                appVersion:        Bundle.main.appVersion
             )
             let bundle = try Manager.Crypto().seal(
                 sealedPayload: sealedPayload,
@@ -1628,7 +1654,14 @@ extension ContactManager {
         // ── 5. A new batch if the sender is out of our keys ──────────────
         // After every check that can throw (`bugs.md` Bug 159). Clearing the pending batch is no
         // longer here: using a key from it already did, at consumption (Bug 157).
-        try self.replenish(after: used, into: prekeys)
+        //
+        // Not for an identity challenge or response. An older contact seals those with the long-term key
+        // whatever keys of ours they hold, so it says nothing about their stock, and the batch would replace
+        // keys they haven't used (`bugs.md` Bug 155). A contact at `.bodyDigestCapable` sends them in group
+        // format, where a long-term slot does mean they're out, and `openGroup` makes the batch.
+        if decodedPayload.identityChallenge == nil {
+            try self.replenish(after: used, into: prekeys)
+        }
 
         // ── 6. Persist ───────────────────────────────────────────────────
         try self.store(prekeys.record, for: sender)
@@ -1776,7 +1809,8 @@ extension ContactManager {
         ownerID:                  String,
         groupID:                  UUID,
         recipientShardOperations: [OccultaBundle.ShardOperation]?,
-        recipientCustodyManifest: [UUID]?
+        recipientCustodyManifest: [UUID]?,
+        challenge:                IdentityChallenge.Authenticated?
     ) {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
@@ -1870,10 +1904,32 @@ extension ContactManager {
         let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
         let decoded     = try WireHandle.decode(payload: payloadData)
 
-        // An identity challenge in a group body always needs the digest: no sender puts one there without it
-        // (prekey continuity §3.4), and an older sender's group bundle is exactly what a recipient would rewrite.
-        if decoded.identityChallenge != nil, recipientPayload.bodyDigest == nil {
-            throw GroupDecryptError.missingBodyDigest
+        // ── 5.1. An identity challenge or response: authenticated here, or not at all ──
+        // Only a 2.0.0 sender puts one in a group body (prekey continuity §3.4), so it must carry what every such
+        // sender sends: the body digest, since an older sender's group bundle is exactly what a recipient would
+        // rewrite (`bugs.md` Bug 165); and on a forward-secret slot, the sender's signature over its ephemeral key
+        // in the prefixed form, whatever tier is recorded. Unsigned is refused here even from a contact with no tier
+        // recorded, which the gate in 3.5 lets through for messages. `IdentityChallenge.Authenticated` can only be
+        // built in this file, so nothing else can hand the coordinator an envelope as if it had passed these checks.
+        let challenge: IdentityChallenge.Authenticated?
+        if let identityChallenge = decoded.identityChallenge {
+            guard recipientPayload.bodyDigest != nil else { throw GroupDecryptError.missingBodyDigest }
+            if isFSMode {
+                // The signature verified in `findAndOpenRecipientSlot` against our slot's ephemeral key, in either
+                // form. Our slot isn't reported back, so look for a slot whose key it verifies in the prefixed
+                // form: only ours can, since the signature is over that key.
+                guard let signature = recipientPayload.senderEphemeralSignature,
+                      envelope.recipients.contains(where: {
+                          cryptoOps.verifySenderEphemeralSignature(
+                              signature, ephemeralPublicKey: $0.secrecyContext.ephemeralPublicKey,
+                              senderPublicKey: senderPublicKey, acceptsBareForm: false
+                          )
+                      })
+                else { throw GroupDecryptError.missingSenderEphemeralSignature }
+            }
+            challenge = IdentityChallenge.Authenticated(identityChallenge)
+        } else {
+            challenge = nil
         }
 
         // A body claiming a build that always sends the digest, without one, isn't from that build: it's a rewrite
@@ -1954,7 +2010,23 @@ extension ContactManager {
             sender.identifier,
             groupID,
             recipOps.isEmpty ? nil : recipOps,
-            recipManifest
+            recipManifest,
+            challenge
         )
+    }
+}
+
+extension IdentityChallenge {
+    /// An identity challenge or response that arrived in a group body and passed `openGroup`'s checks: its slot
+    /// opened, the body matches the slot's digest, and a forward-secret slot carries the sender's signature in the
+    /// prefixed form. `Coordinator.handleAuthenticatedChallenge` trusts it without reopening the bundle with the
+    /// long-term key, so it's built nowhere but `openGroup`: the initializer is private to this file
+    /// (prekey continuity §3.4).
+    struct Authenticated {
+        let envelope: IdentityChallengeEnvelope
+
+        fileprivate init(_ envelope: IdentityChallengeEnvelope) {
+            self.envelope = envelope
+        }
     }
 }

@@ -8,12 +8,17 @@
 //                  → respond(to:)                                                        → outbound OccultaBundle
 //    3. Challenger → verifyResponse(bundle:senderKey:senderQuantum:senderID:)           → VerificationResult
 //
-//  Only the long-term key derivation path is used — identity verification must
-//  never fail because of prekey exhaustion.
+//  Two formats (prekey continuity §3.4). To a contact at `.bodyDigestCapable`, a
+//  challenge or response goes as a group bundle through `ContactManager.encryptBundle`,
+//  like a message: a one-time key, else the contact's last-resort key, else the
+//  long-term key, so verification never fails because of prekey exhaustion. The
+//  caller picks that path with the `seal:` variants of `createChallenge` and
+//  `respond`; it arrives through `ContactManager.openGroup` as
+//  `IdentityChallenge.Authenticated`, and the `envelope:` variants check it.
 //
-//  ⚠️ Wire compatibility: challenge bundles ride on `Version.v3fs` +
-//  `Mode.longTermFallback` — values every shipped Occulta build already decodes.
-//  Routing to this manager happens via `SealedPayload.identityChallenge`
+//  ⚠️ To an older contact, the long-term format: challenge bundles ride on
+//  `Version.v3fs` + `Mode.longTermFallback` — values every shipped Occulta build
+//  already decodes. Routing to this manager happens via `SealedPayload.identityChallenge`
 //  *after* decryption, so old builds that don't know about identity challenges
 //  simply render the human-readable fallback string in `SealedPayload.message`.
 //
@@ -117,13 +122,32 @@ extension IdentityChallenge {
         ///
         /// The bundle rides on `Version.v3fs` + `Mode.longTermFallback` — values
         /// every shipped Occulta build decodes. Routing discrimination lives in
-        /// `SealedPayload.identityChallenge` inside the encrypted envelope.
+        /// `SealedPayload.identityChallenge` inside the encrypted envelope. For a
+        /// contact at `.bodyDigestCapable`, use `createChallenge(contactID:contextNote:seal:)`
+        /// with `ContactManager.encryptBundle` instead (prekey continuity §3.4).
         func createChallenge(
             recipientKey:    Data,
             recipientQuantum: QuantumKeyMaterial?,
             contactID:       String,
             contextNote:     String? = nil
         ) throws -> OccultaBundle {
+            try self.createChallenge(contactID: contactID, contextNote: contextNote) { envelope in
+                try self.sealIdentityBundle(
+                    envelope:        envelope,
+                    fallbackMessage: IdentityChallenge.challengeFallbackMessage,
+                    recipientKey:    recipientKey,
+                    quantumMaterial: recipientQuantum
+                )
+            }
+        }
+
+        /// Build a challenge and hand its envelope to `seal`, which picks the format. Same side effects as above:
+        /// the challenge is registered only once `seal` returns.
+        func createChallenge<Sealed>(
+            contactID:   String,
+            contextNote: String? = nil,
+            seal:        (IdentityChallengeEnvelope) throws -> Sealed
+        ) throws -> Sealed {
             // 0. Rate limit first — avoid wasting SE work on a request we'll reject.
             guard !self.store.hasOutstanding(for: contactID) else {
                 throw ManagerError.rateLimited
@@ -169,13 +193,7 @@ extension IdentityChallenge {
                 payload:     payload.encoded(),
                 contextNote: sanitizedNote
             )
-            let bundle = try self.sealIdentityBundle(
-                envelope:        envelope,
-                fallbackMessage: IdentityChallenge.challengeFallbackMessage,
-                ourPublicKey:    ourPublicKey,
-                recipientKey:    recipientKey,
-                quantumMaterial: recipientQuantum
-            )
+            let sealed = try seal(envelope)
 
             // 4. Remember this challenge until the response arrives or expires.
             //    Done LAST so a seal failure doesn't leave a ghost entry.
@@ -188,7 +206,7 @@ extension IdentityChallenge {
                 )
             )
 
-            return bundle
+            return sealed
         }
 
         // MARK: Phase 2 — responder decrypts and (later) signs
@@ -216,6 +234,27 @@ extension IdentityChallenge {
                 peerQuantum:   senderQuantum,
                 expecting:     .challenge
             )
+            return try self.decryptChallenge(
+                envelope:      envelope,
+                senderKey:     senderKey,
+                senderQuantum: senderQuantum,
+                senderID:      senderID,
+                senderName:    senderName
+            )
+        }
+
+        /// Validate a challenge whose bundle is already open and authenticated: one that arrived in a group body
+        /// and passed `ContactManager.openGroup` (prekey continuity §3.4). Every check after opening is the same as
+        /// for a bundle; only the long-term reopening is skipped. Take `IdentityChallenge.Authenticated` at the call
+        /// site, never an envelope from anywhere else.
+        func decryptChallenge(
+            envelope:      IdentityChallengeEnvelope,
+            senderKey:     Data,
+            senderQuantum: QuantumKeyMaterial?,
+            senderID:      String,
+            senderName:    String
+        ) throws -> PendingApproval {
+            guard envelope.kind == .challenge else { throw ManagerError.malformedBundle }
             let payloadBytes = envelope.payload
             let note         = envelope.contextNote
 
@@ -275,13 +314,19 @@ extension IdentityChallenge {
         /// Secure Enclave access control. The caller is responsible for having
         /// surfaced the user-approval UI before invoking this.
         func respond(to pending: PendingApproval) throws -> OccultaBundle {
-            let ourPublicKey: Data
-            do {
-                ourPublicKey = try self.crypto.keyManager.retrieveIdentity()
-            } catch {
-                throw ManagerError.noIdentity
+            try self.respond(to: pending) { envelope in
+                try self.sealIdentityBundle(
+                    envelope:        envelope,
+                    fallbackMessage: IdentityChallenge.responseFallbackMessage,
+                    recipientKey:    pending.challengerPublicKey,
+                    quantumMaterial: pending.challengerQuantum
+                )
             }
+        }
 
+        /// Sign the approved challenge and hand the response envelope to `seal`, which picks the format: for a
+        /// challenger at `.bodyDigestCapable`, `ContactManager.encryptBundle` (prekey continuity §3.4).
+        func respond<Sealed>(to pending: PendingApproval, seal: (IdentityChallengeEnvelope) throws -> Sealed) throws -> Sealed {
             let signedData = Occulta.Manager.Crypto.buildSignedData(
                 nonce:                 pending.payload.nonce,
                 timestamp:             pending.payload.timestamp,
@@ -293,14 +338,7 @@ extension IdentityChallenge {
 
             // `.response(payload:)` forces contextNote == nil — the rule that
             // responses never carry a note lives inside the factory, not here.
-            let envelope = IdentityChallengeEnvelope.response(payload: response.encoded())
-            return try self.sealIdentityBundle(
-                envelope:        envelope,
-                fallbackMessage: IdentityChallenge.responseFallbackMessage,
-                ourPublicKey:    ourPublicKey,
-                recipientKey:    pending.challengerPublicKey,
-                quantumMaterial: pending.challengerQuantum
-            )
+            return try seal(IdentityChallengeEnvelope.response(payload: response.encoded()))
         }
 
         // MARK: Phase 3 — challenger verifies the response
@@ -326,6 +364,17 @@ extension IdentityChallenge {
                 peerQuantum:   senderQuantum,
                 expecting:     .response
             )
+            return try self.verifyResponse(envelope: envelope, senderKey: senderKey, senderID: senderID)
+        }
+
+        /// Verify a response whose bundle is already open and authenticated, as `decryptChallenge(envelope:…)`
+        /// describes. The same checks as for a bundle, after the long-term reopening.
+        func verifyResponse(
+            envelope:  IdentityChallengeEnvelope,
+            senderKey: Data,
+            senderID:  String
+        ) throws -> VerificationResult {
+            guard envelope.kind == .response else { throw ManagerError.malformedBundle }
 
             let response: ResponsePayload
             do {
@@ -409,10 +458,15 @@ extension IdentityChallenge {
         private func sealIdentityBundle(
             envelope:        IdentityChallengeEnvelope,
             fallbackMessage: String,
-            ourPublicKey:    Data,
             recipientKey:    Data,
             quantumMaterial: QuantumKeyMaterial? = nil
         ) throws -> OccultaBundle {
+            let ourPublicKey: Data
+            do {
+                ourPublicKey = try self.crypto.keyManager.retrieveIdentity()
+            } catch {
+                throw ManagerError.noIdentity
+            }
             let sealed = OccultaBundle.SealedPayload(
                 message:           Data(fallbackMessage.utf8),
                 prekeyBatch:       nil,

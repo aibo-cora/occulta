@@ -21,7 +21,7 @@ struct OccultaApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     @State private var contactManager: ContactManager
-    @State private var identityChallenge = IdentityChallenge.Coordinator()
+    @State private var identityChallenge: IdentityChallenge.Coordinator
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var security: Manager.Security
@@ -95,6 +95,7 @@ struct OccultaApp: App {
 
         self.sharedModelContainer = sharedModelContainer
         self.contactManager       = contactManager
+        self.identityChallenge    = IdentityChallenge.Coordinator(contactManager: contactManager)
         self.vaultManager         = vaultManager
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
@@ -1019,18 +1020,15 @@ struct RootView: View {
                     // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
                     // (messages, shards, custody ops) use this path. Shard-only bundles signal
                     // "no basket" via an empty message field.
-                    let (sealed, ownerID, _, recipShardOps, recipManifest) =
+                    let (sealed, ownerID, _, recipShardOps, recipManifest, challenge) =
                         try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version
 
-                    // Identity-challenge traffic inside a group bundle.
-                    if let identityEnvelope = sealed.identityChallenge {
+                    // Identity-challenge traffic inside a group bundle, already authenticated by `openGroup`
+                    // (prekey continuity §3.4). It sets `challenge` whenever the body carries one.
+                    if let challenge {
                         if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                            _ = self.identityChallenge.handleInboundChallenge(
-                                bundle:   bundle,
-                                envelope: identityEnvelope,
-                                sender:   sender
-                            )
+                            _ = self.identityChallenge.handleAuthenticatedChallenge(challenge, sender: sender)
                         }
                         return nil
                     }
