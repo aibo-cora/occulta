@@ -439,6 +439,10 @@ The user knows how they got a card. They can add it to the contact's notes if th
 
 This is the trade in §1. Recommendation: card key. It keeps the trust graph's meaning, cards unlinkable, and `#22`'s premise intact. It costs per-contact own keys throughout the send path, and the chance to catch a swapped card before meeting.
 
+**Decided 2026-10-15: card key.**
+- **The send-path cost** is narrowed by contact-first storage (Q-05) to one check per send: if the contact's card field holds a card conversation, sign and seal with my card key, otherwise with my identity key. It still touches every send path, which makes it the largest engineering item.
+- **A Not verified contact shows no fingerprint.** A card-key fingerprint means nothing to compare. Showing one would suggest it can be checked, and the only remote check would be a code compared on a call, which proves nothing between people who have never met (Q-02).
+
 ### Q-09 · Secrecy indicator colour for Not verified contacts
 
 The `SecrecyIndicator`'s forward-secret state is green (`occultaVerified`), and Sweep 4 rules out green for unverified contacts. Recommendation: for Not verified contacts, keep the label and description, drop the green, and show the trust line above it.
@@ -515,7 +519,7 @@ The two modes are decided (§4). These details are not:
 - the contact stays Not verified until a UWB exchange;
 - the warnings above appear at every point where something can go wrong.
 
-**Q-01 and Q-03 are decided.** Q-08 (card key) settles most of what's left of the engineering.
+**Q-01, Q-03 and Q-08 are decided.** The largest engineering item is the per-contact own key in the send path (Q-08).
 
 The direct route is also the better form of Sweep 4's contact card (D-05), with or without a carrier.
 
@@ -528,7 +532,7 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
 - ~~Answer Q-01 and align the four docs that disagree on D1.~~ Done 2026-10-15.
 - ~~Answer Q-02 (D2).~~ Done 2026-10-15: send-capable.
 - ~~Rule on Q-03 with the same discipline applied to `originDepth`.~~ Done 2026-10-15.
-- Confirm Q-08.
+- ~~Confirm Q-08.~~ Done 2026-10-15: card key.
 
 **If pursued:**
 
