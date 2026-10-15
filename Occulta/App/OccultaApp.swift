@@ -21,7 +21,7 @@ struct OccultaApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     @State private var contactManager: ContactManager
-    @State private var identityChallenge = IdentityChallenge.Coordinator()
+    @State private var identityChallenge: IdentityChallenge.Coordinator
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var security: Manager.Security
@@ -95,6 +95,7 @@ struct OccultaApp: App {
 
         self.sharedModelContainer = sharedModelContainer
         self.contactManager       = contactManager
+        self.identityChallenge    = IdentityChallenge.Coordinator(contactManager: contactManager)
         self.vaultManager         = vaultManager
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())

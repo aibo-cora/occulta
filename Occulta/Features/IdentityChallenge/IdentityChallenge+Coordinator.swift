@@ -81,12 +81,15 @@ extension IdentityChallenge {
         // MARK: - Private
 
         private let manager: Manager
+        /// Sends to a contact at `.bodyDigestCapable` in group format, as a message (prekey continuity §3.4).
+        private let contactManager: ContactManager
 
-        init() {
+        init(contactManager: ContactManager) {
             let store   = OutstandingChallengeStore()
             let crypto  = Occulta.Manager.Crypto()
             self.store   = store
             self.manager = Manager(crypto: crypto, store: store)
+            self.contactManager = contactManager
             // Sweep stale entries on init — matches app-launch cleanup in the spec.
             store.removeExpired()
         }
@@ -94,33 +97,42 @@ extension IdentityChallenge {
         // MARK: - Outbound: create challenge
 
         /// Build a challenge bundle for `contact`, write it to a temp `.occ`
-        /// file, and stage it for sharing via `ShareActivityView`.
+        /// file, and stage it for sharing via `ShareActivityView`. In group format,
+        /// as a message, to a contact at `.bodyDigestCapable`; in the long-term
+        /// format to anyone older (prekey continuity §3.4).
         func createChallenge(
             for contact: Contact.Profile,
             contextNote: String?
         ) throws {
             let crypto = Occulta.Manager.Crypto()
-            guard
-                let keyRecord    = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
-                let recipientKey = try? crypto.decrypt(data: keyRecord.material)
-            else {
-                throw IdentityChallenge.ManagerError.noIdentity
-            }
-            let quantum: QuantumKeyMaterial? = {
+            let encoded: Data
+            if Self.takesGroupFormat(contact, using: crypto) {
+                encoded = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote) { envelope in
+                    try self.contactManager.encryptBundle(for: contact.identifier, identityChallenge: envelope)
+                }
+            } else {
                 guard
-                    let enc = keyRecord.quantumKeyMaterialEncrypted,
-                    let dec = try? crypto.decrypt(data: enc)
-                else { return nil }
-                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
-            }()
+                    let keyRecord    = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+                    let recipientKey = try? crypto.decrypt(data: keyRecord.material)
+                else {
+                    throw IdentityChallenge.ManagerError.noIdentity
+                }
+                let quantum: QuantumKeyMaterial? = {
+                    guard
+                        let enc = keyRecord.quantumKeyMaterialEncrypted,
+                        let dec = try? crypto.decrypt(data: enc)
+                    else { return nil }
+                    return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
+                }()
+                encoded = try self.manager.createChallenge(
+                    recipientKey:     recipientKey,
+                    recipientQuantum: quantum,
+                    contactID:        contact.identifier,
+                    contextNote:      contextNote
+                ).encoded()
+            }
             let displayName = contact.givenName.decrypt()
-            let bundle = try self.manager.createChallenge(
-                recipientKey:     recipientKey,
-                recipientQuantum: quantum,
-                contactID:        contact.identifier,
-                contextNote:      contextNote
-            )
-            let url = try Self.writeOCC(bundle.encoded(), kind: "challenge")
+            let url = try Self.writeOCC(encoded, kind: "challenge")
             self.outboundShare = OutboundShare(
                 url:         url,
                 contactID:   contact.identifier,
@@ -273,8 +285,16 @@ extension IdentityChallenge {
                     self.incomingChallenge = nil
                     guard authenticated else { return }
                     do {
-                        let bundle = try self.manager.respond(to: pending)
-                        let url    = try Self.writeOCC(bundle.encoded(), kind: "response")
+                        let encoded: Data
+                        if let challenger = try? self.contactManager.fetchContact(by: pending.challengerID),
+                           Self.takesGroupFormat(challenger, using: Occulta.Manager.Crypto()) {
+                            encoded = try self.manager.respond(to: pending) { envelope in
+                                try self.contactManager.encryptBundle(for: pending.challengerID, identityChallenge: envelope)
+                            }
+                        } else {
+                            encoded = try self.manager.respond(to: pending).encoded()
+                        }
+                        let url    = try Self.writeOCC(encoded, kind: "response")
                         self.outboundShare = OutboundShare(
                             url:         url,
                             contactID:   pending.challengerID,
@@ -311,6 +331,13 @@ extension IdentityChallenge {
         }
 
         // MARK: - Helpers
+
+        /// Whether `contact`'s build accepts a challenge or response in group format: recorded at
+        /// `.bodyDigestCapable`, which only rises. Below it, or with a stranded marker, the long-term format, which
+        /// every build reads (prekey continuity §3.4).
+        private static func takesGroupFormat(_ contact: Contact.Profile, using crypto: Occulta.Manager.Crypto) -> Bool {
+            ContactManager.resolveTargetVersion(for: contact, using: crypto).isAtLeast(.bodyDigestCapable)
+        }
 
         /// Write bundle bytes to a temp `.occ` file ready for share sheet.
         private static func writeOCC(_ data: Data, kind: String) throws -> URL {

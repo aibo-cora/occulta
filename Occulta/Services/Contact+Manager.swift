@@ -732,6 +732,12 @@ extension ContactManager {
         case trusteeLacksQuantumMaterial
         case groupIDMissing
         case groupHasNoMembers
+        /// An identity challenge or response travels alone: no basket, piece operations or manifest with it
+        /// (prekey continuity §3.4, D5).
+        case identityChallengeNotAlone
+        /// An identity challenge or response in group format, to a contact below `.bodyDigestCapable`, whose build
+        /// would refuse it. Those get the long-term format (prekey continuity §3.4).
+        case identityChallengeBelowTier
     }
 }
 
@@ -1012,7 +1018,10 @@ extension ContactManager {
     ///
     /// **< 1.9.0 → single-recipient legacy format (`seal(message:contactPrekey:...)`)**
     ///   - Shard ops on this path skip prekey pop and use longTermFallback (no FS mandate).
-    ///   - Identity challenge sends are always on this path regardless of version.
+    ///
+    /// ## Identity challenges (prekey continuity §3.4)
+    /// `identityChallenge` sends a challenge or response like a message, to a contact at `.bodyDigestCapable`
+    /// only: below it, `IdentityChallenge.Manager` seals the long-term format itself. It travels alone.
     ///
     /// ## Pending batch delivery guarantee (message mode)
     /// A pending batch is attached to every message until the contact sends back
@@ -1022,9 +1031,15 @@ extension ContactManager {
         basket: Basket? = nil,
         for identifier: String,
         shardOperations: [OccultaBundle.ShardOperation]? = nil,
-        custodyManifest: [UUID]? = nil
+        custodyManifest: [UUID]? = nil,
+        identityChallenge: IdentityChallengeEnvelope? = nil
     ) throws -> Data {
-        guard basket != nil || shardOperations != nil || custodyManifest != nil else { throw Errors.messageHasNoData }
+        guard basket != nil || shardOperations != nil || custodyManifest != nil || identityChallenge != nil else {
+            throw Errors.messageHasNoData
+        }
+        guard identityChallenge == nil || (basket == nil && shardOperations == nil && custodyManifest == nil) else {
+            throw Errors.identityChallengeNotAlone
+        }
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
@@ -1062,6 +1077,10 @@ extension ContactManager {
         // capability case to seal() would embed its own raw value in the AAD while
         // the receiver reconstructs "v4" → authentication failure.
         let wireVersion   = targetVersion.supportsGroups ? OccultaBundle.Version.v4 : targetVersion
+        // Before any prekey is taken below.
+        if identityChallenge != nil, !targetVersion.isAtLeast(.bodyDigestCapable) {
+            throw Errors.identityChallengeBelowTier
+        }
 
         // Pop a prekey for forward secrecy.
         // Message sends always attempt FS; shard sends on the group path require it.
@@ -1094,6 +1113,12 @@ extension ContactManager {
             messageData = wireVersion == .v4
                 ? try WireHandle.encode(basket: basket)
                 : try JSONEncoder().encode(basket)
+        } else if let identityChallenge {
+            // The same text the long-term format carries, for the same size. Nothing at this tier shows it: the
+            // receiver routes on the envelope (`bugs.md` Bug 167 holds the size question).
+            messageData = Data((identityChallenge.kind == .challenge
+                ? IdentityChallenge.challengeFallbackMessage
+                : IdentityChallenge.responseFallbackMessage).utf8)
         } else {
             messageData = Data("Occulta vault operation. Please update your app.".utf8)
         }
@@ -1111,12 +1136,13 @@ extension ContactManager {
             let onFallback       = hasShardContent && contactPrekey == nil
             // Shard-only bundles (basket == nil) use Data() as a sentinel so the
             // receiver can detect "no basket" without trying to parse the payload.
-            let groupMessage = basket != nil ? messageData : Data()
+            let groupMessage = basket != nil || identityChallenge != nil ? messageData : Data()
             let sealedPayload = OccultaBundle.SealedPayload(
-                message:         groupMessage,
-                shardOperations: onFallback ? nil : shardOperations,
-                custodyManifest: onFallback ? nil : custodyManifest,
-                appVersion:      Bundle.main.appVersion
+                message:           groupMessage,
+                identityChallenge: identityChallenge,
+                shardOperations:   onFallback ? nil : shardOperations,
+                custodyManifest:   onFallback ? nil : custodyManifest,
+                appVersion:        Bundle.main.appVersion
             )
             let bundle = try Manager.Crypto().seal(
                 sealedPayload: sealedPayload,

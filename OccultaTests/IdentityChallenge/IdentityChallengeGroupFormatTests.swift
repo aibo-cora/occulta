@@ -110,7 +110,7 @@ private func groupBundle(
         let challenge = try #require(try cm.openGroup(bundle: bundle, ownerID: "alice").challenge)
         #expect(challenge.envelope == envelope)
 
-        let coordinator = IdentityChallenge.Coordinator()
+        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
         coordinator.handleAuthenticatedChallenge(challenge, sender: profile)
         #expect(coordinator.incomingChallenge?.pending.challengerID == "alice")
         #expect(coordinator.incomingChallenge?.pending.contextNote == "Was this you?")
@@ -127,7 +127,7 @@ private func groupBundle(
         )
 
         let challenge = try #require(try cm.openGroup(bundle: bundle, ownerID: "alice").challenge)
-        let coordinator = IdentityChallenge.Coordinator()
+        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
         coordinator.handleAuthenticatedChallenge(challenge, sender: profile)
         #expect(coordinator.incomingChallenge == nil)
         #expect(coordinator.errorMessage != nil)
@@ -253,9 +253,219 @@ private struct ForwardSecretFixture {
 
         let (sealed, ownerID) = try f.cm.decryptSealed(bundle: bundle)
         #expect(ownerID == "alice")
-        let coordinator = IdentityChallenge.Coordinator()
+        let coordinator = IdentityChallenge.Coordinator(contactManager: f.cm)
         coordinator.handleInboundChallenge(bundle: bundle, envelope: try #require(sealed.identityChallenge), sender: f.profile)
         #expect(coordinator.incomingChallenge == nil)
         #expect(coordinator.errorMessage != nil)
+    }
+}
+
+// MARK: - Sending
+
+/// Alice's tier as recorded on our phone.
+@MainActor
+private func marker(_ tier: OccultaBundle.Version) throws -> Data {
+    let byte = try #require(tier.wireByte)
+    return try #require(try Manager.Crypto().encrypt(data: Data([byte])))
+}
+
+/// Alice's last-resort private half as a software key: she'd hold an Enclave blob, but these tests run without an
+/// Enclave. Found as her receive path finds it, by the prekey ID derived from it.
+private struct SoftwareLastResort: PrekeyPrivateKeys {
+    let keyID = UUID().uuidString
+    let privateKey: SecKey
+    let publicKey: Data
+
+    init() throws {
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeySizeInBits as String: 256
+        ]
+        var error: Unmanaged<CFError>?
+        let key = try #require(SecKeyCreateRandomKey(attributes as CFDictionary, &error))
+        let publicKey = try #require(SecKeyCopyPublicKey(key))
+        self.privateKey = key
+        self.publicKey  = try #require(SecKeyCopyExternalRepresentation(publicKey, &error) as Data?)
+    }
+
+    func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey? { nil }
+    func consume(prekeyID: String, contactID: String) {}
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
+        OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: self.keyID, ephemeralPublicKey: ephemeralPublicKey) == prekeyID
+            ? (self.keyID, .keychain(self.privateKey))
+            : nil
+    }
+}
+
+@Suite("Identity challenge in group format — sending (prekey continuity stage 3)")
+@MainActor struct IdentityChallengeGroupSendTests {
+
+    let alice = TestKeyManager()
+
+    /// What Alice's phone does with a group bundle from us: opens her slot and the body.
+    private func openOnAlicesPhone(
+        _ bundle: OccultaBundle, prekeys: PrekeyPrivateKeys = Manager.PrekeySecretsManager()
+    ) throws -> (slot: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, sealed: OccultaBundle.SealedPayload) {
+        let crypto = Manager.Crypto(keyManager: self.alice)
+        let (slot, used, _) = try crypto.findAndOpenRecipientSlot(
+            in: bundle, blind: try #require(bundle.group).blind, senderContactID: "us",
+            senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(), quantumMaterial: nil, prekeys: prekeys
+        )
+        let sealed = try WireHandle.decode(payload: try crypto.openGroupCiphertext(bundle, using: SymmetricKey(data: slot.sessionKey)))
+        return (slot, used, sealed)
+    }
+
+    @Test("A challenge to a contact at the tier goes as a message, and her group-format answer passes once",
+          .ambientTestKeyManager)
+    func endToEnd() throws {
+        let cm = try makeContactManager()
+        let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
+        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+
+        try coordinator.createChallenge(for: profile, contextNote: "Was this you?")
+        let file = try #require(coordinator.outboundShare?.url)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let challengeBundle = try OccultaBundle.decoded(from: try Data(contentsOf: file))
+        #expect(challengeBundle.group != nil, "group format, like a message")
+
+        // Alice's phone. She holds none of our keys, so the challenge is on the long-term slot, and our pending
+        // batch rides with it, as with any message.
+        let opened = try self.openOnAlicesPhone(challengeBundle)
+        #expect(opened.used == .longTerm)
+        #expect(opened.slot.prekeyBatch != nil)
+        #expect(opened.slot.bodyDigest != nil)
+        #expect(opened.sealed.shardOperations == nil && opened.sealed.custodyManifest == nil)
+        let ourPublicKey = try Manager.Ambient.keyManager.retrieveIdentity()
+        let alicesManager = IdentityChallenge.Manager(
+            crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
+        )
+        let pending = try alicesManager.decryptChallenge(
+            envelope: try #require(opened.sealed.identityChallenge), senderKey: ourPublicKey, senderQuantum: nil,
+            senderID: "us", senderName: "Us"
+        )
+        #expect(pending.contextNote == "Was this you?")
+        let response = try alicesManager.respond(to: pending) { envelope in
+            try groupBundle(envelope, from: self.alice, to: ourPublicKey)
+        }
+
+        // Ours.
+        coordinator.handleAuthenticatedChallenge(
+            try #require(try cm.openGroup(bundle: response, ownerID: "alice").challenge), sender: profile
+        )
+        #expect(coordinator.verificationOutcome?.passed == true)
+        #expect(coordinator.verificationOutcome?.contextNote == "Was this you?")
+
+        // A long-term slot opens again; reopened, the answer names nothing waiting (Bug 166).
+        coordinator.verificationOutcome = nil
+        coordinator.handleAuthenticatedChallenge(
+            try #require(try cm.openGroup(bundle: response, ownerID: "alice").challenge), sender: profile
+        )
+        #expect(coordinator.verificationOutcome == nil)
+    }
+
+    @Test("Our answer to a contact at the tier goes as a message, and passes on her phone", .ambientTestKeyManager)
+    func answerGoesAsMessage() throws {
+        let cm = try makeContactManager()
+        try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
+        let ourPublicKey = try Manager.Ambient.keyManager.retrieveIdentity()
+
+        // Alice challenges us, in group format.
+        let alicesManager = IdentityChallenge.Manager(
+            crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
+        )
+        let challenge = try alicesManager.createChallenge(contactID: "us") { envelope in
+            try groupBundle(envelope, from: self.alice, to: ourPublicKey)
+        }
+        let authenticated = try #require(try cm.openGroup(bundle: challenge, ownerID: "alice").challenge)
+
+        // We approve and answer, as `approvePending` does after Face ID.
+        let ours = IdentityChallenge.Manager(crypto: Manager.Crypto(), store: IdentityChallenge.OutstandingChallengeStore())
+        let pending = try ours.decryptChallenge(
+            envelope: authenticated.envelope, senderKey: try self.alice.retrieveIdentity(), senderQuantum: nil,
+            senderID: "alice", senderName: "Alice"
+        )
+        let answer = try OccultaBundle.decoded(from: try ours.respond(to: pending) { envelope in
+            try cm.encryptBundle(for: "alice", identityChallenge: envelope)
+        })
+        #expect(answer.group != nil)
+
+        let opened = try self.openOnAlicesPhone(answer)
+        #expect(try alicesManager.verifyResponse(
+            envelope: try #require(opened.sealed.identityChallenge), senderKey: ourPublicKey, senderID: "us"
+        ) == .passed(contextNote: nil))
+    }
+
+    @Test("Out of one-time keys, a challenge goes to the contact's last-resort key", .ambientTestKeyManager)
+    func lastResort() throws {
+        let cm = try makeContactManager()
+        let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), pendingBatch: false, in: cm)
+        let alicesLastResort = try SoftwareLastResort()
+        var record = PrekeyRecord.empty
+        record.inboundLastResort = PrekeyRecord.InboundKey(id: alicesLastResort.keyID, publicKey: alicesLastResort.publicKey)
+        try cm.store(record, for: profile)
+        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+
+        try coordinator.createChallenge(for: profile, contextNote: nil)
+        let file = try #require(coordinator.outboundShare?.url)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let opened = try self.openOnAlicesPhone(try OccultaBundle.decoded(from: try Data(contentsOf: file)), prekeys: alicesLastResort)
+        #expect(opened.used == .lastResort(keyID: alicesLastResort.keyID))
+        #expect(opened.sealed.identityChallenge?.kind == .challenge)
+    }
+
+    @Test("A challenge to a contact below the tier keeps the long-term format", .ambientTestKeyManager)
+    func belowTierKeepsLongTerm() throws {
+        let cm = try makeContactManager()
+        let profile = try insertAlice(self.alice, marker: try marker(.prefixedSenderSignatureCapable), in: cm)
+        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+
+        try coordinator.createChallenge(for: profile, contextNote: nil)
+        let file = try #require(coordinator.outboundShare?.url)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let bundle = try OccultaBundle.decoded(from: try Data(contentsOf: file))
+
+        #expect(bundle.group == nil)
+        #expect(bundle.secrecy.mode == .longTermFallback)
+    }
+
+    /// Our record of a contact's version can lag behind their update; their build still reads both formats.
+    @Test("A long-term challenge from a contact recorded at the tier is still accepted", .ambientTestKeyManager)
+    func longTermFromContactAtTier() throws {
+        let cm = try makeContactManager()
+        let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
+        let alicesManager = IdentityChallenge.Manager(
+            crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
+        )
+        let bundle = try alicesManager.createChallenge(
+            recipientKey: try Manager.Ambient.keyManager.retrieveIdentity(), recipientQuantum: nil, contactID: "us"
+        )
+
+        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+        coordinator.handleInboundChallenge(bundle: bundle, envelope: .challenge(payload: Data(), contextNote: nil), sender: profile)
+        #expect(coordinator.incomingChallenge?.pending.challengerID == "alice")
+    }
+
+    @Test("encryptBundle sends a challenge alone, and only to a contact at the tier", .ambientTestKeyManager)
+    func encryptBundleRefusals() throws {
+        let cm = try makeContactManager()
+        let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
+        let envelope = try challengeFrom(TestKeyManager())
+
+        #expect(throws: ContactManager.Errors.identityChallengeNotAlone) {
+            try cm.encryptBundle(for: "alice", custodyManifest: [UUID()], identityChallenge: envelope)
+        }
+        #expect(throws: ContactManager.Errors.identityChallengeNotAlone) {
+            try cm.encryptBundle(basket: Basket(files: []), for: "alice", identityChallenge: envelope)
+        }
+
+        // Below the tier, refused before any of her keys is taken.
+        profile.maxBundleVersion = try marker(.prefixedSenderSignatureCapable)
+        var record = try cm.prekeyRecord(for: profile)
+        record.inboundBatches = [.init(id: nil, keys: [.init(id: UUID().uuidString, publicKey: try TestKeyManager().retrieveIdentity())])]
+        try cm.store(record, for: profile)
+        #expect(throws: ContactManager.Errors.identityChallengeBelowTier) {
+            try cm.encryptBundle(for: "alice", identityChallenge: envelope)
+        }
+        #expect(try cm.prekeyRecord(for: profile).inboundBatches.first?.keys.count == 1)
     }
 }
