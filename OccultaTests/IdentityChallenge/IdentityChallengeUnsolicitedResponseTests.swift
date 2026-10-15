@@ -10,25 +10,8 @@
 import Testing
 import Foundation
 import CryptoKit
-import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
-
-/// Alice's tier isn't recorded, so the coordinator takes the long-term format and never reaches this store.
-@MainActor
-private func makeContactManager() throws -> ContactManager {
-    let schema = Schema([
-        Group.self,
-        Contact.Profile.self,
-        Contact.Profile.PhoneNumber.self,
-        Contact.Profile.EmailAddress.self,
-        Contact.Profile.PostalAddress.self,
-        Contact.Profile.URLAddress.self,
-        Contact.Profile.Key.self,
-    ])
-    let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    return ContactManager(modelContainer: container, security: try Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
-}
 
 @Suite("Identity challenge — a response we aren't waiting for shows nothing (Bug 166)")
 @MainActor struct IdentityChallengeUnsolicitedResponseTests {
@@ -71,7 +54,7 @@ private func makeContactManager() throws -> ContactManager {
     @Test("Reopening a response that already passed shows no result", .ambientTestKeyManager)
     func reopenedResponseShowsNothing() throws {
         let profile = try self.aliceProfile()
-        let coordinator = IdentityChallenge.Coordinator(contactManager: try makeContactManager())
+        let coordinator = IdentityChallenge.Coordinator(contactManager: try TestSupport.makeContactManager())
         let response = try self.challengeAndResponse(coordinator, profile: profile)
 
         coordinator.handleInboundChallenge(bundle: response, envelope: self.envelope, sender: profile)
@@ -86,7 +69,7 @@ private func makeContactManager() throws -> ContactManager {
     @Test("A response that doesn't open shows nothing, and leaves the challenge waiting", .ambientTestKeyManager)
     func unopenableResponseShowsNothing() throws {
         let profile = try self.aliceProfile()
-        let coordinator = IdentityChallenge.Coordinator(contactManager: try makeContactManager())
+        let coordinator = IdentityChallenge.Coordinator(contactManager: try TestSupport.makeContactManager())
         let response = try self.challengeAndResponse(coordinator, profile: profile)
 
         var ciphertext = response.ciphertext
@@ -107,7 +90,7 @@ private func makeContactManager() throws -> ContactManager {
     @Test("A response naming our challenge with a bad signature still shows \"Verification failed\"", .ambientTestKeyManager)
     func badSignatureStillFails() throws {
         let profile = try self.aliceProfile()
-        let coordinator = IdentityChallenge.Coordinator(contactManager: try makeContactManager())
+        let coordinator = IdentityChallenge.Coordinator(contactManager: try TestSupport.makeContactManager())
         let response = try self.challengeAndResponse(coordinator, profile: profile)
 
         // Alice's response with its signature broken, resealed under the same long-term session key.

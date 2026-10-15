@@ -14,29 +14,8 @@
 import Testing
 import Foundation
 import CryptoKit
-import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
-@MainActor
-private func makeContactManager() throws -> ContactManager {
-    let schema = Schema([
-        Group.self,
-        Contact.Profile.self,
-        Contact.Profile.PhoneNumber.self,
-        Contact.Profile.EmailAddress.self,
-        Contact.Profile.PostalAddress.self,
-        Contact.Profile.URLAddress.self,
-        Contact.Profile.Key.self,
-    ])
-    let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
-    return ContactManager(modelContainer: container, security: security)
-}
 
 /// Alice as a contact on this device, with `marker` as her recorded tier. With `pendingBatch`, a batch of ours waits
 /// for her, so a long-term bundle from her generates no new one, which would need an Enclave.
@@ -102,7 +81,7 @@ private func groupBundle(
 
     @Test("A group-format challenge on a long-term slot is authenticated by openGroup and reaches approval", .ambientTestKeyManager)
     func longTermChallengeReachesApproval() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, in: cm)
         let envelope = try challengeFrom(self.alice)
         let bundle = try groupBundle(envelope, from: self.alice, to: try Manager.Ambient.keyManager.retrieveIdentity())
@@ -120,7 +99,7 @@ private func groupBundle(
     /// The checks after opening still run: a challenge that isn't bound to the sender's key is refused.
     @Test("An authenticated challenge whose inner fingerprint names someone else is refused", .ambientTestKeyManager)
     func innerFingerprintStillChecked() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, in: cm)
         let bundle = try groupBundle(
             try challengeFrom(TestKeyManager()), from: self.alice, to: try Manager.Ambient.keyManager.retrieveIdentity()
@@ -135,7 +114,7 @@ private func groupBundle(
 
     @Test("A message carries no authenticated challenge", .ambientTestKeyManager)
     func messageCarriesNone() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         try insertAlice(self.alice, in: cm)
         let bundle = try Manager.Crypto(keyManager: self.alice).seal(
             sealedPayload: OccultaBundle.SealedPayload(message: Data("Lunch at one.".utf8)),
@@ -177,7 +156,7 @@ private struct ForwardSecretFixture {
     let selfPublicKey: Data
 
     init(alice: TestKeyManager, marker: Data?) throws {
-        self.cm = try makeContactManager()
+        self.cm = try TestSupport.makeContactManager()
         self.profile = try insertAlice(alice, marker: marker, pendingBatch: false, in: self.cm)
         self.selfPublicKey = try Manager.Key().retrieveIdentity()
         let prekeys = try self.cm.senderPrekeys(for: self.profile)
@@ -201,7 +180,7 @@ private struct ForwardSecretFixture {
     let alice = TestKeyManager()
 
     @Test("A challenge on a forward-secret slot, signed in the prefixed form, is authenticated",
-          .enabled(if: secureEnclaveAvailable()))
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
     func prefixedSignatureAccepted() throws {
         let f = try ForwardSecretFixture(alice: self.alice, marker: nil)
         let envelope = try challengeFrom(self.alice)
@@ -213,7 +192,7 @@ private struct ForwardSecretFixture {
     /// The bare form is what a 1.10.0/1.10.1 sender signs, and no sender of a group-format challenge is one. With no
     /// tier recorded, the gate for messages lets an unsigned or bare-signed slot through; a challenge it doesn't.
     @Test("A challenge on a forward-secret slot signed in the bare form is refused, even with no tier recorded",
-          .enabled(if: secureEnclaveAvailable()))
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
     func bareSignatureRefused() throws {
         let f = try ForwardSecretFixture(alice: self.alice, marker: nil)
         // Both read before either is used: using one delivers the batch, which drops its public keys.
@@ -240,7 +219,7 @@ private struct ForwardSecretFixture {
 
     /// `decryptSealed`'s forward-secret bundles carry no sender binding, so the one-to-one path keeps reopening a
     /// challenge with the long-term key, which a forward-secret bundle never opens with.
-    @Test("A challenge in a one-to-one forward-secret bundle is refused", .enabled(if: secureEnclaveAvailable()))
+    @Test("A challenge in a one-to-one forward-secret bundle is refused", .enabled(if: TestSupport.secureEnclaveAvailable()))
     func oneToOneForwardSecretRefused() throws {
         let f = try ForwardSecretFixture(alice: self.alice, marker: nil)
         let envelope = try challengeFrom(self.alice)
@@ -269,33 +248,6 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
     return try #require(try Manager.Crypto().encrypt(data: Data([byte])))
 }
 
-/// Alice's last-resort private half as a software key: she'd hold an Enclave blob, but these tests run without an
-/// Enclave. Found as her receive path finds it, by the prekey ID derived from it.
-private struct SoftwareLastResort: PrekeyPrivateKeys {
-    let keyID = UUID().uuidString
-    let privateKey: SecKey
-    let publicKey: Data
-
-    init() throws {
-        let attributes: [String: Any] = [
-            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeySizeInBits as String: 256
-        ]
-        var error: Unmanaged<CFError>?
-        let key = try #require(SecKeyCreateRandomKey(attributes as CFDictionary, &error))
-        let publicKey = try #require(SecKeyCopyPublicKey(key))
-        self.privateKey = key
-        self.publicKey  = try #require(SecKeyCopyExternalRepresentation(publicKey, &error) as Data?)
-    }
-
-    func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey? { nil }
-    func consume(prekeyID: String, contactID: String) {}
-    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
-        OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: self.keyID, ephemeralPublicKey: ephemeralPublicKey) == prekeyID
-            ? (self.keyID, .keychain(self.privateKey))
-            : nil
-    }
-}
-
 @Suite("Identity challenge in group format — sending (prekey continuity stage 3)")
 @MainActor struct IdentityChallengeGroupSendTests {
 
@@ -317,7 +269,7 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
     @Test("A challenge to a contact at the tier goes as a message, and her group-format answer passes once",
           .ambientTestKeyManager)
     func endToEnd() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
         let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
 
@@ -364,7 +316,7 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
 
     @Test("Our answer to a contact at the tier goes as a message, and passes on her phone", .ambientTestKeyManager)
     func answerGoesAsMessage() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
         let ourPublicKey = try Manager.Ambient.keyManager.retrieveIdentity()
 
@@ -396,7 +348,7 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
 
     @Test("Out of one-time keys, a challenge goes to the contact's last-resort key", .ambientTestKeyManager)
     func lastResort() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), pendingBatch: false, in: cm)
         let alicesLastResort = try SoftwareLastResort()
         var record = PrekeyRecord.empty
@@ -415,7 +367,7 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
 
     @Test("A challenge to a contact below the tier keeps the long-term format", .ambientTestKeyManager)
     func belowTierKeepsLongTerm() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.prefixedSenderSignatureCapable), in: cm)
         let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
 
@@ -431,7 +383,7 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
     /// Our record of a contact's version can lag behind their update; their build still reads both formats.
     @Test("A long-term challenge from a contact recorded at the tier is still accepted", .ambientTestKeyManager)
     func longTermFromContactAtTier() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
         let alicesManager = IdentityChallenge.Manager(
             crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
@@ -447,7 +399,7 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
 
     @Test("encryptBundle sends a challenge alone, and only to a contact at the tier", .ambientTestKeyManager)
     func encryptBundleRefusals() throws {
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
         let envelope = try challengeFrom(TestKeyManager())
 
@@ -480,7 +432,7 @@ private struct SoftwareLastResort: PrekeyPrivateKeys {
           .ambientTestKeyManager, arguments: [IdentityChallengeEnvelope.Kind.challenge, .response])
     func noBatch(kind: IdentityChallengeEnvelope.Kind) throws {
         let alice = TestKeyManager()
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(alice, pendingBatch: false, in: cm)
         let envelope: IdentityChallengeEnvelope = kind == .challenge
             ? try challengeFrom(alice)

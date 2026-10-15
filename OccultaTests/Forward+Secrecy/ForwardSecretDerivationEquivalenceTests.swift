@@ -20,10 +20,6 @@ import Security
 @testable import OccultaCore
 @testable import OccultaFormats
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 /// The same private key as a CryptoKit key and as a `SecKey`.
 private func keyInBothForms() throws -> (cryptoKit: P256.KeyAgreement.PrivateKey, secKey: SecKey) {
     let key   = P256.KeyAgreement.PrivateKey()
@@ -122,7 +118,7 @@ private func bytes(_ key: SymmetricKey?) -> Data? {
 
     /// End to end with a real Enclave key, rebuilt from its blob as a record-held prekey will be.
     @Test("A bundle sealed by today's sender code opens with a CryptoKit Enclave prekey rebuilt from its blob",
-          .enabled(if: secureEnclaveAvailable()))
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
     func enclaveBlobOpensBundle() throws {
         var error: Unmanaged<CFError>?
         let access = try #require(SecAccessControlCreateWithFlags(

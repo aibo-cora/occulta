@@ -12,10 +12,6 @@ import Foundation
 @testable import OccultaCore
 @testable import OccultaFormats
 
-private func randomBytes(_ count: Int) -> Data {
-    Data((0..<count).map { _ in .random(in: .min ... .max) })
-}
-
 private func generated(_ count: Int) -> [Data] {
     (0..<count).map { _ in randomBytes(143) }
 }

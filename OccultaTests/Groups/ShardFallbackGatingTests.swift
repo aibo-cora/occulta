@@ -465,35 +465,6 @@ private func insertContact(
 
 // MARK: - 4. Out of one-time keys: the contact's last-resort key (prekey continuity stage 2)
 
-/// A contact's last-resort private half as a software key: the recipient holds an Enclave blob, but these tests run
-/// without an Enclave. Found as the receive path finds it, by the prekey ID derived from it.
-private struct SoftwareLastResort: PrekeyPrivateKeys {
-    let keyID = UUID().uuidString
-    let privateKey: SecKey
-    let publicKey: Data
-
-    init() throws {
-        let attributes: [String: Any] = [
-            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeySizeInBits as String: 256
-        ]
-        var error: Unmanaged<CFError>?
-        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error),
-              let publicKey = SecKeyCopyPublicKey(key),
-              let x963 = SecKeyCopyExternalRepresentation(publicKey, &error) as Data?
-        else { throw TestSetupError.seUnavailable }
-        self.privateKey = key
-        self.publicKey  = x963
-    }
-
-    func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey? { nil }
-    func consume(prekeyID: String, contactID: String) {}
-    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
-        OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: self.keyID, ephemeralPublicKey: ephemeralPublicKey) == prekeyID
-            ? (self.keyID, .keychain(self.privateKey))
-            : nil
-    }
-}
-
 @Suite("encryptBundle — out of one-time keys, the contact's last-resort key (stage 2)")
 @MainActor struct SendToLastResortTests {
 

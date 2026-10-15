@@ -20,22 +20,6 @@ import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
-/// SplitMix64, so a shuffled run can be replayed.
-private struct SeededGenerator: RandomNumberGenerator {
-    var state: UInt64
-    mutating func next() -> UInt64 {
-        self.state &+= 0x9E37_79B9_7F4A_7C15
-        var z = self.state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-}
-
 /// One phone: its identity, its store, and the other phone as its one contact.
 @MainActor
 private final class Phone {
@@ -152,7 +136,7 @@ private struct Pair {
     }
 }
 
-@Suite("Prekey conversations, end to end — refill and append (stage 4)", .enabled(if: secureEnclaveAvailable()))
+@Suite("Prekey conversations, end to end — refill and append (stage 4)", .enabled(if: TestSupport.secureEnclaveAvailable()))
 @MainActor struct PrekeyConversationTests {
 
     @Test("Alternating, 100 messages each way: every one on a one-time key")

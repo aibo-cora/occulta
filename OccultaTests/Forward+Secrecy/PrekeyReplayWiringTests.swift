@@ -15,25 +15,8 @@
 import Testing
 import Foundation
 import CryptoKit
-import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
-
-@MainActor
-private func makeContactManager() throws -> ContactManager {
-    let schema = Schema([
-        Group.self,
-        Contact.Profile.self,
-        Contact.Profile.PhoneNumber.self,
-        Contact.Profile.EmailAddress.self,
-        Contact.Profile.PostalAddress.self,
-        Contact.Profile.URLAddress.self,
-        Contact.Profile.Key.self,
-    ])
-    let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
-    return ContactManager(modelContainer: container, security: security)
-}
 
 /// `publicKey` as a contact on this device. A pending batch of ours stands waiting for them, so a long-term bundle
 /// from them generates no new one, which would need an Enclave.
@@ -114,7 +97,7 @@ private func batch(generatedAt: Date) -> OccultaBundle.SealedPayload.PrekeySyncB
           .ambientTestKeyManager, arguments: Route.allCases)
     func olderDatedBatchOnLongTermKeys(route: Route) throws {
         let sender = TestKeyManager()
-        let cm = try makeContactManager()
+        let cm = try TestSupport.makeContactManager()
         try insertSender(identifier: "sender", publicKey: try sender.retrieveIdentity(), in: cm)
         let message = Data("Lunch at one.".utf8)
         let newest = Date(timeIntervalSince1970: 1_800_000_000)
