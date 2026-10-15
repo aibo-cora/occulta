@@ -467,6 +467,8 @@ Secure Mode activation sends a ban bundle to contacts (`Message Ban/FINDINGS.md`
 - **Send it:** reveals the activation to someone the user hasn't met.
 - **Don't send it:** they stay free to message during the coercion window.
 
+**Moved 2026-10-15: belongs to Message Ban, and doesn't block cards.** Message Ban isn't built or scheduled, and this question doesn't affect the cards' protocol or UI. It is settled in `Message Ban/FINDINGS.md`, where the open note stays.
+
 ### Q-12 · Wire shape of the first message
 
 Where does the ML-KEM ciphertext go?
@@ -474,6 +476,8 @@ Where does the ML-KEM ciphertext go?
 - **Inside a classical outer layer.** This hides it as a field. The ciphertext isn't secret, so wrapping it classically costs no post-quantum strength.
 
 Recommendation: the outer layer. New vectors in `OccultaTests/Interop/InteropVectors.json` either way.
+
+**Left for the SPEC (2026-10-15).** This is a wire-format detail, not a product or UI decision.
 
 ### Q-13 · Open-card details
 
