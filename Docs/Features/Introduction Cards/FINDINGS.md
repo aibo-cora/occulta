@@ -1,10 +1,10 @@
 # Introduction Cards — Design Findings
 
-**Status:** Proposal. No SPEC. The carrier route is blocked on D1, a product decision (Q-01). The direct route involves no third party and is not. Both routes depend on D2 (Q-02). Not scoped for a release.
+**Status:** Proposal. No SPEC. D1 is decided: the carrier route is allowed (Q-01). Both routes depend on D2 (Q-02). Not scoped for a release.
 **Origin:** Design discussion, 2026-10-14. The question raised was whether a contact's *encryption* key could be vouched for, rather than their identity key, so that people we introduce can encrypt to them, marked unverified until they meet. It was assessed against the no-vouching rulings, Sweep 4's trust ladder and the shipped receive path, then reshaped into owner-issued, single-use cards.
 **Relation to earlier plans:** this is a worked design for Sweep 4 components 1 and 4 (`Friction/USER_ENGAGEMENT_FRICTION.md:284`). It replaces component 1's card and recasts component 4, so the mutual contact carries a card and asserts nothing. Every earlier plan it touches is listed in [Relationship to earlier plans](#relationship-to-earlier-plans), and each one points back here.
 **Decided so far (2026-10-14):** the carrier is never named on the recipient's phone (Q-07). A card may reach its recipient directly or through any number of carriers, and the issuer chooses a named or an open card when creating it (§4). Two ways of recording the route were considered and not adopted ([Considered and not adopted](#considered-and-not-adopted)).
-**Decided 2026-10-15:** one "Not verified" badge for every route, with no route text and no stored route kind (Q-07). For a Not verified contact the secrecy indicator drops its green and the trust line sits above it (Q-09).
+**Decided 2026-10-15:** the carrier route is allowed, because it grants no trust (Q-01). One "Not verified" badge for every route, with no route text and no stored route kind (Q-07). For a Not verified contact the secrecy indicator drops its green and the trust line sits above it (Q-09).
 
 Names used below: **Bob** issues a card. **Carol** receives it and has never met Bob. **Alice** is a verified contact of Bob's who may carry the card. **Dave** is a later carrier whom Bob may not know.
 
@@ -58,7 +58,7 @@ Measured against D-03:
 4. Bob's phone accepts a stranger only if they use a card Bob made.
 5. Each card carries its own one-time prekey.
 
-Is this vouching? No third party signs or asserts anything, and no trust is granted: the contact stays Not verified until a UWB exchange. Whether that keeps the carrier route on the right side of the line is D1 (Q-01).
+Is this vouching? No third party signs or asserts anything, and no trust is granted: the contact stays Not verified until a UWB exchange. D1 rules that this keeps the carrier route on the right side of the line (Q-01, decided 2026-10-15).
 
 It is also not H5's rejected "key-in-bundle" shortcut (`USER_ENGAGEMENT_FRICTION.md:156`). No session key ever travels next to its ciphertext. And the upgrade happens only in person, so the *"reply with your real key so we can go secure"* moment, where an attacker would insert themselves, doesn't exist.
 
@@ -134,7 +134,7 @@ A hiding commitment instead of a signature, `SHA-256(identityPub ‖ nonce)` wit
 |---|---|---|
 | Who could swap the card | Any carrier on the route, or someone holding one of their unlocked phones | Anyone controlling the channel: the messaging app, the email account, a phone or cloud backup |
 | Where the card file ends up | Inside Occulta bundles, unless a carrier shares it outside Occulta (Q-13) | The other app's storage and its cloud backups |
-| Third party involved | Yes, so gated on D1 | No |
+| Third party involved | Yes; allowed under D1 (Q-01) | No |
 | Best for | Someone Bob can't reach privately, or doesn't know yet | In person, or a channel Bob already trusts |
 
 **Through carriers.** Bob sends the card to Alice inside an ordinary bundle. Whoever holds the card can use it or pass it on. Each holder's copy is deleted when they pass it on.
@@ -308,7 +308,14 @@ The docs currently disagree on D1:
 
 Those last two entries describe verified introductions, where a mutual contact vouches. The carrier route here asserts nothing and grants nothing (D-04). Decide, then align all four docs.
 
-`Remote Key Exchange/FINDINGS.md` Q-01 applies here unchanged: a Not verified tier makes public claims such as *"No one can impersonate you remotely"* (`README.md:15`) conditional on the contact's tier. That has to be settled before shipping, not after.
+**Decided 2026-10-15: the carrier route is allowed.** Passing a card on isn't vouching:
+- Nothing is signed, and nothing records the route.
+- No trust is granted: the contact stays Not verified until a UWB exchange.
+- The only claim is spoken ("this is Bob's card"), like passing on a phone number.
+
+The two off-limits entries now say that carried cards are outside them, and that verified introductions stay off-limits. The two Friction addenda record the decision.
+
+`Remote Key Exchange/FINDINGS.md` Q-01 applies here unchanged: a Not verified tier makes public claims such as *"No one can impersonate you remotely"* (`README.md:15`) conditional on the contact's tier. That has to be settled before shipping, not after. It applies to the direct route too, so it stays open after D1: the `README.md` wording changes in the same change that makes cards reachable.
 
 ### Q-02 · D2: send-capable or import-only?
 
@@ -395,7 +402,7 @@ The two modes are decided (§4). These details are not:
 |---|---|---|
 | `Friction/USER_ENGAGEMENT_FRICTION.md:284`, Sweep 4 component 1 | Multi-use contact card: long-term key + signed prekey batch, with static prekeys | Replaced by a single-use card with its own key and a one-time prekey (D-05) |
 | Same, component 3 (gossip audit) | Detects a first-contact swap as the graph fills in | Can't check card keys; detection waits for the meeting |
-| Same, component 4 (introductions) | A verified mutual forwards both keys, signed; a product-owner call | Recast: contacts pass the issuer's card on, through any number of hops, asserting nothing and leaving no route record (D-04, §4). Still D1 (Q-01) |
+| Same, component 4 (introductions) | A verified mutual forwards both keys, signed; a product-owner call | Recast: contacts pass the issuer's card on, through any number of hops, asserting nothing and leaving no route record (D-04, §4). Allowed under D1 (Q-01) |
 | Same, second open decision (D2) | Send-capable or import-only | Still open (Q-02); this design assumes send-capable |
 | Same, H5 | Key-in-bundle rejected; warning fatigue and downgrade risk | Not key-in-bundle (D-04); the warning rules follow H5 |
 | `Friction/CONSUMER_OPENING_AND_CEREMONY.md` §6–7 | Introduced and Unverified rungs; D1–D3 | Both rungs become one Not verified badge, with no route text (§4, Q-07) |
@@ -403,7 +410,7 @@ The two modes are decided (§4). These details are not:
 | [Multi-Device Contacts/FINDINGS.md](../Multi-Device%20Contacts/FINDINGS.md) D-08 | ML-KEM can be introduced asynchronously, for a future opt-in, weaker trust model | This is that feature, using D-08's mechanism |
 | Same, "Rejected: self-vouching device certs"; `ROADMAP.md:140` | No trust for a new key without a UWB exchange | Kept: no trust is granted, and the identity key leaves the phone only in person |
 | `Master Feature & Expansion Analysis.md:481` | Anonymous source drop omitted: shared prekeys or no forward secrecy | Cards avoid both, but aren't a public drop: a published card works once, for whoever uses it first |
-| `Master Feature & Expansion Analysis.md:571`; `Feature Ideation — 2026-07-10 Community Demand Pass.md:118` | Verified introductions off-limits | Disagrees with the friction docs; this isn't a verified introduction (Q-01) |
+| `Master Feature & Expansion Analysis.md:571`; `Feature Ideation — 2026-07-10 Community Demand Pass.md:118` | Verified introductions off-limits | Aligned 2026-10-15: carried cards are outside the ruling, which stands for verified introductions (Q-01) |
 | `Master Feature & Expansion Analysis.md` #22 | Keys never travel in cleartext, so probing is limited | Preserved by the card key (§1) |
 | `Prekey Continuity/DESIGN.md` §3.1, §7 | Sender signature on last-resort sealing; `SecrecyIndicator` wording rules | Pattern for the first-message signature (§3) and the warnings |
 | `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md` | No bundle rejected by depth; presence oracle documented | Constrains Q-03 |
@@ -421,9 +428,9 @@ The two modes are decided (§4). These details are not:
 - the contact stays Not verified until a UWB exchange;
 - the warnings above appear at every point where something can go wrong.
 
-**Decide Q-01 first.** It's a product call, and the docs currently disagree. Then decide Q-03 (duress) and Q-08 (card key), which settle most of the engineering.
+**Q-01 is decided: carriers are allowed.** Next decide Q-03 (duress) and Q-08 (card key), which settle most of the engineering.
 
-**If Q-01 answers no, the direct route still stands.** It involves no third party. It is also the better form of Sweep 4's contact card (D-05), with or without a carrier.
+The direct route is also the better form of Sweep 4's contact card (D-05), with or without a carrier.
 
 ---
 
@@ -431,7 +438,7 @@ The two modes are decided (§4). These details are not:
 
 **Before any protocol work:**
 
-- Answer Q-01 and align the four docs that disagree on D1.
+- ~~Answer Q-01 and align the four docs that disagree on D1.~~ Done 2026-10-15.
 - Answer Q-02 (D2).
 - Rule on Q-03 with the same discipline applied to `originDepth`.
 - Confirm Q-08.

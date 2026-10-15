@@ -191,10 +191,10 @@ Invariants carried over from Sweep 4:
 > that arrive by card are Not verified, whether carried or shared directly. The
 > carrier is never named. The Introduced and Unverified rungs in §6 collapse
 > into one "Not verified" badge with no route text (its Q-07, decided
-> 2026-10-15). D1 is still open there
-> (its Q-01). It also records that this doc lists D1 as open while
-> `Master Feature & Expansion Analysis.md` and the 2026-07-10 ideation pass
-> list verified introductions as off-limits.
+> 2026-10-15). D1 is decided there (its Q-01, 2026-10-15): carried cards
+> are allowed, because the carrier asserts nothing and no trust is granted.
+> Verified introductions, as `Master Feature & Expansion Analysis.md` and the
+> 2026-07-10 ideation pass rule, stay off-limits.
 
 ---
 

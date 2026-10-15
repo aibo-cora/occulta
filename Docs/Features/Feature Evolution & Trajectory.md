@@ -244,7 +244,7 @@ The same research pass proposed "second-device enrollment over UWB" — a user's
 
 ### Noted, pending a decision: Introduction Cards
 
-Proposed 2026-10-14 after "vouch for the encryption key, not the identity key" was assessed and set aside. There is no separate encryption key, and the claim vouching makes is the same for any key. What survives is owner-issued, single-use cards. Each card has its own key, so the owner's identity key still leaves the phone only in person. Cards are handed over directly or passed on by one or more contacts who assert nothing, with no record of the route, and the contact stays Not verified until a UWB exchange. No trust is granted, so the invariant above is unchanged. Whether the carrier route is acceptable is the open D1 decision. See [Introduction Cards/FINDINGS.md](Introduction%20Cards/FINDINGS.md).
+Proposed 2026-10-14 after "vouch for the encryption key, not the identity key" was assessed and set aside. There is no separate encryption key, and the claim vouching makes is the same for any key. What survives is owner-issued, single-use cards. Each card has its own key, so the owner's identity key still leaves the phone only in person. Cards are handed over directly or passed on by one or more contacts who assert nothing, with no record of the route, and the contact stays Not verified until a UWB exchange. No trust is granted, so the invariant above is unchanged. D1 was decided 2026-10-15: the carrier route is allowed, because it grants no trust. See [Introduction Cards/FINDINGS.md](Introduction%20Cards/FINDINGS.md).
 
 ---
 

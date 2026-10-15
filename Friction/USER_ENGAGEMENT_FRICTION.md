@@ -365,8 +365,8 @@ carrier-blind; the choice only sets the authenticity floor.
 > so the first message keeps full forward secrecy and cards can't be linked to
 > each other. It recasts component 4 so contacts pass the owner's card on,
 > through any number of hops, asserting nothing and leaving no record of the
-> route. The direct route needs no D1 decision; the carrier
-> route still does. Both still depend on the send-capable / import-only
+> route. D1 is decided there (its Q-01, 2026-10-15): the carrier route is
+> allowed, since it grants no trust. Both routes still depend on the send-capable / import-only
 > decision above. Component 3 can't check card keys, so a swapped card is
 > caught only at the in-person meeting.
 
