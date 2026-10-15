@@ -103,6 +103,26 @@ extension Manager.Crypto {
         quantumMaterial: QuantumKeyMaterial?,
         prekeys: PrekeyPrivateKeys
     ) throws -> (payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode) {
+        let opened = try self.openRecipientSlot(
+            in: bundle, blind: blind, senderContactID: senderContactID, senderPublicKey: senderPublicKey,
+            quantumMaterial: quantumMaterial, prekeys: prekeys
+        )
+        return (opened.payload, opened.used, opened.mode)
+    }
+
+    /// `findAndOpenRecipientSlot`, which see, and the opened slot's ephemeral public key as well: the key the
+    /// sender's signature is over, for a caller that must verify it again in another form.
+    func openRecipientSlot(
+        in bundle: OccultaBundle,
+        blind: Data,
+        senderContactID: String,
+        senderPublicKey: Data,
+        quantumMaterial: QuantumKeyMaterial?,
+        prekeys: PrekeyPrivateKeys
+    ) throws -> (
+        payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode,
+        ephemeralPublicKey: Data
+    ) {
         guard let recipients = bundle.group?.recipients else {
             throw GroupDecryptError.noGroupEnvelope
         }
@@ -164,7 +184,7 @@ extension Manager.Crypto {
                     senderPublicKey: senderPublicKey
                 ) else { throw GroupDecryptError.senderEphemeralSignatureMismatch }
             }
-            return (payload, used, entry.secrecyContext.mode)
+            return (payload, used, entry.secrecyContext.mode, entry.secrecyContext.ephemeralPublicKey)
         }
         throw GroupDecryptError.recipientSlotNotFound
     }

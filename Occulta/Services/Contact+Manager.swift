@@ -1841,7 +1841,7 @@ extension ContactManager {
         let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
 
         // ── 3. Trial-decrypt: find our slot and open it ─────────────────
-        let (recipientPayload, used, recipientMode) = try cryptoOps.findAndOpenRecipientSlot(
+        let (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
             in: bundle,
             blind: envelope.blind,
             senderContactID: sender.identifier,
@@ -1915,16 +1915,13 @@ extension ContactManager {
         if let identityChallenge = decoded.identityChallenge {
             guard recipientPayload.bodyDigest != nil else { throw GroupDecryptError.missingBodyDigest }
             if isFSMode {
-                // The signature verified in `findAndOpenRecipientSlot` against our slot's ephemeral key, in either
-                // form. Our slot isn't reported back, so look for a slot whose key it verifies in the prefixed
-                // form: only ours can, since the signature is over that key.
+                // The signature verified in `openRecipientSlot` against our slot's ephemeral key, in either form.
+                // Once more against that key, in the prefixed form only.
                 guard let signature = recipientPayload.senderEphemeralSignature,
-                      envelope.recipients.contains(where: {
-                          cryptoOps.verifySenderEphemeralSignature(
-                              signature, ephemeralPublicKey: $0.secrecyContext.ephemeralPublicKey,
-                              senderPublicKey: senderPublicKey, acceptsBareForm: false
-                          )
-                      })
+                      cryptoOps.verifySenderEphemeralSignature(
+                          signature, ephemeralPublicKey: slotEphemeralKey,
+                          senderPublicKey: senderPublicKey, acceptsBareForm: false
+                      )
                 else { throw GroupDecryptError.missingSenderEphemeralSignature }
             }
             challenge = IdentityChallenge.Authenticated(identityChallenge)
