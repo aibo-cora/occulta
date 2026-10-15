@@ -216,7 +216,7 @@ These carry over from earlier decisions:
 - **Claim no more than the design delivers** (`Docs/Audit/OPEN_LIMITATIONS.md` §E).
 - **Same text at every depth.** Text depends only on the contact's or card's own state, never on the current depth (`Prekey Continuity/DESIGN.md` §7).
 - **Secrecy and trust are separate lines.** A Not verified contact's next message can be forward-secret. The `SecrecyIndicator` green is the `occultaVerified` token, and Sweep 4 rules that *"nothing about an unverified contact may render green or 'secure'"*. So for a Not verified contact, the trust line comes first and the secrecy state isn't green (Q-09, decided).
-- **The alarm can't fade into silence.** After W-11, the contact keeps a "Card swapped" state until it's deleted. *Since 2026-10-15 this conflicts with §5:* a mismatch now ends with the contact verified with the real person, and a stored "Card swapped" state records that the contact came through a card. Open, needs a decision (Q-10).
+- **The alarm can't be missed (revised 2026-10-15, Q-10).** W-11 is shown at the exchange and needs an explicit acknowledgment. It can't be swiped away or skipped. Nothing is stored afterwards. This replaces the earlier rule that the contact keeps a "Card swapped" state. That rule was written for a mismatch that left the contact pointing at the attacker. Now the contact ends up verified with the real person, the danger is past, and a stored state would only be a trace. W-11 is the one warning that appears as an event rather than a persistent label, because it reports something that happened, not a risk that is still open.
 
 ### Draft copy
 
@@ -400,7 +400,9 @@ The `SecrecyIndicator`'s forward-secret state is green (`occultaVerified`), and 
 
 **Resolved 2026-10-15 by the contact-first flow (§3, §5).** The user starts the exchange from the contact's details, so they pick the contact deliberately and before the meeting, and there's no picker inside the ceremony. The check runs against that one contact. If the user opens the wrong person's page, that's the same mistake as in any key exchange, not something specific to cards.
 
-**Still open, needs a decision: what remains after a mismatch.** The warning rules say the alarm can't fade into silence, and that a contact keeps a "Card swapped" state. In §5, though, a mismatch ends with the contact verified with the real person, so the danger is in the past. A stored "Card swapped" state would also be a lasting record that this contact came through a card, which Q-07 rules out for the route kind. The options:
+**Decided 2026-10-15: show W-11 at the exchange, require an explicit acknowledgment, and store nothing.** The question as it was put:
+
+**What remains after a mismatch.** The warning rules say the alarm can't fade into silence, and that a contact keeps a "Card swapped" state. In §5, though, a mismatch ends with the contact verified with the real person, so the danger is in the past. A stored "Card swapped" state would also be a lasting record that this contact came through a card, which Q-07 rules out for the route kind. The options:
 - **Show W-11 at the exchange, require an explicit acknowledgment, and store nothing.**
 - **Keep a persistent state,** at the cost of that record.
 
