@@ -777,10 +777,14 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     a newer batch retires older ones, and the first use of any record-held batch retires the legacy keys (`legacyKeys`). A
     sweep deletes retired blobs, and the contact's legacy keychain keys by tag, 30 days after the respective
     retirement, on receipt and at unlock for the contacts that depth can read (D1, Bug 156). Built 2026-10-10
-    (`ContactManager.sweepPrekeys`): on receipt it runs before the bundle is opened and is saved and flushed at
-    once, like a used key, so a rejected bundle still leaves expired keys deleted; at unlock it covers the contacts
-    visible at the authenticated depth, runs at every depth, and is flushed by the checkpoint every unlock already
-    takes. Inbound batches
+    (`ContactManager.sweepPrekeys`): at unlock it covers the contacts visible at the authenticated depth, runs at
+    every depth, and is flushed by the checkpoint every unlock already takes. **On receipt (changed 2026-10-15,
+    found in review of PR #110):** the sweep is applied to the record the open uses, so nothing past its grace
+    period opens the bundle, and it's written with the record once a slot has opened (at once for a one-time key,
+    else when the bundle has passed every check), and flushed. A file that opens no slot writes nothing, so an
+    unauthenticated file naming a contact causes no save, flush or keychain delete; what it would have deleted,
+    the next authenticated receipt or the unlock sweep deletes. D1 itself (30 days by time, on receipt and at
+    unlock) is unchanged. Inbound batches
     are dropped by ID (Bug 158). Accepting a batch still replaces the keys held from that contact, as today;
     appending is stage 4's.
   - **No manifest of live keys (rejected 2026-10-10).** The record keeps keys the contact may or may not still

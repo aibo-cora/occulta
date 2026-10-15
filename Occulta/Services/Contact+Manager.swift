@@ -1664,8 +1664,8 @@ extension ContactManager {
         }
 
         // ── 6. Persist ───────────────────────────────────────────────────
-        try self.store(prekeys.record, for: sender)
-        try self.modelContext.save()
+        // Also the sweep on receipt, now that the bundle has passed every check, and a consume-time save that failed.
+        try self.save(prekeys, for: sender)
 
         #if DEBUG
         // Identifier prefix, not the decrypted name. Enough to correlate lines about the same
@@ -1966,8 +1966,7 @@ extension ContactManager {
         // delivery of the pending batch, Bug 157). Generating stays behind every check above that
         // can throw (`bugs.md` Bug 159), so a rejected bundle can't make us issue keys.
         try self.replenish(after: used, into: prekeys)
-        try self.store(prekeys.record, for: sender)
-        try self.modelContext.save()
+        try self.save(prekeys, for: sender)
 
         #if DEBUG
         // Identifier prefix, not the decrypted name — see the same log on the direct path.

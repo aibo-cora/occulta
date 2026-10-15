@@ -83,22 +83,36 @@ extension ContactManager {
 
     // MARK: - Receiving
 
-    /// The sender's prekeys for opening one inbound bundle, swept first. Using a key saves the record at once.
+    /// The sender's prekeys for opening one inbound bundle, swept first, in memory. Writes nothing: what an
+    /// unauthenticated file can reach by naming a contact must not cost a save and a flush. Using a key saves the
+    /// record at once; a bundle that opens no one-time slot saves it at the end of the open (`save(_:for:)`).
     func senderPrekeys(for sender: Contact.Profile) throws -> SenderPrekeys {
-        // The sweep on receipt (D1). What it deletes is past its grace period, so it's saved and flushed at once,
-        // as a used key is.
-        if try self.sweepPrekeys(of: sender) { try self.saveAndFlush() }
-        return SenderPrekeys(record: try self.prekeyRecord(for: sender)) { [weak self] record in
+        // The sweep on receipt (D1). Expired keys can't open this bundle, since the open uses the swept record.
+        var record = try self.prekeyRecord(for: sender)
+        let legacyKeysDue = PrekeyBookkeeper().sweep(&record, now: Date())
+        return SenderPrekeys(record: record, legacyKeysDue: legacyKeysDue) { [weak self] prekeys in
             guard let self else { return }
             do {
-                try self.store(record, for: sender)
-                try self.saveAndFlush()
+                try self.save(prekeys, for: sender)
             } catch {
+                // The change stays pending in the context, so the next save writes it. The open's own save at
+                // the end retries, and throws if it fails again.
                 #if DEBUG
                 debugPrint("⚠️ A used prekey couldn't be saved out of the record — forward secrecy NOT established for this message: \(error)")
                 #endif
             }
         }
+    }
+
+    /// Writes `prekeys`' record, with the sweep applied, and flushes the log. Legacy keychain keys that were due
+    /// go first, so a failed save leaves the record saying they're retired and the unlock sweep deletes again.
+    func save(_ prekeys: SenderPrekeys, for sender: Contact.Profile) throws {
+        if prekeys.legacyKeysDue {
+            Manager.PrekeySecretsManager().deleteAllKeys(for: sender.identifier)
+            prekeys.legacyKeysDue = false
+        }
+        try self.store(prekeys.record, for: sender)
+        try self.saveAndFlush()
     }
 
     /// Accepts a batch the sender attached, through the bookkeeper's rules (Bug 158). `used` is the key the bundle
@@ -187,28 +201,35 @@ extension ContactManager {
 /// A sender's prekeys while one inbound bundle is opened: the record first, then the keychain for legacy keys.
 ///
 /// Holds the record for the whole open, so the inbound batch and any new batch land in the same record that
-/// `ContactManager` stores at the end. Using a key applies the bookkeeper's rules (delivery of the pending batch,
-/// Bug 157; retirement of older batches and legacy keys) and saves immediately, before anything can still reject
-/// the bundle (§2.2 of `SECURITY_CHECKLIST.md`). Applying those rules on a bundle later rejected is the same
-/// fail-secure trade `findAndOpenRecipientSlot` makes for consumption: only someone holding our batch can open
-/// a slot, and what they can do with it is retire keys early.
+/// `ContactManager` stores at the end. The sweep on receipt is applied to it in memory and saved with it. Using a
+/// key applies the bookkeeper's rules (delivery of the pending batch, Bug 157; retirement of older batches and
+/// legacy keys) and saves immediately, before anything can still reject the bundle (§2.2 of
+/// `SECURITY_CHECKLIST.md`). Applying those rules on a bundle later rejected is the same fail-secure trade
+/// `findAndOpenRecipientSlot` makes for consumption: only someone holding our batch can open a slot, and what
+/// they can do with it is retire keys early.
 final class SenderPrekeys: PrekeyPrivateKeys {
 
     var record: PrekeyRecord
 
     private let keychain   = Manager.PrekeySecretsManager()
     private let bookkeeper = PrekeyBookkeeper()
-    private let persist: (PrekeyRecord) -> Void
+    private let persist: (SenderPrekeys) -> Void
 
-    init(record: PrekeyRecord, persist: @escaping (PrekeyRecord) -> Void) {
-        self.record  = record
-        self.persist = persist
+    /// The sweep on receipt found the contact's legacy keychain keys past their grace period. They open nothing,
+    /// and are deleted when the record is next saved.
+    var legacyKeysDue: Bool
+
+    init(record: PrekeyRecord, legacyKeysDue: Bool, persist: @escaping (SenderPrekeys) -> Void) {
+        self.record        = record
+        self.legacyKeysDue = legacyKeysDue
+        self.persist       = persist
     }
 
     func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey? {
         if let blob = self.bookkeeper.blob(forPrekeyID: prekeyID, in: self.record) {
             return (try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob)).map(PrekeyPrivateKey.enclave)
         }
+        guard !self.legacyKeysDue else { return nil }
         return self.keychain.privateKey(forPrekeyID: prekeyID, contactID: contactID)
     }
 
@@ -227,6 +248,6 @@ final class SenderPrekeys: PrekeyPrivateKeys {
             self.keychain.consume(prekeyID: prekeyID, contactID: contactID)
         }
         self.bookkeeper.consume(prekeyID: prekeyID, in: &self.record, now: Date())
-        self.persist(self.record)
+        self.persist(self)
     }
 }

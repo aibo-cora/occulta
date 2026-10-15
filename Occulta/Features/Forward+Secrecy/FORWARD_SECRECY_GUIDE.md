@@ -124,8 +124,9 @@ slots too, whatever the sender did.
 
 `decryptSealed` (single-recipient) and `openGroup` (group), in this order:
 
-1. Identify the sender by fingerprint. `senderPrekeys(for:)` sweeps their record (saved and flushed at once if it
-   deleted anything) and returns a `SenderPrekeys` holding it.
+1. Identify the sender by fingerprint. `senderPrekeys(for:)` sweeps their record in memory, so nothing past its
+   grace period opens the bundle, and returns a `SenderPrekeys` holding it. It writes nothing: the sweep is saved
+   with the record once a slot has opened (step 3 for a one-time key, else step 7).
 2. Derive the key and open: `deriveInboundKey`, or `findAndOpenRecipientSlot` trying each slot. A `prekeyID` that
    names no one-time key is tried against each last-resort key still in the sender's record, by recomputing its
    derived ID (one HMAC each). Both report which key opened it (`InboundPrekeyUse`). A single-recipient bundle
@@ -136,9 +137,10 @@ slots too, whatever the sender did.
 4. The remaining checks: shared ciphertext, sender proof, the sender-signature gates, payload decoding.
 5. Accept the batch the sender attached (`acceptInboundBatch`).
 6. If the bundle was long-term and no batch of ours is pending, generate one (`installFreshBatch`).
-7. Store the record and save.
+7. Store the record, save and flush (`ContactManager.save(_:for:)`). This writes the receipt sweep, and retries a
+   save at step 3 that failed, throwing if it fails again.
 
-A rejected bundle still has steps 1 and 3 saved. That is the fail-secure direction: the key already derived the
+A rejected bundle still has step 3 saved. That is the fail-secure direction: the key already derived the
 wrapping key, so keeping it would keep the message openable on a seized phone. Someone holding our batch can make
 us burn its keys and deliver it early; nothing more.
 
@@ -197,7 +199,9 @@ nothing: on the first failure it throws, and the keys already made vanish with i
 keys by tag 30 days after they retired, exactly once (`legacyKeys` → `.none`). The 30 days are kept for messages
 sealed to those keys and still in transit.
 
-- **On receipt**, for the sender, before the bundle is opened (`senderPrekeys(for:)`).
+- **On receipt**, for the sender, in memory before the bundle is opened (`senderPrekeys(for:)`), so nothing past
+  its grace period opens it. Written and flushed with the record once a slot has opened; a file that opens no
+  slot writes nothing, and the next authenticated receipt or the unlock sweep deletes what was due.
 - **At unlock**, for the contacts visible at the authenticated depth, at every depth
   (`OccultaApp.sweepPrekeysIfUnlocked`), flushed by the checkpoint every unlock already takes.
 
