@@ -116,7 +116,6 @@ In-app capture (mic/camera) → immediate SE signature over the media hash + tim
 - **Standalone personal C2PA / media provenance suite:** platform momentum (C2PA in cameras and OS pipelines) will out-deliver any app-level implementation for general media; only the in-circle capture-attestation slice survives scrutiny (Candidate 4).
 - **Scam-detection AI / content classifiers:** would require either on-device models flagging message content (false-positive liability, scope creep) or network services (excluded). The Second Opinion flow (Candidate 2) achieves the useful subset with a human the user trusts.
 - **Verified introductions (transitive trust / vouching):** repeatedly tempting for growth, and repeatedly wrong — every entry in the graph is physically verified or the graph's core claim dies. Mutual-Contact Discovery (#22) corroboration remains the ceiling. Re-affirmed, not new.
-  - *Addendum (2026-10-14):* see [Introduction Cards](Introduction%20Cards/FINDINGS.md). It proposes owner-issued, single-use cards that one or more contacts may pass on without asserting anything, with the contact Not verified until a UWB exchange. It also records that the friction docs list this question as open (D1). Not decided.
 
 ---
 

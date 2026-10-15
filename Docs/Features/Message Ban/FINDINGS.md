@@ -159,11 +159,6 @@ pads membership to 32 byte-identical filler slots specifically so counts cannot 
 it rests on a negative grep. It only bites if requirement 1 is ever violated and the ban is addressed
 selectively, but it should be settled before implementation.
 
-**Added 2026-10-14: Not verified contacts.** If [Introduction Cards](../Introduction%20Cards/FINDINGS.md)
-ships, some contacts will be people the user has never met. Sending them a ban reveals the activation
-to a stranger. Not sending one leaves them free to message during the coercion window. Open; tracked
-as that doc's Q-11.
-
 ## Reception and threat-model gaps, flagged 2026-09-02
 
 Raised while assessing how this feature would land against the project's security/privacy posture.

@@ -358,18 +358,6 @@ zero-round-trip async first message — a stricter posture that is defensible
 for Occulta's threat-sensitive personas. Both variants keep every bundle
 carrier-blind; the choice only sets the authenticity floor.
 
-> **Addendum (2026-10-14):** components 1 and 4 now have a worked proposal,
-> [Introduction Cards](../Docs/Features/Introduction%20Cards/FINDINGS.md). It
-> replaces component 1's multi-use card with an owner-issued, single-use card
-> that carries its own key and a one-time prekey instead of the long-term key,
-> so the first message keeps full forward secrecy and cards can't be linked to
-> each other. It recasts component 4 so contacts pass the owner's card on,
-> through any number of hops, asserting nothing and leaving no record of the
-> route. The direct route needs no D1 decision; the carrier
-> route still does. Both still depend on the send-capable / import-only
-> decision above. Component 3 can't check card keys, so a swapped card is
-> caught only at the in-person meeting.
-
 Evaluated and shelved: PAKE / wormhole codes (interactive, and CryptoKit
 exposes no PAKE primitive — building one means rolling our own crypto);
 key-transparency logs and Keybase-style social proofs (require
