@@ -29,13 +29,18 @@ extension ContactManager {
 
     /// The prekey record between us and `contact`.
     ///
-    /// Every row has one, written at creation or by `DatabaseMigration.migratePrekeyRecords`; nil reads as empty.
+    /// Every row has one, written at creation or by `DatabaseMigration.migratePrekeyRecords`. A row without one is a
+    /// row that pass hasn't reached, because it failed at launch, so its record is carried over from the retired
+    /// field here, the same way. Reading it as empty would lose it: the first store would write a fresh record, and
+    /// the pass, which leaves a row's new field alone, would then clear the old one. A row with neither is empty.
     ///
     /// An unreadable record starts over, as it did before stage 1: the keys we held for them and the
     /// batch we were delivering are lost, and the next long-term message from them restores both. Legacy keys
     /// may still exist for them, so the fresh record says so.
     func prekeyRecord(for contact: Contact.Profile) throws -> PrekeyRecord {
-        guard let sealed = contact.prekeyRecordEncrypted else { return .empty }
+        guard let sealed = contact.prekeyRecordEncrypted else {
+            return DatabaseMigration.carriedOverPrekeyRecord(from: contact.retiredForwardSecrecyEncrypted)
+        }
         guard let plaintext = sealed.decrypt() else {
             var fresh = PrekeyRecord.empty
             fresh.legacyKeys = .inUse

@@ -227,3 +227,54 @@ struct PrekeyRecordMigrationTests {
         #expect(Set(after) == Set(before), "a second launch must leave every record byte-identical")
     }
 }
+
+/// The launch pass can fail, for one when the app starts while the local DB key is unavailable. The rows it didn't
+/// reach still have only the old field, and the session goes on: `prekeyRecord(for:)` must read them as their old
+/// record, so the first store writes that, and the pass that runs later has nothing left to lose.
+@MainActor
+@Suite("DatabaseMigration — a row the launch pass didn't reach", .serialized)
+struct PrekeyRecordUnmigratedRowTests {
+
+    private func makeContactManager() throws -> ContactManager {
+        let schema = Schema([
+            Group.self,
+            Contact.Profile.self,
+            Contact.Profile.PhoneNumber.self,
+            Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddress.self,
+            Contact.Profile.URLAddress.self,
+            Contact.Profile.Key.self,
+        ])
+        let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        return ContactManager(modelContainer: container, security: try Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
+    }
+
+    @Test("It reads as its old record, and a store then the pass keep what was used", .ambientTestKeyManager)
+    func readAsOldRecordAndKept() throws {
+        let cm = try self.makeContactManager()
+        let old = try sealedLegacyRecord(inboundIDs: [UUID().uuidString, UUID().uuidString])
+        let row = insertRow(old: old, in: cm.modelContext)
+        let carriedOver = try PrekeyRecordCodec().decode(try #require(old.decrypt()))
+
+        #expect(try cm.prekeyRecord(for: row) == carriedOver)
+
+        // A send takes one of the contact's keys, and stores the record.
+        var record = try cm.prekeyRecord(for: row)
+        #expect(PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: row.identifier) != nil)
+        try cm.store(record, for: row)
+
+        try DatabaseMigration.migratePrekeyRecords(modelContext: cm.modelContext)
+
+        let kept = try opened(row.prekeyRecordEncrypted)
+        #expect(kept == record, "the contact's other key, our pending batch and the legacy keys are all still there")
+        #expect(kept.inboundBatches.first?.keys.count == 1 && kept.ownBatches.count == 1 && kept.legacyKeys == .inUse)
+        #expect(row.retiredForwardSecrecyEncrypted == nil)
+    }
+
+    @Test("A row with neither field reads as empty, with no legacy keys", .ambientTestKeyManager)
+    func neitherReadsEmpty() throws {
+        let cm = try self.makeContactManager()
+        let row = insertRow(in: cm.modelContext)
+        #expect(try cm.prekeyRecord(for: row) == .empty)
+    }
+}
