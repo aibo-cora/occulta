@@ -356,6 +356,14 @@ The shipped rule says no bundle is rejected because of the current depth, and an
 - That puts a card redeemed from a hidden depth into the presence-oracle shape recorded 2026-08-13: a message opens from someone absent from the list. Should cards inherit that documented limitation, or behave differently?
 - Pending cards stay invisible at depths that didn't create them.
 
+**Decided 2026-10-15: cards follow their contact's depth.** The card lives on its contact (Q-05), so the contact-first flow settles most of this:
+- **Creating a card at a duress depth works.** The card belongs to a contact visible at that depth. Nothing in the card records a depth.
+- **A hidden contact's active card is hidden with it.**
+- **The receive path tries every active card regardless of depth,** as `identifyOwner` matches hidden contacts.
+- **Cards inherit the documented presence-oracle limitation, with no new leak shape.** A hidden contact's card used at a duress depth opens a message from a contact absent from the list. That's the presence oracle accepted on 2026-08-13 for any hidden contact (`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). The earlier question of which depth a new card contact appears at no longer arises, because the contact exists before the card.
+- **Expiry is checked when a message arrives, at every depth.** A cleanup that only ran on visible contacts would leave a hidden contact's card usable for longer than a day.
+- **Cleanup overwrites the card field with random filler of the same size.** It leaves no change on disk.
+
 ### Q-04 · Can a card file be unrecognisable?
 
 A card shared directly ends up in another app's storage. If it starts with an Occulta marker, it's the "I use Occulta" evidence that Sweep 4 and `Remote Key Exchange/FINDINGS.md` D-08 warn about. Can a card look like random bytes and still be importable? For example, the app could recognise it by trying it, the way the receive path tries pending cards.
@@ -507,7 +515,7 @@ The two modes are decided (§4). These details are not:
 - the contact stays Not verified until a UWB exchange;
 - the warnings above appear at every point where something can go wrong.
 
-**Q-01 is decided: carriers are allowed.** Next decide Q-03 (duress) and Q-08 (card key), which settle most of the engineering.
+**Q-01 and Q-03 are decided.** Q-08 (card key) settles most of what's left of the engineering.
 
 The direct route is also the better form of Sweep 4's contact card (D-05), with or without a carrier.
 
@@ -519,7 +527,7 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
 
 - ~~Answer Q-01 and align the four docs that disagree on D1.~~ Done 2026-10-15.
 - ~~Answer Q-02 (D2).~~ Done 2026-10-15: send-capable.
-- Rule on Q-03 with the same discipline applied to `originDepth`.
+- ~~Rule on Q-03 with the same discipline applied to `originDepth`.~~ Done 2026-10-15.
 - Confirm Q-08.
 
 **If pursued:**
@@ -541,7 +549,9 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
   - an expired or cancelled card leaves no keys behind;
   - creating a new card for a contact cancels the old one and deletes its keys (§3);
   - resetting a card contact deletes the card conversation's keys and returns the contact to pending (§3);
-  - the exchange completes on a mismatch, and the card keys are deleted on both sides (§5).
+  - the exchange completes on a mismatch, and the card keys are deleted on both sides (§5);
+  - a hidden contact's active card is tried and redeemed at a duress depth (Q-03);
+  - an expired card is refused on arrival at every depth, and cleanup leaves the row the same size (Q-03).
 - Update `README.md` claims in the same change that makes the feature reachable (Q-01).
 
 ---
