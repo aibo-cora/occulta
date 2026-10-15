@@ -4,7 +4,7 @@
 **Origin:** Design discussion, 2026-10-14. The question raised was whether a contact's *encryption* key could be vouched for, rather than their identity key, so that people we introduce can encrypt to them, marked unverified until they meet. It was assessed against the no-vouching rulings, Sweep 4's trust ladder and the shipped receive path, then reshaped into owner-issued, single-use cards.
 **Relation to earlier plans:** this is a worked design for Sweep 4 components 1 and 4 (`Friction/USER_ENGAGEMENT_FRICTION.md:284`). It replaces component 1's card and recasts component 4, so the mutual contact carries a card and asserts nothing. Every earlier plan it touches is listed in [Relationship to earlier plans](#relationship-to-earlier-plans), and each one points back here.
 **Decided so far (2026-10-14):** the carrier is never named on the recipient's phone (Q-07). A card may reach its recipient directly or through any number of carriers, and the issuer chooses a named or an open card when creating it (§4). Two ways of recording the route were considered and not adopted ([Considered and not adopted](#considered-and-not-adopted)).
-**Decided 2026-10-15:** the carrier route is allowed, because it grants no trust (Q-01). A card contact can send before meeting (Q-02). **v1 is direct only.** A card is created from a pending contact's details. Each contact has at most one active card, and only the active card is listed. At the meeting, the exchange runs from the contact's details and checks the earlier conversation (§3–§5, Q-10). Carriers of any length and open cards are deferred until direct cards ship (§4). One "Not verified" badge for every route, with no route text and no stored route kind (Q-07). For a Not verified contact the secrecy indicator drops its green and the trust line sits above it (Q-09).
+**Decided 2026-10-15:** the carrier route is allowed, because it grants no trust (Q-01). A card contact can send before meeting (Q-02). **v1 is direct only.** A card is created from a pending contact's details. Each contact has at most one active card, stored on the contact, with no limit across the app. Cards expire after 1 day. Only the active card is listed (Q-05). At the meeting, the exchange runs from the contact's details and checks the earlier conversation (§3–§5, Q-10). Carriers of any length and open cards are deferred until direct cards ship (§4). One "Not verified" badge for every route, with no route text and no stored route kind (Q-07). For a Not verified contact the secrecy indicator drops its green and the trust line sits above it (Q-09).
 
 Names used below: **Bob** issues a card. **Carol** receives it and has never met Bob. **Alice** is a verified contact of Bob's who may carry the card. **Dave** is a later carrier whom Bob may not know.
 
@@ -122,11 +122,11 @@ A hiding commitment instead of a signature, `SHA-256(identityPub ‖ nonce)` wit
 
 A card belongs to a contact Bob already has but hasn't exchanged keys with. The app already has these: a contact with no keys shows as "pending" (`Contacts+DesignTokens.swift:115`).
 
-1. **Bob creates a card from the contact's details.** It is stored as a pending card attached to that contact: an encrypted, fixed-size record. It holds the private halves of the card key, prekey and ML-KEM key, as Enclave blobs (as prekeys are held under Prekey Continuity D9). **A contact has at most one active card.** Creating a new one cancels the old one and deletes its record and keys. Otherwise two cards for Carol could both be used, one by Carol and one by whoever intercepted the other, and two conversations would claim the same contact.
+1. **Bob creates a card from the contact's details.** It is stored in a fixed-size encrypted field on the contact record, which every contact has (Q-05). The field holds the private halves of the card key, prekey and ML-KEM key, as Enclave blobs (as prekeys are held under Prekey Continuity D9). **A contact has at most one active card.** Creating a new one cancels the old one and deletes its record and keys. Otherwise two cards for Carol could both be used, one by Carol and one by whoever intercepted the other, and two conversations would claim the same contact.
 2. **Bob shares it** through any channel he chooses (§4, W-02).
 3. **Carol imports it.** She attaches it to one of her own pending contacts, or creates a new one. Either way the contact is Not verified.
 4. **Carol sends a first message.** It is sealed in forward-secret mode to the card's prekey, with ML-KEM encapsulated to the card's key. The payload carries Carol's own new card key, a prekey batch and an ML-KEM encapsulation key, all signed with her card key. That signature plays the role the sender's ephemeral signature plays for last-resort sealing in groups (`Prekey Continuity/DESIGN.md` §3.1). Without it, anyone holding the card could claim any card key, and §5 couldn't tell who wrote the first message.
-5. **Bob's phone recognises it.** When `identifyOwner` matches no contact, the receive path tries Bob's pending cards before failing. The number of pending cards is capped, so this is cheap. If a card opens, its prekey is consumed and the pending card removed, following the rule that a prekey is consumed as soon as it opens a bundle (`SECURITY_CHECKLIST.md` §2). The conversation attaches to the contact the card was made from, which becomes Not verified.
+5. **Bob's phone recognises it.** When `identifyOwner` matches no contact, the receive path tries Bob's pending cards before failing. There is no cap on the number of active cards, but each one expires after a day, so few are active at once and the cost stays small (Q-05). If a card opens, its prekey is consumed and the pending card removed, following the rule that a prekey is consumed as soon as it opens a bundle (`SECURITY_CHECKLIST.md` §2). The conversation attaches to the contact the card was made from, which becomes Not verified.
 6. **Bob replies.** He uses Carol's prekeys and encapsulates to her ML-KEM key. After these two messages the pair holds two ML-KEM secrets, as after a ceremony, and forward secrecy works per contact as it does for verified contacts.
 7. **The card is spent.** From here on the conversation runs on the two card keys and the prekeys exchanged inside it, until they meet (§5).
 8. **Ending without a meeting.** An unused card expires or Bob cancels it, and its record and keys are deleted. If Carol tells Bob, through another channel, that her message never arrived, then the message that did arrive came from someone else. **Bob resets the contact** (W-15): the card conversation's keys are deleted, the contact returns to pending, and he can make a new card.
@@ -280,7 +280,7 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 | Seizes two phones holding cards from the same issuer | Two unrelated keys. Verified contacts all hold one identity key, so cards are less linkable than verified contacts. |
 | Seizes a carrier's phone | Nothing of the card once it was passed on. With the phone unlocked, they can give the carrier's contacts fake cards. That reach is limited to that contact list, and each fake is caught at its in-person check. |
 | Holds a copy of a card anywhere on its route | The same bytes at every hop. Nothing shows who carried it or how many people did. |
-| Images the issuer's phone | Pending cards are encrypted, fixed-size rows. Their number is visible unless slots are preallocated (Q-05). |
+| Images the issuer's phone | Every contact record carries a fixed-size encrypted card field, filled with random bytes when there's no card. The number of active cards isn't visible (Q-05). |
 | Coerces the issuer at a duress depth | Q-03. |
 
 ---
@@ -384,6 +384,18 @@ A card shared directly ends up in another app's storage. If it starts with an Oc
 ### Q-05 · Pending-card storage
 
 The cap and the expiry are product choices; 8 cards and 14 days are placeholders. Since 2026-10-15 a contact has at most one active card (§3), so the cap limits how many contacts can have an active card at the same time. The row count is visible on disk. Preallocated fixed slots would hide it, which is the same question the soft-delete cap answers for contacts.
+
+**Decided 2026-10-15:**
+
+- **The card lives on the contact.** Every contact record carries a fixed-size encrypted card field:
+  - with no card, it holds random filler;
+  - with an active card, it holds the card's private keys and its expiry;
+  - with a card conversation, it holds the two card keys.
+
+  Every row is the same size, so the number of active cards isn't visible on disk, and no separate table is needed. The structure itself enforces one active card per contact. The card also lives at the same depth as its contact, which helps with Q-03. (The comparison above to a "soft-delete cap" points to nothing defined in the docs or the code, so it no longer applies.)
+- **One active card per contact, with no limit across the app.** The limit covers unused cards only. Not verified contacts with a conversation in progress are ordinary contacts and aren't limited.
+- **Cards expire after 1 day, fixed, with no picker.** That day is how long Carol has to import the card and send her first message, and also how long someone who intercepted it has to use it. After the first message, the conversation has no time limit. Bob's phone enforces the expiry by deleting the card's keys, so a late first message fails like any message that can't be opened. If Carol misses the day, Bob makes a new card.
+- **What the receive path costs.** With no overall cap, each message from an unknown sender is tried against every active card. The 1-day expiry keeps that number small in practice.
 
 ### Q-06 · iOS 18.6–25
 
