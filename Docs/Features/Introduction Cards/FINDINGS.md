@@ -94,6 +94,17 @@ What this preserves:
 
 **Rejected alternative: put the identity key on the card.** It's much simpler, since existing code works and the in-person upgrade is a key comparison. It also allows checks before the two people meet: mutual contacts already hold Bob's real key, so gossip (Sweep 4 component 3) and `#22` corroboration could catch a swapped card early. It costs all four properties above. Q-08 records this trade so it gets decided, not drifted into.
 
+**Rejected alternative: sign the card with the identity key, with a nonce** (raised 2026-10-15). It costs the same four properties as putting the key on the card, and gives Carol nothing she can check:
+
+- **Carol can't verify it.** She doesn't hold Bob's identity key until they meet.
+- **The signature exposes the key.** CryptoKit signs with ECDSA, and an ECDSA signature plus the signed message yields the signer's public key, up to a couple of candidates. So two seized cards link to each other and to Bob, and `#22` probing works again.
+- **It leaves proof on someone else's phone.** Carol's phone would hold a non-repudiable proof that Bob issued the card, outside his duress depths and checkable by anyone who holds his key.
+- **The nonce changes nothing.** It changes the signed message, not the key, so the key can still be recovered. A card doesn't need it to be unique either: the card key is new and the one-time prekey makes it single-use.
+
+The in-person check (§5) already makes this link, and makes it only when they meet.
+
+A hiding commitment instead of a signature, `SHA-256(identityPub ‖ nonce)` with the nonce revealed at the meeting, would be unlinkable but proves nothing. Alice holds Bob's identity key, so she could put the same commitment on a swapped card, and only the §5 card-key signature would catch it.
+
 ### 2. What a card contains
 
 | Field | Why |
