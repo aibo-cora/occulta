@@ -275,7 +275,7 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 
 | Observer | What they learn |
 |---|---|
-| Finds a card file (another app's backup, a Files folder) | Three public keys, an expiry and a signature. No name and no identity key. Whether the file reveals Occulta is Q-04. An unused, unexpired card can be used once. |
+| Finds a card file (another app's backup, a Files folder) | Three public keys, an expiry and a signature. No name and no identity key. Nothing in the file names Occulta (Q-04), but someone who knows the format can confirm it's a card by verifying its signature. An unused, unexpired card can be used once. |
 | Seizes the recipient's phone | A Not verified contact under a card key, with no record of how the card arrived. It can't be connected to the issuer's identity key or to other cards. The seizer can message the issuer as that contact, as with any contact on a seized phone. |
 | Seizes two phones holding cards from the same issuer | Two unrelated keys. Verified contacts all hold one identity key, so cards are less linkable than verified contacts. |
 | Seizes a carrier's phone | Nothing of the card once it was passed on. With the phone unlocked, they can give the carrier's contacts fake cards. That reach is limited to that contact list, and each fake is caught at its in-person check. |
@@ -359,6 +359,27 @@ The shipped rule says no bundle is rejected because of the current depth, and an
 ### Q-04 · Can a card file be unrecognisable?
 
 A card shared directly ends up in another app's storage. If it starts with an Occulta marker, it's the "I use Occulta" evidence that Sweep 4 and `Remote Key Exchange/FINDINGS.md` D-08 warn about. Can a card look like random bytes and still be importable? For example, the app could recognise it by trying it, the way the receive path tries pending cards.
+
+**Decided 2026-10-15: unbranded for v1.**
+- **The file:** no magic bytes, no file extension, no registered file type, and a generic file name.
+- **How the app recognises it:** the bytes parse, and the card's own signature verifies under its domain-separation label (§2).
+- **How Carol imports it:**
+  - through Occulta's share extension (`ShareExtension/`), which accepts generic data;
+  - or with an Import card button inside the app.
+
+  There is no "Open in Occulta" from a chat.
+
+**Rule for any future unbranded format.** Each format is recognised by its own authenticity check, never by a marker:
+- **Each check passes for its own format only.** Every check uses its own domain-separation label, so a card's signature can't verify as another format, and the reverse.
+- **The app tries the checks in turn,** and the one that passes says what the file is.
+- **Versions follow the same rule.** A new version gets a new label, and the app tries each version's check. There is no version byte, so the list stays short. Each check is a single signature verification or trial decryption.
+- **Every format and version gets its own vectors** in `OccultaTests/Interop/InteropVectors.json`.
+
+**Limits (open, needs a decision).** Unbranded stops detection by marker: scanners, backup indexing, someone glancing at the file. It doesn't stop an analyst who knows the format:
+- **The signature can be tested.** It has to verify for anyone, because Carol has nothing else to check it against. So anyone who knows the format can verify a suspect file and know for certain that it's an Occulta card.
+- **The bytes aren't uniformly random.** The size is fixed, and the ML-KEM key's packed coefficients are below q, which a statistical test detects. A uniform encoding (Kemeleon-style) would remove the second part.
+
+**Possible later option: a code-encrypted card.** Bob encrypts the card under a short code he tells Carol separately. Only someone who has the code can recognise or use the card. It costs a second channel and an extra step, so it isn't in v1.
 
 ### Q-05 · Pending-card storage
 
