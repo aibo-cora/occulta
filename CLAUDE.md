@@ -135,7 +135,8 @@ Enclave — they exercise the real `Manager.Key` or create prekeys through `Prek
 private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `DuressModePrekeyTests`, `PrekeySecretsManagerTests`, `ForwardSecrecyIntegrationTests`,
 `PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the five suites in that file),
-`PrekeyGenerationMeasurementTests`, the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
+`PrekeyGenerationMeasurementTests`, `IdentityChallengeGroupForwardSecretTests` (a challenge on a forward-secret
+slot needs a prekey this device holds), the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
 and four tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
 (`decryptSealed` calls `installFreshBatch` when a fallback message arrives with no

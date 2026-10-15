@@ -12864,8 +12864,9 @@ embedded. With the exclusions reverted it fails and names exactly the six.
 
 ## Bug 155 — An identity challenge makes each side generate a fresh prekey batch while the other still has keys
 
-**Status:** Open — fix decided 2026-10-07, not yet built. Found 2026-10-06 reviewing the prekey batch lifecycle
-(Bugs 155–160 come from that review).
+**Status:** Fixed 2026-10-15 on `v2.0.0/prekey-stage-3` (prekey continuity stage 3), not yet merged; ships in 2.0.0.
+The old-path shard case below stays open. Found 2026-10-06 reviewing the prekey batch lifecycle (Bugs 155–160 come
+from that review).
 
 **Target:** `v2.0.0`. Present since the identity challenge shipped (`b63b5daa`, 2026-04-15).
 
@@ -12897,10 +12898,14 @@ Both candidates, by contact version (`Docs/Features/Prekey Continuity/DESIGN.md`
 
 The old-path shard case (contacts below 1.9.0) is not covered by either and stays open.
 
+Built 2026-10-15 as decided: `decryptSealed` skips `replenish` when the payload carries `identityChallenge`, and
+challenges to contacts at `.bodyDigestCapable` go in group format, where `openGroup` still makes a batch for a
+long-term slot, since there it does mean the contact is out of our keys.
+
 ### Guard
 
-None yet. Needed: open an identity-challenge bundle through `decryptSealed` for a sender with no pending batch
-and assert none is created.
+`IdentityChallengeMakesNoBatchTests`: a long-term challenge and a long-term response through `decryptSealed`, from a
+sender with no pending batch, create none. Both fail with the skip removed.
 
 ## Bug 156 — Unused prekeys are never removed from the Secure Enclave
 
