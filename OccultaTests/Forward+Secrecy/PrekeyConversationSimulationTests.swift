@@ -11,6 +11,11 @@
 //  After every step both records are checked against the limits the fixed 16 KB record is budgeted for, and every
 //  message must open: a one-time key the receiver still holds, used once, or the receiver's last-resort key.
 //
+//  Nothing marks a key expired: a receiver's batch retires when the sender first uses a newer one, and the sweep at
+//  unlock deletes it 30 days later. What keeps a sender off an expired key is structural, so it's checked after
+//  every step too: every key a phone holds for the other, one-time or last-resort, is one the other still holds in a
+//  batch that hasn't retired. Long silences run the sweep on both phones.
+//
 //  `PrekeyConversationTests` drives the same conversations through the real send and receive paths.
 //
 
@@ -82,6 +87,7 @@ private struct Conversation {
         self.records[side] = record
         self.log[side, default: []].append(sealedTo)
         try Self.checkLimits(record)
+        try self.checkHeldKeysAreLive()
         return Message(from: side, sealedTo: sealedTo, batch: batch)
     }
 
@@ -102,8 +108,7 @@ private struct Conversation {
             }
             self.bookkeeper.consume(prekeyID: id, in: &record, now: self.now)
         case .lastResort(let keyID):
-            let bytes = try #require(UUID(uuidString: keyID)).uuid
-            let id = withUnsafeBytes(of: bytes) { Data($0) }
+            let id = try Self.idBytes(keyID)
             guard record.ownBatches.contains(where: { $0.lastResort?.id == id && $0.lastResort?.blob != nil }) else {
                 throw Unopenable(description: "\(receiver) no longer holds last-resort key \(keyID)")
             }
@@ -131,10 +136,45 @@ private struct Conversation {
 
         self.records[receiver] = record
         try Self.checkLimits(record)
+        try self.checkHeldKeysAreLive()
         if self.expectsNoUnusedRetiredKeys {
             let unused = record.ownBatches.filter { $0.retiredAt != nil }.reduce(0) { $0 + $1.keys.count }
             #expect(unused == 0, "\(receiver)'s retired batches hold \(unused) keys the contact never used")
         }
+    }
+
+    /// Days with no messages, ending in an unlock on both phones, which sweeps what the grace period no longer
+    /// protects (`ContactManager.sweepPrekeys`).
+    mutating func silence(days: Int) throws {
+        self.now += TimeInterval(days) * 24 * 60 * 60
+        for side in [Side.alice, .bob] {
+            var record = try #require(self.records[side])
+            _ = self.bookkeeper.sweep(&record, now: self.now)
+            self.records[side] = record
+        }
+        try self.checkHeldKeysAreLive()
+    }
+
+    /// Every key a phone holds for the other is one the other still holds, in a batch that hasn't retired: a sender is
+    /// never left with an expired key, though nothing on its side marks one.
+    func checkHeldKeysAreLive() throws {
+        for holder in [Side.alice, .bob] {
+            let held = try #require(self.records[holder])
+            let owner = try #require(self.records[holder.other])
+            let live = owner.ownBatches.filter { $0.retiredAt == nil }
+            let liveOneTime = Set(live.flatMap { $0.keys.filter { $0.blob != nil }.map(\.id) })
+            let liveLastResort = Set(live.compactMap { $0.lastResort?.blob != nil ? $0.lastResort?.id : nil })
+            for key in held.inboundBatches.flatMap(\.keys) {
+                #expect(liveOneTime.contains(try Self.idBytes(key.id)), "\(holder) holds a one-time key \(holder.other) has retired or deleted")
+            }
+            if let lastResort = held.inboundLastResort {
+                #expect(liveLastResort.contains(try Self.idBytes(lastResort.id)), "\(holder) holds a last-resort key \(holder.other) has retired or deleted")
+            }
+        }
+    }
+
+    static func idBytes(_ uuidString: String) throws -> Data {
+        withUnsafeBytes(of: try #require(UUID(uuidString: uuidString)).uuid) { Data($0) }
     }
 
     /// One message, sent and delivered at once.
@@ -232,9 +272,30 @@ struct PrekeyConversationSimulationTests {
         #expect(sent.dropFirst(held).allSatisfy(isLastResort))
         #expect(Set(sent.dropFirst(held).map { "\($0)" }).count == 1, "one last-resort key throughout")
 
+        // Bob doesn't answer for 40 days. His batch never retired, so the sweep leaves the key Alice is using.
+        try conversation.silence(days: 40)
+        try conversation.exchange(from: .alice)
+        #expect(conversation.log[.alice]?.last.map(isLastResort) == true)
+
         try conversation.exchange(from: .bob)
         try conversation.exchange(from: .alice)
         #expect(conversation.log[.alice]?.last.map(isOneTime) == true)
+    }
+
+    /// The unlock-time sweep deletes only retired batches, so a conversation picks up after weeks of silence on the keys
+    /// both phones held before it.
+    @Test("Alternating, with 40 days' silence every 50 messages: the sweeps delete nothing either phone still needs")
+    func silences() throws {
+        var conversation = Conversation()
+        try conversation.warmUp()
+        conversation.expectsNoUnusedRetiredKeys = true
+        for round in 0..<1_000 {
+            if round.isMultiple(of: 50) { try conversation.silence(days: 40) }
+            try conversation.exchange(from: .alice)
+            try conversation.exchange(from: .bob)
+        }
+        #expect(conversation.count(.alice, isOneTime) == 1_000)
+        #expect(conversation.count(.bob, isOneTime) == 1_000)
     }
 
     /// Every seventh message is never delivered, either way. A batch rides every message until delivered, so losing
@@ -271,7 +332,8 @@ struct PrekeyConversationSimulationTests {
         #expect(conversation.count(.bob, { $0 == .longTerm }) == 0)
     }
 
-    /// Random bursts of 1–15 either way, a delay of up to 6 messages per direction, and one message in twenty lost.
+    /// Random bursts of 1–15 either way, a delay of up to 6 messages per direction, one message in twenty lost, and now
+    /// and then weeks of silence ending in the sweep.
     @Test("Random conversations: every delivered message opens, never long-term after the first exchange",
           arguments: [11, 12, 13, 14, 15] as [UInt64])
     func random(seed: UInt64) throws {
@@ -290,6 +352,14 @@ struct PrekeyConversationSimulationTests {
                     for message in inFlight[direction, default: []].shuffled(using: &generator) { try conversation.deliver(message) }
                     inFlight[direction] = []
                 }
+            }
+            // Now and then weeks pass: everything in transit arrives first, as within the 30 days' grace.
+            if Int.random(in: 0..<25, using: &generator) == 0 {
+                for direction in [Side.alice, .bob] {
+                    for message in inFlight[direction, default: []].shuffled(using: &generator) { try conversation.deliver(message) }
+                    inFlight[direction] = []
+                }
+                try conversation.silence(days: Int.random(in: 31...90, using: &generator))
             }
         }
         #expect(conversation.count(.alice, { $0 == .longTerm }) == 0)

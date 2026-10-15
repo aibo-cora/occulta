@@ -710,3 +710,65 @@ struct PrekeyBookkeeperRefillTests {
         #expect(self.bookkeeper.needsRefill(record), "the retired batch's 14 leftovers don't count")
     }
 }
+
+@Suite("PrekeyBookkeeper — when a last-resort key expires")
+struct PrekeyBookkeeperLastResortExpiryTests {
+
+    let bookkeeper = PrekeyBookkeeper()
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// Whether the record can still open a bundle sealed to the last-resort key `keyID`.
+    private func opens(lastResort keyID: String, in record: PrekeyRecord) throws -> Bool {
+        let ephemeral = randomBytes(65)
+        let prekeyID = try #require(OccultaBundle.SecrecyContext.lastResortPrekeyID(keyID: keyID, ephemeralPublicKey: ephemeral))
+        return self.bookkeeper.lastResort(matchingPrekeyID: prekeyID, ephemeralPublicKey: ephemeral, in: record) != nil
+    }
+
+    /// Batch 1 delivered, then batch 2 delivered, which retires batch 1 at `start`. Returns batch 1's last-resort ID.
+    private func retiredFirstBatch(in record: inout PrekeyRecord) throws -> String {
+        self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: self.start)
+        let first = try #require(self.bookkeeper.pendingBatch(in: record))
+        for key in first.prekeys { self.bookkeeper.consume(prekeyID: key.id, in: &record, now: self.start) }
+        self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: self.start)
+        let second = try #require(self.bookkeeper.pendingBatch(in: record)?.prekeys.first?.id)
+        self.bookkeeper.consume(prekeyID: second, in: &record, now: self.start)
+        #expect(record.ownBatches.first?.retiredAt == self.start)
+        return try #require(first.lastResort?.id)
+    }
+
+    @Test("A retired batch's last-resort key opens for 30 days, and is deleted with its batch after")
+    func sweptAfterGrace() throws {
+        var record = PrekeyRecord.empty
+        let keyID = try self.retiredFirstBatch(in: &record)
+
+        _ = self.bookkeeper.sweep(&record, now: self.start.addingTimeInterval(29 * day))
+        #expect(try self.opens(lastResort: keyID, in: record), "a message sealed to it may still be in transit")
+
+        _ = self.bookkeeper.sweep(&record, now: self.start.addingTimeInterval(30 * day))
+        #expect(try !self.opens(lastResort: keyID, in: record))
+        #expect(record.ownBatches.count == 1)
+    }
+
+    /// A contact who never replies never moves us on, so the batch never retires: its last-resort key is kept for as
+    /// long as they may still seal to it (§3.1).
+    @Test("The last-resort key of a batch that hasn't retired is never swept, however old")
+    func liveBatchNeverSwept() throws {
+        var record = PrekeyRecord.empty
+        self.bookkeeper.install(generated(15), lastResort: randomBytes(143), into: &record, now: self.start)
+        let batch = try #require(self.bookkeeper.pendingBatch(in: record))
+        self.bookkeeper.consume(prekeyID: batch.prekeys[0].id, in: &record, now: self.start)
+
+        _ = self.bookkeeper.sweep(&record, now: self.start.addingTimeInterval(10 * 365 * day))
+        #expect(try self.opens(lastResort: try #require(batch.lastResort?.id), in: record))
+    }
+
+    @Test("A message on a retired batch's last-resort key, within the grace period, makes no new batch")
+    func retiredKeyMakesNoBatch() throws {
+        var record = PrekeyRecord.empty
+        let keyID = try self.retiredFirstBatch(in: &record)
+        let before = record
+
+        #expect(!self.bookkeeper.useLastResort(keyID: keyID, in: &record, now: self.start.addingTimeInterval(day)))
+        #expect(record == before, "a late message changes nothing")
+    }
+}

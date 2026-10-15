@@ -212,6 +212,33 @@ private struct Pair {
         #expect(pair.alice.log.last == .forwardSecret)
     }
 
+    /// Nothing marks a key expired: Bob's batch retires when Alice first uses his next one, and the sweep at unlock
+    /// deletes it 30 days later, last-resort key included. Two messages sealed to that last-resort key are held back
+    /// while it retires: one arrives within the 30 days and opens; the other arrives after the sweep and can't.
+    @Test("A message on a retired last-resort key opens within 30 days, and not after the sweep")
+    func retiredLastResortGrace() throws {
+        let pair = try Pair()
+        try pair.warmUp()
+        for _ in 0..<14 { try pair.exchange(from: pair.alice) }
+        let late = try pair.alice.send()
+        let tooLate = try pair.alice.send()
+        #expect(pair.alice.log.suffix(2) == [.temporaryKey, .temporaryKey])
+
+        // Bob's reply carries the batch he made when Alice was down to 5 of his keys; her next message uses it, which
+        // retires his first batch, the one whose last-resort key the held messages are sealed to.
+        try pair.exchange(from: pair.bob)
+        try pair.exchange(from: pair.alice)
+        #expect(pair.alice.log.last == .forwardSecret)
+        #expect(try pair.bob.record.ownBatches.first?.retiredAt != nil)
+
+        try pair.bob.receive(late)
+        try pair.bob.run {
+            try pair.bob.contactManager.sweepPrekeys(of: try pair.bob.contact, now: Date().addingTimeInterval(31 * 86_400))
+            try pair.bob.contactManager.modelContext.save()
+        }
+        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try pair.bob.receive(tooLate) }
+    }
+
     @Test("Alternating with one message in seven lost: every delivered message opens, all on one-time keys")
     func lostMessages() throws {
         let pair = try Pair()
