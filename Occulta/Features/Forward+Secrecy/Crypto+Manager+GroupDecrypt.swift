@@ -216,7 +216,13 @@ extension Manager.Crypto {
     /// is exactly what a legitimate 1.10.0-era sender would have produced. **The bare arm is
     /// transitional and should be removed once 1.10.0/1.10.1 are out of circulation** — until
     /// then the domain separation constrains what new senders emit, not what receivers accept.
-    func verifySenderEphemeralSignature(_ signature: Data, ephemeralPublicKey: Data, senderPublicKey: Data) -> Bool {
+    ///
+    /// `acceptsBareForm: false` drops that arm where no sender can need it: an identity challenge in group
+    /// format comes only from a 2.0.0 build, which signs the prefixed form for any recipient at 1.10.2 or later
+    /// (prekey continuity §3.4).
+    func verifySenderEphemeralSignature(
+        _ signature: Data, ephemeralPublicKey: Data, senderPublicKey: Data, acceptsBareForm: Bool = true
+    ) -> Bool {
         guard senderPublicKey.count == 65 else { return false }
         let attrs: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
@@ -236,6 +242,6 @@ extension Manager.Crypto {
         }
 
         return verify(Self.ephemeralSignaturePayload(ephemeralPublicKey))
-            || verify(ephemeralPublicKey)
+            || (acceptsBareForm && verify(ephemeralPublicKey))
     }
 }

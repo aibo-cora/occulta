@@ -1776,7 +1776,8 @@ extension ContactManager {
         ownerID:                  String,
         groupID:                  UUID,
         recipientShardOperations: [OccultaBundle.ShardOperation]?,
-        recipientCustodyManifest: [UUID]?
+        recipientCustodyManifest: [UUID]?,
+        challenge:                IdentityChallenge.Authenticated?
     ) {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
@@ -1870,10 +1871,32 @@ extension ContactManager {
         let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
         let decoded     = try WireHandle.decode(payload: payloadData)
 
-        // An identity challenge in a group body always needs the digest: no sender puts one there without it
-        // (prekey continuity §3.4), and an older sender's group bundle is exactly what a recipient would rewrite.
-        if decoded.identityChallenge != nil, recipientPayload.bodyDigest == nil {
-            throw GroupDecryptError.missingBodyDigest
+        // ── 5.1. An identity challenge or response: authenticated here, or not at all ──
+        // Only a 2.0.0 sender puts one in a group body (prekey continuity §3.4), so it must carry what every such
+        // sender sends: the body digest, since an older sender's group bundle is exactly what a recipient would
+        // rewrite (`bugs.md` Bug 165); and on a forward-secret slot, the sender's signature over its ephemeral key
+        // in the prefixed form, whatever tier is recorded. Unsigned is refused here even from a contact with no tier
+        // recorded, which the gate in 3.5 lets through for messages. `IdentityChallenge.Authenticated` can only be
+        // built in this file, so nothing else can hand the coordinator an envelope as if it had passed these checks.
+        let challenge: IdentityChallenge.Authenticated?
+        if let identityChallenge = decoded.identityChallenge {
+            guard recipientPayload.bodyDigest != nil else { throw GroupDecryptError.missingBodyDigest }
+            if isFSMode {
+                // The signature verified in `findAndOpenRecipientSlot` against our slot's ephemeral key, in either
+                // form. Our slot isn't reported back, so look for a slot whose key it verifies in the prefixed
+                // form: only ours can, since the signature is over that key.
+                guard let signature = recipientPayload.senderEphemeralSignature,
+                      envelope.recipients.contains(where: {
+                          cryptoOps.verifySenderEphemeralSignature(
+                              signature, ephemeralPublicKey: $0.secrecyContext.ephemeralPublicKey,
+                              senderPublicKey: senderPublicKey, acceptsBareForm: false
+                          )
+                      })
+                else { throw GroupDecryptError.missingSenderEphemeralSignature }
+            }
+            challenge = IdentityChallenge.Authenticated(identityChallenge)
+        } else {
+            challenge = nil
         }
 
         // A body claiming a build that always sends the digest, without one, isn't from that build: it's a rewrite
@@ -1954,7 +1977,23 @@ extension ContactManager {
             sender.identifier,
             groupID,
             recipOps.isEmpty ? nil : recipOps,
-            recipManifest
+            recipManifest,
+            challenge
         )
+    }
+}
+
+extension IdentityChallenge {
+    /// An identity challenge or response that arrived in a group body and passed `openGroup`'s checks: its slot
+    /// opened, the body matches the slot's digest, and a forward-secret slot carries the sender's signature in the
+    /// prefixed form. `Coordinator.handleAuthenticatedChallenge` trusts it without reopening the bundle with the
+    /// long-term key, so it's built nowhere but `openGroup`: the initializer is private to this file
+    /// (prekey continuity §3.4).
+    struct Authenticated {
+        let envelope: IdentityChallengeEnvelope
+
+        fileprivate init(_ envelope: IdentityChallengeEnvelope) {
+            self.envelope = envelope
+        }
     }
 }

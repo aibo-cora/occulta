@@ -132,13 +132,15 @@ extension IdentityChallenge {
 
         // MARK: - Inbound: route a decrypted SealedPayload
 
-        /// Called by the inbound `.occ` pipeline in `OccultaApp` when the
-        /// decoded `SealedPayload.identityChallenge` is non-nil. The sender's
-        /// `Contact.Profile` is resolved at the call site (by `ownerID` from
+        /// Called by the inbound `.occ` pipeline in `OccultaApp` for a one-to-one
+        /// bundle whose decoded `SealedPayload.identityChallenge` is non-nil. The
+        /// sender's `Contact.Profile` is resolved at the call site (by `ownerID` from
         /// `decryptSealed`) and passed in directly.
         ///
         /// Re-opens the bundle through its own ECDSA/AAD checks as
         /// defense-in-depth — we do NOT trust the pre-decrypted payload alone.
+        /// `decryptSealed`'s forward-secret bundles carry no sender binding, so
+        /// that reopening is what authenticates the sender here.
         ///
         /// - Returns: `true` if the bundle was consumed by identity-challenge
         ///   handling. `false` if the envelope was absent (caller falls through
@@ -148,6 +150,46 @@ extension IdentityChallenge {
             bundle:   OccultaBundle,
             envelope: IdentityChallengeEnvelope,
             sender:   Contact.Profile
+        ) -> Bool {
+            self.route(
+                envelope.kind, from: sender,
+                challenge: { key, quantum, id, name in
+                    try self.manager.decryptChallenge(
+                        bundle: bundle, senderKey: key, senderQuantum: quantum, senderID: id, senderName: name
+                    )
+                },
+                response: { key, quantum, id in
+                    try self.manager.verifyResponse(bundle: bundle, senderKey: key, senderQuantum: quantum, senderID: id)
+                }
+            )
+        }
+
+        /// Called for a challenge or response that arrived in a group body. `ContactManager.openGroup` already
+        /// opened and authenticated it (prekey continuity §3.4), and `IdentityChallenge.Authenticated` can only be
+        /// built there, so it isn't reopened with the long-term key: a group bundle never opens that way.
+        @discardableResult
+        func handleAuthenticatedChallenge(
+            _ challenge: IdentityChallenge.Authenticated,
+            sender:      Contact.Profile
+        ) -> Bool {
+            self.route(
+                challenge.envelope.kind, from: sender,
+                challenge: { key, quantum, id, name in
+                    try self.manager.decryptChallenge(
+                        envelope: challenge.envelope, senderKey: key, senderQuantum: quantum, senderID: id, senderName: name
+                    )
+                },
+                response: { key, _, id in
+                    try self.manager.verifyResponse(envelope: challenge.envelope, senderKey: key, senderID: id)
+                }
+            )
+        }
+
+        private func route(
+            _ kind:    IdentityChallengeEnvelope.Kind,
+            from sender: Contact.Profile,
+            challenge: (Data, QuantumKeyMaterial?, String, String) throws -> PendingApproval,
+            response:  (Data, QuantumKeyMaterial?, String) throws -> VerificationResult
         ) -> Bool {
             let crypto = Occulta.Manager.Crypto()
             guard
@@ -167,16 +209,10 @@ extension IdentityChallenge {
             let senderID   = sender.identifier
             let senderName = { let n = sender.givenName.decrypt(); return n.isEmpty ? "Unknown" : n }()
 
-            switch envelope.kind {
+            switch kind {
             case .challenge:
                 do {
-                    let pending = try self.manager.decryptChallenge(
-                        bundle:        bundle,
-                        senderKey:     senderKey,
-                        senderQuantum: senderQuantum,
-                        senderID:      senderID,
-                        senderName:    senderName
-                    )
+                    let pending = try challenge(senderKey, senderQuantum, senderID, senderName)
                     self.incomingChallenge = IncomingChallenge(pending: pending)
                 } catch {
                     self.errorMessage = "Could not open identity verification request."
@@ -190,12 +226,7 @@ extension IdentityChallenge {
                 // Only the contact can produce a response that opens and names our nonce.
                 let passed: Bool
                 let note: String?
-                switch try? self.manager.verifyResponse(
-                    bundle:        bundle,
-                    senderKey:     senderKey,
-                    senderQuantum: senderQuantum,
-                    senderID:      senderID
-                ) {
+                switch try? response(senderKey, senderQuantum, senderID) {
                 case .passed(let contextNote)?:
                     (passed, note) = (true, contextNote)
                     self.verifiedAt[senderID] = Date()

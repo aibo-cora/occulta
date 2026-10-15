@@ -216,6 +216,27 @@ extension IdentityChallenge {
                 peerQuantum:   senderQuantum,
                 expecting:     .challenge
             )
+            return try self.decryptChallenge(
+                envelope:      envelope,
+                senderKey:     senderKey,
+                senderQuantum: senderQuantum,
+                senderID:      senderID,
+                senderName:    senderName
+            )
+        }
+
+        /// Validate a challenge whose bundle is already open and authenticated: one that arrived in a group body
+        /// and passed `ContactManager.openGroup` (prekey continuity §3.4). Every check after opening is the same as
+        /// for a bundle; only the long-term reopening is skipped. Take `IdentityChallenge.Authenticated` at the call
+        /// site, never an envelope from anywhere else.
+        func decryptChallenge(
+            envelope:      IdentityChallengeEnvelope,
+            senderKey:     Data,
+            senderQuantum: QuantumKeyMaterial?,
+            senderID:      String,
+            senderName:    String
+        ) throws -> PendingApproval {
+            guard envelope.kind == .challenge else { throw ManagerError.malformedBundle }
             let payloadBytes = envelope.payload
             let note         = envelope.contextNote
 
@@ -326,6 +347,17 @@ extension IdentityChallenge {
                 peerQuantum:   senderQuantum,
                 expecting:     .response
             )
+            return try self.verifyResponse(envelope: envelope, senderKey: senderKey, senderID: senderID)
+        }
+
+        /// Verify a response whose bundle is already open and authenticated, as `decryptChallenge(envelope:…)`
+        /// describes. The same checks as for a bundle, after the long-term reopening.
+        func verifyResponse(
+            envelope:  IdentityChallengeEnvelope,
+            senderKey: Data,
+            senderID:  String
+        ) throws -> VerificationResult {
+            guard envelope.kind == .response else { throw ManagerError.malformedBundle }
 
             let response: ResponsePayload
             do {
