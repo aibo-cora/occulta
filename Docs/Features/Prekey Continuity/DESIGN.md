@@ -160,12 +160,25 @@ Retirement time is stored per batch in the contact's record. Consequences that c
   after the 30 days, together. That burst is step 17's open "repeated images" item, not a new kind of change.
 - **The clock is the recipient's.** Moving it forward deletes early, which loses messages and exposes
   nothing; moving it back keeps keys longer, which needs the unlocked phone.
-- **Deleting at retirement, with no grace, was rejected (2026-10-11).** A new batch replaces the old one in the
-  contact's store, so once they use the new one, nothing new can be sealed to the old keys: deleting them at
-  once would never delete a key the contact holds. But a file sealed to an old key just before the switch and
+- **Deleting at retirement, with no grace, was rejected (2026-10-11).** The contact uses keys oldest first (since
+  stage 4 a new batch is appended after the old one's keys rather than replacing them), so once they use the new
+  one, nothing new can be sealed to the old keys: deleting them at once would never delete a key the contact holds. But a file sealed to an old key just before the switch and
   opened after a newer one would be lost, with the generic error. That is a message lost that was never lost in
   transit, so the grace stays. Deleting earlier keys of the batch still in use was rejected for the same reason,
   and more strongly: it loses any two files opened out of order, not only those either side of a batch change.
+
+**No key is marked expired (recorded 2026-10-15).** Expiry is deletion: retirement is a date on our own batch, and
+the sweep deletes the batch, last-resort key included, 30 days after it. The contact's side marks nothing and
+can't, since it doesn't see our retirements; a timer there would be wrong anyway, expiring keys a contact who
+hasn't replied in months may still validly use. What keeps a sender off an expired key is structural: we retire a
+batch only when they first use a key from a newer one, and by then they hold none of the older batch's keys,
+since they use keys oldest first, and their last-resort key switched to the newer batch's when they accepted it.
+So every key a contact holds of ours is one we still hold, in a batch that hasn't retired; only a message already
+in transit can reach a retired key, which is what the grace is for. `PrekeyConversationSimulationTests` checks that
+after every step, through 40-day silences and sweeps; `PrekeyBookkeeperLastResortExpiryTests` and
+`PrekeyConversationTests.retiredLastResortGrace` check that a retired last-resort key opens for 30 days and not
+after. The one way around it, an older copy of the database put back, isn't open to a user: the store is excluded
+from iCloud and Finder backups (Bug 70), and nothing restores prekey records.
 
 **Without a reply.** A last-resort key retires only when the sender uses a key from a newer batch, and only
 the recipient can send one. A recipient who never replies keeps the key, and every message sealed to it stays
@@ -877,7 +890,10 @@ than the release that does the one-way migration (rollout stage 3, D6), and neve
   bookkeeper alone (`PrekeyConversationSimulationTests`, on CI too) — the same to 1,000 messages each way, plus
   seeded random runs. Every message opens, both records stay within the fixed size's limits after every step, and
   an in-order conversation leaves no unused key in a retired batch. With refill disabled, or append replaced by the
-  old replacement, the tests that should fail do.
+  old replacement, the tests that should fail do. Added 2026-10-15, on expiry (§3.1, "No key is marked expired"):
+  every key a phone holds for the other is one the other still holds unretired, checked after every step through
+  40-day silences and sweeps; a retired batch's last-resort key opens for 30 days and is swept after, and a live
+  batch's never is. Keeping the old last-resort key on accept, or taking keys newest first, fails them.
 
 **Stage 5 — seed at the exchange (§3.2, v2.0.0 step 6). Deferred out of v2.0.0, 2026-10-07 (§3.2).** When it
 returns: D7's sealing as recorded in §3.2.
