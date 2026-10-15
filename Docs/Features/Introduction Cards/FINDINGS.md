@@ -131,6 +131,19 @@ A card belongs to a contact Bob already has but hasn't exchanged keys with. The 
 7. **The card is spent.** From here on the conversation runs on the two card keys and the prekeys exchanged inside it, until they meet (§5).
 8. **Ending without a meeting.** An unused card expires or Bob cancels it, and its record and keys are deleted. If Carol tells Bob, through another channel, that Carol's message never arrived, then the message that did arrive came from someone else. **Bob discards the conversation** under "Wasn't Carol?" on the contact's details (W-15). The card conversation's keys are deleted, the contact returns to pending, and Bob can make a new card.
 
+**How a contact moves between tiers (2026-10-15):**
+
+| Tier | Keys | Can message |
+|---|---|---|
+| Pending exchange | None, just a name and details | No |
+| Not verified | Card keys, with no in-person exchange | Yes |
+| Verified | Exchanged in person | Yes |
+
+- **On Bob's phone,** Carol stays Pending while the card is out and unused. She moves to Not verified when her first message arrives.
+- **On Carol's phone,** importing the card moves Bob straight to Not verified, because Carol can send to him from then on.
+- **On both phones,** the in-person exchange moves the contact to Verified.
+- **A pending contact with an active card stays in the Pending list.** Only the contact's details show the card.
+
 **The details view shows only the active card, if there is one.** Used, expired and cancelled cards leave nothing behind, so the phone keeps no record of the introductions it issued.
 
 ### 4. Delivery routes

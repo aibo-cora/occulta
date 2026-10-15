@@ -203,7 +203,16 @@ struct OccultaApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            // Introduction card mocks, for review where the vault can't be unlocked (the Simulator).
+            if ProcessInfo.processInfo.arguments.contains("-IntroCardMocks") {
+                IntroCardMock.Gallery()
+            } else {
+                RootView(storeURL: self.storeURL)
+            }
+            #else
             RootView(storeURL: self.storeURL)
+            #endif
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
