@@ -239,6 +239,42 @@ private struct Pair {
         #expect(throws: GroupDecryptError.recipientSlotNotFound) { try pair.bob.receive(tooLate) }
     }
 
+    /// Alice remembers the IDs of only the last 8 batches Bob sent. His first reply is on the long-term keys, which
+    /// open again, so it can be delivered long after its batch is used up and its ID forgotten. It must open, and
+    /// bring back neither the batch nor its last-resort key, or Alice would seal to keys Bob has deleted and every
+    /// message after would be unopenable.
+    @Test("Bob's first reply, redelivered once its batch ID has aged out, opens and brings the batch back no more")
+    func replayedLongTermReply() throws {
+        let pair = try Pair()
+        try pair.exchange(from: pair.alice)
+        let firstReply = try pair.bob.send()
+        try pair.alice.receive(firstReply)
+        let firstBatchID = try #require(try pair.alice.record.acceptedBatchIDs.first)
+        try pair.exchange(from: pair.alice)
+
+        for _ in 0..<120 {
+            try pair.exchange(from: pair.alice)
+            try pair.exchange(from: pair.bob)
+        }
+        let before = try pair.alice.record
+        #expect(before.acceptedBatchIDs.count == PrekeyBookkeeper.maxAcceptedBatchIDs)
+        #expect(!before.acceptedBatchIDs.contains(firstBatchID), "precondition: the first batch's ID has aged out")
+
+        try pair.alice.receive(firstReply)
+        let after = try pair.alice.record
+        #expect(after.inboundBatches == before.inboundBatches)
+        #expect(after.inboundLastResort == before.inboundLastResort)
+
+        pair.alice.log = []
+        pair.bob.log = []
+        for _ in 0..<20 {
+            try pair.exchange(from: pair.alice)
+            try pair.exchange(from: pair.bob)
+        }
+        #expect(pair.alice.log.allSatisfy { $0 == .forwardSecret })
+        #expect(pair.bob.log.allSatisfy { $0 == .forwardSecret })
+    }
+
     @Test("Alternating with one message in seven lost: every delivered message opens, all on one-time keys")
     func lostMessages() throws {
         let pair = try Pair()

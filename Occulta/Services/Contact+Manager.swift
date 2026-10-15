@@ -1641,7 +1641,7 @@ extension ContactManager {
         #if DEBUG
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         #endif
-        try self.acceptInboundBatch(decodedPayload.prekeyBatch, into: prekeys)
+        try self.acceptInboundBatch(decodedPayload.prekeyBatch, openedWith: used, into: prekeys)
 
         // Shard-protocol content requires forward secrecy. If this bundle used the
         // long-term-key fallback path, treat any shard-protocol fields as
@@ -1958,7 +1958,7 @@ extension ContactManager {
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
-        try self.acceptInboundBatch(recipientPayload.prekeyBatch, into: prekeys)
+        try self.acceptInboundBatch(recipientPayload.prekeyBatch, openedWith: used, into: prekeys)
 
         // ── 6.5. A new batch if the sender is out of our keys ────────────
         // A one-time prekey is already gone — `findAndOpenRecipientSlot` consumes it the moment

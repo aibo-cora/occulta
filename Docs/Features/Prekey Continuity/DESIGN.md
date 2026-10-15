@@ -353,6 +353,21 @@ opened. `PrekeySyncBatch` gains an optional `id` (16 random bytes). A keeps the 
 accepted, at most a handful, and drops a batch it has seen. A batch without an `id` comes from an older
 build and keeps today's date rule. That keeps 158 open for older senders only.
 
+**Only the last 8 IDs are kept, so a slot that opens again needs a date too (found in review of PR #110,
+decided and built 2026-10-15).** A bundle on a slot that can be opened again, the long-term keys or a last-resort
+key, can be replayed after its batch's ID has aged out of the 8, and would add a batch whose keys B has already
+used up and deleted. So on such a slot a batch with a new ID must also be no older than the newest batch A has
+accepted from that contact, by the sender's date: `latestInboundGeneratedAt`, updated for every accepted batch
+and never lowered. On a slot sealed to one of A's one-time keys, which can't open twice, a new ID is enough.
+`PrekeyBookkeeper.accept` takes `onReopenableSlot` for this; `ContactManager.acceptInboundBatch` sets it from the
+key the bundle opened with. Guarded by `PrekeyBookkeeperReplayTests`, `PrekeyConversationSimulationTests.replayAfterIDsAgeOut`,
+`PrekeyReplayWiringTests` (`openGroup` and `decryptSealed` pass the slot, no Enclave) and
+`PrekeyConversationTests.replayedLongTermReply` (two phones, Enclave).
+
+Open, needs a decision: a sender whose clock went back, while A is on their long-term or last-resort key, has a new
+batch refused until one dated later than the newest arrives, so their clock must pass that date. That is Bug 158's
+original behaviour, now only on a slot that opens again; on one of A's one-time keys their batch is taken.
+
 ### 3.4 Identity challenges
 
 Once §3.1–3.3 are in, a long-term bundle between two current-build contacts is almost always an identity

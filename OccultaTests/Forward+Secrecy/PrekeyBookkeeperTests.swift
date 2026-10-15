@@ -47,7 +47,7 @@ struct PrekeyBookkeeperSendingTests {
     func takeOldestFirst() throws {
         var record = PrekeyRecord.empty
         let keys = wire(3)
-        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: keys, lastResort: nil, into: &record))
+        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: keys, lastResort: nil, onReopenableSlot: false, into: &record))
 
         for expected in keys {
             let prekey = try #require(self.bookkeeper.takeInboundPrekey(from: &record, contactID: "contact"))
@@ -110,25 +110,25 @@ struct PrekeyBookkeeperAcceptTests {
     func dedupeByID() throws {
         var record = PrekeyRecord.empty
         let first = randomBytes(16)
-        #expect(try self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, into: &record))
+        #expect(try self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, onReopenableSlot: false, into: &record))
 
         let second = wire(15)
-        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: second, lastResort: nil, into: &record),
+        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: second, lastResort: nil, onReopenableSlot: false, into: &record),
                 "a sender whose clock went back must not be stuck")
         #expect(record.inboundBatches.last?.keys.map(\.id) == second.map(\.id))
 
         let held = record.inboundBatches
-        #expect(try !self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), lastResort: nil, into: &record))
+        #expect(try !self.bookkeeper.accept(id: first, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), lastResort: nil, onReopenableSlot: false, into: &record))
         #expect(record.inboundBatches == held, "a repeat must not bring back used keys")
     }
 
     @Test("A batch without an ID keeps the date rule")
     func noIDKeepsDateRule() throws {
         var record = PrekeyRecord.empty
-        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, into: &record))
-        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, into: &record))
-        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: wire(15), lastResort: nil, into: &record))
-        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), lastResort: nil, into: &record))
+        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, onReopenableSlot: false, into: &record))
+        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 2_000), prekeys: wire(15), lastResort: nil, onReopenableSlot: false, into: &record))
+        #expect(try !self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 1_000), prekeys: wire(15), lastResort: nil, onReopenableSlot: false, into: &record))
+        #expect(try self.bookkeeper.accept(id: nil, generatedAt: Date(timeIntervalSince1970: 3_000), prekeys: wire(15), lastResort: nil, onReopenableSlot: false, into: &record))
     }
 
     @Test("Only the 8 most recent accepted IDs are kept")
@@ -136,7 +136,7 @@ struct PrekeyBookkeeperAcceptTests {
         var record = PrekeyRecord.empty
         let ids = (0..<10).map { _ in randomBytes(16) }
         for id in ids {
-            _ = try self.bookkeeper.accept(id: id, generatedAt: Date(), prekeys: wire(1), lastResort: nil, into: &record)
+            _ = try self.bookkeeper.accept(id: id, generatedAt: Date(), prekeys: wire(1), lastResort: nil, onReopenableSlot: false, into: &record)
         }
         #expect(record.acceptedBatchIDs == Array(ids.suffix(PrekeyBookkeeper.maxAcceptedBatchIDs)))
     }
@@ -151,13 +151,13 @@ struct PrekeyBookkeeperAcceptTests {
         )]
         for prekeys in [tooMany, badKey, longID] {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
-                try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: prekeys, lastResort: nil, into: &record)
+                try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: prekeys, lastResort: nil, onReopenableSlot: false, into: &record)
             }
         }
         // A batch ID is stored in the record, so a sender can't choose its size.
         for badID in [randomBytes(15), randomBytes(17), randomBytes(1024)] {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
-                try self.bookkeeper.accept(id: badID, generatedAt: Date(), prekeys: wire(1), lastResort: nil, into: &record)
+                try self.bookkeeper.accept(id: badID, generatedAt: Date(), prekeys: wire(1), lastResort: nil, onReopenableSlot: false, into: &record)
             }
         }
         #expect(record == .empty, "a rejected batch must change nothing")
@@ -292,7 +292,7 @@ struct PrekeyBookkeeperLimitTests {
             self.bookkeeper.consume(prekeyID: first, in: &record, now: now)
         }
         self.bookkeeper.install(generated(15), into: &record, now: now)
-        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: now, prekeys: wire(PrekeyBookkeeper.maxInboundKeysPerBatch), lastResort: nil, into: &record)
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: now, prekeys: wire(PrekeyBookkeeper.maxInboundKeysPerBatch), lastResort: nil, onReopenableSlot: false, into: &record)
         #expect(throws: Never.self) { try PrekeyRecordCodec().encode(record) }
     }
 
@@ -473,7 +473,7 @@ struct PrekeyBookkeeperLastResortTests {
         var record = PrekeyRecord.empty
         let first = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
-                                       lastResort: first, into: &record)
+                                       lastResort: first, onReopenableSlot: false, into: &record)
         #expect(record.inboundLastResort?.id == first.id)
 
         _ = self.bookkeeper.takeInboundPrekey(from: &record, contactID: "contact")
@@ -482,11 +482,11 @@ struct PrekeyBookkeeperLastResortTests {
 
         let second = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
-                                       lastResort: second, into: &record)
+                                       lastResort: second, onReopenableSlot: false, into: &record)
         #expect(record.inboundLastResort?.id == second.id)
 
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
-                                       lastResort: nil, into: &record)
+                                       lastResort: nil, onReopenableSlot: false, into: &record)
         #expect(record.inboundLastResort == nil, "the newest batch's last-resort key, or none")
     }
 
@@ -500,7 +500,7 @@ struct PrekeyBookkeeperLastResortTests {
         for lastResort in bad {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
                 try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
-                                           lastResort: lastResort, into: &record)
+                                           lastResort: lastResort, onReopenableSlot: false, into: &record)
             }
         }
         #expect(record == .empty)
@@ -609,7 +609,7 @@ struct PrekeyBookkeeperLastResortUseTests {
     func lastResortForSending() throws {
         var record = PrekeyRecord.empty
         let lastResort = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
-        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: [], lastResort: lastResort, into: &record)
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: [], lastResort: lastResort, onReopenableSlot: false, into: &record)
 
         let prekey = try #require(self.bookkeeper.lastResortPrekey(in: record, contactID: "contact"))
         #expect(prekey.id == lastResort.id && prekey.publicKey == lastResort.publicKey && prekey.contactID == "contact")
@@ -626,9 +626,9 @@ struct PrekeyBookkeeperAppendTests {
     func appendsAfterHeldKeys() throws {
         var record = PrekeyRecord.empty
         let first = wire(15), second = wire(15)
-        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: first, lastResort: nil, into: &record)
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: first, lastResort: nil, onReopenableSlot: false, into: &record)
         for _ in 0..<10 { _ = self.bookkeeper.takeInboundPrekey(from: &record, contactID: "contact") }
-        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: second, lastResort: nil, into: &record)
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: second, lastResort: nil, onReopenableSlot: false, into: &record)
 
         let used = (0..<20).compactMap { _ in self.bookkeeper.takeInboundPrekey(from: &record, contactID: "contact")?.id }
         #expect(used == Array(first.suffix(5).map(\.id)) + Array(second.map(\.id)))
@@ -640,7 +640,7 @@ struct PrekeyBookkeeperAppendTests {
         var record = PrekeyRecord.empty
         let batches = [wire(15), wire(15), wire(15)]
         for batch in batches {
-            _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: batch, lastResort: nil, into: &record)
+            _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: batch, lastResort: nil, onReopenableSlot: false, into: &record)
         }
         #expect(record.inboundBatches.count == PrekeyBookkeeper.maxInboundBatches)
         #expect(record.inboundBatches.map { $0.keys.map(\.id) } == batches.suffix(2).map { $0.map(\.id) })
@@ -651,8 +651,8 @@ struct PrekeyBookkeeperAppendTests {
         var record = PrekeyRecord.empty
         let older = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
         let newer = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
-        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(15), lastResort: older, into: &record)
-        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(15), lastResort: newer, into: &record)
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(15), lastResort: older, onReopenableSlot: false, into: &record)
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(15), lastResort: newer, onReopenableSlot: false, into: &record)
 
         #expect(record.inboundLastResort?.id == newer.id)
         #expect(record.inboundBatches.count == 2)
@@ -770,5 +770,66 @@ struct PrekeyBookkeeperLastResortExpiryTests {
 
         #expect(!self.bookkeeper.useLastResort(keyID: keyID, in: &record, now: self.start.addingTimeInterval(day)))
         #expect(record == before, "a late message changes nothing")
+    }
+}
+
+/// Only the last 8 accepted batch IDs are remembered. A bundle on a slot that opens again — the long-term keys or a
+/// last-resort key — can be replayed after its batch's ID has aged out, and must not bring the used-up batch back.
+@Suite("PrekeyBookkeeper — a batch replayed after its ID ages out")
+struct PrekeyBookkeeperReplayTests {
+
+    let bookkeeper = PrekeyBookkeeper()
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func lastResortKey() -> OccultaBundle.WirePrekey {
+        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+    }
+
+    @Test("Once 8 newer batches have pushed its ID out, a replayed batch on a reopenable slot is refused")
+    func agedOutReplayRefused() throws {
+        var record = PrekeyRecord.empty
+        let oldID = randomBytes(16), oldKeys = wire(15), oldLastResort = self.lastResortKey()
+        // The first batch arrives on the long-term keys, as at first contact.
+        #expect(try self.bookkeeper.accept(id: oldID, generatedAt: self.start, prekeys: oldKeys, lastResort: oldLastResort,
+                                           onReopenableSlot: true, into: &record))
+        for minute in 1...PrekeyBookkeeper.maxAcceptedBatchIDs {
+            _ = self.bookkeeper.takeInboundPrekey(from: &record, contactID: "contact")
+            _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: self.start + TimeInterval(minute * 60),
+                                           prekeys: wire(15), lastResort: self.lastResortKey(),
+                                           onReopenableSlot: false, into: &record)
+        }
+        #expect(!record.acceptedBatchIDs.contains(oldID), "precondition: its ID has aged out")
+        let before = record
+
+        #expect(try !self.bookkeeper.accept(id: oldID, generatedAt: self.start, prekeys: oldKeys, lastResort: oldLastResort,
+                                            onReopenableSlot: true, into: &record))
+        #expect(record == before, "no used-up keys back, no batch pushed out, the last-resort key unchanged")
+    }
+
+    /// A slot sealed to one of our one-time keys opens once, so what it carries is never a replay. There, as Bug 158
+    /// decided, a new ID is enough, so a sender whose clock went back isn't stuck.
+    @Test("On a one-time key an older-dated batch with a new ID is accepted; on a reopenable slot it isn't")
+    func olderDatedNewID() throws {
+        var record = PrekeyRecord.empty
+        _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: self.start, prekeys: wire(15),
+                                       lastResort: nil, onReopenableSlot: false, into: &record)
+        let earlier = self.start - 3_600
+
+        var reopenable = record
+        #expect(try !self.bookkeeper.accept(id: randomBytes(16), generatedAt: earlier, prekeys: wire(15),
+                                            lastResort: nil, onReopenableSlot: true, into: &reopenable))
+        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: earlier, prekeys: wire(15),
+                                           lastResort: nil, onReopenableSlot: false, into: &record))
+        #expect(record.latestInboundGeneratedAt == self.start, "the newest date accepted is never lowered")
+    }
+
+    @Test("On a reopenable slot a batch no older than the newest is accepted, as when the contact is out of our keys")
+    func reopenableAcceptsNewer() throws {
+        var record = PrekeyRecord.empty
+        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: self.start, prekeys: wire(15),
+                                           lastResort: nil, onReopenableSlot: true, into: &record))
+        #expect(try self.bookkeeper.accept(id: randomBytes(16), generatedAt: self.start + 60, prekeys: wire(15),
+                                           lastResort: nil, onReopenableSlot: true, into: &record))
+        #expect(record.inboundBatches.count == 2)
     }
 }

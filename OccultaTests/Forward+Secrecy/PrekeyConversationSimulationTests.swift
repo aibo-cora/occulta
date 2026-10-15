@@ -119,7 +119,7 @@ private struct Conversation {
         if let batch = message.batch {
             _ = try self.bookkeeper.accept(
                 id: batch.id, generatedAt: batch.generatedAt, prekeys: batch.prekeys, lastResort: batch.lastResort,
-                into: &record
+                onReopenableSlot: !isOneTime(message.sealedTo), into: &record
             )
         }
 
@@ -296,6 +296,57 @@ struct PrekeyConversationSimulationTests {
         }
         #expect(conversation.count(.alice, isOneTime) == 1_000)
         #expect(conversation.count(.bob, isOneTime) == 1_000)
+    }
+
+    /// Only the last 8 accepted batch IDs are remembered. A message on a slot that opens again — the long-term keys,
+    /// or a last-resort key — kept and redelivered after its batch's ID has aged out must change nothing, and the
+    /// conversation must carry on on keys the other phone still holds.
+    @Test("A message on a reopenable slot, redelivered after its batch's ID has aged out, brings nothing back",
+          arguments: [true, false])
+    func replayAfterIDsAgeOut(onLastResort: Bool) throws {
+        var conversation = Conversation()
+        // Alice's first message is long-term; Bob's long-term reply carries his first batch: keep a copy of it.
+        try conversation.exchange(from: .alice)
+        var kept = try conversation.send(from: .bob)
+        try conversation.deliver(kept)
+        try conversation.exchange(from: .alice)
+        if onLastResort {
+            // Alice writes until Bob's refill is due; then Bob writes one way, past Alice's keys onto her last-resort
+            // key. Keep his first message there, which carries his pending batch.
+            for _ in 0..<15 {
+                if conversation.bookkeeper.hasPendingBatch(try #require(conversation.records[.bob])) { break }
+                try conversation.exchange(from: .alice)
+            }
+            for _ in 0..<20 {
+                kept = try conversation.send(from: .bob)
+                try conversation.deliver(kept)
+                if isLastResort(kept.sealedTo) { break }
+            }
+            #expect(isLastResort(kept.sealedTo))
+        }
+        let keptID = try #require(kept.batch?.id)
+        #expect(!isOneTime(kept.sealedTo))
+
+        // Ten from Alice to each reply from Bob: his batches reach her one after another, well past 8, while he uses
+        // few of hers. Her batch holding the kept last-resort key retires but is neither swept nor evicted, so the
+        // kept message still opens, as a replay could in the app.
+        for _ in 0..<20 {
+            for _ in 0..<10 { try conversation.exchange(from: .alice) }
+            try conversation.exchange(from: .bob)
+        }
+        let before = try #require(conversation.records[.alice])
+        #expect(!before.acceptedBatchIDs.contains(keptID), "precondition: the kept batch's ID has aged out")
+
+        try conversation.deliver(kept)
+        #expect(conversation.records[.alice]?.inboundBatches == before.inboundBatches)
+        #expect(conversation.records[.alice]?.inboundLastResort == before.inboundLastResort)
+
+        conversation.log = [.alice: [], .bob: []]
+        for _ in 0..<50 {
+            try conversation.exchange(from: .alice)
+            try conversation.exchange(from: .bob)
+        }
+        #expect(conversation.count(.bob, isOneTime) == 50, "Bob seals only to keys Alice still holds")
     }
 
     /// Every seventh message is never delivered, either way. A batch rides every message until delivered, so losing

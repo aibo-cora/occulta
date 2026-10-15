@@ -101,13 +101,17 @@ extension ContactManager {
         }
     }
 
-    /// Accepts a batch the sender attached, through the bookkeeper's rules (Bug 158).
-    func acceptInboundBatch(_ batch: OccultaBundle.SealedPayload.PrekeySyncBatch?, into prekeys: SenderPrekeys) throws {
+    /// Accepts a batch the sender attached, through the bookkeeper's rules (Bug 158). `used` is the key the bundle
+    /// opened with: on the long-term keys or a last-resort key it can be opened again, so an old one replayed must
+    /// not bring back a batch already used up (`PrekeyBookkeeper.accept`).
+    func acceptInboundBatch(
+        _ batch: OccultaBundle.SealedPayload.PrekeySyncBatch?, openedWith used: InboundPrekeyUse, into prekeys: SenderPrekeys
+    ) throws {
         guard let batch else { return }
         do {
             _ = try PrekeyBookkeeper().accept(
                 id: batch.id, generatedAt: batch.generatedAt, prekeys: batch.prekeys, lastResort: batch.lastResort,
-                into: &prekeys.record
+                onReopenableSlot: used.consumable == nil, into: &prekeys.record
             )
         } catch PrekeyBookkeeper.BookkeeperError.malformedBatch {
             throw Errors.invalidPrekeySyncBatch
