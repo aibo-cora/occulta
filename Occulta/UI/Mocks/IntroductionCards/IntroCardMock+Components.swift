@@ -130,7 +130,9 @@ extension IntroCardMock {
 
 extension IntroCardMock {
     /// Compose for a Not verified contact: the trust line sits above the
-    /// secrecy state, and forward secrecy isn't green (Q-09).
+    /// secrecy state, and forward secrecy isn't green (Q-09). Carol's messages
+    /// before she holds Bob's batch are sealed to his card key, so they show
+    /// Standard Encryption (SPEC §6.5).
     struct Compose: View {
         let recipientFirstName: String
         var isForwardSecret = true

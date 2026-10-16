@@ -119,7 +119,7 @@ extension IntroCardMock {
                     text:  "Your first message has to reach Bob by then, or Bob's card stops working. Send it early enough for Bob to open it in time. After that, there's no time limit."
                 )
 
-                Compose(recipientFirstName: "Bob")
+                Compose(recipientFirstName: "Bob", isForwardSecret: false)
 
                 ExchangeHero(title: "Meet Bob to verify", subtitle: "exchange keys in person")
             }
@@ -146,7 +146,7 @@ extension IntroCardMock {
                     text:  "If none comes, someone may have used this card before you. Ask Bob for a new one, in person or through someone you trust."
                 )
 
-                Compose(recipientFirstName: "Bob")
+                Compose(recipientFirstName: "Bob", isForwardSecret: false)
 
                 ExchangeHero(title: "Meet Bob to verify", subtitle: "exchange keys in person")
             }
