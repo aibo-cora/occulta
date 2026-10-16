@@ -454,6 +454,8 @@ one: under a second at 20 trustees in the measurements. Past the cap (three or m
 larger groups), a restore still fails as before. Repeating the reconstruction slightly helps an
 on-device timing observer, which is filed as Bug 131.
 
+**Moved 2026-10-13** (modularization Phase 3, step 4): the search is now `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)` in `OccultaCore`, and `verifiedKey` passes it the GCM check. Same order, cap and zeroing; the Bug 95 suite in `VaultRestoreTrustTests` passes unchanged.
+
 **Full reasoning:** `bugs.md` Bug 95.
 
 ---

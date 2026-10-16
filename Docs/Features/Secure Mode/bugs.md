@@ -7190,6 +7190,8 @@ The one way out before the fix was blind: deleting the hostile trustee's contact
 
 ### Fix, as built (2026-09-23)
 
+**Moved 2026-10-13** (modularization Phase 3, step 4): the search is now `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)` in `OccultaCore`, and `verifiedKey` passes it the GCM check. Same order, cap and zeroing; the Bug 95 suite in `VaultRestoreTrustTests` passes unchanged.
+
 - **Subset search** (`VaultManager.Backup.verifiedKey`). It tries every shard first. If that fails, it
   retries with shards left out, fewest first, and stops at the first candidate that opens the file.
   Extra honest shards never change the result, so the first subset that works is the full set minus the
@@ -7407,7 +7409,8 @@ be:** `JSONEncoder`/`JSONDecoder` internals, labels while they pass through Swif
 
 **Follow-up, 2026-09-26 (branch code review):** per-entry key reconstruction had the same gap.
 `reconstructEntry` (`Vault+Manager+Reconstruction.swift`) opened the entry's content to check the GCM tag
-and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` does. Not
+and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` did (since 2026-10-13, the check `verifiedKey`
+passes to `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)`). Not
 covered by a test, like the other zeroing points: a leftover copy in freed memory isn't observable from one.
 
 ### 4 — Minor, recorded so they are not rediscovered
