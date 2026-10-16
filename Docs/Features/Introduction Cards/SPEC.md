@@ -64,7 +64,7 @@ A card is a fixed **1,770-byte** binary blob. It has no magic bytes, no version 
 **Recognition (Q-04 rule).** A file is a card if and only if all of the following hold:
 - it is exactly 1,770 bytes;
 - every public key parses as a valid P-256 point;
-- the encapsulation key parses as ML-KEM-1024;
+- the encapsulation key is a valid ML-KEM-1024 key: FIPS 203's modulus check, meaning every one of the 1,024 12-bit coefficients is below 3329, run on every iOS version (decided 2026-10-17). CryptoKit's `MLKEM1024.PublicKey(rawRepresentation:)` checks only the length on iOS 26.2, so a correctly signed card with a garbage key would otherwise be recognised and then fail when Carol encapsulates. `CardIntroduction.verify` applies the same check to Carol's key;
 - the signature verifies under the signing key in the card.
 
 The domain label appears only inside the signing payload, never in the file. A later card version gets a new label and its own check, tried in turn, with no version byte.
@@ -324,6 +324,8 @@ T = SHA-256("Occulta-card-meeting-v1"
             ‖ sorted(nonce_A, nonce_B)
             ‖ sorted(mlkemCiphertext_A, mlkemCiphertext_B))
 ```
+
+Each element is written as its length (UInt16, big-endian) followed by its bytes (decided 2026-10-17). The inputs are fixed-width today (65, 16 and 1,568 bytes), but without a length prefix, inputs of other lengths could produce the same transcript (testing found `("ab","c")` and `("a","bc")`). Sorting is on the raw element bytes.
 
 **Proof message.** A new ceremony message, which every card-capable build sends:
 - 64 bytes: a raw ECDSA signature by the card signing key over `"Occulta-card-meeting-proof-v1" ‖ T ‖ signerIdentityKey`;

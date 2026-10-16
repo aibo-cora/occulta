@@ -168,6 +168,63 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     // signingPayload
     let attribute: AttributeInput?
 
+    // card, cardSigningPayload
+    let card: CardInput?
+
+    // cardIntroductionSigningPayload
+    let introduction: IntroductionInput?
+
+    // cardBootstrapKey, cardBootstrapLayer
+    let bootstrap: BootstrapInput?
+
+    // cardMeetingTranscript, cardMeetingProofPayload
+    let meeting: MeetingInput?
+
+    // cardField
+    let cardState: String?
+
+    /// Introduction cards (SPEC §2). `expiresAtUnix` is Unix seconds, as on the wire.
+    struct CardInput: Decodable, Sendable {
+        let agreementKey: String
+        let signingKey: String
+        let expiresAtUnix: Int
+        let mlkemEncapsulationKey: String
+        let signature: String?
+    }
+
+    struct IntroductionInput: Decodable, Sendable {
+        let cardDigest: String
+        let agreementKey: String
+        let signingKey: String
+        let mlkemEncapsulationKey: String
+    }
+
+    struct BootstrapInput: Decodable, Sendable {
+        // cardBootstrapKey
+        let ecdhOutput: String?
+        let ownPublicKey: String?
+        let peerPublicKey: String?
+        let ss1: String?
+        // cardBootstrapLayer
+        let outerKey: String?
+        let innerKey: String?
+        let blind: String?
+        let mlkemCiphertext: String?
+        let payload: String?
+        let outerNonce: String?
+        let innerNonce: String?
+    }
+
+    struct MeetingInput: Decodable, Sendable {
+        // cardMeetingTranscript
+        let identityKeys: [String]?
+        let nonces: [String]?
+        let mlkemCiphertexts: [String]?
+        // cardMeetingProofPayload
+        let transcript: String?
+        let signerIdentityKey: String?
+    }
+
     struct ChallengeInput: Decodable, Sendable {
         let kind: String
         let payload: String
@@ -378,6 +435,86 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         case "depth":
             return DepthCodec.encode(try #require(self.value))
 
+        case "card":
+            // The 1,770 bytes of a card from fixed parts. The signature is an input: signatures are random.
+            let encoded = try Self.introductionCard(try #require(self.card)).encoded
+            #expect(encoded.count == IntroductionCard.byteCount, "\(self.name): a card is 1,770 bytes")
+            return encoded
+
+        case "cardSigningPayload":
+            let input = try #require(self.card)
+            return IntroductionCard.signingPayload(
+                agreementKey:          try Self.bytes(input.agreementKey),
+                signingKey:            try Self.bytes(input.signingKey),
+                expiresAt:             Date(timeIntervalSince1970: Double(input.expiresAtUnix)),
+                mlkemEncapsulationKey: try Self.bytes(input.mlkemEncapsulationKey)
+            )
+
+        case "cardIntroductionSigningPayload":
+            let input = try #require(self.introduction)
+            return CardIntroduction.signingPayload(
+                cardDigest:            try Self.bytes(input.cardDigest),
+                agreementKey:          try Self.bytes(input.agreementKey),
+                signingKey:            try Self.bytes(input.signingKey),
+                mlkemEncapsulationKey: try Self.bytes(input.mlkemEncapsulationKey)
+            )
+
+        case "cardBootstrapKey":
+            // Carol's K_inner. Both phones derive it, each with itself as "own": the two must agree.
+            let input = try #require(self.bootstrap)
+            let ecdh = try Self.bytes(input.ecdhOutput), own = try Self.bytes(input.ownPublicKey)
+            let peer = try Self.bytes(input.peerPublicKey), ss1 = try Self.bytes(input.ss1)
+            let key = try #require(CardBootstrap.carolInnerKey(ecdhOutput: ecdh, ownPublicKey: own, peerPublicKey: peer, ss1: ss1))
+            let otherSide = try #require(CardBootstrap.carolInnerKey(ecdhOutput: ecdh, ownPublicKey: peer, peerPublicKey: own, ss1: ss1))
+            let bytes = key.withUnsafeBytes { Data($0) }
+            #expect(bytes == otherSide.withUnsafeBytes { Data($0) }, "\(self.name): the two sides disagree")
+            return bytes
+
+        case "cardBootstrapLayer":
+            // Fixed nonces, as the `gcm` kind has. What the vector pins is the layering and both AADs; production
+            // `openOuter` and `openInner` must then open the recorded bytes.
+            let input = try #require(self.bootstrap)
+            let outerKey = SymmetricKey(data: try Self.bytes(input.outerKey))
+            let innerKey = SymmetricKey(data: try Self.bytes(input.innerKey))
+            let blind = try Self.bytes(input.blind), ciphertext = try Self.bytes(input.mlkemCiphertext)
+            let payload = try Self.bytes(input.payload)
+            let wrapped = try CardBootstrap.seal(
+                payload: payload, mlkemCiphertext: ciphertext, outerKey: outerKey, innerKey: innerKey, blind: blind,
+                outerNonce: try AES.GCM.Nonce(data: try Self.bytes(input.outerNonce)),
+                innerNonce: try AES.GCM.Nonce(data: try Self.bytes(input.innerNonce))
+            )
+            let outer = try CardBootstrap.openOuter(wrapped, outerKey: outerKey, blind: blind)
+            #expect(outer.mlkemCiphertext == ciphertext, "\(self.name): production openOuter changed the ciphertext")
+            #expect(try CardBootstrap.openInner(outer.inner, mlkemCiphertext: outer.mlkemCiphertext, innerKey: innerKey, blind: blind) == payload,
+                    "\(self.name): production openInner rejected the sealed bytes")
+            return wrapped
+
+        case "cardMeetingTranscript":
+            let input = try #require(self.meeting)
+            let ids = try Self.pair(input.identityKeys), nonces = try Self.pair(input.nonces), cts = try Self.pair(input.mlkemCiphertexts)
+            let transcript = CardMeeting.transcript(identityKeys: ids, nonces: nonces, mlkemCiphertexts: cts)
+            #expect(transcript == CardMeeting.transcript(
+                identityKeys: (ids.1, ids.0), nonces: (nonces.1, nonces.0), mlkemCiphertexts: (cts.1, cts.0)
+            ), "\(self.name): the two phones disagree")
+            return transcript
+
+        case "cardMeetingProofPayload":
+            let input = try #require(self.meeting)
+            return CardMeeting.proofPayload(
+                transcript:        try Self.bytes(input.transcript),
+                signerIdentityKey: try Self.bytes(input.signerIdentityKey)
+            )
+
+        case "cardField":
+            // The card field's plaintext before sealing. Only the empty state has a fixed encoding to pin; the others
+            // hold Enclave blobs.
+            switch self.cardState {
+            case "empty": return try CardStateCodec().encode(.empty)
+            default:
+                Issue.record("\(self.name): unknown card state \(self.cardState ?? "nil")")
+                return Data()
+            }
+
         default:
             Issue.record("\(self.name): unknown kind \(self.kind)")
             return Data()
@@ -429,6 +566,22 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     /// The x963 public key (65 bytes) for `scalar`: scalar · G.
     static func publicMaterial(_ scalar: String?) throws -> Data {
         try P256.KeyAgreement.PrivateKey(rawRepresentation: try Self.bytes(scalar)).publicKey.x963Representation
+    }
+
+    private static func introductionCard(_ input: CardInput) throws -> IntroductionCard {
+        IntroductionCard(
+            agreementKey:          try Self.bytes(input.agreementKey),
+            signingKey:            try Self.bytes(input.signingKey),
+            expiresAt:             Date(timeIntervalSince1970: Double(input.expiresAtUnix)),
+            mlkemEncapsulationKey: try Self.bytes(input.mlkemEncapsulationKey),
+            signature:             try Self.bytes(input.signature)
+        )
+    }
+
+    private static func pair(_ hex: [String]?) throws -> (Data, Data) {
+        let values = try #require(hex)
+        try #require(values.count == 2)
+        return (try Self.bytes(values[0]), try Self.bytes(values[1]))
     }
 
     private static func batch(_ input: Batch) throws -> OccultaBundle.SealedPayload.PrekeySyncBatch {
