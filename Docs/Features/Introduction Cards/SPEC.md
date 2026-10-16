@@ -163,7 +163,7 @@ Recorded 2026-10-16. A bootstrap slot from Carol carries a card prekey's ID in i
 
 Options:
 - **(a) Accept it.** Whoever holds the card usually got it from the channel the bundles also cross, and has already seen the card go to Carol. On that channel, the link adds little.
-- **(b) Hide the IDs.** Carol writes a **random** `prekeyID`. Bob finds the card by trying each unused prekey of each active card: up to 15 ECDHs per active card for every bundle from an unknown sender. The cost stays small because cards expire after a day. It must not reuse `lastResortPrekeyID`. That's an HMAC keyed by the key's own ID, and on a card those IDs are public, so the card holder could compute the same value and match it.
+- **(b) Hide the IDs.** Carol writes a **random** `prekeyID`. Bob finds the card by trying each unused prekey of each active card: up to 15 ECDHs per active card for every bundle from an unknown sender. After redemption, Carol's later bootstrap messages still name card prekeys randomly, so even with the sender known Bob tries the card's remaining unused prekeys (at most 14) instead of looking one up. The cost stays small: the card holds 15 prekeys, they are used up as Carol writes, and cards expire after a day. It must not reuse `lastResortPrekeyID`. That's an HMAC keyed by the key's own ID, and on a card those IDs are public, so the card holder could compute the same value and match it.
 
 Not decided. (a) costs nothing. (b) helps where the card leaked somewhere other than the channel the bundles travel, such as an old backup.
 
