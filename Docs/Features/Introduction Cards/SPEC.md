@@ -159,11 +159,11 @@ A bootstrap slot is about 1.6 KB larger than an ordinary one, from the ML-KEM ci
 
 ### 4.6 Prekey IDs link Carol's bootstrap messages to the card (open, needs a decision)
 
-Recorded 2026-10-16. A bootstrap slot from Carol carries a card prekey's ID in its cleartext `prekeyID` (§6.6 looks the card up by it). Those 15 IDs are printed on the card (§2). So **anyone holding the card file can tell which bundles are Carol's bootstrap messages to Bob**: up to 15 of them, one per card prekey. They can't read them. Ordinary bundles don't have this problem, because their prekey IDs come from batches only the two phones see.
+Recorded 2026-10-16. A bootstrap slot from Carol carries a card prekey's ID in its `prekeyID` (§6.6 looks the card up by it). `SecrecyContext` is authenticated as AAD but not encrypted, because the receiver needs the ID to pick a private key before it can decrypt anything (`OccultaBundle.swift`). So anyone can read it. Those 15 IDs are printed on the card (§2). So **anyone holding the card file can tell which bundles are Carol's bootstrap messages to Bob**: up to 15 of them, one per card prekey. They can't read them. Ordinary bundles don't have this problem, because their prekey IDs come from batches only the two phones see.
 
 Options:
 - **(a) Accept it.** Whoever holds the card usually got it from the channel the bundles also cross, and has already seen the card go to Carol. On that channel, the link adds little.
-- **(b) Hide the IDs.** Carol writes a random-looking `prekeyID`, as a last-resort bundle does (`lastResortPrekeyID`). Bob finds the card by trying each unused prekey of each active card: up to 15 ECDHs per active card for every bundle from an unknown sender. The cost stays small because cards expire after a day.
+- **(b) Hide the IDs.** Carol writes a **random** `prekeyID`. Bob finds the card by trying each unused prekey of each active card: up to 15 ECDHs per active card for every bundle from an unknown sender. The cost stays small because cards expire after a day. It must not reuse `lastResortPrekeyID`. That's an HMAC keyed by the key's own ID, and on a card those IDs are public, so the card holder could compute the same value and match it.
 
 Not decided. (a) costs nothing. (b) helps where the card leaked somewhere other than the channel the bundles travel, such as an old backup.
 
