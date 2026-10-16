@@ -498,7 +498,7 @@ Recommendation: the outer layer. New vectors in `OccultaTests/Interop/InteropVec
 
 **Left for the SPEC (2026-10-15).** This is a wire-format detail, not a product or UI decision.
 
-**Decided 2026-10-16 in [SPEC.md](SPEC.md) §4: the outer layer.** Card messages use the group format with one slot, and no new `Version`, `Mode` or `Recipient` field. A bootstrap slot's `wrappedPayload` is a classical AES-GCM layer holding the ML-KEM ciphertext and an inner layer under a key that mixes in the ML-KEM secret. Its visible mode is `.forwardSecret`, like any iOS 26 slot. Every bootstrap message from Carol carries her full introduction, so whichever arrives first redeems the card. Out-of-order delivery is normal here. The larger slot size is an open item (SPEC §4.5).
+**Decided 2026-10-16 in [SPEC.md](SPEC.md) §4: the outer layer.** Card messages use the group format with one slot, and no new `Version`, `Mode` or `Recipient` field. A bootstrap slot's `wrappedPayload` is a classical AES-GCM layer holding the ML-KEM ciphertext and an inner layer under a key that mixes in the ML-KEM secret. Its visible mode is `.forwardSecret`, like any iOS 26 slot. Every bootstrap message from Carol carries her full introduction, so whichever arrives first redeems the card. Out-of-order delivery is normal here. The larger slot size isn't padded (decided 2026-10-16, SPEC §4.5): the channel has already carried the card itself.
 
 ### Q-13 · Open-card details
 

@@ -149,11 +149,11 @@ RecipientPayload.introduction: CardIntroduction? {
 
 The card digest ties the introduction to this card, so it can't be replayed against another card. The signature ties Carol's agreement key to her signing key, which an agreement key can't do itself. Carol's prekey batch travels in the existing `RecipientPayload.prekeyBatch`. The slot's `senderEphemeralSignature`, made with the same signing key, authenticates it. **Every bootstrap message from Carol carries the identical introduction.**
 
-### 4.5 Size (open, needs a decision)
+### 4.5 Size (decided 2026-10-16: no padding)
 
 A bootstrap slot is about 1.6 KB larger than an ordinary one, from the ML-KEM ciphertext. Carol's slots add the introduction on top, about 2.3 KB in JSON. Slots aren't padded to hide this.
 
-**Recommendation: leave it unpadded.** Anyone who can see these bundles on the channel has already seen the 2,985-byte card cross the same channel, so the size adds nothing they don't know. Padding every slot to bootstrap size would cost about 4 KB per message for no measurable gain. Recorded as open until decided, per the residual rule.
+**Decided 2026-10-16: no padding.** Anyone who can see these bundles on the channel has already seen the 2,985-byte card cross the same channel, so the size adds nothing they don't know. Padding every slot to bootstrap size would cost about 4 KB on every message from every contact, for no measurable gain.
 
 ---
 
@@ -370,7 +370,6 @@ Card key creation needs a real Enclave and gets `.enabled(if: secureEnclaveAvail
 
 ## 13. Open items
 
-- **Slot size signal** (§4.5): open, needs a decision. Recommendation: no padding.
 - **N** (§5): set by measuring the Enclave-wrapped ML-KEM-1024 blob.
 - **`PostQuantumProvider` persistence** (§1): API to add, with tests.
 - **Unverified assumption:** a CryptoKit Enclave key blob can't be loaded as the other key type. The two-key design doesn't depend on it, but confirm it in a test.
