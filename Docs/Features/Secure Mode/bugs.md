@@ -10396,6 +10396,8 @@ design work.
 
 **Status:** Open. Filed 2026-09-12, found while designing `RECOVERY_BUFFER_LAYERING.md` Stage 4's
 shard-buffer cap and generalizing the question to the rest of the app's per-depth storage.
+**Re-examined 2026-10-15: can't be closed with per-depth keys against a surrendered phrase.** Open, needs
+a decision. See "Re-examined 2026-10-15" below.
 
 **Target:** None — cross-cutting, affects every per-depth container currently shipped, not a single
 release's scope.
@@ -10467,6 +10469,27 @@ whatever storage-churn cost that implies — worse for containers written to oft
 than for ones written rarely, like BEK), or (b) some other mechanism that hides write-frequency-by-depth
 without paying that cost everywhere. Not resolved by anything currently in this file or in either design
 document.
+
+### Re-examined 2026-10-15: per-depth keys close the keyless case and can't close the other
+
+Found in a design discussion of `PASSPHRASE_LAYER_KEYS.md` §2 for v2.0.0. The full reasoning is that
+document's "Finding, 2026-10-15".
+
+- **With no phrase, per-depth keys close it on their own.** Today a row's depth is readable from array
+  slot positions without any key, and from depth stamps by code on the phone. Under the storage proposed in
+  the spec, a row carries no depth that can be read without its depth's phrase, so comparing images shows
+  which rows changed but not whose they were.
+- **With a surrendered duress phrase, it can't be closed.** That phrase sorts the changed rows into those
+  it opens and those it doesn't. During real use, rows it doesn't open change, and nothing the surrendered
+  depth does could have changed them. A duress session can't rewrite rows it can't read without destroying
+  them, so its writes can never look like the real depth's. Closing this needs ciphertexts that can be
+  re-randomised without the key, which CryptoKit doesn't offer, or the spec's append-only design, which
+  replaces SwiftData and lets a coercer wipe the real depth by keeping a duress session open.
+- **Option (a) above, resealing every depth's rows on every write,** fixes only the surrendered depth's
+  own rows never changing. That reveals the same fact, so it isn't proposed for v2.0.0.
+
+`Docs/v2.0.0` step 4 is marked not achievable as written, the assessment's repeated-images row is
+corrected, and step 16's guidance has to tell at-risk users.
 
 ---
 
