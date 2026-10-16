@@ -134,7 +134,9 @@ so each depth would have to process its own, as it already does for statuses: **
 
 **And the trustee's piece count (`bugs.md` Bug 162):** a trustee holds one piece per owner depth with a backup,
 which tells the trustee, and anyone with their phone, how many of the owner's depths have one. Stamping custody
-rows with the trustee's depth doesn't change that. Open, needs a decision; the bug lists the options.
+rows with the trustee's depth doesn't change that. The Vault tab no longer shows the count (2026-10-16); the
+stored rows, the pieces' dates and the custody manifest's size still carry it. Open, needs a decision; the bug
+lists what's left and why owner-side padding was dropped.
 
 ## Required before Stages 2 and 3 count as done
 
