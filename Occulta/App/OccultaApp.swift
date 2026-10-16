@@ -945,6 +945,9 @@ struct RootView: View {
     /// Gated on the phase for the reason `purgeOrphanedGroupsIfAtRealDepth()` gives; runs at every depth.
     private func sweepPrekeysIfUnlocked() {
         guard self.appScreen.phase == .unlocked else { return }
+        // The launch pass again, which does nothing once it has succeeded. A launch while the local DB key was
+        // unavailable, such as in the background before the first unlock, leaves rows it has yet to convert.
+        try? DatabaseMigration.migratePrekeyRecords(modelContext: self.contactManager.modelContext)
         try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
     }
 

@@ -1641,7 +1641,7 @@ extension ContactManager {
         #if DEBUG
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         #endif
-        try self.acceptInboundBatch(decodedPayload.prekeyBatch, into: prekeys)
+        try self.acceptInboundBatch(decodedPayload.prekeyBatch, openedWith: used, into: prekeys)
 
         // Shard-protocol content requires forward secrecy. If this bundle used the
         // long-term-key fallback path, treat any shard-protocol fields as
@@ -1664,8 +1664,8 @@ extension ContactManager {
         }
 
         // ── 6. Persist ───────────────────────────────────────────────────
-        try self.store(prekeys.record, for: sender)
-        try self.modelContext.save()
+        // Also the sweep on receipt, now that the bundle has passed every check, and a consume-time save that failed.
+        try self.save(prekeys, for: sender)
 
         #if DEBUG
         // Identifier prefix, not the decrypted name. Enough to correlate lines about the same
@@ -1841,7 +1841,7 @@ extension ContactManager {
         let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
 
         // ── 3. Trial-decrypt: find our slot and open it ─────────────────
-        let (recipientPayload, used, recipientMode) = try cryptoOps.findAndOpenRecipientSlot(
+        let (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
             in: bundle,
             blind: envelope.blind,
             senderContactID: sender.identifier,
@@ -1915,16 +1915,13 @@ extension ContactManager {
         if let identityChallenge = decoded.identityChallenge {
             guard recipientPayload.bodyDigest != nil else { throw GroupDecryptError.missingBodyDigest }
             if isFSMode {
-                // The signature verified in `findAndOpenRecipientSlot` against our slot's ephemeral key, in either
-                // form. Our slot isn't reported back, so look for a slot whose key it verifies in the prefixed
-                // form: only ours can, since the signature is over that key.
+                // The signature verified in `openRecipientSlot` against our slot's ephemeral key, in either form.
+                // Once more against that key, in the prefixed form only.
                 guard let signature = recipientPayload.senderEphemeralSignature,
-                      envelope.recipients.contains(where: {
-                          cryptoOps.verifySenderEphemeralSignature(
-                              signature, ephemeralPublicKey: $0.secrecyContext.ephemeralPublicKey,
-                              senderPublicKey: senderPublicKey, acceptsBareForm: false
-                          )
-                      })
+                      cryptoOps.verifySenderEphemeralSignature(
+                          signature, ephemeralPublicKey: slotEphemeralKey,
+                          senderPublicKey: senderPublicKey, acceptsBareForm: false
+                      )
                 else { throw GroupDecryptError.missingSenderEphemeralSignature }
             }
             challenge = IdentityChallenge.Authenticated(identityChallenge)
@@ -1958,7 +1955,7 @@ extension ContactManager {
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
-        try self.acceptInboundBatch(recipientPayload.prekeyBatch, into: prekeys)
+        try self.acceptInboundBatch(recipientPayload.prekeyBatch, openedWith: used, into: prekeys)
 
         // ── 6.5. A new batch if the sender is out of our keys ────────────
         // A one-time prekey is already gone — `findAndOpenRecipientSlot` consumes it the moment
@@ -1966,8 +1963,7 @@ extension ContactManager {
         // delivery of the pending batch, Bug 157). Generating stays behind every check above that
         // can throw (`bugs.md` Bug 159), so a rejected bundle can't make us issue keys.
         try self.replenish(after: used, into: prekeys)
-        try self.store(prekeys.record, for: sender)
-        try self.modelContext.save()
+        try self.save(prekeys, for: sender)
 
         #if DEBUG
         // Identifier prefix, not the decrypted name — see the same log on the direct path.

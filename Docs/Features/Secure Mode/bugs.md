@@ -13013,6 +13013,13 @@ no format change is needed.
 carries a 16-byte ID and is deduplicated by it, whatever its date (the first option below). A batch without an ID,
 from a sender on an older build, keeps the date rule, so that sender keeps the bug until they update.
 
+Found in review of PR #110, fixed 2026-10-15: only the last 8 IDs are kept, so an old batch replayed on a slot that
+opens again (the long-term keys or a last-resort key) after its ID aged out would have been accepted again. On such
+a slot a batch with a new ID must also be no older than the newest accepted from that contact
+(`latestInboundGeneratedAt`, never lowered); on a one-time key a new ID is enough. The clock-back corner therefore
+remains, but only on a slot that opens again: such a sender's new batch is refused until one dated later than the
+newest arrives. Open, needs a decision.
+
 **Target:** `v2.0.0`. Present since `latestPrekeysGeneratedAt` was introduced (`efb0b199`, 2026-03-29).
 
 ### Severity: Medium (forward secrecy silently off for a pair; neither side can restore it)
@@ -13050,6 +13057,11 @@ them unopenable. Any replacement has to keep rejecting that copy. Options:
 `PrekeyBookkeeperTests`: an older-dated batch with a new ID is accepted, a repeated ID is dropped, and a batch
 without an ID keeps the date rule. The interop vectors `payload.prekeyBatchWithID` and
 `recipientPayload.prekeyBatchWithID` pin the wire field.
+
+The reopenable-slot date rule: `PrekeyBookkeeperReplayTests` (a batch replayed after its ID aged out is refused; an
+older-dated new ID is accepted on a one-time key and refused on a reopenable slot), `PrekeyConversationSimulationTests.replayAfterIDsAgeOut`,
+`PrekeyReplayWiringTests` (`openGroup` and `decryptSealed` pass the slot they opened with), and
+`PrekeyConversationTests.replayedLongTermReply` (Bob's first reply redelivered to Alice after her 8 IDs rolled past it).
 
 ## Bug 159 — A fresh prekey batch is generated before the bundle has passed every check
 

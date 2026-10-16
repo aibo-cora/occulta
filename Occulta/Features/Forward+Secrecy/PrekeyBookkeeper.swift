@@ -107,15 +107,20 @@ struct PrekeyBookkeeper {
     /// then we've used up the one before it. Dropping keys we hold loses nothing: they keep the private halves until
     /// those retire, and we just won't seal to them. Their last-resort key becomes the new batch's.
     ///
-    /// A batch with an ID is dropped if that ID was accepted before (Bug 158); its date doesn't matter, so a
-    /// sender whose clock went back isn't stuck. A batch without one comes from an older build and keeps
-    /// today's rule: accepted only if newer than the last one accepted without an ID.
+    /// A batch with an ID is dropped if that ID was accepted before (Bug 158). Only the last `maxAcceptedBatchIDs`
+    /// are remembered, so a batch whose ID has aged out would be new again, and a bundle on a slot that opens again
+    /// (`onReopenableSlot`: the long-term keys or a last-resort key) can be replayed long after its batch was used up.
+    /// On such a slot a new ID must therefore also be no older than the newest batch accepted from the contact, by
+    /// their date: a replayed batch is older than whatever was accepted since. On a slot sealed to one of our
+    /// one-time keys, which can't open twice, a new ID is enough, so a sender whose clock went back isn't stuck
+    /// (Bug 158) once they're on our keys. A batch without an ID comes from an older build and keeps
+    /// today's rule: accepted only if newer than the last one accepted.
     ///
     /// - Returns: whether the batch was accepted.
     /// - Throws: `malformedBatch` for a batch outside the record's limits, which no build of ours produces.
     func accept(
         id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], lastResort: OccultaBundle.WirePrekey?,
-        into record: inout PrekeyRecord
+        onReopenableSlot: Bool, into record: inout PrekeyRecord
     ) throws -> Bool {
         let keys = prekeys.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
         let lastResortKey = lastResort.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
@@ -126,14 +131,17 @@ struct PrekeyBookkeeper {
 
         if let id {
             guard !record.acceptedBatchIDs.contains(id) else { return false }
+            if onReopenableSlot, let newest = record.latestInboundGeneratedAt, generatedAt < newest { return false }
             record.acceptedBatchIDs.append(id)
             if record.acceptedBatchIDs.count > Self.maxAcceptedBatchIDs {
                 record.acceptedBatchIDs.removeFirst(record.acceptedBatchIDs.count - Self.maxAcceptedBatchIDs)
             }
         } else {
             guard generatedAt > (record.latestInboundGeneratedAt ?? .distantPast) else { return false }
-            record.latestInboundGeneratedAt = generatedAt
         }
+        // The newest date accepted, never lowered: a batch a clock-back sender got through on a one-time key mustn't
+        // let an older replay through on a reopenable slot.
+        record.latestInboundGeneratedAt = max(record.latestInboundGeneratedAt ?? generatedAt, generatedAt)
 
         if !keys.isEmpty {
             record.inboundBatches.append(PrekeyRecord.InboundBatch(id: id, keys: keys))

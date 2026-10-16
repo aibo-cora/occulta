@@ -20,22 +20,6 @@ import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
-/// SplitMix64, so a shuffled run can be replayed.
-private struct SeededGenerator: RandomNumberGenerator {
-    var state: UInt64
-    mutating func next() -> UInt64 {
-        self.state &+= 0x9E37_79B9_7F4A_7C15
-        var z = self.state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-}
-
 /// One phone: its identity, its store, and the other phone as its one contact.
 @MainActor
 private final class Phone {
@@ -152,7 +136,7 @@ private struct Pair {
     }
 }
 
-@Suite("Prekey conversations, end to end — refill and append (stage 4)", .enabled(if: secureEnclaveAvailable()))
+@Suite("Prekey conversations, end to end — refill and append (stage 4)", .enabled(if: TestSupport.secureEnclaveAvailable()))
 @MainActor struct PrekeyConversationTests {
 
     @Test("Alternating, 100 messages each way: every one on a one-time key")
@@ -237,6 +221,42 @@ private struct Pair {
             try pair.bob.contactManager.modelContext.save()
         }
         #expect(throws: GroupDecryptError.recipientSlotNotFound) { try pair.bob.receive(tooLate) }
+    }
+
+    /// Alice remembers the IDs of only the last 8 batches Bob sent. His first reply is on the long-term keys, which
+    /// open again, so it can be delivered long after its batch is used up and its ID forgotten. It must open, and
+    /// bring back neither the batch nor its last-resort key, or Alice would seal to keys Bob has deleted and every
+    /// message after would be unopenable.
+    @Test("Bob's first reply, redelivered once its batch ID has aged out, opens and brings the batch back no more")
+    func replayedLongTermReply() throws {
+        let pair = try Pair()
+        try pair.exchange(from: pair.alice)
+        let firstReply = try pair.bob.send()
+        try pair.alice.receive(firstReply)
+        let firstBatchID = try #require(try pair.alice.record.acceptedBatchIDs.first)
+        try pair.exchange(from: pair.alice)
+
+        for _ in 0..<120 {
+            try pair.exchange(from: pair.alice)
+            try pair.exchange(from: pair.bob)
+        }
+        let before = try pair.alice.record
+        #expect(before.acceptedBatchIDs.count == PrekeyBookkeeper.maxAcceptedBatchIDs)
+        #expect(!before.acceptedBatchIDs.contains(firstBatchID), "precondition: the first batch's ID has aged out")
+
+        try pair.alice.receive(firstReply)
+        let after = try pair.alice.record
+        #expect(after.inboundBatches == before.inboundBatches)
+        #expect(after.inboundLastResort == before.inboundLastResort)
+
+        pair.alice.log = []
+        pair.bob.log = []
+        for _ in 0..<20 {
+            try pair.exchange(from: pair.alice)
+            try pair.exchange(from: pair.bob)
+        }
+        #expect(pair.alice.log.allSatisfy { $0 == .forwardSecret })
+        #expect(pair.bob.log.allSatisfy { $0 == .forwardSecret })
     }
 
     @Test("Alternating with one message in seven lost: every delivered message opens, all on one-time keys")

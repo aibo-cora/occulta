@@ -362,8 +362,9 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
-    /// A live row's record from its old one; see `migratePrekeyRecords`.
-    private static func carriedOverPrekeyRecord(from old: Data?) -> PrekeyRecord {
+    /// A live row's record from its old one; see `migratePrekeyRecords`. Also `ContactManager.prekeyRecord(for:)`'s
+    /// for a row the launch pass didn't reach.
+    static func carriedOverPrekeyRecord(from old: Data?) -> PrekeyRecord {
         guard let old else { return .empty }
         let codec = PrekeyRecordCodec()
         if let plaintext = old.decrypt(),

@@ -348,6 +348,7 @@ private struct ComposeHeroV2: View {
 
     @State private var showMediaPicker = false
     @State private var showFilePicker  = false
+    @State private var secrecy: NextSendSecrecy?
 
     init(vm: ComposeViewModel, identifier: String) {
         self.vm = vm
@@ -474,7 +475,7 @@ private struct ComposeHeroV2: View {
             .padding(.top, 10)
 
             // Its own line, below the size and the Encrypt button, with its description (D2).
-            if let secrecy = self.contacts.first.map(self.contactManager.nextSendSecrecy) {
+            if let secrecy = self.secrecy {
                 SecrecyIndicator(secrecy: secrecy)
                     .padding(.top, 10)
             }
@@ -493,6 +494,10 @@ private struct ComposeHeroV2: View {
             allowsMultipleSelection: false
         ) { result in
             self.vm.handleFile(result)
+        }
+        // Decrypts the 16 KB prekey record, so only when what it reads changes, not on every keystroke.
+        .onChange(of: [self.contacts.first?.prekeyRecordEncrypted, self.contacts.first?.maxBundleVersion], initial: true) {
+            self.secrecy = self.contacts.first.map(self.contactManager.nextSendSecrecy)
         }
     }
 

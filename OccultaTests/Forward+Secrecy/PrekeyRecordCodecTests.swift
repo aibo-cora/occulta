@@ -11,10 +11,6 @@ import Foundation
 @testable import OccultaCore
 @testable import OccultaFormats
 
-private func randomBytes(_ count: Int) -> Data {
-    Data((0..<count).map { _ in .random(in: .min ... .max) })
-}
-
 private func uuidBytes(_ uuid: UUID = UUID()) -> Data {
     withUnsafeBytes(of: uuid.uuid) { Data($0) }
 }

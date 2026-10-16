@@ -353,6 +353,21 @@ opened. `PrekeySyncBatch` gains an optional `id` (16 random bytes). A keeps the 
 accepted, at most a handful, and drops a batch it has seen. A batch without an `id` comes from an older
 build and keeps today's date rule. That keeps 158 open for older senders only.
 
+**Only the last 8 IDs are kept, so a slot that opens again needs a date too (found in review of PR #110,
+decided and built 2026-10-15).** A bundle on a slot that can be opened again, the long-term keys or a last-resort
+key, can be replayed after its batch's ID has aged out of the 8, and would add a batch whose keys B has already
+used up and deleted. So on such a slot a batch with a new ID must also be no older than the newest batch A has
+accepted from that contact, by the sender's date: `latestInboundGeneratedAt`, updated for every accepted batch
+and never lowered. On a slot sealed to one of A's one-time keys, which can't open twice, a new ID is enough.
+`PrekeyBookkeeper.accept` takes `onReopenableSlot` for this; `ContactManager.acceptInboundBatch` sets it from the
+key the bundle opened with. Guarded by `PrekeyBookkeeperReplayTests`, `PrekeyConversationSimulationTests.replayAfterIDsAgeOut`,
+`PrekeyReplayWiringTests` (`openGroup` and `decryptSealed` pass the slot, no Enclave) and
+`PrekeyConversationTests.replayedLongTermReply` (two phones, Enclave).
+
+Open, needs a decision: a sender whose clock went back, while A is on their long-term or last-resort key, has a new
+batch refused until one dated later than the newest arrives, so their clock must pass that date. That is Bug 158's
+original behaviour, now only on a slot that opens again; on one of A's one-time keys their batch is taken.
+
 ### 3.4 Identity challenges
 
 Once §3.1–3.3 are in, a long-term bundle between two current-build contacts is almost always an identity
@@ -762,10 +777,14 @@ D1 and D9 are decided; the three points below were settled 2026-10-08.
     a newer batch retires older ones, and the first use of any record-held batch retires the legacy keys (`legacyKeys`). A
     sweep deletes retired blobs, and the contact's legacy keychain keys by tag, 30 days after the respective
     retirement, on receipt and at unlock for the contacts that depth can read (D1, Bug 156). Built 2026-10-10
-    (`ContactManager.sweepPrekeys`): on receipt it runs before the bundle is opened and is saved and flushed at
-    once, like a used key, so a rejected bundle still leaves expired keys deleted; at unlock it covers the contacts
-    visible at the authenticated depth, runs at every depth, and is flushed by the checkpoint every unlock already
-    takes. Inbound batches
+    (`ContactManager.sweepPrekeys`): at unlock it covers the contacts visible at the authenticated depth, runs at
+    every depth, and is flushed by the checkpoint every unlock already takes. **On receipt (changed 2026-10-15,
+    found in review of PR #110):** the sweep is applied to the record the open uses, so nothing past its grace
+    period opens the bundle, and it's written with the record once a slot has opened (at once for a one-time key,
+    else when the bundle has passed every check), and flushed. A file that opens no slot writes nothing, so an
+    unauthenticated file naming a contact causes no save, flush or keychain delete; what it would have deleted,
+    the next authenticated receipt or the unlock sweep deletes. D1 itself (30 days by time, on receipt and at
+    unlock) is unchanged. Inbound batches
     are dropped by ID (Bug 158). Accepting a batch still replaces the keys held from that contact, as today;
     appending is stage 4's.
   - **No manifest of live keys (rejected 2026-10-10).** The record keeps keys the contact may or may not still

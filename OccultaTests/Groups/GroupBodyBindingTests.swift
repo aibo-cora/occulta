@@ -15,25 +15,8 @@
 import Testing
 import Foundation
 import CryptoKit
-import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
-
-@MainActor
-private func makeContactManager() throws -> ContactManager {
-    let schema = Schema([
-        Group.self,
-        Contact.Profile.self,
-        Contact.Profile.PhoneNumber.self,
-        Contact.Profile.EmailAddress.self,
-        Contact.Profile.PostalAddress.self,
-        Contact.Profile.URLAddress.self,
-        Contact.Profile.Key.self,
-    ])
-    let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
-    return ContactManager(modelContainer: container, security: security)
-}
 
 /// `publicKey` as a contact on this device, with `marker` as their recorded tier. A pending batch of ours stands
 /// waiting for them, so a long-term bundle from them generates no new one, which would need an Enclave.
@@ -197,7 +180,7 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
         // Carol is this device: `openGroup` opens with the ambient identity.
         let carolPublicKey = try Manager.Ambient.keyManager.retrieveIdentity()
 
-        let carolSide = try makeContactManager()
+        let carolSide = try TestSupport.makeContactManager()
         try insertSender(identifier: "alice", publicKey: alicePublicKey, in: carolSide)
 
         let groupID = UUID()
@@ -297,7 +280,7 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
     @Test("A slot without the digest is refused only from a sender recorded at the tier",
           .ambientTestKeyManager, arguments: RecordedTier.allCases)
     func missingDigest(tier: RecordedTier) throws {
-        let carolSide = try makeContactManager()
+        let carolSide = try TestSupport.makeContactManager()
         try insertSender(identifier: "alice", publicKey: try self.alice.retrieveIdentity(), marker: try tier.marker(), in: carolSide)
         let bundle = try sealWithoutDigest(
             OccultaBundle.SealedPayload(message: Data("Lunch at one.".utf8), groupID: UUID()),
@@ -313,7 +296,7 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
 
     @Test("An identity challenge in a group body without the digest is refused, whatever the sender's tier", .ambientTestKeyManager)
     func challengeNeedsTheDigest() throws {
-        let carolSide = try makeContactManager()
+        let carolSide = try TestSupport.makeContactManager()
         try insertSender(identifier: "alice", publicKey: try self.alice.retrieveIdentity(),
                          marker: try RecordedTier.belowTheTier.marker(), in: carolSide)
         let bundle = try sealWithoutDigest(
@@ -331,7 +314,7 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
     @Test("A body claiming 2.0.0 or later without the digest is refused, whatever the sender's tier",
           .ambientTestKeyManager, arguments: ["2.0.0", "2.1", "1.11.1"])
     func claimWithoutTheDigest(appVersion: String) throws {
-        let carolSide = try makeContactManager()
+        let carolSide = try TestSupport.makeContactManager()
         try insertSender(identifier: "alice", publicKey: try self.alice.retrieveIdentity(),
                          marker: try RecordedTier.belowTheTier.marker(), in: carolSide)
         let bundle = try sealWithoutDigest(
@@ -351,7 +334,7 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
 
     @Test("A body claiming 2.0.0 with the digest opens", .ambientTestKeyManager)
     func claimWithTheDigestOpens() throws {
-        let carolSide = try makeContactManager()
+        let carolSide = try TestSupport.makeContactManager()
         try insertSender(identifier: "alice", publicKey: try self.alice.retrieveIdentity(), in: carolSide)
         let bundle = try Manager.Crypto(keyManager: self.alice).seal(
             sealedPayload: OccultaBundle.SealedPayload(message: Data("Lunch at one.".utf8), appVersion: "2.0.0"),
@@ -367,7 +350,7 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
 
     @Test("An identity challenge in a group body with the digest opens", .ambientTestKeyManager)
     func challengeWithTheDigestOpens() throws {
-        let carolSide = try makeContactManager()
+        let carolSide = try TestSupport.makeContactManager()
         try insertSender(identifier: "alice", publicKey: try self.alice.retrieveIdentity(), in: carolSide)
         let bundle = try Manager.Crypto(keyManager: self.alice).seal(
             sealedPayload: OccultaBundle.SealedPayload(

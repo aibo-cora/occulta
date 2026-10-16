@@ -470,14 +470,9 @@ private struct Fixture {
         #expect(throws: (any Error).self) { _ = try f.cm.openGroup(bundle: tooLate, ownerID: f.senderID) }
     }
 
-    /// The sweep on receipt (D1, Bug 156) runs before the bundle is opened and is saved at once, so
-    /// even a bundle that is then rejected leaves expired keys deleted: from the record, and the
-    /// legacy ones from the keychain.
-    @Test("A message from a contact sweeps their record first, even when it is rejected", .enabled(if: secureEnclaveAvailable()))
-    func receiptSweepsBeforeRejection() throws {
-        let f = try Fixture()
-        defer { f.cleanUp() }
-
+    /// An expired retired batch, and legacy keychain keys retired 31 days ago with keys in the keychain: what the
+    /// sweep on receipt (D1, Bug 156) would delete.
+    private func contactWithExpiredKeys(_ f: Fixture) throws {
         _ = try f.pm.generateBatch(contactID: f.senderID)
         let now = Date()
         var record = PrekeyRecord.empty
@@ -488,14 +483,66 @@ private struct Fixture {
         record.legacyKeys = .retired(since: now - 31 * 86_400)
         try f.cm.store(record, for: try f.sender)
         try f.cm.modelContext.save()
+    }
+
+    /// The sweep on receipt is applied in memory: a file that opens no slot, which anyone can send naming a
+    /// contact, writes nothing. What the sweep would have deleted waits for the next authenticated receipt or
+    /// the unlock sweep.
+    @Test("A rejected bundle writes nothing, expired keys included", .enabled(if: secureEnclaveAvailable()))
+    func rejectedBundleWritesNothing() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        try self.contactWithExpiredKeys(f)
+        let before = try #require(try f.sender.prekeyRecordEncrypted)
+        let keychainBefore = f.keychainPrekeyCount
+        #expect(keychainBefore > 0)
 
         let bundle = f.corrupted(try f.groupBundle())
         #expect(throws: (any Error).self) { _ = try f.cm.openGroup(bundle: bundle, ownerID: f.senderID) }
 
+        #expect(try f.sender.prekeyRecordEncrypted == before)
+        #expect(f.keychainPrekeyCount == keychainBefore)
+    }
+
+    /// Once the bundle has passed every check, the sweep is written with the record: the expired batch from it,
+    /// the legacy keys from the keychain.
+    @Test("A bundle that opens saves the sweep with the record", .enabled(if: secureEnclaveAvailable()))
+    func openedBundleSavesTheSweep() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        try self.contactWithExpiredKeys(f)
+        #expect(f.keychainPrekeyCount > 0)
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+
         let saved = try f.savedRecord
-        #expect(saved.ownBatches.isEmpty)
+        #expect(saved.ownBatches.allSatisfy { $0.retiredAt == nil }, "the expired batch is gone")
         #expect(saved.legacyKeys == PrekeyRecord.LegacyKeys.none)
         #expect(f.keychainPrekeyCount == 0, "legacy keys past their grace period must be gone from the keychain")
+    }
+
+    /// The open uses the swept record, so a key past its grace period doesn't open a bundle even though the
+    /// sweep hasn't been written yet.
+    @Test("A legacy keychain key past its grace period does not open, and nothing is written", .enabled(if: secureEnclaveAvailable()))
+    func expiredLegacyKeyDoesNotOpen() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        let keys = try f.pm.generateBatch(contactID: f.senderID)
+        var record = PrekeyRecord.empty
+        record.legacyKeys = .retired(since: Date() - 31 * 86_400)
+        try f.cm.store(record, for: try f.sender)
+        try f.cm.modelContext.save()
+        let before = try #require(try f.sender.prekeyRecordEncrypted)
+
+        let prekey = try #require(keys.first)
+        #expect(throws: (any Error).self) { _ = try f.cm.decryptSealed(bundle: try f.forwardSecretBundle(to: prekey)) }
+
+        #expect(try f.sender.prekeyRecordEncrypted == before)
+        #expect(f.pm.retrievePrivateKey(for: prekey) != nil, "nothing was consumed")
+        #expect(f.keychainPrekeyCount == keys.count)
     }
 
     /// A contact still holding a batch from before stage 1 seals to a keychain key, which the record
