@@ -103,7 +103,7 @@ extension IntroCardMock {
                         Notice(
                             tone:  .danger,
                             label: "Can't import",
-                            text:  "You already sent \(self.chosenName) a card. Wait for \(self.chosenName)'s message."
+                            text:  "You already sent \(self.chosenName) a card. Wait for \(self.chosenName)'s message. \(self.chosenName) needs to import your card."
                         )
                     case .none:
                         Countdown()

@@ -254,7 +254,7 @@ Write `empty`. The blobs exist only in the field, so overwriting it deletes the 
    | `empty` (pending) | Import |
    | `imported` (waiting on an earlier card from Bob) | **Replace.** Write the new `imported` state over the old one, which deletes its keys. Bob can only issue a card from a pending contact, so a new card means his side never got Carol's message, or he discarded the conversation |
    | `conversation` | **Refuse** (W-16). A card claiming to be from Bob must not replace a live conversation: anyone could send one |
-   | `issued` (Carol's own card out to Bob) | **Refuse** (W-17). If importing cancelled her own card, two crossing cards could cancel each other and both get stuck |
+   | `issued` (Carol's own card out to Bob: the cards crossed) | **Key order decides** (decided 2026-10-16). Compare the two cards' agreement public keys (X9.63, bytewise). If Bob's is lower, cancel Carol's card (§6.2) and import Bob's. If Carol's is lower, refuse (W-17): Bob's phone, importing Carol's card, makes the same comparison, cancels Bob's card and imports hers. Exactly one card survives, with no question asked. If only the side whose own card wins imports, it waits until the other imports or the cards expire |
 3. **Generate** Carol's card agreement, signing and ML-KEM keys, and her own prekey batch.
 4. **Encapsulate** to Bob's card ML-KEM key, which gives `ss1` and `ct1`.
 5. **Store** `imported`, then save.
@@ -379,7 +379,8 @@ FINDINGS' action-item tests, plus these:
 - A card that differs in any byte fails recognition, as does a file of 1,769 or 1,771 bytes.
 - An expired card is refused at import and on arrival, at every depth.
 - Redemption by the second, not the first, of Carol's bootstrap messages, followed by the first arriving: both open.
-- Import into an `imported` contact replaces it and leaves none of the old keys. Import into a `conversation` or `issued` contact is refused and changes nothing.
+- Import into an `imported` contact replaces it and leaves none of the old keys. Import into a `conversation` contact is refused and changes nothing.
+- Crossing cards (§6.3): when both phones import, exactly one card survives on both, the one with the lower agreement key. When one phone imports, its card is cancelled if the other card is lower, or the import is refused if its own card is lower.
 - The sweep clears an expired `imported` field only when `sentFirstMessage` is false, at every depth, keeping the field's size.
 - A bootstrap from a second sender with a different introduction on the same card is rejected after redemption.
 - Carol's slots sealed to Bob's card agreement key carry a random version-4 `prekeyID` that matches nothing on the card.

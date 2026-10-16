@@ -27,7 +27,7 @@ extension IntroCardMock {
                     Section("Carol uses it") {
                         NavigationLink("5 · Import, then write · W-05") { ImportCard() }
                         NavigationLink("5b · Import refused: already talking · W-16") { ImportCard(refusal: .alreadyTalking) }
-                        NavigationLink("5c · Import refused: your card is out · W-17") { ImportCard(refusal: .ownCardOut) }
+                        NavigationLink("5c · Cards crossed, yours wins · W-17") { ImportCard(refusal: .ownCardOut) }
                         NavigationLink("6 · Before the first message · W-06") { RecipientBeforeFirstSend() }
                         NavigationLink("7 · Waiting for a reply · W-07") { RecipientWaitingForReply() }
                         NavigationLink("Import below iOS 26") { ImportCard(isCardSupported: false) }
