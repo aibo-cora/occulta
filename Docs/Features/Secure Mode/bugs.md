@@ -13678,3 +13678,72 @@ are rare (§3.4). That change alone doesn't achieve it, because of the size.
 ### Guard
 
 None yet.
+
+---
+
+## Bug 168 — A downgraded build deletes every contact's prekey record
+
+**Status:** Accepted, 2026-10-16 (owner's decision), for TestFlight and sideload users. Found the same day while
+checking Prekey Continuity D6's premise on a simulator. The acceptance covers the prekey refactor only. The
+passphrase migration's downgrade is a separate question (see "Fix" below).
+
+**Target:** `v2.0.0`. Present since prekey continuity stage 1, merged into `release/v2.0.0` with PR #110.
+
+### Severity: Medium (data loss; reachable only through TestFlight and sideloaded builds)
+
+### What happens
+
+- **The older build migrates the store back.** It creates its `ModelContainer` at launch
+  (`OccultaApp.swift:70`). Core Data finds the store at a newer model version, takes that model from the
+  store's own `Z_MODELCACHE` table, and runs a lightweight migration back to the older schema. Attributes the
+  older model lacks are dropped, values and all. The app doesn't fail to open; it runs.
+- **For the prekey refactor, that drops `Contact.Profile.prekeyRecordEncrypted`.** Every contact loses our blob
+  prekeys, our last-resort keys, and the batches the contact sent us. The older build reads only
+  `forwardSecrecyEncrypted`, which `migratePrekeyRecords` set to nil on every row, so it holds no prekeys at all.
+- **While downgraded:**
+  - Sends fall back to the long-term key until each contact sends a new batch.
+  - Messages contacts seal to our blob prekeys or last-resort keys can't be opened.
+  - Contacts can't detect the downgrade (D6), so each one keeps sealing to our last-resort key, and those
+    messages keep failing.
+- **Upgrading again** brings the column back empty. `migratePrekeyRecords` then carries over whatever the older
+  build stored in `forwardSecrecyEncrypted` during the downgrade (`PQmigration.swift:345–358`). The record from
+  before the downgrade is gone for good. The private keys in it existed only there, so messages sealed to them
+  can never be opened.
+
+### Verified, 2026-10-16
+
+A throwaway iPhone 17 Pro simulator on iOS 26.2. Debug builds of the pre-refactor release commit `9ff49f9` (old)
+and the refactor `9a23264` (new):
+
+| Step | `ZPROFILE` columns | Contact row |
+|---|---|---|
+| Old build creates the store | `ZFORWARDSECRECYENCRYPTED` only | — |
+| Upgrade to new | both | A row planted with `sqlite3`, `ZPREKEYRECORDENCRYPTED` = `DEADBEEF` |
+| Downgrade to old | `ZPREKEYRECORDENCRYPTED` gone | The row survives; the value is gone |
+| Upgrade to new again | both | `NULL` |
+
+The row was planted directly because a real contact needs a key exchange between two devices. No crash report
+was written at any step.
+
+### Why D6 didn't prevent it
+
+D6 ruled downgrades out by release order, on the premise that an older build can't read a migrated database at
+all (`ROLLOUT_PLAN.md`, "Migrations are one-way"). It can. The passphrase migration would be read back the same
+way, so pairing the refactor with it only adds to what a downgrade deletes. That case is untested, but the
+mechanism is the same.
+
+### Fix — decided 2026-10-16: accept it
+
+- **Taken: accept it** for TestFlight and sideload users, the only people who can downgrade on iOS, and say so in
+  the TestFlight notes. The prekey refactor ships in 2.0.0 without waiting for the passphrase work, since release
+  order protected nothing (`decisions.md`, 2026-10-16).
+- **Not taken for the refactor:** making a downgrade lose nothing by keeping migrated data where an older build
+  doesn't look, such as a new store file. For the refactor that would mean moving the store, which is new work.
+  `ROLLOUT_PLAN.md` still proposes it for the passphrase migration, where a downgrade would delete everything
+  resealed rather than prekey records alone. That is not decided.
+- **Already rejected:** a "last reported version" marker (D6). It would be a downgrade lever for anyone with
+  temporary use of a contact's identity key.
+
+### Guard
+
+None yet.
