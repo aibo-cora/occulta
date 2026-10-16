@@ -348,6 +348,7 @@ private struct ComposeHeroV2: View {
 
     @State private var showMediaPicker = false
     @State private var showFilePicker  = false
+    @State private var secrecy: NextSendSecrecy?
 
     init(vm: ComposeViewModel, identifier: String) {
         self.vm = vm
@@ -450,15 +451,6 @@ private struct ComposeHeroV2: View {
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
 
-                    if let isForwardSecret = self.contacts.first?.hasPrekeyAvailable {
-                        SecrecyIndicator(isForwardSecret: isForwardSecret)
-                            #if DEBUG
-                            .onAppear { self.contacts.first?.debugLogPrekeyStateAtCompose("V2 onAppear") }
-                            .onChange(of: self.contacts.first?.availableInboundPrekeyCount) { old, new in
-                                debugPrint("[FS badge/V2 onChange] \(self.identifier): live availableInboundPrekeyCount \(String(describing: old)) -> \(String(describing: new))")
-                            }
-                            #endif
-                    }
                 }
                 Spacer()
                 Button(action: self.encryptAction) {
@@ -481,6 +473,12 @@ private struct ComposeHeroV2: View {
                 .buttonStyle(.plain)
             }
             .padding(.top, 10)
+
+            // Its own line, below the size and the Encrypt button, with its description (D2).
+            if let secrecy = self.secrecy {
+                SecrecyIndicator(secrecy: secrecy)
+                    .padding(.top, 10)
+            }
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
@@ -496,6 +494,10 @@ private struct ComposeHeroV2: View {
             allowsMultipleSelection: false
         ) { result in
             self.vm.handleFile(result)
+        }
+        // Decrypts the 16 KB prekey record, so only when what it reads changes, not on every keystroke.
+        .onChange(of: [self.contacts.first?.prekeyRecordEncrypted, self.contacts.first?.maxBundleVersion], initial: true) {
+            self.secrecy = self.contacts.first.map(self.contactManager.nextSendSecrecy)
         }
     }
 

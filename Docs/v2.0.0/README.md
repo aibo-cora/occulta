@@ -48,9 +48,9 @@ depends on.
 |---|---|---|---|
 | Bug 62 | `pinCollision` PIN oracle; Gap 2 (no attempt limit) and Gap 1a still open | Open | 1 (removes the collision check entirely) |
 | Bug 82 | Identity-key change strands earlier messages; split 82a/82b | Open (82a P1, 82b P2) | 6 (the measurement that fallback fires first in each direction) |
-| Bug 109 | Per-depth keys leave an authentication-failure tell on rows the key doesn't own | Closed moot, 2026-09-10 | 3 (returns if per-depth keys ship without it) |
+| Bug 109 | Per-depth keys leave an authentication-failure tell on rows the key doesn't own | Closed moot, 2026-09-10 | 3 (returns if per-depth keys ship without it; the 2026-10-15 proposal, spec §2, argues a row that opens completely or not at all isn't this tell) |
 | Bug 119 | Vault key is device-level; one key opens every depth under AFU | Open | 1, 2 |
-| Bug 120 | Write frequency across snapshots reveals the real depth | Open | 4 |
+| Bug 120 | Write frequency across snapshots reveals the real depth | Open; can't be closed with per-depth keys against a surrendered phrase, needs a decision (2026-10-15) | 4 |
 | Bug 123 | Small sealed fields share one AAD, so ciphertext splices between rows | Closed, subsumed into 119 | 5 |
 | Register §B §3.2 | No `MCSession` peer authentication | P1 | 8 |
 | Register C2 | Hybrid local DB key re-derived per operation; a cache is planned | P1 | 13 (the cache must follow its rule) |
@@ -60,10 +60,14 @@ depends on.
 | Register §E | Language risk; `USER_GUIDE.md` overclaims and names authorities | Tier 3 P1 | 11 |
 | Register §I | A duress depth's content can look thin next to the real one | Accepted, 2026-09-07 | Residual; see the assessment |
 | Spec §2, message keys | Prekey tags name contacts; classical-only modes open with the passcode alone | Decided, 2026-10-04; open items listed in step 17 | 17 |
-| Bugs 155–160 | Prekey batch lifecycle: needless batches, keys never pruned, clock-based dedupe, untested trigger | Open | 6, 17 (via [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), targeted at v2.0.0 on 2026-10-06; D1–D6, D8, D9 decided; step 6 and D7 deferred out of v2.0.0. D9 supersedes 17b for prekeys) |
-| Bug 162 | A trustee's piece count for an owner shows how many of the owner's depths have a backup | Open, needs a decision (2026-10-12) | none yet; rollout stage 4 |
+| Bugs 155–161 | Prekey batch lifecycle: needless batches, keys never pruned, clock-based dedupe, any key clearing the pending batch, generation before checks, untested trigger, a record whose size tracks activity | 159, 160 fixed (stage 0, PR #87, merged); 156, 157, 158, 161 fixed in stage 1, merged into `v2.0.0/prekey-refactor`, 156 with a residual open, needs a decision; 155 fixed in stage 3 (`v2.0.0/prekey-stage-3`, not merged), its old-path shard case open | 6, 17 (via [Prekey Continuity](../Features/Prekey%20Continuity/DESIGN.md), targeted at v2.0.0 on 2026-10-06; D1–D6, D8, D9 decided; step 6 and D7 deferred out of v2.0.0. D9 supersedes 17b for prekeys) |
+| Bug 162 | A trustee's piece count for an owner shows how many of the owner's depths have a backup | On-screen count and custody manifest size fixed (2026-10-16, `v2.0.0/bug-162-piece-count`, not merged); stored rows and piece dates open, needs a decision; owner-side padding dropped | none yet; rollout stage 4 |
 | Bug 163 | A lost or late `.replace` leaves the trustee holding the piece it replaced | Open; fix worked out (a lineage per owner depth and trustee), deferred | none yet |
-| Bug 164 | A one-to-one bundle's fallback slot keeps its piece operations on receipt | Fixed on `v2.0.0/prekey-stage-2`, not merged | prekey continuity stage 2 |
+| Bug 164 | A one-to-one bundle's fallback slot keeps its piece operations on receipt | Fixed in stage 2, merged into `v2.0.0/prekey-refactor` | prekey continuity stage 2 |
+| Bug 165 | A group member can rewrite another member's message to the rest of the group | Fixed (PR #100), merged into `v2.0.0/prekey-refactor`; builds below 2.0.0 stay open on either side until they update, and making 2.0.0 the minimum sender is open, needs a decision | none; needed before prekey continuity stage 3 |
+| Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Fixed (PR #102), merged into `v2.0.0/prekey-refactor` | none |
+| Bug 167 | Identity challenges and responses can be recognised by their size | Open, needs a decision | prekey continuity stage 3 |
+| Bug 168 | A downgraded build migrates the store back and deletes every contact's prekey record; D6's release order doesn't prevent it | Accepted 2026-10-16 for TestFlight and sideload users; the refactor ships in 2.0.0 without waiting for the passphrase work | release mechanics; the migration requirements before stages 2 and 3 |
 
 Steps 6, 7, 10, 13, 15, 16 and 17 are not tracked anywhere else yet.
 

@@ -21,7 +21,7 @@ struct OccultaApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     @State private var contactManager: ContactManager
-    @State private var identityChallenge = IdentityChallenge.Coordinator()
+    @State private var identityChallenge: IdentityChallenge.Coordinator
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var security: Manager.Security
@@ -95,6 +95,7 @@ struct OccultaApp: App {
 
         self.sharedModelContainer = sharedModelContainer
         self.contactManager       = contactManager
+        self.identityChallenge    = IdentityChallenge.Coordinator(contactManager: contactManager)
         self.vaultManager         = vaultManager
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
@@ -181,6 +182,16 @@ struct OccultaApp: App {
             #endif
         }
 
+
+        // Before the reseal of contacts per depth, whenever that ships (`migratePrekeyRecords`), and after
+        // `migrateToV2`, whose rows it skips until they're converted.
+        do {
+            try DatabaseMigration.migratePrekeyRecords(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("prekey record migration error: \(error)")
+            #endif
+        }
 
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
@@ -343,6 +354,7 @@ struct RootView: View {
                 // Without a gate, `wire()` went straight to `.unlocked` and this call is what
                 // covers that case. Both may fire; the sweep is idempotent.
                 self.purgeOrphanedGroupsIfAtRealDepth()
+                self.sweepPrekeysIfUnlocked()
 
                 // Unconditional, at every depth and on every launch, and deliberately not
                 // folded into the purge above: a checkpoint that fired only at depth 0 would
@@ -373,10 +385,11 @@ struct RootView: View {
                 // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
                 // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
                 self.purgeOrphanedGroupsIfAtRealDepth()
+                self.sweepPrekeysIfUnlocked()
 
-                // Flushes the purge's delete records out of the WAL (`secure_delete` zeroes
+                // Flushes the purge's and the sweep's delete records out of the WAL (`secure_delete` zeroes
                 // them on the way), and runs on **every** unlock at every depth even though
-                // only a depth-0 unlock can have deleted anything — a checkpoint that followed
+                // only a depth-0 unlock can purge groups — a checkpoint that followed
                 // the deletion would otherwise announce it.
                 self.security.checkpointStore()
                 if let data = self.pendingFileData {
@@ -895,8 +908,13 @@ struct RootView: View {
         // this device has never heard from, not one it is hiding — and a contact who has never
         // sent anything holds no prekey of ours and cannot send forward-secret traffic at all.
         // No duress state is recoverable from it.
+        //
+        // The body-digest refusals (`bugs.md` Bug 165) share it too: each says the same thing, that the
+        // message can't be tied to this contact, and a separate string would only add a third to tell apart.
         } catch GroupDecryptError.senderSignatureCapabilityUnknown,
-                GroupDecryptError.missingSenderEphemeralSignature {
+                GroupDecryptError.missingSenderEphemeralSignature,
+                GroupDecryptError.bodyDigestMismatch,
+                GroupDecryptError.missingBodyDigest {
             self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be using an older version — ask them to update, or verify them another way."
             self.showError = true
         } catch {
@@ -930,6 +948,16 @@ struct RootView: View {
         else { return }
 
         try? self.contactManager.purgeUnreadableGroups(using: key)
+    }
+
+    /// Deletes prekeys past their grace period (D1, Bug 156), for the contacts visible at the authenticated depth.
+    /// Gated on the phase for the reason `purgeOrphanedGroupsIfAtRealDepth()` gives; runs at every depth.
+    private func sweepPrekeysIfUnlocked() {
+        guard self.appScreen.phase == .unlocked else { return }
+        // The launch pass again, which does nothing once it has succeeded. A launch while the local DB key was
+        // unavailable, such as in the background before the first unlock, leaves rows it has yet to convert.
+        try? DatabaseMigration.migratePrekeyRecords(modelContext: self.contactManager.modelContext)
+        try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
     }
 
     /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,
@@ -1004,18 +1032,15 @@ struct RootView: View {
                     // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
                     // (messages, shards, custody ops) use this path. Shard-only bundles signal
                     // "no basket" via an empty message field.
-                    let (sealed, ownerID, _, recipShardOps, recipManifest) =
+                    let (sealed, ownerID, _, recipShardOps, recipManifest, challenge) =
                         try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version
 
-                    // Identity-challenge traffic inside a group bundle.
-                    if let identityEnvelope = sealed.identityChallenge {
+                    // Identity-challenge traffic inside a group bundle, already authenticated by `openGroup`
+                    // (prekey continuity §3.4). It sets `challenge` whenever the body carries one.
+                    if let challenge {
                         if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                            _ = self.identityChallenge.handleInboundChallenge(
-                                bundle:   bundle,
-                                envelope: identityEnvelope,
-                                sender:   sender
-                            )
+                            _ = self.identityChallenge.handleAuthenticatedChallenge(challenge, sender: sender)
                         }
                         return nil
                     }

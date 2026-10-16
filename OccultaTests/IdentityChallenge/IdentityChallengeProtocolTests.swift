@@ -77,11 +77,9 @@ private func parties(
 
         let responseBundle = try r.mgr.respond(to: pending)
 
-        let (ok, note) = try c.mgr.verifyResponse(
+        #expect(try c.mgr.verifyResponse(
             bundle: responseBundle, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(ok)
-        #expect(note == nil)
+        ) == .passed(contextNote: nil))
 
         // Slot is released after verification.
         #expect(c.store.count == 0)
@@ -245,10 +243,9 @@ private func parties(
         // Advance past `IdentityChallenge.timestampWindow` before the challenger verifies.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampWindow) + 1
 
-        let (ok, _) = try c.mgr.verifyResponse(
+        #expect(try c.mgr.verifyResponse(
             bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(!ok)
+        ) == .failed(contextNote: nil))
     }
 
     @Test func verify_atWindowBoundary_returnsTrue() throws {
@@ -271,10 +268,9 @@ private func parties(
         // Just under the window.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampWindow) - 1
 
-        let (ok, _) = try c.mgr.verifyResponse(
+        #expect(try c.mgr.verifyResponse(
             bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(ok)
+        ) == .passed(contextNote: nil))
     }
 
     // MARK: Replay
@@ -293,13 +289,12 @@ private func parties(
         // First verify — succeeds and consumes the slot.
         #expect(try c.mgr.verifyResponse(
             bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        ).ok)
+        ) == .passed(contextNote: nil))
 
-        // Replay — same response, but store no longer has the entry.
-        let (replay, _) = try c.mgr.verifyResponse(
+        // Replay — same response, but store no longer has the entry: not an answer to anything (Bug 166).
+        #expect(try c.mgr.verifyResponse(
             bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(!replay)
+        ) == .notOurs)
     }
 
     // MARK: Phase 2 staleness
@@ -418,11 +413,9 @@ private func parties(
         #expect(pending.contextNote == note)
 
         let response = try r.mgr.respond(to: pending)
-        let (ok, echoed) = try c.mgr.verifyResponse(
+        #expect(try c.mgr.verifyResponse(
             bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(ok)
-        #expect(echoed == note)
+        ) == .passed(contextNote: note))
     }
 
     @Test func contextNote_nilWhenNotProvided() throws {
@@ -437,11 +430,9 @@ private func parties(
         #expect(pending.contextNote == nil)
 
         let response = try r.mgr.respond(to: pending)
-        let (ok, echoed) = try c.mgr.verifyResponse(
+        #expect(try c.mgr.verifyResponse(
             bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(ok)
-        #expect(echoed == nil)
+        ) == .passed(contextNote: nil))
     }
 
     @Test func contextNote_truncatedAtMaxBytes() throws {
@@ -544,10 +535,9 @@ private func parties(
         )
 
         // Verification should succeed — the tampered note is ignored, not fatal.
-        let (ok, _) = try c.mgr.verifyResponse(
+        #expect(try c.mgr.verifyResponse(
             bundle: resealed, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(ok)
+        ) == .passed(contextNote: nil))
     }
 
     @Test func contextNote_notInSignedData() throws {
@@ -569,10 +559,9 @@ private func parties(
             senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
         )
         let responseA = try r.mgr.respond(to: pendingA)
-        let (okA, _)  = try c.mgr.verifyResponse(
+        #expect(try c.mgr.verifyResponse(
             bundle: responseA, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
-        )
-        #expect(okA)
+        ) == .passed(contextNote: "X"))
     }
 
     @Test func responseBundle_ridesV3fsLongTermFallback() throws {

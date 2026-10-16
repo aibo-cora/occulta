@@ -1,5 +1,5 @@
 //
-//  PrekeyManagerTests.swift
+//  PrekeySecretsManagerTests.swift
 //  OccultaTests
 //
 //  ⚠️  DEVICE ONLY — requires Secure Enclave.
@@ -31,17 +31,17 @@ private extension String {
 
 // MARK: - Generation
 
-@Suite("PrekeyManager — Generation")
-struct PrekeyManagerGenerationTests {
+@Suite("PrekeySecretsManager — Generation")
+struct PrekeySecretsManagerGenerationTests {
 
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_returnsDefaultCount() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
         let prekeys = try pm.generateBatch(contactID: cid)
-        #expect(prekeys.count == Manager.PrekeyManager.defaultBatchSize)
+        #expect(prekeys.count == Manager.PrekeySecretsManager.defaultBatchSize)
     }
 
     @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_customCount() throws {
@@ -105,10 +105,10 @@ struct PrekeyManagerGenerationTests {
 
 // MARK: - Retrieval
 
-@Suite("PrekeyManager — Retrieval")
-struct PrekeyManagerRetrievalTests {
+@Suite("PrekeySecretsManager — Retrieval")
+struct PrekeySecretsManagerRetrievalTests {
 
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     @Test func retrievePrivateKey_nilForPhantomID() {
         let phantom = Prekey(id: UUID().uuidString, contactID: "nonexistent", publicKey: Data(count: 65))
@@ -141,10 +141,10 @@ struct PrekeyManagerRetrievalTests {
 
 // MARK: - Consumption
 
-@Suite("PrekeyManager — Consumption")
-struct PrekeyManagerConsumptionTests {
+@Suite("PrekeySecretsManager — Consumption")
+struct PrekeySecretsManagerConsumptionTests {
 
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     @Test(.enabled(if: secureEnclaveAvailable())) func consume_deletesKeyFromSE() throws {
         let cid = String.testContactID()
@@ -207,10 +207,10 @@ struct PrekeyManagerConsumptionTests {
 
 // MARK: - Pool deletion
 
-@Suite("PrekeyManager — Pool deletion")
-struct PrekeyManagerDeletionTests {
+@Suite("PrekeySecretsManager — Pool deletion")
+struct PrekeySecretsManagerDeletionTests {
 
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     @Test(.enabled(if: secureEnclaveAvailable())) func deleteAllKeys_removesEntirePool() throws {
         let cid = String.testContactID()
@@ -242,10 +242,10 @@ struct PrekeyManagerDeletionTests {
 
 // MARK: - Stock tracking
 
-@Suite("PrekeyManager — Stock")
-struct PrekeyManagerStockTests {
+@Suite("PrekeySecretsManager — Stock")
+struct PrekeySecretsManagerStockTests {
 
-    let pm = Manager.PrekeyManager()
+    let pm = Manager.PrekeySecretsManager()
 
     @Test(.enabled(if: secureEnclaveAvailable())) func remainingCount_accurateAfterGeneration() throws {
         let cid = String.testContactID()
@@ -264,26 +264,5 @@ struct PrekeyManagerStockTests {
         let prekeys = try pm.generateBatch(contactID: cid, count: 3)
         pm.consume(prekey: prekeys[0])
         #expect(pm.remainingCount(for: cid) == 2)
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func needsReplenishment_falseAtOrAboveThreshold() throws {
-        let cid = String.testContactID()
-        defer { pm.deleteAllKeys(for: cid) }
-
-        _ = try pm.generateBatch(contactID: cid, count: Manager.PrekeyManager.replenishThreshold)
-        #expect(pm.needsReplenishment(for: cid) == false)
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func needsReplenishment_trueBelowThreshold() throws {
-        let cid = String.testContactID()
-        defer { pm.deleteAllKeys(for: cid) }
-
-        _ = try pm.generateBatch(contactID: cid, count: Manager.PrekeyManager.replenishThreshold - 1)
-        #expect(pm.needsReplenishment(for: cid) == true)
-    }
-
-    @Test func needsReplenishment_trueForNewContact() {
-        let cid = "never-used-\(UUID().uuidString)"
-        #expect(pm.needsReplenishment(for: cid) == true)
     }
 }

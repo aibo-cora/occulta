@@ -179,7 +179,7 @@ private enum TestSetupError: Error { case keyUnavailable }
         #expect(after.count == 1)
         #expect(after[0].encryptedPayload != beforeBytes,
                 "a surviving row must be re-sealed with a fresh nonce on any purge, not just deletions matching it")
-        #expect(custody.heldShards(from: after).first?.ownerContactIdentifier == "carol",
+        #expect(custody.heldShardOwners(from: after) == ["carol"],
                 "content must decrypt unchanged after re-sealing")
     }
 }

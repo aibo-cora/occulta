@@ -104,6 +104,16 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       previous behaviour: 4 of its 5 cases break when the `defer` is removed. The fifth asserts
       a non-recipient consumes nothing, and holds either way by design.
 
+      **Amended 2026-10-13 — one exception, for Bug 165.** A body that doesn't match the slot's
+      `bodyDigest` throws `bodyDigestMismatch` before the prekey is recorded as used, so it survives.
+      The slot is the sender's own, for a message not opened yet; another recipient, who holds the
+      session key, put a body of theirs behind it. Consuming would let them, by delivering first,
+      make the genuine message unopenable. Keeping the key leaves it as it was before the forgery
+      arrived, which anyone can bring about anyway by withholding the bundle, and retirement still
+      covers it. Every other rejection after the slot opens consumes as above. Guarded by
+      `GroupBodyBindingTests.mismatchKeepsTheOneTimeKey` and
+      `PrekeyRecordWiringTests.digestMismatchKeepsThePrekey`.
+
       **A second defect under the same item, independent of ordering — also fixed.** `consume`
       returns 1/0 and both call sites discarded it, so a failed `SecItemDelete` at what its own
       doc calls "the exact moment forward secrecy is established" passed unnoticed on the
