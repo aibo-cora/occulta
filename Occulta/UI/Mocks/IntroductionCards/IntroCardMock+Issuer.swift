@@ -65,13 +65,13 @@ extension IntroCardMock {
                     Notice(
                         tone:  .warn,
                         label: "Before you make it",
-                        text:  "Anyone who gets this card before Carol can use it and pretend to be Carol. Share it only with Carol. Carol must send you a first message by \(IntroCardMock.expiryLabel), or the card stops working. Making a new card cancels this one."
+                        text:  "Anyone who gets this card before Carol can use it and pretend to be Carol. Share it only with Carol. Carol's first message must reach you by \(IntroCardMock.expiryLabel), or the card stops working. Making a new card cancels this one."
                     )
 
                     VStack(spacing: 0) {
                         FactRow(label: "WORKS",   value: "For one person: whoever sends the first message")
                         Divider().padding(.leading, 76)
-                        FactRow(label: "DEADLINE", value: "Carol's first message by \(IntroCardMock.expiryLabel)")
+                        FactRow(label: "DEADLINE", value: "Carol's first message must reach you by \(IntroCardMock.expiryLabel)")
                         Divider().padding(.leading, 76)
                         FactRow(label: "HOLDS",   value: "No name, no photo, no identity key")
                     }
@@ -125,7 +125,7 @@ extension IntroCardMock {
             Notice(
                 tone:  .neutral,
                 label: "Carol's deadline",
-                text:  "Carol must send you a first message by \(IntroCardMock.expiryLabel). After that the card stops working, and you'd need to make a new one."
+                text:  "Carol's first message must reach you by \(IntroCardMock.expiryLabel). After that the card stops working, and you'd need to make a new one."
             )
 
             HStack(spacing: 12) {
@@ -172,7 +172,7 @@ extension IntroCardMock {
                     Notice(
                         tone:  .warn,
                         label: "Not used yet",
-                        text:  "Carol has until \(IntroCardMock.expiryLabel) to send you a first message, and then the card stops working. Until then, anyone who has this card can use it. Cancel it if it might have reached the wrong person."
+                        text:  "Carol's first message must reach you by \(IntroCardMock.expiryLabel), and then the card stops working. Until then, anyone who has this card can use it. Cancel it if it might have reached the wrong person."
                     )
 
                     HStack(spacing: 12) {

@@ -90,8 +90,8 @@ extension IntroCardMock {
 
                     Notice(
                         tone:  .warn,
-                        label: "Send a message by \(IntroCardMock.expiryLabel)",
-                        text:  "The card stops working at that time. Send \(self.chosenName) a first message before then. After it's sent, there's no time limit."
+                        label: "Must reach \(self.chosenName) by \(IntroCardMock.expiryLabel)",
+                        text:  "Your first message has to reach \(self.chosenName) by then, or the card stops working. Send it early enough for \(self.chosenName) to open it in time. After that, there's no time limit."
                     )
 
                     PrimaryButton(title: "Import")
@@ -115,8 +115,8 @@ extension IntroCardMock {
 
                 Notice(
                     tone:  .warn,
-                    label: "Send a message by \(IntroCardMock.expiryLabel)",
-                    text:  "Bob's card stops working at that time. Send Bob a first message before then. After it's sent, there's no time limit."
+                    label: "Must reach Bob by \(IntroCardMock.expiryLabel)",
+                    text:  "Your first message has to reach Bob by then, or Bob's card stops working. Send it early enough for Bob to open it in time. After that, there's no time limit."
                 )
 
                 Compose(recipientFirstName: "Bob")

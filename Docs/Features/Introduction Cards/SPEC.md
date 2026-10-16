@@ -230,6 +230,7 @@ Write `empty` and delete the pending card batch from the record. The blobs exist
 
 - **Bob's phone** enforces it at receipt, at every depth (Q-03), and in the unlock sweep across every contact at every depth. An expired `issued` card is cancelled (§6.2).
 - **Carol's phone** shows the deadline. It refuses to send a first message after `expiresAt`, so it doesn't send one that can't open.
+- **The deadline is when Bob opens the message, not when Carol sends it** (decided 2026-10-16). Carol's send time can't be trusted, because an interceptor would simply backdate it. So a message sent just before the deadline and opened just after fails. The copy says so: the first message "must reach Bob by {date}" (FINDINGS W-01, W-02, W-05, W-09). There's no grace period, which would only lengthen the window for an intercepted card.
 
 ### 6.5 Send
 
@@ -369,9 +370,6 @@ Card key creation needs a real Enclave and gets `.enabled(if: secureEnclaveAvail
 
 ## 13. Open items
 
-- **What the deadline measures: open, needs a decision.** Bob's phone can only check the deadline when it opens the first message (§6.4). Carol's send time isn't trustworthy: an interceptor would simply backdate it. So a message Carol sends just before the deadline fails if Bob opens it just after, and the current copy ("Carol must send you a first message by {date}") promises more than the design delivers. The options:
-  - **(a) Keep the check at opening and change the copy** to "must reach Bob by {date}". The window for an intercepted card stays one day. Recommended.
-  - **(b) Add a grace period at Bob's end,** while Carol's phone still refuses to send after the deadline. Late messages get through, but someone who intercepted the card gets the grace period on top of the day.
 - **Slot size signal** (§4.5): open, needs a decision. Recommendation: no padding.
 - **N** (§5): set by measuring the Enclave-wrapped ML-KEM-1024 blob.
 - **`PostQuantumProvider` persistence** (§1): API to add, with tests.
