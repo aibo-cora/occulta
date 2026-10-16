@@ -370,6 +370,6 @@ Card key creation needs a real Enclave and gets `.enabled(if: secureEnclaveAvail
 
 ## 13. Open items
 
-- **N** (§5): set by measuring the Enclave-wrapped ML-KEM-1024 blob.
+- **N** (§5): set during the build by a size test on the largest state (Carol's `imported` state), with distinct values everywhere, plus a margin, rounded up to 4 KB. About 12 KB per contact is expected. Agreed 2026-10-16; this is a measurement, not a design question.
 - **`PostQuantumProvider` persistence** (§1): API to add, with tests.
 - **Unverified assumption:** a CryptoKit Enclave key blob can't be loaded as the other key type. The two-key design doesn't depend on it, but confirm it in a test.
