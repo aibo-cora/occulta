@@ -351,6 +351,7 @@ FINDINGS' action-item tests, plus these:
 - The card field is the same length in every state, before and after sealing.
 - A proof filler and a real proof are the same length. W-11 for no proof message.
 - Every §8 feature refuses `imported` and `conversation` contacts.
+- A card agreement key's Enclave blob can't be loaded as a signing key, or the reverse. This needs a real Enclave. The two-key design doesn't depend on the answer, but if loading does work, one key could do both jobs later.
 
 Card key creation needs a real Enclave and gets `.enabled(if: secureEnclaveAvailable())`. Everything else injects keys: codec, recognition, signing payloads, derivations, and the state rules.
 
@@ -372,4 +373,3 @@ Card key creation needs a real Enclave and gets `.enabled(if: secureEnclaveAvail
 
 - **N** (§5): set during the build by a size test on the largest state (Carol's `imported` state), with distinct values everywhere, plus a margin, rounded up to 4 KB. About 12 KB per contact is expected. Agreed 2026-10-16; this is a measurement, not a design question.
 - **`PostQuantumProvider` persistence** (§1): API to add, with tests. **The first build step confirms that iOS 26's Enclave ML-KEM-1024 key can be saved as a blob and used to decapsulate later.** If it can't, the build stops and the trade-off comes back as a decision (agreed 2026-10-16). The only fallback is a software key sealed with the local DB key, which anyone holding that key could extract, so it must not be adopted silently.
-- **Unverified assumption:** a CryptoKit Enclave key blob can't be loaded as the other key type. The two-key design doesn't depend on it, but confirm it in a test.
