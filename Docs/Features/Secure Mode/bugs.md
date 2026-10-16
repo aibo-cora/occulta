@@ -13225,9 +13225,9 @@ row's field matches a real one's length.
 
 ## Bug 162 — A trustee's piece count for an owner tells how many of the owner's depths have a backup
 
-**Status:** Open. The on-screen count is fixed (2026-10-16, below); the stored rows, the pieces' dates and the
-size of the trustee's custody manifest still carry it: open, needs a decision. Found 2026-10-12 reviewing custody
-for depth leaks.
+**Status:** Open. The on-screen count and the custody manifest's size are fixed (2026-10-16, below); the stored
+rows and the pieces' dates still carry it: open, needs a decision. Found 2026-10-12 reviewing custody for depth
+leaks.
 
 **Target:** `v2.0.0`. Present since per-entry splitting was retired (`decisions.md`, 2026-09-26/27), which left
 the backup key as the only split secret, one per depth.
@@ -13289,13 +13289,23 @@ Vault tab's "Held for Others" rows show the owner's name only, with no subtitle:
 same. Still open, needs a decision:
 - **The stored rows.** Code on Bob's unlocked phone can still decrypt the custody rows and count them per owner.
 - **The pieces' dates**, described above. Nothing shows them on screen.
-- **The custody manifest's size (found 2026-10-16).** Every 1:1 bundle Bob sends Alice carries `custodyManifest`,
-  the ID of every piece he holds for her, and nothing pads it (`ContactManager.encryptBundle`; group bundles pad
-  their piece operations and carry no manifest). Each ID adds to the ciphertext, whose length is in the clear,
-  so a copy of a bundle whose message size is known, a piece-only one say, gives the count without either phone.
-  A possible fix: pad the manifest with random IDs to a fixed floor, which the owner ignores as IDs it never
-  queued; whether every older owner build ignores them too needs checking first.
-- **Trustees on older builds** still show the count.
+- **Trustees on older builds** still show the count, and send unpadded manifests (below).
+
+**The custody manifest's size, found and fixed 2026-10-16.** Every 1:1 forward-secret bundle Bob sends Alice
+carries `custodyManifest`, the ID of every piece he holds for her, and nothing padded it (group bundles pad their
+piece operations and carry no manifest). Each ID added about 39 bytes of JSON to a ciphertext whose length is in
+the clear, so a copy of a bundle whose message size is known, a piece-only one say, gave the count without either
+phone. It also told a contact Bob holds nothing for (an empty list) from one he does.
+- **Fix:** `ContactManager.encryptBundle` pads the manifest with random IDs to at least 32
+  (`custodyManifestFloor`, one per possible depth, `AppLayerConfig.maxDepthCount`), then to the next doubling
+  tier (`ShardPadding.tier`), on the group-format and the legacy path alike. `buildCustodyManifest` still
+  returns only the real IDs. About 1.25 KB more per 1:1 forward-secret bundle. Floor chosen 2026-10-16 over 8
+  and 16.
+- **Older owners are unaffected:** every owner build since manifests began (1.7.0; checked at v1.7.0, v1.8.3,
+  v1.9.0, v1.10.0, v1.10.3, v1.11.1 and now) only looks up the IDs it queued or watches (`processInboundManifest`),
+  so an ID it never sent confirms nothing and adds no row. Nothing needs stripping on receipt.
+- **Residual, open, needs a decision:** above 32 pieces for one owner (old per-entry pieces, or Bug 163's stale
+  ones) the tier steps to 64, which shows. A trustee on an older build still sends an unpadded manifest.
 
 **Padding on the owner's side, examined 2026-10-16: not recommended.** It isn't the cheap no-format-change fix it
 looked like:
@@ -13346,7 +13356,15 @@ whole it is about as large as the container and leaves more open.
 The display: `HeldShardOwnersTests` (`ShardCustodyTests.swift`), an owner holding pieces from three depths is
 listed once, and the list is the same as with one. Both fail with the de-duplication removed. Simulator-safe.
 Full suite, 2026-10-16: 1,101 tests, 1,095 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
-Not walked through on a device: the "Held for Others" rows without their subtitle. Still needed: the stored rows for an owner are the same whether that owner has one depth with a backup or
+Not walked through on a device: the "Held for Others" rows without their subtitle.
+
+The manifest: `CustodyManifestPaddingTests` (pads to the floor up to 32, to the next tier above, keeps the real
+IDs, filler distinct; an owner given a padded manifest confirms only its real piece and adds no watch row) and
+`EncryptBundleManifestPaddingTests` (`ShardFallbackGatingTests.swift`: bundles with 0, 1 and 3 IDs are the same
+size within one ID; one past the floor steps up). Each fails with its rule removed: no padding in
+`encryptBundle`, no tier above the floor, a floor of 2. Simulator-safe. Full suite: 1,108 tests, 1,102 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+Still needed: the stored rows for an owner are the same whether that owner has one depth with a backup or
 several.
 
 ## Bug 163 — A lost or late `.replace` leaves the trustee holding the piece it replaced
