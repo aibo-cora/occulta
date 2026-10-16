@@ -1,6 +1,6 @@
 # Introduction Cards — Design Findings
 
-**Status:** Proposal. No SPEC. D1 is decided: the carrier route is allowed (Q-01). D2 is decided: send-capable (Q-02). Not scoped for a release.
+**Status:** Proposal. SPEC drafted 2026-10-16 ([SPEC.md](SPEC.md)); it pins down the formats and procedures and wins where it is more specific than this document. D1 is decided: the carrier route is allowed (Q-01). D2 is decided: send-capable (Q-02). Not scoped for a release.
 **Origin:** Design discussion, 2026-10-14. The question raised was whether a contact's *encryption* key could be vouched for, rather than their identity key, so that people we introduce can encrypt to them, marked unverified until they meet. It was assessed against the no-vouching rulings, Sweep 4's trust ladder and the shipped receive path, then reshaped into owner-issued, single-use cards.
 **Relation to earlier plans:** this is a worked design for Sweep 4 components 1 and 4 (`Friction/USER_ENGAGEMENT_FRICTION.md:284`). It replaces component 1's card and recasts component 4, so the mutual contact carries a card and asserts nothing. Every earlier plan it touches is listed in [Relationship to earlier plans](#relationship-to-earlier-plans), and each one points back here.
 **Decided so far (2026-10-14):** the carrier is never named on the recipient's phone (Q-07). A card may reach its recipient directly or through any number of carriers, and the issuer chooses a named or an open card when creating it (§4). Two ways of recording the route were considered and not adopted ([Considered and not adopted](#considered-and-not-adopted)).
@@ -107,6 +107,8 @@ The in-person check (§5) already makes this link, and makes it only when they m
 A hiding commitment instead of a signature, `SHA-256(identityPub ‖ nonce)` with the nonce revealed at the meeting, would be unlinkable but proves nothing. Alice holds Bob's identity key, so she could put the same commitment on a swapped card, and only the §5 card-key signature would catch it.
 
 ### 2. What a card contains
+
+> **Superseded in detail by [SPEC.md](SPEC.md) §1–§2 (2026-10-16).** The card holds two card keys, an agreement key and a signing key, because CryptoKit's Enclave keys are typed and a tagged keychain key per card would show how many exist. It carries the 15-key prekey batch with no last-resort key, whose ID would be public on the card and would link every bundle sealed to it. Its fixed size is 2,985 bytes. The reasons in the table below still hold.
 
 | Field | Why |
 |---|---|
@@ -418,6 +420,7 @@ The cap and the expiry are product choices; 8 cards and 14 days are placeholders
 
   Every row is the same size, so the number of active cards isn't visible on disk, and no separate table is needed. The structure itself enforces one active card per contact. The card also lives at the same depth as its contact, which helps with Q-03. (The comparison above to a "soft-delete cap" points to nothing defined in the docs or the code, so it no longer applies.)
 - **One active card per contact, with no limit across the app.** The limit covers unused cards only. Not verified contacts with a conversation in progress are ordinary contacts and aren't limited.
+- **Storage refined in SPEC §5 (2026-10-16).** The card's prekeys live in the contact's `PrekeyRecord` as a pending batch. The card field holds the card keys, the ML-KEM key and the state. Whether the deadline is measured when Bob opens the message or when Carol sends it is open (SPEC §13).
 - **Cards expire after 1 day, fixed, with no picker.** That day is how long Carol has to import the card and send her first message, and also how long someone who intercepted it has to use it. After the first message, the conversation has no time limit. The deadline is on the first message, not on importing. Importing happens only on Carol's phone, so Bob's phone can't see it. A deadline checked on Carol's phone can't be enforced, and Bob would have to keep the card's keys until something arrived, which would leave an intercepted card usable for that whole time. Bob's phone enforces the expiry by deleting the card's keys, so a late first message fails like any message that can't be opened. If Carol misses the day, Bob makes a new card.
 - **What the receive path costs.** With no overall cap, each message from an unknown sender is tried against every active card. The 1-day expiry keeps that number small in practice.
 
@@ -494,6 +497,8 @@ Where does the ML-KEM ciphertext go?
 Recommendation: the outer layer. New vectors in `OccultaTests/Interop/InteropVectors.json` either way.
 
 **Left for the SPEC (2026-10-15).** This is a wire-format detail, not a product or UI decision.
+
+**Decided 2026-10-16 in [SPEC.md](SPEC.md) §4: the outer layer.** Card messages use the group format with one slot, and no new `Version`, `Mode` or `Recipient` field. A bootstrap slot's `wrappedPayload` is a classical AES-GCM layer holding the ML-KEM ciphertext and an inner layer under a key that mixes in the ML-KEM secret. Its visible mode is `.forwardSecret`, like any iOS 26 slot. Every bootstrap message from Carol carries her full introduction, so whichever arrives first redeems the card. Out-of-order delivery is normal here. The larger slot size is an open item (SPEC §4.5).
 
 ### Q-13 · Open-card details
 
@@ -575,7 +580,7 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
 
 **If pursued:**
 
-- Write a SPEC covering:
+- ~~Write a SPEC covering:~~ Drafted 2026-10-16 as [SPEC.md](SPEC.md). Vectors are listed in its §10 and recorded with the implementation.
   - the card and first-message wire formats, with new interop vectors (Q-12);
   - the pending-card record (Q-05);
   - the receive-path order (contacts first, then pending cards);
