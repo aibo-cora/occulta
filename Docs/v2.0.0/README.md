@@ -67,7 +67,7 @@ depends on.
 | Bug 165 | A group member can rewrite another member's message to the rest of the group | Fixed (PR #100), merged into `v2.0.0/prekey-refactor`; builds below 2.0.0 stay open on either side until they update, and making 2.0.0 the minimum sender is open, needs a decision | none; needed before prekey continuity stage 3 |
 | Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Fixed (PR #102), merged into `v2.0.0/prekey-refactor` | none |
 | Bug 167 | Identity challenges and responses can be recognised by their size | Open, needs a decision | prekey continuity stage 3 |
-| Bug 168 | A downgraded build migrates the store back and deletes every contact's prekey record; D6's release order doesn't prevent it | Open, needs a decision (2026-10-16) | release mechanics; the migration requirements before stages 2 and 3 |
+| Bug 168 | A downgraded build migrates the store back and deletes every contact's prekey record; D6's release order doesn't prevent it | Accepted 2026-10-16 for TestFlight and sideload users; the refactor ships in 2.0.0 without waiting for the passphrase work | release mechanics; the migration requirements before stages 2 and 3 |
 
 Steps 6, 7, 10, 13, 15, 16 and 17 are not tracked anywhere else yet.
 

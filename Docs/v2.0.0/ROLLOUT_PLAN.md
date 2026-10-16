@@ -48,8 +48,9 @@ however the stages are cut.
   Continuity](../Features/Prekey%20Continuity/DESIGN.md) D6, 2026-10-07). An older build can't open a
   message sealed to one. This rule means any build that issues one has already migrated, so no working
   build can be downgraded below it. *2026-10-16:* the rule rests on the line above, so it protects nothing. A
-  downgrade deletes the record holding the last-resort keys whichever release they ship in. Open, needs a
-  decision.
+  downgrade deletes the record holding the last-resort keys whichever release they ship in. **Decided
+  2026-10-16:** the loss is accepted for TestFlight and sideload users, and the TestFlight notes say so
+  (Bug 168). The rule no longer constrains release order.
 - **The prekey refactor ships in 2.0.0, together with the contacts slice (stage 3)** (decided 2026-10-14), so
   the rule above holds within one release. Nothing numbered 2.0.0 or later goes out without the refactor,
   TestFlight included. Bug 165's capability tier, `bodyDigestCapable`, is keyed on app version
@@ -57,9 +58,11 @@ however the stages are cut.
   refused. A build numbered 2.0.0 that predates the digest would have its group and one-to-one messages
   refused by every build that has it. So `v2.0.0/prekey-refactor` merges into the release branch before the
   version number reaches 2.0.0, and any earlier stage ships under a 1.x number. *2026-10-16:* the pairing with
-  the contacts slice existed only to satisfy the rule above, which protects nothing. Whether the refactor ships
-  without the passphrase work is open, needs a decision. The 2.0.0 numbering that Bug 165's tier needs is
-  unaffected either way.
+  the contacts slice existed only to satisfy the rule above, which protects nothing. **Decided 2026-10-16:**
+  the refactor doesn't wait for the passphrase work. It is merged into `release/v2.0.0` (PR #110) and ships in
+  2.0.0. The 2.0.0 numbering that Bug 165's tier needs is unaffected. Which release carries the passphrase work
+  is not decided. The owner leans towards shipping all its data slices together in one release (2026-10-15),
+  also not decided.
 
 ## Stages
 

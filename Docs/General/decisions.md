@@ -869,3 +869,33 @@ every key exchange, fixed here (`bugs.md` Bug 153).
 **Full reasoning:** this entry. `OnboardingTests` pins the page order, the Restore pointer, and a tripwire on
 authority names and overclaiming words; the drawing is view code, on the device-check list.
 
+## Accept the prekey loss on downgrade; the prekey refactor doesn't wait for the passphrase work
+
+**Status:** Decided 2026-10-16 by the owner, after the downgrade was measured on a simulator the same day.
+
+**Context:** Prekey Continuity D6 tied the prekey refactor to the passphrase migration's release. The premise was
+that an older build can't read a migrated database at all, so a downgrade could never meet a last-resort key or a
+blob prekey. That premise is false (`bugs.md` Bug 168). Core Data keeps the newer model in the store's
+`Z_MODELCACHE` table, so an older build migrates the store back and drops what it doesn't know. A downgrade from
+the refactor deletes every contact's prekey record. Messages sealed to those keys can never be opened, even after
+upgrading again. Only TestFlight and sideloaded builds can downgrade on iOS.
+
+**Decision:**
+- Accept the loss for TestFlight and sideload users, and say so in the TestFlight notes.
+- The prekey refactor doesn't wait for the passphrase work. It is merged into `release/v2.0.0` (PR #110) and
+  ships in 2.0.0.
+
+**Why:**
+- Release order protected nothing, so the pairing decided on 2026-10-14 had no reason left.
+- Making a downgrade lose nothing would mean moving the store for the refactor, which is new work, for a failure
+  only testers can reach.
+
+**Consequences:**
+- The acceptance covers the refactor's prekey records only. For the passphrase migration, `ROLLOUT_PLAN.md` still
+  proposes that a downgrade lose nothing, with a new store file, because there a downgrade would delete everything
+  resealed. That is not decided.
+- Which release carries the passphrase work is open.
+
+**Full reasoning:** Prekey Continuity `DESIGN.md` §5 (D6); `bugs.md` Bug 168; `Docs/v2.0.0/ROLLOUT_PLAN.md`,
+release mechanics.
+

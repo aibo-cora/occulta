@@ -13683,8 +13683,9 @@ None yet.
 
 ## Bug 168 — A downgraded build deletes every contact's prekey record
 
-**Status:** Open — needs a decision. Found 2026-10-16 while checking Prekey Continuity D6's premise on a
-simulator.
+**Status:** Accepted, 2026-10-16 (owner's decision), for TestFlight and sideload users. Found the same day while
+checking Prekey Continuity D6's premise on a simulator. The acceptance covers the prekey refactor only. The
+passphrase migration's downgrade is a separate question (see "Fix" below).
 
 **Target:** `v2.0.0`. Present since prekey continuity stage 1, merged into `release/v2.0.0` with PR #110.
 
@@ -13731,13 +13732,15 @@ all (`ROLLOUT_PLAN.md`, "Migrations are one-way"). It can. The passphrase migrat
 way, so pairing the refactor with it only adds to what a downgrade deletes. That case is untested, but the
 mechanism is the same.
 
-### Fix — open, needs a decision
+### Fix — decided 2026-10-16: accept it
 
-- **Accept it** for TestFlight and sideload users, the only people who can downgrade on iOS, and say so in the
-  TestFlight notes.
-- **Make a downgrade lose nothing** by keeping migrated data where an older build doesn't look, such as a new
-  store file. `ROLLOUT_PLAN.md` now requires this of the passphrase migration. For the prekey refactor it would
-  mean moving the store, which is new work.
+- **Taken: accept it** for TestFlight and sideload users, the only people who can downgrade on iOS, and say so in
+  the TestFlight notes. The prekey refactor ships in 2.0.0 without waiting for the passphrase work, since release
+  order protected nothing (`decisions.md`, 2026-10-16).
+- **Not taken for the refactor:** making a downgrade lose nothing by keeping migrated data where an older build
+  doesn't look, such as a new store file. For the refactor that would mean moving the store, which is new work.
+  `ROLLOUT_PLAN.md` still proposes it for the passphrase migration, where a downgrade would delete everything
+  resealed rather than prekey records alone. That is not decided.
 - **Already rejected:** a "last reported version" marker (D6). It would be a downgrade lever for anyone with
   temporary use of a contact's identity key.
 

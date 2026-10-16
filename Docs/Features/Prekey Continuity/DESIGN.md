@@ -6,7 +6,8 @@ branch; stages 3 and 4 (PRs #108, #109) merged 2026-10-15 into it. The refactor 
 merged into the release branch before the version number reaches 2.0.0. **Target: v2.0.0** (D8). **Grace period: 30 days** (D1). **Compose indicator: a third state and
 per-state descriptions** (D2). **Prekeys as Enclave blobs in the sealed record** (D9). **Batches of
 15, refill at 5** (D4). **Identity challenges in group format** (D3, 2026-10-07). **Replay guards** (D5, 2026-10-07).
-**Downgrades ruled out by release order** (D6, 2026-10-07; its premise proved false 2026-10-16, §5, Bug 168).
+**Downgrades ruled out by release order** (D6, 2026-10-07; its premise proved false 2026-10-16, §5, Bug 168; the downgrade loss accepted the same day, and the refactor
+ships in 2.0.0 without waiting for the passphrase work).
 **Seeding at the exchange (§3.2,
 stage 5, step 6) deferred out of v2.0.0** (2026-10-07), which leaves D7 moot until it returns.
 Every point that needs a decision is listed in §10 and marked where it comes up. §9 records research that
@@ -571,11 +572,13 @@ batches are all deleted, and upgrading again doesn't restore them.
 - **Release order protects nothing.** An older build would read the passphrase migration's store the same way,
   so shipping that migration in the same release only adds to what a downgrade deletes. That case is untested,
   but the mechanism is the same. The 2026-10-14 pairing of the refactor with the contacts slice has no reason
-  left. Whether the refactor ships without the passphrase work is open, needs a decision.
-- **What to do about downgrades is open, needs a decision.** Either accept the loss for TestFlight and sideload
-  users, the only people who can downgrade, or make a downgrade lose nothing, for instance by keeping migrated
-  data in a store file older builds don't open. That is the requirement `ROLLOUT_PLAN.md` now sets for the
-  passphrase migration.
+  left. **Decided 2026-10-16: the refactor doesn't wait for the passphrase work.** It is already merged into
+  `release/v2.0.0` (PR #110) and ships in 2.0.0. Which release carries the passphrase work is a separate question.
+- **Decided 2026-10-16: the loss is accepted** for TestFlight and sideload users, the only people who can
+  downgrade, and the TestFlight notes say so. The alternative, making a downgrade lose nothing by keeping
+  migrated data in a store file older builds don't open, isn't taken for the refactor. The acceptance covers this
+  refactor's prekey records only. For the passphrase migration, `ROLLOUT_PLAN.md` still proposes that a
+  downgrade lose nothing, because there it would delete everything resealed.
 
 **Rejected: a "last reported version" marker for this decision.** Every message carries `appVersion`, so a
 second, overwritable marker could stop us sealing to the temporary key once a contact reports an older build.
@@ -1062,7 +1065,7 @@ stage:
 | D3 | Identity challenges. **Decided 2026-10-07: group format to contacts at the new tier (a)**; long-term to older contacts as today | §3.4 |
 | D4 | Batch size and refill threshold `T`. **Decided 2026-10-06: 15/5.** 50/15 revisited only with a measurement from an iPhone 11 holding no real data | §4.1 |
 | D5 | Replay of last-resort bundles. **Decided 2026-10-07: messages may reopen; piece operations and manifests only on one-time keys; trustee guard G1 (no duplicate `.replace`).** *Revised 2026-10-12:* G2′ ("supersedes" field) and the replay matrix dropped; ordering of `.replace` is Bug 163's, deferred. Replay cache, per-owner tombstones, timestamp ordering and a manifest counter rejected | §3.1 |
-| D6 | A contact who downgrades after sending a last-resort key. **Decided 2026-10-07: ruled out by release order**: last-resort keys ship no earlier than the one-way migration; both ship in 2.0.0 (2026-10-14). A "last reported version" marker for this decision was rejected as a downgrade lever. **Premise false, verified 2026-10-16** (Bug 168): an older build opens a migrated store and drops what it doesn't know, so release order protects nothing. What to do about downgrades, and whether the refactor still waits for the passphrase work, are open, need a decision | §5 |
+| D6 | A contact who downgrades after sending a last-resort key. **Decided 2026-10-07: ruled out by release order**: last-resort keys ship no earlier than the one-way migration; both ship in 2.0.0 (2026-10-14). A "last reported version" marker for this decision was rejected as a downgrade lever. **Premise false, verified 2026-10-16** (Bug 168): an older build opens a migrated store and drops what it doesn't know, so release order protects nothing. **Decided 2026-10-16:** the loss is accepted for TestFlight and sideload users, and the refactor ships in 2.0.0 without waiting for the passphrase work | §5 |
 | D7 | Binding the seed batch. **Moot for v2.0.0: stage 5 deferred, 2026-10-07.** Kept in §3.2 for when it returns: authenticate with a key derived from the words' secret, most likely exchanging prekeys and other setup data after both users confirm the words (owner's note, 2026-10-07) | §3.2 |
 | D8 | Target release. **Decided 2026-10-06: v2.0.0**, alongside step 17 (step 6 deferred, 2026-10-07). Ships in the 2.0.0 release, with the contacts slice (2026-10-14) | §8 |
 | D9 | Where prekeys live. **Decided 2026-10-06: Enclave-wrapped blobs (CryptoKit) in the contact's sealed record**, not keychain items. Fallback to software keys in the record only with the owner's explicit, recorded sign-off | §9 |
