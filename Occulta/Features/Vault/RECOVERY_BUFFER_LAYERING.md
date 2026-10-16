@@ -420,7 +420,8 @@ decided; see item 9 for what's still open before that's settled.
 
    **What this doesn't cover — noted 2026-10-12.** The *owner's* depths still show, as a count: each owner
    depth with a backup sends the trustee one piece, so the trustee holds one row per such depth, stamped with
-   the trustee's depth or not, and its Vault tab displays the number (`bugs.md` Bug 162). Item 7 protects the
+   the trustee's depth or not, and until 2026-10-16 its Vault tab displayed the number and its custody manifest's
+   size carried it (`bugs.md` Bug 162; the rows still do). Item 7 protects the
    trustee's depths, not the owner's. As of 2026-10-12 item 7 itself is decided but not built: `CustodyShard`
    has no depth stamp and no filler rows; v2.0.0 rollout stage 4 takes it.
 

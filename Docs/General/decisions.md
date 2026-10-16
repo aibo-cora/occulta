@@ -731,7 +731,8 @@ its own row, and the per-entry paths were the remaining reads across depths.
 **Consequences:**
 - Per-entry watch rows (`PotentiallyLostShard`) confirmed since the last unlock before the upgrade can't be
   told apart without opening every entry's record, so they stay; nothing reads them.
-- A trustee's "held for this contact" count still includes old per-entry pieces.
+- A trustee's "held for this contact" count still includes old per-entry pieces. (The Vault tab stopped showing
+  the count on 2026-10-16, `bugs.md` Bug 162; the stored rows still include them.)
 - Bugs 115 and 116 (per-entry health screens) are moot.
 
 **Full reasoning:** this conversation, 2026-09-26/27; `bugs.md` Bug 141 (which unblocked it).

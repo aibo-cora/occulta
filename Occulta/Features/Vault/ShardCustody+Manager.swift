@@ -392,20 +392,24 @@ final class ShardCustodyManager {
 
     // MARK: - Trustee display
 
-    /// How many shards this device holds per owner, keyed by owner contact identifier.
+    /// The owners this device holds shards for, each once, by owner contact identifier.
+    ///
+    /// No count per owner: each of an owner's depths with a backup sends its own piece, so
+    /// the number held for one owner tells how many of their depths have one (`bugs.md`
+    /// Bug 162).
     ///
     /// Accepts the raw rows from the view's `@Query` to avoid a second ModelContext
     /// fetch — the `@Query` context is always in sync with the persistent store.
     /// Returns an empty array when decryption fails.
-    func heldShards(from rows: [CustodyShard]) -> [(ownerContactIdentifier: String?, count: Int)] {
+    func heldShardOwners(from rows: [CustodyShard]) -> [String?] {
         guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return [] }
-        var groups: [String?: Int] = [:]
+        var owners = Set<String?>()
         for row in rows {
             guard let payload = try? self.openRow(row.encryptedPayload, as: CustodyShard.Payload.self, using: custodyKey, id: row.id)
             else { continue }
-            groups[payload.ownerContactIdentifier, default: 0] += 1
+            owners.insert(payload.ownerContactIdentifier)
         }
-        return groups.map { ($0.key, $0.value) }
+        return Array(owners)
     }
 
     // MARK: - Shard distribute queuing (owner → trustee)

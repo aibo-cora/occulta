@@ -13225,7 +13225,9 @@ row's field matches a real one's length.
 
 ## Bug 162 — A trustee's piece count for an owner tells how many of the owner's depths have a backup
 
-**Status:** Open — fix needs a decision. Found 2026-10-12 reviewing custody for depth leaks.
+**Status:** Open. The on-screen count and the custody manifest's size are fixed (2026-10-16, below); the stored
+rows and the pieces' dates still carry it: open, needs a decision. Found 2026-10-12 reviewing custody for depth
+leaks.
 
 **Target:** `v2.0.0`. Present since per-entry splitting was retired (`decisions.md`, 2026-09-26/27), which left
 the backup key as the only split secret, one per depth.
@@ -13278,6 +13280,57 @@ the whole container, which changes when any depth re-splits and says nothing abo
 
 The first is a reasonable interim step whichever structural fix is chosen.
 
+**Decided 2026-10-16: build the first now. The second is dropped from the candidates** (examined below); the
+container stays the structural fix, open, needs a decision.
+
+**Built 2026-10-16: the count is gone from the screen.** `ShardCustodyManager.heldShardOwners` (was
+`heldShards`) returns each owner once, with no count, so the number isn't there for a view to show again. The
+Vault tab's "Held for Others" rows show the owner's name only, with no subtitle: one piece or several look the
+same. Still open, needs a decision:
+- **The stored rows.** Code on Bob's unlocked phone can still decrypt the custody rows and count them per owner.
+- **The pieces' dates**, described above. Nothing shows them on screen.
+- **Trustees on older builds** still show the count, and send unpadded manifests (below).
+
+**The custody manifest's size, found and fixed 2026-10-16.** Every 1:1 forward-secret bundle Bob sends Alice
+carries `custodyManifest`, the ID of every piece he holds for her, and nothing padded it (group bundles pad their
+piece operations and carry no manifest). Each ID added about 39 bytes of JSON to a ciphertext whose length is in
+the clear, so a copy of a bundle whose message size is known, a piece-only one say, gave the count without either
+phone. It also told a contact Bob holds nothing for (an empty list) from one he does.
+- **Fix:** `ContactManager.encryptBundle` pads the manifest with random IDs to at least 32
+  (`custodyManifestFloor`, one per possible depth, `AppLayerConfig.maxDepthCount`), then to the next doubling
+  tier (`ShardPadding.tier`), on the group-format and the legacy path alike. `buildCustodyManifest` still
+  returns only the real IDs. About 1.25 KB more per 1:1 forward-secret bundle. Floor chosen 2026-10-16 over 8
+  and 16.
+- **Older owners are unaffected:** every owner build since manifests began (1.7.0; checked at v1.7.0, v1.8.3,
+  v1.9.0, v1.10.0, v1.10.3, v1.11.1 and now) only looks up the IDs it queued or watches (`processInboundManifest`),
+  so an ID it never sent confirms nothing and adds no row. Nothing needs stripping on receipt.
+- **Residual, open, needs a decision:** above 32 pieces for one owner (old per-entry pieces, or Bug 163's stale
+  ones) the tier steps to 64, which shows. A trustee on an older build still sends an unpadded manifest.
+
+**Padding on the owner's side, examined 2026-10-16: not recommended.** It isn't the cheap no-format-change fix it
+looked like:
+1. **Nothing can decide the filler without a cross-depth record.** The owner's depths can't see each other, so
+   either a depth-blind record per trustee says how much filler went out, which tells code at any depth of the
+   owner's phone the very count being hidden (rollout stage 4 is moving the queue and watch rows the other way),
+   or every slot is seeded with filler in advance and depth *d* replaces slot *d*. Seeding only trustees needs a
+   depth-blind "seeded" mark, which says some depth uses that trustee, so it would have to go to every
+   trustee-eligible contact: about 15–20 KB stored and 11 KB sent per pair, and "Held for Others" listing everyone.
+2. **Dates.** Filler never re-splits, so the pieces dated after the seeding are the real ones. Hiding that needs
+   one constant `createdAt` on every piece, which Bug 163's lineage needs for ordering.
+3. **x-coordinate.** A real piece's first byte is the trustee's position in the split, 1 to the number of
+   trustees (`ShamirSecretSharing.split`), so it stays small. Filler would have to copy that, or every real split
+   would have to use random x-coordinates.
+4. **Snapshots.** Two copies of Bob's store taken apart show which pieces changed, and only real ones re-split.
+   Refreshing every piece whenever one changes needs the record from item 1.
+5. **Bug 163.** A lost or late `.replace` leaves one piece over the fixed number, tied to real activity, so this
+   bug would have to be fixed first, with lineages for filler too.
+6. **Two trustees.** Pieces of one real split share an `entryID` across trustees and filler doesn't, so two
+   trustees' phones give the number of depths they both serve.
+
+Restore would cope: each handed-back filler piece has its own `entryID`, so it banks as its own one-sender row
+and `restoreBackup` tries it and moves on. Trustees on older builds would store and show every piece. On the
+whole it is about as large as the container and leaves more open.
+
 **The container, worked out 2026-10-12, and deferred: too large a change for now.** Bug 162 stays open.
 
 - Alice's phone keeps one fixed-size container per trustee, one slot per possible depth (`AppLayerConfig`
@@ -13300,8 +13353,19 @@ The first is a reasonable interim step whichever structural fix is chosen.
 
 ### Guard
 
-None yet. Needed: a trustee's display and stored rows for an owner are the same whether that owner has one
-depth with a backup or several.
+The display: `HeldShardOwnersTests` (`ShardCustodyTests.swift`), an owner holding pieces from three depths is
+listed once, and the list is the same as with one. Both fail with the de-duplication removed. Simulator-safe.
+Full suite, 2026-10-16: 1,101 tests, 1,095 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+Not walked through on a device: the "Held for Others" rows without their subtitle.
+
+The manifest: `CustodyManifestPaddingTests` (pads to the floor up to 32, to the next tier above, keeps the real
+IDs, filler distinct; an owner given a padded manifest confirms only its real piece and adds no watch row) and
+`EncryptBundleManifestPaddingTests` (`ShardFallbackGatingTests.swift`: bundles with 0, 1 and 3 IDs are the same
+size within one ID; one past the floor steps up). Each fails with its rule removed: no padding in
+`encryptBundle`, no tier above the floor, a floor of 2. Simulator-safe. Full suite: 1,108 tests, 1,102 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+Still needed: the stored rows for an owner are the same whether that owner has one depth with a backup or
+several.
 
 ## Bug 163 — A lost or late `.replace` leaves the trustee holding the piece it replaced
 

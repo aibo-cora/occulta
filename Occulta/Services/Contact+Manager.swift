@@ -1108,6 +1108,9 @@ extension ContactManager {
         }
 
         // ── 4. Build and seal payload ─────────────────────────────────────
+        // Padded so the bundle's length doesn't say how many pieces we hold for this contact (`bugs.md` Bug 162).
+        let custodyManifest = custodyManifest.map(Self.paddedCustodyManifest)
+
         let messageData: Data
         if let basket {
             messageData = wireVersion == .v4
@@ -1368,6 +1371,24 @@ extension ContactManager {
         while padded.count < tier { padded.append(Self.fillerShardOperation()) }
         return padded
     }
+
+    /// Pads a custody manifest with random IDs to at least `custodyManifestFloor` entries, then to
+    /// the next doubling tier. Each of an owner's depths with a backup sends us its own piece, so
+    /// the number of IDs, which the ciphertext length shows, would tell how many of the owner's
+    /// depths have one (`bugs.md` Bug 162). It would also tell apart a contact we hold nothing for.
+    ///
+    /// The receiver needs nothing to strip them: every owner build since manifests began (1.7.0)
+    /// only looks up the IDs it queued or watches, so an ID it never sent is ignored. A random
+    /// UUID encodes to the same size as a real one.
+    ///
+    /// Not `private`: `CustodyManifestPaddingTests` checks the sizes.
+    static func paddedCustodyManifest(_ real: [UUID]) -> [UUID] {
+        let target = max(Self.custodyManifestFloor, ShardPadding.tier(for: real.count))
+        return real + (0..<(target - real.count)).map { _ in UUID() }
+    }
+
+    /// One ID per possible depth, so every owner's backup-key pieces fit under it.
+    static let custodyManifestFloor = AppLayerConfig.maxDepthCount
 
     /// Not `private`: `ShardOperationPaddingTests` encodes this against a real handback op
     /// to catch the next field that gets added to one and not the other.
