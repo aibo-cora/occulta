@@ -184,7 +184,7 @@ extension IntroCardMock {
                     Notice(
                         tone:  .neutral,
                         label: "Waiting for the first reply",
-                        text:  "If none comes, someone may have used this card before you. Ask Bob for a new one, in person or through someone you trust."
+                        text:  "If none comes, someone may have used this card before you. Ask Bob for a new card. It replaces this one."
                     )
                 }
 
