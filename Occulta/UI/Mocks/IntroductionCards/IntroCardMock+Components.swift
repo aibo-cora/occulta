@@ -159,8 +159,8 @@ extension IntroCardMock {
 // MARK: - Compose
 
 extension IntroCardMock {
-    /// Compose for a Not verified contact: the trust line sits above the
-    /// secrecy state, and forward secrecy isn't green (Q-09). Carol's messages
+    /// Compose for a Not verified contact: the card section above it carries the
+    /// trust line, so compose repeats nothing; forward secrecy isn't green (Q-09). Carol's messages
     /// before she holds Bob's batch are sealed to his card key, so they show
     /// Standard Encryption (SPEC §6.5).
     struct Compose: View {
@@ -177,13 +177,6 @@ extension IntroCardMock {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.bottom, 10)
-
-                HStack(spacing: 6) {
-                    Circle().fill(Color.occultaWarn).frame(width: 6, height: 6)
-                    Text("Not verified")
-                        .font(.system(size: 10, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
 
                 Text("")
                     .frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
