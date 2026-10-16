@@ -286,6 +286,7 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 - **Whose card it is travels by word of mouth.** A card carries no name. The recipient believes it's Bob's because the person who gave it said so, and on an open card that may be second-hand.
 - **Named versus open can't be enforced.** A modified app can pass on a named card. Single use is the only hard limit.
 - **No help for people who aren't on Occulta.**
+- **Anyone holding the card can link Carol's first messages to it** (recorded 2026-10-16, open, needs a decision; [SPEC.md](SPEC.md) §4.6). Up to 15 bootstrap bundles carry card prekey IDs in the clear, and those IDs are printed on the card.
 
 ---
 
@@ -293,7 +294,7 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 
 | Observer | What they learn |
 |---|---|
-| Finds a card file (another app's backup, a Files folder) | Three public keys, an expiry and a signature. No name and no identity key. Nothing in the file names Occulta (Q-04), but someone who knows the format can confirm it's a card by verifying its signature. An unused, unexpired card can be used once. |
+| Finds a card file (another app's backup, a Files folder) | Three public keys, an expiry and a signature. No name and no identity key. Nothing in the file names Occulta (Q-04), but someone who knows the format can confirm it's a card by verifying its signature. An unused, unexpired card can be used once. Holding it also identifies the bundles Carol's first messages travel in, by their prekey IDs (SPEC §4.6, open). |
 | Seizes the recipient's phone | A Not verified contact under a card key, with no record of how the card arrived. It can't be connected to the issuer's identity key or to other cards. The seizer can message the issuer as that contact, as with any contact on a seized phone. |
 | Seizes two phones holding cards from the same issuer | Two unrelated keys. Verified contacts all hold one identity key, so cards are less linkable than verified contacts. |
 | Seizes a carrier's phone | Nothing of the card once it was passed on. With the phone unlocked, they can give the carrier's contacts fake cards. That reach is limited to that contact list, and each fake is caught at its in-person check. |
@@ -337,7 +338,7 @@ The idea was that the card carries a public key belonging to Bob. Each carrier a
 
 ## Open questions
 
-### Q-01 · D1: does the carrier route cross the no-vouching line? (blocking, product decision)
+### Q-01 · D1: does the carrier route cross the no-vouching line? (decided 2026-10-15: carriers allowed, deferred past v1)
 
 The docs currently disagree on D1:
 - **Open:** `USER_ENGAGEMENT_FRICTION.md` (Sweep 4 item 4) and `CONSUMER_OPENING_AND_CEREMONY.md` §7.
@@ -365,7 +366,7 @@ This design assumes send-capable, with W-05 and W-06 carrying the risk. Import-o
 
 The risk is carried by W-05, W-06 and W-07, as designed.
 
-### Q-03 · Duress (open, needs a decision)
+### Q-03 · Duress (decided 2026-10-15: cards follow their contact's depth)
 
 The shipped rule says no bundle is rejected because of the current depth, and an unrecognised sender fails the same way at every depth (`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, final design 2026-08-08). Applied to cards:
 
@@ -454,7 +455,7 @@ Both say "Introduction cards need iOS 26 or later", and claim nothing more.
 
 The user knows how they got a card. They can add it to the contact's notes if they want it written down.
 
-### Q-08 · Card key or identity key on the card? (confirm §1)
+### Q-08 · Card key or identity key on the card? (decided 2026-10-15: card key)
 
 This is the trade in §1. Recommendation: card key. It keeps the trust graph's meaning, cards unlinkable, and `#22`'s premise intact. It costs per-contact own keys throughout the send path, and the chance to catch a swapped card before meeting.
 
@@ -518,7 +519,7 @@ The two modes are decided (§4). These details are not:
 - W-06's copy names no route, so it fits both.
 - For an imported user who moved their contacts from an old phone, every imported contact now shows W-06 permanently. That is the existing status, made visible.
 
-**Still open, needs a decision: do the §6 hard blocks apply to shared/transferred keys?** Today they don't. An imported key keeps its ML-KEM material, so `mlkemEligibleContacts` offers it as a vault trustee, and nothing else gates on `verificationStatus` either, apart from the identity-challenge button. Card contacts are blocked by construction (§1, §6). With one badge, two contacts that look the same would allow different things. Applying the blocks to imported keys would change behaviour for existing users: an imported contact who is already a trustee would stop being eligible. That needs a migration plan for existing shard holders before it can be decided.
+**The question raised next (closed below): do the §6 hard blocks apply to shared/transferred keys?** Today they don't. An imported key keeps its ML-KEM material, so `mlkemEligibleContacts` offers it as a vault trustee, and nothing else gates on `verificationStatus` either, apart from the identity-challenge button. Card contacts are blocked by construction (§1, §6). With one badge, two contacts that look the same would allow different things. Applying the blocks to imported keys would change behaviour for existing users: an imported contact who is already a trustee would stop being eligible. That needs a migration plan for existing shard holders before it can be decided.
 
 **Closed 2026-10-15: no imported keys exist, and none will in the foreseeable future** (product owner). The code agrees:
 - Only v1.0.0 could share a contact as a file.

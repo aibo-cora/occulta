@@ -157,6 +157,16 @@ A bootstrap slot is about 1.6 KB larger than an ordinary one, from the ML-KEM ci
 
 **Decided 2026-10-16: no padding.** Anyone who can see these bundles on the channel has already seen the 2,985-byte card cross the same channel, so the size adds nothing they don't know. Padding every slot to bootstrap size would cost about 4 KB on every message from every contact, for no measurable gain.
 
+### 4.6 Prekey IDs link Carol's bootstrap messages to the card (open, needs a decision)
+
+Recorded 2026-10-16. A bootstrap slot from Carol carries a card prekey's ID in its cleartext `prekeyID` (§6.6 looks the card up by it). Those 15 IDs are printed on the card (§2). So **anyone holding the card file can tell which bundles are Carol's bootstrap messages to Bob**: up to 15 of them, one per card prekey. They can't read them. Ordinary bundles don't have this problem, because their prekey IDs come from batches only the two phones see.
+
+Options:
+- **(a) Accept it.** Whoever holds the card usually got it from the channel the bundles also cross, and has already seen the card go to Carol. On that channel, the link adds little.
+- **(b) Hide the IDs.** Carol writes a random-looking `prekeyID`, as a last-resort bundle does (`lastResortPrekeyID`). Bob finds the card by trying each unused prekey of each active card: up to 15 ECDHs per active card for every bundle from an unknown sender. The cost stays small because cards expire after a day.
+
+Not decided. (a) costs nothing. (b) helps where the card leaked somewhere other than the channel the bundles travel, such as an old backup.
+
 ---
 
 ## 5. The card field (at rest)
@@ -373,5 +383,6 @@ Card key creation needs a real Enclave and gets `.enabled(if: secureEnclaveAvail
 
 ## 13. Open items
 
+- **Prekey IDs link Carol's bootstrap messages to the card** (§4.6): open, needs a decision.
 - **N** (§5): set during the build by a size test on the largest state (Carol's `imported` state), with distinct values everywhere, plus a margin, rounded up to 4 KB. About 12 KB per contact is expected. Agreed 2026-10-16; this is a measurement, not a design question.
 - **`PostQuantumProvider` persistence** (§1): API to add, with tests. The Enclave check passed on 2026-10-16 (§1), so no fallback decision is needed.
