@@ -169,6 +169,8 @@ extension IntroCardMock {
 
                 SectionLabel(text: "INTRODUCTION CARD")
                 VStack(alignment: .leading, spacing: 12) {
+                    Countdown()
+
                     Notice(
                         tone:  .warn,
                         label: "Not used yet",

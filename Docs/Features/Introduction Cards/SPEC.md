@@ -203,7 +203,8 @@ enum CardState {
   case imported(     // Carol, until she opens Bob's first message
       peerCard: Data,                // Bob's 1,770 bytes: his card keys and ML-KEM key, and the digest for the introduction
       agreementKey: Data, signingKey: Data, mlkemKey: Data,   // Carol's blobs
-      ss1: Data, ct1: Data, expiresAt: Date)
+      ss1: Data, ct1: Data, expiresAt: Date,
+      sentFirstMessage: Bool)        // set on her first send; decides the sweep (§6.4)
   case conversation( // both sides, until the meeting or a discard
       agreementKey: Data, signingKey: Data,                   // own blobs
       peerAgreementKey: Data, peerSigningKey: Data,
@@ -246,7 +247,14 @@ Write `empty`. The blobs exist only in the field, so overwriting it deletes the 
 ### 6.3 Import (Carol)
 
 1. **Recognise** the file (§2). **Refuse** it if it's expired, or below iOS 26.
-2. **Attach** it to a pending contact Carol picks, or a new one. Refuse a contact whose field isn't `empty`.
+2. **Attach** it to a contact Carol picks, or a new one. What happens depends on that contact's field (decided 2026-10-16):
+
+   | Field | Result |
+   |---|---|
+   | `empty` (pending) | Import |
+   | `imported` (waiting on an earlier card from Bob) | **Replace.** Write the new `imported` state over the old one, which deletes its keys. Bob can only issue a card from a pending contact, so a new card means his side never got Carol's message, or he discarded the conversation |
+   | `conversation` | **Refuse** (W-16). A card claiming to be from Bob must not replace a live conversation: anyone could send one |
+   | `issued` (Carol's own card out to Bob) | **Refuse** (W-17). If importing cancelled her own card, two crossing cards could cancel each other and both get stuck |
 3. **Generate** Carol's card agreement, signing and ML-KEM keys, and her own prekey batch.
 4. **Encapsulate** to Bob's card ML-KEM key, which gives `ss1` and `ct1`.
 5. **Store** `imported`, then save.
@@ -255,6 +263,8 @@ Write `empty`. The blobs exist only in the field, so overwriting it deletes the 
 
 - **Bob's phone** enforces it at receipt, at every depth (Q-03), and in the unlock sweep across every contact at every depth. An expired `issued` card is cancelled (§6.2).
 - **Carol's phone** shows the deadline. It refuses to send a first message after `expiresAt`, so it doesn't send one that can't open.
+- **Carol's phone clears a dead card in the unlock sweep,** at every depth: an `imported` field past `expiresAt` with `sentFirstMessage == false` is written `empty`, which deletes its keys and returns Bob's contact to Pending (decided 2026-10-16). The sweep does this, not opening the contact. A contact hidden at a duress depth may never be opened, and cleanup tied to viewing would be a write someone could observe.
+- **If Carol sent something, her phone keeps the card.** She can't tell whether Bob opened it in time, and his reply can only be opened with her card keys and `ss1`. It stays until Bob's reply arrives, or until a new card from Bob replaces it (§6.3). There's no timer (decided 2026-10-16), so a slow reply is never cut off.
 - **The deadline is when Bob opens the message, not when Carol sends it** (decided 2026-10-16). Carol's send time can't be trusted, because an interceptor would simply backdate it. So a message sent just before the deadline and opened just after fails. The copy says so: the first message "must reach Bob by {date}" (FINDINGS W-01, W-02, W-05, W-09). There's no grace period, which would only lengthen the window for an intercepted card.
 
 ### 6.5 Send
@@ -264,6 +274,8 @@ Write `empty`. The blobs exist only in the field, so overwriting it deletes the 
 | Carol `imported` (she holds no batch of Bob's yet) | Bootstrap layer with `ct1` and `introduction`, sealed ephemeral to static to Bob's card agreement key with a random `prekeyID`. **Labelled Standard Encryption** on both phones |
 | Bob `conversation` with `bootstrapOpen` | Bootstrap layer with `ct2`. FS to Carol's batch, or long-term |
 | Either side, `conversation` without `bootstrapOpen` | Ordinary hybrid slot using the stored material |
+
+Carol's first send sets `sentFirstMessage`, saved before the bundle is handed to the share sheet. A bundle that may have left must never leave the card open to the sweep.
 
 Any failure on these paths throws. A card contact never gets a classical-only or identity-key bundle in their place (FORWARD_SECRECY_GUIDE, "No silent security degradation").
 
@@ -367,6 +379,8 @@ FINDINGS' action-item tests, plus these:
 - A card that differs in any byte fails recognition, as does a file of 1,769 or 1,771 bytes.
 - An expired card is refused at import and on arrival, at every depth.
 - Redemption by the second, not the first, of Carol's bootstrap messages, followed by the first arriving: both open.
+- Import into an `imported` contact replaces it and leaves none of the old keys. Import into a `conversation` or `issued` contact is refused and changes nothing.
+- The sweep clears an expired `imported` field only when `sentFirstMessage` is false, at every depth, keeping the field's size.
 - A bootstrap from a second sender with a different introduction on the same card is rejected after redemption.
 - Carol's slots sealed to Bob's card agreement key carry a random version-4 `prekeyID` that matches nothing on the card.
 - Carol's compose and Bob's view of her bootstrap messages show Standard Encryption. Both show Forward Secret once Carol seals to Bob's batch.

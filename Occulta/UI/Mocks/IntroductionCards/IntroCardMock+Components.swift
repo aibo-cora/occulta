@@ -19,9 +19,39 @@ enum IntroCardMock {
     static let bobID   = "mock-bob"
     static let bobName = "Bob Lin"
 
-    /// Cards expire a fixed day after creation (Q-05).
+    /// Cards expire a fixed day after creation (Q-05). The mock card was made
+    /// 48 minutes before launch, so the countdown starts at 23h 12m.
+    static let expiresAt = Date.now.addingTimeInterval(23 * 60 * 60 + 12 * 60)
+
     static var expiryLabel: String {
-        Date.now.addingTimeInterval(24 * 60 * 60).formatted(date: .abbreviated, time: .shortened)
+        self.expiresAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// "23h 12m 05s", or "23h" when `short`.
+    static func remaining(at now: Date, short: Bool = false) -> String {
+        let total = max(0, Int(self.expiresAt.timeIntervalSince(now)))
+        let (h, m, sec) = (total / 3600, (total % 3600) / 60, total % 60)
+        return short ? "\(h)h" : String(format: "%dh %02dm %02ds", h, m, sec)
+    }
+}
+
+// MARK: - Countdown
+
+extension IntroCardMock {
+    /// Live countdown to the card's deadline (decided 2026-10-16).
+    struct Countdown: View {
+        var body: some View {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack(spacing: 8) {
+                    Image(systemName: "timer")
+                    Text("Expires in \(IntroCardMock.remaining(at: context.date))")
+                        .monospacedDigit()
+                }
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.occultaWarn)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 }
 

@@ -15,15 +15,24 @@ extension IntroCardMock {
     /// One Not verified section; the old UNVERIFIED section is folded into it
     /// (Q-14). No route is shown, and no fingerprint (Q-07, Q-08).
     struct ContactsList: View {
+        /// Rows from both phones, for review: Ellis has Bob's card out (Bob's phone),
+        /// Bob Lin is waiting for Carol's first message (Carol's phone).
         private struct Row: Identifiable {
-            let id:    String
-            let name:  String
-            let color: Color
+            let id:        String
+            let name:      String
+            let color:     Color
+            var countdown: String? = nil   // "Card" or "Send by", followed by the live hours left
         }
 
         private let verified    = [Row(id: "mock-alice", name: "Alice Moreau", color: .occultaVerified)]
-        private let notVerified = [Row(id: IntroCardMock.carolID, name: IntroCardMock.carolName, color: .occultaWarn)]
-        private let pending     = [Row(id: "mock-dana", name: "Dana Park", color: .secondary)]
+        private let notVerified = [
+            Row(id: IntroCardMock.carolID, name: IntroCardMock.carolName, color: .occultaWarn),
+            Row(id: IntroCardMock.bobID,   name: IntroCardMock.bobName,   color: .occultaWarn, countdown: "Send by")
+        ]
+        private let pending     = [
+            Row(id: "mock-ellis", name: "Ellis Grant", color: .secondary, countdown: "Card"),
+            Row(id: "mock-dana",  name: "Dana Park",   color: .secondary)
+        ]
 
         var body: some View {
             List {
@@ -56,7 +65,16 @@ extension IntroCardMock {
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(row.name).font(.body)
-                        Circle().fill(row.color).frame(width: 6, height: 6)
+                        HStack(spacing: 6) {
+                            Circle().fill(row.color).frame(width: 6, height: 6)
+                            if let label = row.countdown {
+                                TimelineView(.periodic(from: .now, by: 60)) { context in
+                                    Text("\(label) · \(IntroCardMock.remaining(at: context.date, short: true)) left")
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Color.occultaWarn)
+                                }
+                            }
+                        }
                     }
                     Spacer()
                 }

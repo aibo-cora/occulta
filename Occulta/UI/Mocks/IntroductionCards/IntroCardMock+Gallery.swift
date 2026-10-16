@@ -25,7 +25,9 @@ extension IntroCardMock {
                     }
 
                     Section("Carol uses it") {
-                        NavigationLink("5 · Import · W-05") { ImportCard() }
+                        NavigationLink("5 · Import, then write · W-05") { ImportCard() }
+                        NavigationLink("5b · Import refused: already talking · W-16") { ImportCard(refusal: .alreadyTalking) }
+                        NavigationLink("5c · Import refused: your card is out · W-17") { ImportCard(refusal: .ownCardOut) }
                         NavigationLink("6 · Before the first message · W-06") { RecipientBeforeFirstSend() }
                         NavigationLink("7 · Waiting for a reply · W-07") { RecipientWaitingForReply() }
                         NavigationLink("Import below iOS 26") { ImportCard(isCardSupported: false) }
@@ -37,7 +39,7 @@ extension IntroCardMock {
                     }
 
                     Section("Both") {
-                        NavigationLink("10 · Contact list · W-06") { ContactsList() }
+                        NavigationLink("10 · Contact list, both phones · W-06") { ContactsList() }
                         NavigationLink("11 · Blocked feature · W-10") { BlockedFeature() }
                         NavigationLink("12 · Exchange: match · W-12") { ExchangeMatch() }
                         Button("13 · Exchange: mismatch · W-11") { self.showingMismatch = true }

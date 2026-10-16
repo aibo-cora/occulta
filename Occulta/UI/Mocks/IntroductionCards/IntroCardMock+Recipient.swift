@@ -14,7 +14,11 @@ extension IntroCardMock {
     /// Reached through the share extension or an Import card button; there is
     /// no "Open in Occulta" from a chat (Q-04).
     struct ImportCard: View {
+        /// Imports the picker refuses (SPEC §6.3).
+        enum Refusal { case none, alreadyTalking, ownCardOut }
+
         var isCardSupported = true
+        var refusal: Refusal = .none
 
         @State private var attachToExisting = true
         @State private var selectedID       = IntroCardMock.bobID
@@ -56,7 +60,7 @@ extension IntroCardMock {
                     .pickerStyle(.segmented)
 
                     if self.attachToExisting {
-                        SectionLabel(text: "PENDING CONTACTS")
+                        SectionLabel(text: "ATTACH TO")
                         VStack(spacing: 0) {
                             ForEach(self.pendingContacts, id: \.id) { contact in
                                 Button { self.selectedID = contact.id } label: {
@@ -88,13 +92,45 @@ extension IntroCardMock {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
 
-                    Notice(
-                        tone:  .warn,
-                        label: "Must reach \(self.chosenName) by \(IntroCardMock.expiryLabel)",
-                        text:  "Your first message has to reach \(self.chosenName) by then, or the card stops working. Send it early enough for \(self.chosenName) to open it in time. After that, there's no time limit."
-                    )
+                    switch self.refusal {
+                    case .alreadyTalking:
+                        Notice(
+                            tone:  .danger,
+                            label: "Can't import",
+                            text:  "You're already talking with \(self.chosenName) through a card. Meet \(self.chosenName) to verify instead."
+                        )
+                    case .ownCardOut:
+                        Notice(
+                            tone:  .danger,
+                            label: "Can't import",
+                            text:  "You already sent \(self.chosenName) a card. Wait for \(self.chosenName)'s message, or cancel your card first."
+                        )
+                    case .none:
+                        Countdown()
 
-                    PrimaryButton(title: "Import")
+                        Notice(
+                            tone:  .warn,
+                            label: "Must reach \(self.chosenName) by \(IntroCardMock.expiryLabel)",
+                            text:  "Your first message has to reach \(self.chosenName) by then, or the card stops working. Send it early enough for \(self.chosenName) to open it in time. After that, there's no time limit."
+                        )
+
+                        NavigationLink {
+                            RecipientBeforeFirstSend()
+                        } label: {
+                            Text("Import and write to \(self.chosenName)")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.occultaAccent)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                        }
+
+                        Button("Import only") {}
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.occultaAccent)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
         }
@@ -112,6 +148,8 @@ extension IntroCardMock {
                 }
 
                 TrustLine()
+
+                Countdown()
 
                 Notice(
                     tone:  .warn,
