@@ -39,18 +39,27 @@ however the stages are cut.
   vault.
 - **App Store phased release** spreads a migration release over 7 days for automatic-update users. It
   only limits damage if users report problems, because the app sends no telemetry.
-- **Migrations are one-way.** An older build can't read resealed data.
+- ~~**Migrations are one-way.** An older build can't read resealed data.~~ **Wrong, verified 2026-10-16**
+  (`bugs.md` Bug 168). An older build opens a newer store. Core Data keeps the newer model in the store's
+  `Z_MODELCACHE` table, migrates the store back to the older schema, and drops whatever that schema lacks. A
+  downgrade doesn't stop the app; it deletes data, and upgrading again doesn't bring it back. On iOS only
+  TestFlight and sideloaded builds can downgrade.
 - **Last-resort prekeys ship no earlier than the one-way migration** (stage 3 below; [Prekey
   Continuity](../Features/Prekey%20Continuity/DESIGN.md) D6, 2026-10-07). An older build can't open a
   message sealed to one. This rule means any build that issues one has already migrated, so no working
-  build can be downgraded below it.
+  build can be downgraded below it. *2026-10-16:* the rule rests on the line above, so it protects nothing. A
+  downgrade deletes the record holding the last-resort keys whichever release they ship in. Open, needs a
+  decision.
 - **The prekey refactor ships in 2.0.0, together with the contacts slice (stage 3)** (decided 2026-10-14), so
   the rule above holds within one release. Nothing numbered 2.0.0 or later goes out without the refactor,
   TestFlight included. Bug 165's capability tier, `bodyDigestCapable`, is keyed on app version
   2.0.0: a contact recorded at 2.0.0 must send the body digest, and a body claiming 2.0.0 without one is
   refused. A build numbered 2.0.0 that predates the digest would have its group and one-to-one messages
   refused by every build that has it. So `v2.0.0/prekey-refactor` merges into the release branch before the
-  version number reaches 2.0.0, and any earlier stage ships under a 1.x number.
+  version number reaches 2.0.0, and any earlier stage ships under a 1.x number. *2026-10-16:* the pairing with
+  the contacts slice existed only to satisfy the rule above, which protects nothing. Whether the refactor ships
+  without the passphrase work is open, needs a decision. The 2.0.0 numbering that Bug 165's tier needs is
+  unaffected either way.
 
 ## Stages
 
@@ -157,3 +166,11 @@ Each needs tests and a no-data-loss migration plan before it counts as done. The
   is ahead of which must not be.
 - **Schema change through a migration plan.** The project has no `VersionedSchema`/`SchemaMigrationPlan`
   (register §G), and a change of this size shouldn't rely on SwiftData's inference.
+- **A downgrade loses nothing** (added 2026-10-16, `bugs.md` Bug 168). An older build migrates a newer store
+  back to its own schema and drops what it doesn't know. Resealed rows in new tables of the same store would
+  therefore be deleted by any downgrade. Proposed, not decided:
+  - **Write the migrated data to a new store file,** with the same file protection, and remove the old store
+    only after the switch. An older build then finds no store and starts empty without touching the new file,
+    and upgrading again brings everything back.
+  - **The new file's name says nothing** about what it holds.
+  - **Still to decide:** what a newer build does with a store an older build created in the meantime.
