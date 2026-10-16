@@ -82,6 +82,7 @@ extension IntroCardMock {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     } else {
                         TextField("Name", text: self.$newName)
+                            .autocorrectionDisabled()
                             .padding(14)
                             .background(Color(.secondarySystemGroupedBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 12))
