@@ -1,105 +1,73 @@
+Prekey flow as of prekey continuity stage 1. The prose, with the reasons, is `FORWARD_SECRECY_GUIDE.md`.
+
 ```mermaid
 flowchart TD
-    subgraph ALICE["Alice — encryptBundle"]
-        A1([encryptBundle]) --> A2[Fetch contact\nconfigureForwardSecrecy\nValidate recipientMaterial == 65 bytes]
-        A2 --> A3[popOldestPrekeyData\ndecode → contactPrekey]
-        A3 --> A4[loadPendingBatch → outboundBatch]
-        A4 --> A5[Encode SealedPayload\nmessage + outboundBatch]
-        A5 --> A6{contactPrekey\nnon-nil?}
+    subgraph ALICE["Alice — encryptBundle / encryptGroupBundle"]
+        A1([Send to Bob]) --> A2[Load Bob's record\nprekeyRecord for:]
+        A2 --> A3[takeInboundPrekey\nBob's oldest key, removed]
+        A3 --> A4[pendingBatchForWire\nour pending batch with its ID, if any]
+        A4 --> A6{Bob's key\ntaken?}
 
-        A6 -- yes → FS path --> A7[generateEphemeralKeyPair\nin memory, never persisted]
-        A7 --> A8[Validate contactPrekey.publicKey == 65 bytes]
-        A8 --> A9[sessionKey =\nHKDF ECDH ephemeralPriv\ncontactPrekey.publicKey]
-        A9 --> A10[AES-256-GCM seal SealedPayload\nauthenticating version + SecrecyContext]
-        A10 --> A11[OccultaBundle\nmode: forwardSecret\nephemeralPublicKey: ephPub\nprekeyID: contactPrekey.id]
+        A6 -- yes --> A7[Ephemeral key pair in memory\nECDH with Bob's prekey\nHKDF, + ML-KEM if available]
+        A7 --> A11[Slot mode: forwardSecret / forwardSecretNoPQ\nephemeralPublicKey, prekeyID]
 
-        A6 -- nil → fallback --> A12[sessionKey =\nHKDF ECDH ourSEIdentityKey\nrecipientMaterial]
-        A12 --> A13[AES-256-GCM seal SealedPayload\nauthenticating version + SecrecyContext]
-        A13 --> A14[OccultaBundle\nmode: longTermFallback\nephemeralPublicKey: empty Data\nprekeyID: nil]
+        A6 -- no --> A12[ECDH between identity keys\nHKDF, + ML-KEM if available\nshard content dropped]
+        A12 --> A14[Slot mode: longTermFallback / longTermNoPQ\nno prekeyID]
 
-        A11 --> A15([Return encoded bundle])
+        A11 --> A15[Seal payload + pending batch\nstore Bob's record, save]
         A14 --> A15
     end
 
-    subgraph BUNDLE["Wire format — what an observer sees"]
-        B1["OccultaBundle {
-  version           ← in AAD
-  secrecy {
-    mode            ← in AAD
-    ephemeralPublicKey  ← in AAD, 65 bytes or empty
-    prekeyID        ← in AAD, UUID or nil
-  }
-  ciphertext        ← AES-GCM(SealedPayload)
-  fingerprintNonce  ← routing only, not in AAD
-  senderFingerprint ← routing only, not in AAD
-}
+    subgraph BOB["Bob — decryptSealed / openGroup"]
+        C1([Bundle received]) --> C2[Identify Alice by fingerprint]
+        C2 --> C3[senderPrekeys for: Alice\nsweep her record first\nsaved + flushed if it deleted anything]
+        C3 --> C4[Derive and open\ntrial-open each group slot]
+        C4 --> C5{Slot used\none of our prekeys?}
 
-─── ciphertext decrypts to ───────────────────────
+        C5 -- yes --> C6[Private key: record blob,\nelse legacy keychain key]
+        C6 --> C7["SenderPrekeys.consume — at once:
+delete legacy key from keychain
+remove key from record
+pending batch → delivered (only if the key was in it)
+older batches → retired
+first record-held key → legacy keys retired
+store, save, checkpoint"]
 
-SealedPayload {         ← encrypted + authenticated
-  message               ← plaintext bytes
-  prekeyBatch? {        ← nil or sender's fresh keys
-    generatedAt         ← Date
-    prekeys: [WirePrekey {
-      id, publicKey     ← no contactID on wire
-    }]
-  }
-}"]
+        C5 -- no, long-term --> C8[Identity-key ECDH]
+
+        C7 --> C9[Remaining checks:\nshared ciphertext, sender proof,\nsignature gates, decoding]
+        C8 --> C9
+        C9 -- reject --> C10([Throw — consumption\nand sweep already saved])
+        C9 -- pass --> C11[acceptInboundBatch\nID seen? drop. No ID? date rule.\nElse replace Alice's keys]
+        C11 --> C12{Long-term and\nnone of ours pending?}
+        C12 -- yes --> C13[installFreshBatch\n15 CryptoKit Enclave keys\nblobs into the record, pending,\nrandom 16-byte ID]
+        C12 -- no --> C14
+        C13 --> C14[Store record, save]
+        C14 --> C15([Return payload])
     end
 
-    subgraph BOB["Bob — decrypt"]
-        C1([Bundle received]) --> C2[Validate version == .v3fs]
-        C2 --> C3[Scan contacts:\nSHA-256 pubKey + fingerprintNonce\n== senderFingerprint]
-        C3 --> C4{Sender found?}
-        C4 -- no --> C5([Throw noPublicKeyToEncryptWith])
-        C4 -- yes --> C6{bundle.secrecy.mode?}
-
-        C6 -- forwardSecret --> C7[Validate ephemeralPublicKey == 65 bytes]
-        C7 --> C8["Closure — SecKey lifetime:
-temp = Prekey(id: prekeyID, contactID: sender.id, publicKey: Data())
-privKey = retrievePrivateKey(for: temp)
-sessKey = HKDF ECDH privKey + ephemeralPublicKey
-open(bundle, using: sessKey)
-← privKey released here"]
-        C8 --> C9{open success?}
-        C9 -- no --> C10([Throw decryptionFailed])
-        C9 -- yes --> C11["temp = Prekey(id: prekeyID, ...)
-consume(prekey: temp)   ← SecItemDelete, SecKey gone
-clearPendingBatch()     ← proof of receipt"]
-
-        C6 -- longTermFallback --> C12[sessionKey =\nHKDF ECDH ourSEIdentityKey\nsender's stored identity key]
-        C12 --> C13[open bundle]
-        C13 --> C14{open success?}
-        C14 -- no --> C10
-        C14 -- yes --> C15{hasPendingBatch?}
-        C15 -- no → generate --> C16[generateBatch for sender\nstore as pendingOutboundBatch\nrides Alice's next message]
-        C15 -- yes → keep riding --> C17
-
-        C11 --> C17[Decode SealedPayload\nfrom decrypted bytes]
-        C16 --> C17
-        C17 --> C18{prekeyBatch\nin payload?}
-        C18 -- no --> C20
-        C18 -- yes --> C19[Validate count and key lengths\nsyncInboundPrekeys blobs date:\ndate > latestPrekeysGeneratedAt?\nencodedPrekeys = blobs]
-        C19 --> C20[modelContext.save]
-        C20 --> C21([Return plaintext + ownerID])
-    end
-
-    subgraph PENDING["Pending batch lifecycle"]
-        P1([Fallback received\nno pending batch]) --> P2[generateBatch\nstore as pendingOutboundBatch]
-        P2 --> P3[Rides every encryptBundle\nvia loadPendingBatch]
-        P3 --> P4{FS bundle received\nfrom contact?}
+    subgraph LIFE["Our batch's life"]
+        P1([Long-term bundle in,\nnothing pending]) --> P2[Generated, pending]
+        P2 --> P3[Rides every message to the contact]
+        P3 --> P4{Contact uses\na key from it?}
         P4 -- no --> P3
-        P4 -- yes:\nconsume fires --> P5[clearPendingBatch\nProof of receipt]
-        P5 --> P6([Next fallback will generate again])
+        P4 -- yes --> P5[Delivered: public keys dropped]
+        P5 --> P6[Retired when the contact\nfirst uses a newer batch]
+        P6 --> P7[Sweep deletes its leftover keys\n30 days after retirement]
+    end
+
+    subgraph RECORD["Record lifecycle"]
+        R1([Contact created]) --> R2[Sealed empty record, 16 KB]
+        R0([Existing row at launch]) --> R3[migratePrekeyRecords\nold record converted, old field nil]
+        R2 --> R4[In use]
+        R3 --> R4
+        R4 --> R5([Contact deleted:\nsealed empty record, same size])
     end
 
     A15 -.->|AirDrop, iMessage, email, etc| C1
-    BUNDLE -.->|structure| A11
-    BUNDLE -.->|structure| A14
-    BUNDLE -.->|structure| C6
 
-    style ALICE   fill:#EDF2FA,stroke:#2E4A7A,color:#1B2A4A
-    style BUNDLE  fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-    style BOB     fill:#EAF3DE,stroke:#3B6D11,color:#173404
-    style PENDING fill:#FBF3E2,stroke:#8B6914,color:#3B2800
+    style ALICE  fill:#EDF2FA,stroke:#2E4A7A,color:#1B2A4A
+    style BOB    fill:#EAF3DE,stroke:#3B6D11,color:#173404
+    style LIFE   fill:#FBF3E2,stroke:#8B6914,color:#3B2800
+    style RECORD fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
 ```

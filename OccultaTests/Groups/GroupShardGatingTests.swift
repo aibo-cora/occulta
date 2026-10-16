@@ -48,8 +48,8 @@ private func makeShardCustodyManager() throws -> ShardCustodyManager {
 
 /// Build a profile with controllable capability/quantum/prekey state.
 ///
-/// `hasPrekey: true` pre-populates `forwardSecrecyEncrypted` with one inbound
-/// prekey so `encryptGroupBundle`'s `popOldestPrekeyData()` call finds it — the
+/// `hasPrekey: true` pre-populates `prekeyRecordEncrypted` with one inbound
+/// prekey so `encryptGroupBundle`'s `takeInboundPrekey` call finds it — the
 /// prekey's own key bytes are fake (not a real SE keypair); only its *presence*
 /// matters for the gating logic under test, not its cryptographic validity.
 @MainActor
@@ -91,12 +91,9 @@ private func makeMember(
         // Must be a real EC point, not filler bytes — encryptGroupBundle's FS path
         // does real ECDH against this key, which fails loudly on an invalid point.
         let prekeyPublicKey = try TestKeyManager().retrieveIdentity()
-        let prekey  = Prekey(id: UUID().uuidString, contactID: identifier, publicKey: prekeyPublicKey)
-        let encoded = try JSONEncoder().encode(prekey)
-        var secrecy = ForwardSecrecy()
-        secrecy.encodedPrekeys = [encoded]
-        let encodedSecrecy = try JSONEncoder().encode(secrecy)
-        profile.forwardSecrecyEncrypted = try encodedSecrecy.encrypt()
+        var record = PrekeyRecord.empty
+        record.inboundBatches = [.init(id: nil, keys: [.init(id: UUID().uuidString, publicKey: prekeyPublicKey)])]
+        profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
     }
 
     return profile

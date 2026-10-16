@@ -306,14 +306,8 @@ extension Manager {
                 ) as? Data
             else { return nil }
 
-            let salt = Data(zip(
-                recipientMaterial.map { $0 },
-                ephPubData.map        { $0 }
-            ).map { $0 ^ $1 })
-
-            return HKDF<SHA256>.deriveKey(
-                inputKeyMaterial: SymmetricKey(data: rawSecret),
-                salt: salt, info: SaltInfo.kTransportKeyInfo, outputByteCount: 32
+            return Self.forwardSecretSessionKey(
+                ecdhOutput: rawSecret, ownPublicKey: ephPubData, peerMaterial: recipientMaterial, quantumMaterial: nil
             )
         }
 
@@ -1096,20 +1090,54 @@ extension Manager.Key {
             ) as? Data
         else { return nil }
 
-        let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
-            .sorted { $0.lexicographicallyPrecedes($1) }
+        return Self.forwardSecretSessionKey(
+            ecdhOutput: rawECDH, ownPublicKey: ephemeralPublicKeyData, peerMaterial: recipientMaterial,
+            quantumMaterial: quantumMaterial
+        )
+    }
 
-        var ikm = rawECDH
-        ikm.append(contentsOf: sorted[0])
-        ikm.append(contentsOf: sorted[1])
+    /// The forward-secret session key from an ECDH output, shared by every kind of private key.
+    ///
+    /// A `SecKey` reaches here through `createSharedSecret(ephemeralPrivateKey:recipientMaterial:)` and
+    /// `createHybridFSSharedSecret`; a CryptoKit key through `Manager.Crypto.deriveSessionKey(sharedSecret:…)`.
+    /// One derivation, so the two can't drift: a prekey held as an Enclave blob in the contact's record
+    /// (Prekey Continuity D9) has to open exactly what a keychain prekey opens.
+    ///
+    /// ```
+    /// IKM  = ecdhOutput                                   (classical)
+    ///      = ecdhOutput || sorted(ML-KEM_secret_1, ML-KEM_secret_2)  (hybrid)
+    /// Salt = XOR(peerMaterial, ownPublicKey)
+    /// Info = kTransportKeyInfo (classical) / kHybridFSTransportKeyInfo (hybrid)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - ecdhOutput:   32 bytes of `.ecdhKeyExchangeCofactorX963SHA256`, i.e. ECDH then the X9.63 KDF
+    ///                   with SHA-256 and no shared info. Not the raw shared secret.
+    ///   - ownPublicKey: x963 public key of the private key used in the ECDH (65 bytes).
+    ///   - peerMaterial: x963 public key of the other side (65 bytes).
+    static func forwardSecretSessionKey(
+        ecdhOutput: Data,
+        ownPublicKey: Data,
+        peerMaterial: Data,
+        quantumMaterial: QuantumKeyMaterial?
+    ) -> SymmetricKey? {
+        guard peerMaterial.count == 65, ownPublicKey.count == 65 else { return nil }
 
-        let salt = Data(zip(recipientMaterial, ephemeralPublicKeyData).map { $0 ^ $1 })
+        var ikm  = ecdhOutput
+        var info = SaltInfo.kTransportKeyInfo
+        if let quantumMaterial {
+            guard quantumMaterial.isValid else { return nil }
+            let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
+                .sorted { $0.lexicographicallyPrecedes($1) }
+            ikm.append(contentsOf: sorted[0])
+            ikm.append(contentsOf: sorted[1])
+            info = SaltInfo.kHybridFSTransportKeyInfo
+        }
+
+        let salt = Data(zip(peerMaterial, ownPublicKey).map { $0 ^ $1 })
 
         return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm),
-            salt: salt,
-            info: SaltInfo.kHybridFSTransportKeyInfo,
-            outputByteCount: 32
+            inputKeyMaterial: SymmetricKey(data: ikm), salt: salt, info: info, outputByteCount: 32
         )
     }
  

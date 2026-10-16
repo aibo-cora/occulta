@@ -15,7 +15,9 @@
 //  hardware they ran on:
 //    - batch generation: today's keychain path, CryptoKit Enclave keys, software keys;
 //    - opening one message: today's keychain lookup + ECDH, against rebuilding from a blob + ECDH;
-//    - the size of an Enclave key's `dataRepresentation`, which sizes the record field.
+//    - the size of an Enclave key's `dataRepresentation`, which sizes the record field;
+//    - deriving a public key from a blob, per key and per send of 16, which the pending batch does instead of
+//      storing them (attached separately as `prekey-publickey-measurement.txt`).
 //
 //  D4 is decided at 15/5 without device numbers. An iPhone 11 run is needed only to revisit 50/15.
 //
@@ -43,10 +45,10 @@ private func secureEnclaveAvailable() -> Bool {
 @Suite("Prekey generation — Enclave blob measurement (D4, D9)")
 @MainActor struct PrekeyGenerationMeasurementTests {
 
-    let pm    = Manager.PrekeyManager()
+    let pm    = Manager.PrekeySecretsManager()
     let clock = ContinuousClock()
 
-    /// The proposed batch (D4). Today's is `PrekeyManager.defaultBatchSize`.
+    /// The proposed batch (D4). Today's is `PrekeySecretsManager.defaultBatchSize`.
     static let proposedBatchSize = 50
 
     @Test("A CryptoKit Enclave key leaves no keychain item", .enabled(if: secureEnclaveAvailable()))
@@ -73,7 +75,7 @@ private func secureEnclaveAvailable() -> Bool {
         var report = ["device: \(Self.deviceModel()), \(ProcessInfo.processInfo.operatingSystemVersionString)"]
         defer { Attachment.record(report.joined(separator: "\n"), named: "prekey-measurement.txt") }
 
-        let batch    = Manager.PrekeyManager.defaultBatchSize
+        let batch    = Manager.PrekeySecretsManager.defaultBatchSize
         let proposed = Self.proposedBatchSize
         let access   = try Self.prekeyAccessControl()
 
@@ -130,9 +132,39 @@ private func secureEnclaveAvailable() -> Bool {
         report.append("open, rebuild from blob + ECDH (D9): \(Self.stats(blobOpen))")
     }
 
+    /// The cost of deriving the pending batch's public keys from their blobs on every send, which the record does
+    /// instead of storing them (decided 2026-10-11). A send carries the whole pending batch: 15 one-time keys, and
+    /// from stage 2 a last-resort key, so 16. Today's alternative, copying stored keys, is measured alongside.
+    @Test("Public keys derived from blobs, attached", .enabled(if: secureEnclaveAvailable()))
+    func measurePublicKeyFromBlob() throws {
+        var report = ["device: \(Self.deviceModel()), \(ProcessInfo.processInfo.operatingSystemVersionString)"]
+        defer { Attachment.record(report.joined(separator: "\n"), named: "prekey-publickey-measurement.txt") }
+
+        let access = try Self.prekeyAccessControl()
+        let keys = try (0..<16).map { _ in try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access) }
+        let blobs = keys.map(\.dataRepresentation)
+        let stored = keys.map(\.publicKey.x963Representation)
+        #expect(blobs.map(Manager.PrekeySecretsManager.publicKey(ofBlob:)) == stored,
+                "a public key derived from a blob must be the key's own")
+
+        var perKey: [Duration] = []
+        var perSend: [Duration] = []
+        var copied: [Duration] = []
+        for _ in 0..<20 {
+            for blob in blobs {
+                perKey.append(self.clock.measure { _ = Manager.PrekeySecretsManager.publicKey(ofBlob: blob) })
+            }
+            perSend.append(self.clock.measure { _ = blobs.map(Manager.PrekeySecretsManager.publicKey(ofBlob:)) })
+            copied.append(self.clock.measure { _ = stored.map { $0 } })
+        }
+        report.append("one key, public key from blob: \(Self.stats(perKey))")
+        report.append("one send, 16 public keys from blobs: \(Self.stats(perSend))")
+        report.append("one send, 16 stored public keys: \(Self.stats(copied))")
+    }
+
     // MARK: - Helpers
 
-    /// The access control `PrekeyManager.generateBatch` gives its keys, so both paths are measured
+    /// The access control `PrekeySecretsManager.generateBatch` gives its keys, so both paths are measured
     /// under the same constraints.
     private static func prekeyAccessControl() throws -> SecAccessControl {
         var error: Unmanaged<CFError>?

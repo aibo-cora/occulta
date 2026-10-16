@@ -20,7 +20,7 @@ extension Manager {
         /// Deletes all app data: prekeys, contacts, vault, and SE keys.
         /// SE keys are deleted last — once gone, all data encrypted under them is permanently inaccessible.
         func eraseAllData() throws {
-            Manager.PrekeyManager().deleteAllKeys()
+            Manager.PrekeySecretsManager().deleteAllKeys()
             try self.contacts.deleteAllContacts()
             try self.vault.deleteAllData()
             Manager.Key().deleteAllKeys()

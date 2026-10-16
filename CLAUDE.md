@@ -115,7 +115,7 @@ classical-only modes exist for everything between 18.6 and that.
 
 **Secure Enclave and the test suite.** Most tests inject `TestKeyManager` or run under
 `.ambientTestKeyManager` and run anywhere; about one in twenty need a real Enclave, because they
-create prekeys through `PrekeyManager` or exercise a real Enclave key directly. Measure that from
+create prekeys through `PrekeySecretsManager` or exercise a real Enclave key directly. Measure that from
 CI's result bundle (its skip count), not by counting `@Test` declarations by hand. Those carry
 `.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
 notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
@@ -129,15 +129,17 @@ Every read of keys the whole app must agree on goes through it — the local DB 
 override at all. Use that trait instead of `.enabled(if: secureEnclaveAvailable())` wherever the
 local DB key is the only reason for the gate. The trait fails the test if a real `Manager.Key` is
 built while it is bound, because that path would pass here and fail on CI. It cannot see code that
-calls the Keychain or Enclave directly — `PrekeyManager` does — so CI remains the final word.
+calls the Keychain or Enclave directly — `PrekeySecretsManager` does — so CI remains the final word.
 Every gate on the local DB key alone is converted. Still gated, because they genuinely need an
-Enclave — they exercise the real `Manager.Key` or create prekeys through `PrekeyManager`, whose
+Enclave — they exercise the real `Manager.Key` or create prekeys through `PrekeySecretsManager`, whose
 private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
-`DuressModePrekeyTests`, `PrekeyManagerTests`, `ForwardSecrecyIntegrationTests`,
-`PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the three suites in that file),
-`PrekeyGenerationMeasurementTests`, the two prekey round-trips in `VersionCompatibilityTests`,
-and three tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
-(`decryptSealed` calls `generateAndStoreFreshBatch` when a fallback message arrives with no
+`DuressModePrekeyTests`, `PrekeySecretsManagerTests`, `ForwardSecrecyIntegrationTests`,
+`PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the five suites in that file),
+`PrekeyGenerationMeasurementTests`, `IdentityChallengeGroupForwardSecretTests` (a challenge on a forward-secret
+slot needs a prekey this device holds), `PrekeyConversationTests` (two phones generating real prekeys), the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
+the two prekey round-trips in `VersionCompatibilityTests`,
+and four tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
+(`decryptSealed` calls `installFreshBatch` when a fallback message arrives with no
 pending batch). A test that reaches that receive path needs the gate, not the trait.
 The share-staging key (`ShareStagingKeyManager`) has its own, simpler seam: `ShareSession` takes
 `any ShareSessionDecrypting`, so `ShareSessionTests` passes an in-memory key and runs anywhere.
