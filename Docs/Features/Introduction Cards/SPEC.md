@@ -21,7 +21,7 @@ Each side holds its own set of the following for one relationship. None of them 
 |---|---|---|---|
 | **Card agreement key** | `SecureEnclave.P256.KeyAgreement`, `.privateKeyUsage`, `WhenUnlockedThisDeviceOnly` | `dataRepresentation` blob in the card field (§5) | Until the meeting or a discard |
 | **Card signing key** | `SecureEnclave.P256.Signing`, same policy | Blob in the card field | Same |
-| **Card ML-KEM key** | ML-KEM-1024, Enclave-backed | Blob in the card field | Until the full post-quantum material is held (§4.2) |
+| **Card ML-KEM key** | `SecureEnclave.MLKEM1024`, same policy (not CryptoKit's default `AfterFirstUnlock`) | Blob in the card field (4,788 bytes measured) | Until the full post-quantum material is held (§4.2) |
 | **Card prekeys** (Bob's 15) | `SecureEnclave.P256.KeyAgreement`, made by `PrekeySecretsManager.generateEnclaveKeys` | The contact's pending own batch in `PrekeyRecord` | As any own batch |
 
 **Why two P-256 keys, unlike the identity key.** The identity key is a tagged keychain item (`Manager.Key`), which `SecKey` uses for both ECDH and ECDSA. A tagged item per card would show how many cards exist in a keychain listing, and Q-05 rules that out. CryptoKit's Enclave keys create no keychain item, so the blob is the only copy, as with stage 1 prekeys. Each CryptoKit Enclave key is typed for either agreement or signing, which is why there are two.
@@ -29,6 +29,8 @@ Each side holds its own set of the following for one relationship. None of them 
 **No last-resort key on the card.** A last-resort key's ID keys `lastResortPrekeyID`. On a card that ID would be public, so every bundle sealed to it would be linkable. Carol receives Bob's last-resort key in his first batch, as any contact does.
 
 **OccultaCore addition.** `PostQuantumProvider` today hands out an in-memory handle (`generateKeyPair() -> privateKeyHandle: Any`), which is released after the ceremony. Cards need an ML-KEM private key that survives until the other side's ciphertext arrives. That requires two additions to the provider: a key that can be persisted as a blob, and decapsulation from that blob. Both are first-party, with no new dependency.
+
+**Confirmed 2026-10-16** (`IntroCardEnclaveKeyPersistenceTests`, on an Apple Silicon Simulator with Enclave access). An Enclave ML-KEM-1024 key created with this policy reloads from its `dataRepresentation` after the original is released. It has the same public key and decapsulates to the encapsulator's shared secret. No software fallback is needed. CryptoKit's API is `SecureEnclave.MLKEM1024.PrivateKey(accessControl:)`, `.dataRepresentation` and `init(dataRepresentation:)`.
 
 **iOS 26 at both ends** (Q-06). Below it, card creation is disabled and import fails (FINDINGS W-copy).
 
@@ -165,7 +167,7 @@ A new property, `Contact.Profile.introductionCardEncrypted: Data`, sealed with t
 
 - **Never nil.** It is written when a contact is created and overwritten with the sealed empty state on delete. A launch migration writes it for every existing row, as `migratePrekeyRecords` did, so a NULL can't tell contacts apart.
 - **Discarding a card overwrites** the field with the empty state, at the same size.
-- **N is set by a size test** on the largest state, with distinct values everywhere (FORWARD_SECRECY_GUIDE mistakes 19 and 20). The provisional value is **12 KB**. It depends on the size of the Enclave-wrapped ML-KEM-1024 blob, which hasn't been measured.
+- **N is set by a size test** on the largest state, with distinct values everywhere (FORWARD_SECRECY_GUIDE mistakes 19 and 20). The provisional value is **12 KB**. Measured blob sizes: ML-KEM-1024 4,788 bytes, P-256 143 bytes each. The largest state, Carol's `imported`, comes to about 9.7 KB before plist overhead (card 2,985 + 2 × 143 + 4,788 + ss1 32 + ct1 1,568 + expiry). 12 KB leaves about 2 KB of margin. The sizes came from a Simulator, so the size test also runs on a device before release.
 
 ```
 enum CardState {
@@ -372,4 +374,4 @@ Card key creation needs a real Enclave and gets `.enabled(if: secureEnclaveAvail
 ## 13. Open items
 
 - **N** (§5): set during the build by a size test on the largest state (Carol's `imported` state), with distinct values everywhere, plus a margin, rounded up to 4 KB. About 12 KB per contact is expected. Agreed 2026-10-16; this is a measurement, not a design question.
-- **`PostQuantumProvider` persistence** (§1): API to add, with tests. **The first build step confirms that iOS 26's Enclave ML-KEM-1024 key can be saved as a blob and used to decapsulate later.** If it can't, the build stops and the trade-off comes back as a decision (agreed 2026-10-16). The only fallback is a software key sealed with the local DB key, which anyone holding that key could extract, so it must not be adopted silently.
+- **`PostQuantumProvider` persistence** (§1): API to add, with tests. The Enclave check passed on 2026-10-16 (§1), so no fallback decision is needed.
