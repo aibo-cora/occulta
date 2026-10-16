@@ -24,8 +24,7 @@ extension IntroCardMock {
 
                 ExchangeHero(title: "No key yet", subtitle: "exchange to encrypt messages")
 
-                SectionLabel(text: "INTRODUCTION CARD")
-                VStack(alignment: .leading, spacing: 12) {
+                CardSection {
                     Text("Can't meet Carol yet? Make a card Carol can use to send you a message. Carol will stay Not verified until you meet and exchange keys in person.")
                         .font(.footnote)
                         .fixedSize(horizontal: false, vertical: true)
@@ -37,9 +36,6 @@ extension IntroCardMock {
                         Notice(tone: .neutral, label: "Not available", text: "Introduction cards need iOS 26 or later.")
                     }
                 }
-                .padding(14)
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
             .sheet(isPresented: self.$creating) {
                 NavigationStack { CreateCard() }
@@ -167,8 +163,7 @@ extension IntroCardMock {
 
                 ExchangeHero(title: "No key yet", subtitle: "exchange to encrypt messages")
 
-                SectionLabel(text: "INTRODUCTION CARD")
-                VStack(alignment: .leading, spacing: 12) {
+                CardSection {
                     Countdown()
 
                     Notice(
@@ -190,9 +185,6 @@ extension IntroCardMock {
                         .font(.system(size: 10, weight: .regular, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
-                .padding(14)
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
             .confirmationDialog("Cancel the card for Carol?", isPresented: self.$confirmingCancel, titleVisibility: .visible) {
                 Button("Cancel card", role: .destructive) {}
@@ -229,6 +221,23 @@ extension IntroCardMock {
                 .clipShape(RoundedRectangle(cornerRadius: 14))
 
                 TrustLine()
+
+                NavigationLink {
+                    IssuerCardContact()
+                } label: {
+                    Text("Reply to Carol")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.occultaAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+
+                Text("Your reply also gives Carol your prekeys, so Carol's next messages are forward-secret.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .navigationTitle("Message")
         }
@@ -250,14 +259,14 @@ extension IntroCardMock {
                     NotVerifiedChip()
                 }
 
-                TrustLine()
+                CardSection {
+                    TrustLine()
 
-                Compose(recipientFirstName: "Carol")
+                    Text("WASN'T CAROL?")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .tracking(1.6)
 
-                ExchangeHero(title: "Meet Carol to verify", subtitle: "exchange keys in person")
-
-                SectionLabel(text: "WASN'T CAROL?")
-                VStack(alignment: .leading, spacing: 12) {
                     Text("If Carol never sent the first message you got, someone else used your card before Carol could, and that's who you've been talking to. Discard this conversation and make Carol a new card.")
                         .font(.footnote)
                         .fixedSize(horizontal: false, vertical: true)
@@ -267,10 +276,10 @@ extension IntroCardMock {
                             .font(.system(size: 14, weight: .semibold))
                     }
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                Compose(recipientFirstName: "Carol")
+
+                ExchangeHero(title: "Meet Carol to verify", subtitle: "exchange keys in person")
             }
             .confirmationDialog("Discard the conversation with Carol?", isPresented: self.$confirmingDiscard, titleVisibility: .visible) {
                 Button("Discard", role: .destructive) {}

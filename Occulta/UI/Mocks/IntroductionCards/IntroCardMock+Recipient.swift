@@ -103,7 +103,7 @@ extension IntroCardMock {
                         Notice(
                             tone:  .danger,
                             label: "Can't import",
-                            text:  "You already sent \(self.chosenName) a card. Wait for \(self.chosenName)'s message, or cancel your card first."
+                            text:  "You already sent \(self.chosenName) a card. Wait for \(self.chosenName)'s message."
                         )
                     case .none:
                         Countdown()
@@ -147,15 +147,17 @@ extension IntroCardMock {
                     NotVerifiedChip()
                 }
 
-                TrustLine()
+                CardSection {
+                    TrustLine()
 
-                Countdown()
+                    Countdown()
 
-                Notice(
-                    tone:  .warn,
-                    label: "Must reach Bob by \(IntroCardMock.expiryLabel)",
-                    text:  "Your first message has to reach Bob by then, or Bob's card stops working. Send it early enough for Bob to open it in time. After that, there's no time limit."
-                )
+                    Notice(
+                        tone:  .warn,
+                        label: "Must reach Bob by \(IntroCardMock.expiryLabel)",
+                        text:  "Your first message has to reach Bob by then, or Bob's card stops working. Send it early enough for Bob to open it in time. After that, there's no time limit."
+                    )
+                }
 
                 Compose(recipientFirstName: "Bob", isForwardSecret: false)
 
@@ -176,13 +178,15 @@ extension IntroCardMock {
                     NotVerifiedChip()
                 }
 
-                TrustLine()
+                CardSection {
+                    TrustLine()
 
-                Notice(
-                    tone:  .neutral,
-                    label: "Waiting for the first reply",
-                    text:  "If none comes, someone may have used this card before you. Ask Bob for a new one, in person or through someone you trust."
-                )
+                    Notice(
+                        tone:  .neutral,
+                        label: "Waiting for the first reply",
+                        text:  "If none comes, someone may have used this card before you. Ask Bob for a new one, in person or through someone you trust."
+                    )
+                }
 
                 Compose(recipientFirstName: "Bob", isForwardSecret: false)
 

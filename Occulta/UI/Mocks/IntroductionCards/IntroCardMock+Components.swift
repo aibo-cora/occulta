@@ -304,6 +304,25 @@ extension IntroCardMock {
         }
     }
 
+    /// Everything about the card on one contact, in one box: status, deadline,
+    /// actions. Card content is never split across the screen.
+    struct CardSection<Content: View>: View {
+        @ViewBuilder let content: Content
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel(text: "INTRODUCTION CARD")
+                VStack(alignment: .leading, spacing: 12) {
+                    self.content
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+        }
+    }
+
     struct Screen<Content: View>: View {
         @ViewBuilder let content: Content
 
