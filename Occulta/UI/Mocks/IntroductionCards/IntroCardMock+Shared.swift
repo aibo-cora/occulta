@@ -68,8 +68,8 @@ extension IntroCardMock {
                         HStack(spacing: 6) {
                             Circle().fill(row.color).frame(width: 6, height: 6)
                             if let label = row.countdown {
-                                TimelineView(.periodic(from: .now, by: 60)) { context in
-                                    Text("\(label) · \(IntroCardMock.remaining(at: context.date, short: true)) left")
+                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                    Text("\(label) · \(IntroCardMock.remaining(at: context.date))")
                                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(Color.occultaWarn)
                                 }

@@ -223,6 +223,11 @@ nonisolated enum IntroCardCopy {
         )
     }
 
+    /// W-18. The import is refused because the card is the user's own.
+    static func refusedOwnCard() -> Message {
+        Message(label: Self.refusedLabel, text: "This is your own card.")
+    }
+
     // MARK: - Recipient: waiting (W-07)
 
     /// W-07. After the first send.
@@ -295,21 +300,18 @@ nonisolated enum IntroCardCopy {
         return "Expires in \(Self.remainingClock(until: expiresAt, now: now))"
     }
 
-    /// "23h", or "45m" in the last hour.
-    private static func shortRemaining(until expiresAt: Date, now: Date) -> String {
-        let total = max(0, Int(expiresAt.timeIntervalSince(now)))
-        if total >= 3600 { return "\(total / 3600)h" }
-        if total >= 60 { return "\(total / 60)m" }
-        return "<1m"
-    }
-
-    /// The pending contact's second line on the issuer's phone: "Card · 23h left".
+    /// The pending contact's second line on the issuer's phone: "Card · 23h 12m 05s".
     static func issuedListLine(expiresAt: Date, now: Date) -> String {
-        "Card · \(Self.shortRemaining(until: expiresAt, now: now)) left"
+        "Card · \(Self.listClock(until: expiresAt, now: now))"
     }
 
-    /// The card contact's second line on the recipient's phone, until the first message is sent: "Send by · 23h left".
+    /// The card contact's second line on the recipient's phone, until the first message is sent: "Send by · 23h 12m 05s".
     static func sendByListLine(expiresAt: Date, now: Date) -> String {
-        "Send by · \(Self.shortRemaining(until: expiresAt, now: now)) left"
+        "Send by · \(Self.listClock(until: expiresAt, now: now))"
+    }
+
+    /// The full clock, or "Expired" past the deadline (decided 2026-10-17: the timer at all times).
+    private static func listClock(until expiresAt: Date, now: Date) -> String {
+        expiresAt > now ? Self.remainingClock(until: expiresAt, now: now) : "Expired"
     }
 }

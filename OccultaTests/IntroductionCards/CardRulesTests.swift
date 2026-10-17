@@ -72,7 +72,7 @@ struct CardRulesTests {
         for expiry in [self.now, self.earlier, Date(timeIntervalSince1970: 0)] {
             let incoming = makeShapedCard(expiresAt: expiry)
             for (name, state) in states {
-                #expect(CardRules.importDecision(current: state, incoming: incoming, now: self.now) == .refuse(.expired), "\(name), expiry \(expiry.timeIntervalSince1970)")
+                #expect(CardRules.importDecision(current: state, incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .refuse(.expired), "\(name), expiry \(expiry.timeIntervalSince1970)")
             }
         }
     }
@@ -81,12 +81,12 @@ struct CardRulesTests {
     func importDecisionForEachState() {
         let incoming = makeShapedCard(expiresAt: self.now.addingTimeInterval(1))
 
-        #expect(CardRules.importDecision(current: .empty, incoming: incoming, now: self.now) == .importNew)
-        #expect(CardRules.importDecision(current: self.imported(expiresAt: self.later, sent: false), incoming: incoming, now: self.now) == .replace)
-        #expect(CardRules.importDecision(current: self.imported(expiresAt: self.later, sent: true), incoming: incoming, now: self.now) == .replace)
-        #expect(CardRules.importDecision(current: self.imported(expiresAt: self.earlier, sent: true), incoming: incoming, now: self.now) == .replace, "an expired imported field is still replaced")
-        #expect(CardRules.importDecision(current: self.conversation(bootstrapOpen: true), incoming: incoming, now: self.now) == .refuse(.alreadyTalking))
-        #expect(CardRules.importDecision(current: self.conversation(bootstrapOpen: false), incoming: incoming, now: self.now) == .refuse(.alreadyTalking))
+        #expect(CardRules.importDecision(current: .empty, incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .importNew)
+        #expect(CardRules.importDecision(current: self.imported(expiresAt: self.later, sent: false), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .replace)
+        #expect(CardRules.importDecision(current: self.imported(expiresAt: self.later, sent: true), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .replace)
+        #expect(CardRules.importDecision(current: self.imported(expiresAt: self.earlier, sent: true), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .replace, "an expired imported field is still replaced")
+        #expect(CardRules.importDecision(current: self.conversation(bootstrapOpen: true), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .refuse(.alreadyTalking))
+        #expect(CardRules.importDecision(current: self.conversation(bootstrapOpen: false), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .refuse(.alreadyTalking))
     }
 
     // MARK: - Import: crossing cards (SPEC §6.3)
@@ -100,12 +100,16 @@ struct CardRulesTests {
         let (lower, higher) = (pair[0], pair[1])
         #expect(bytewiseLess(lower.card.agreementKey, higher.card.agreementKey), "control: the keys differ")
 
-        for (alice, bob) in [(lower, higher), (higher, lower)] {
-            // Each phone has issued a card and now imports the other's.
+        let unrelated: Set<Data> = [randomBytes(65), randomBytes(65)]
+        for (alice, bob, unrelatedKeys) in [(lower, higher, Set<Data>()), (higher, lower, Set<Data>()), (lower, higher, unrelated), (higher, lower, unrelated)] {
+            // Each phone has issued a card and now imports the other's. A phone's own-card set holds the
+            // agreement key of every card it issued: its own card, here, plus any unrelated ones.
             let aliceField = self.issued(card: alice.card.encoded, expiresAt: self.later)
             let bobField   = self.issued(card: bob.card.encoded, expiresAt: self.later)
-            let onAlice = CardRules.importDecision(current: aliceField, incoming: bob.card, now: self.now)
-            let onBob   = CardRules.importDecision(current: bobField, incoming: alice.card, now: self.now)
+            let aliceOwn = unrelatedKeys.isEmpty ? Set<Data>() : unrelatedKeys.union([alice.card.agreementKey])
+            let bobOwn   = unrelatedKeys.isEmpty ? Set<Data>() : unrelatedKeys.union([bob.card.agreementKey])
+            let onAlice = CardRules.importDecision(current: aliceField, incoming: bob.card, now: self.now, ownIssuedAgreementKeys: aliceOwn)
+            let onBob   = CardRules.importDecision(current: bobField, incoming: alice.card, now: self.now, ownIssuedAgreementKeys: bobOwn)
 
             let aliceHasLower = bytewiseLess(alice.card.agreementKey, bob.card.agreementKey)
             // The phone whose own card is lower keeps it and refuses; the other cancels its own and imports.
@@ -128,8 +132,8 @@ struct CardRulesTests {
     func crossingCardsManyPairs() throws {
         for _ in 0 ..< 25 {
             let alice = try CardTestIssuer(), bob = try CardTestIssuer()
-            let onAlice = CardRules.importDecision(current: self.issued(card: alice.card.encoded, expiresAt: self.later), incoming: bob.card, now: self.now)
-            let onBob   = CardRules.importDecision(current: self.issued(card: bob.card.encoded, expiresAt: self.later), incoming: alice.card, now: self.now)
+            let onAlice = CardRules.importDecision(current: self.issued(card: alice.card.encoded, expiresAt: self.later), incoming: bob.card, now: self.now, ownIssuedAgreementKeys: [])
+            let onBob   = CardRules.importDecision(current: self.issued(card: bob.card.encoded, expiresAt: self.later), incoming: alice.card, now: self.now, ownIssuedAgreementKeys: [])
 
             #expect((onAlice == .cancelOwnAndImport) != (onBob == .cancelOwnAndImport), "exactly one cancels")
             #expect((onAlice == .refuse(.ownCardWins)) != (onBob == .refuse(.ownCardWins)), "exactly one refuses")
@@ -142,21 +146,81 @@ struct CardRulesTests {
     @Test("A tie, which only a copy of the user's own card could cause, keeps the user's card")
     func tieKeepsOwnCard() throws {
         let own = try CardTestIssuer()
-        let decision = CardRules.importDecision(current: self.issued(card: own.card.encoded, expiresAt: self.later), incoming: own.card, now: self.now)
+        let decision = CardRules.importDecision(current: self.issued(card: own.card.encoded, expiresAt: self.later), incoming: own.card, now: self.now, ownIssuedAgreementKeys: [])
         #expect(decision == .refuse(.ownCardWins))
     }
 
     @Test("An own card that no longer parses can't win: it is cancelled")
     func unparseableOwnCardIsCancelled() {
         let incoming = makeShapedCard(expiresAt: self.later)
-        #expect(CardRules.importDecision(current: self.issued(card: randomBytes(1_770), expiresAt: self.later), incoming: incoming, now: self.now) == .cancelOwnAndImport)
-        #expect(CardRules.importDecision(current: self.issued(card: Data(), expiresAt: self.later), incoming: incoming, now: self.now) == .cancelOwnAndImport)
+        #expect(CardRules.importDecision(current: self.issued(card: randomBytes(1_770), expiresAt: self.later), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .cancelOwnAndImport)
+        #expect(CardRules.importDecision(current: self.issued(card: Data(), expiresAt: self.later), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .cancelOwnAndImport)
     }
 
     @Test("An expired incoming card is refused as expired even when the cards crossed and its key sorts lower")
     func expiredBeatsKeyOrder() {
         let incoming = makeShapedCard(agreementKey: Data(count: 65), expiresAt: self.earlier)
-        #expect(CardRules.importDecision(current: self.issued(expiresAt: self.later), incoming: incoming, now: self.now) == .refuse(.expired))
+        #expect(CardRules.importDecision(current: self.issued(expiresAt: self.later), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .refuse(.expired))
+    }
+
+    // MARK: - Import: the user's own card
+
+    private func everyState() -> [(String, CardState)] {
+        [
+            ("empty", .empty),
+            ("issued", self.issued(expiresAt: self.later)),
+            ("imported", self.imported(expiresAt: self.later, sent: false)),
+            ("conversation", self.conversation()),
+        ]
+    }
+
+    @Test("A card whose agreement key is one the user issued is refused as their own, for every current state")
+    func ownCardIsRefusedForEveryState() {
+        let incoming = makeShapedCard(expiresAt: self.later)
+        let others: Set<Data> = [randomBytes(65), randomBytes(65)]
+        for keys in [Set([incoming.agreementKey]), others.union([incoming.agreementKey])] {
+            for (name, state) in self.everyState() {
+                #expect(CardRules.importDecision(current: state, incoming: incoming, now: self.now, ownIssuedAgreementKeys: keys) == .refuse(.ownCard), "\(name), \(keys.count) own keys")
+            }
+        }
+    }
+
+    @Test("An own card that is expired is refused as expired: expiry comes first")
+    func expiredOwnCardIsExpired() {
+        for expiry in [self.now, self.earlier] {
+            let incoming = makeShapedCard(expiresAt: expiry)
+            for (name, state) in self.everyState() {
+                #expect(CardRules.importDecision(current: state, incoming: incoming, now: self.now, ownIssuedAgreementKeys: [incoming.agreementKey]) == .refuse(.expired), "\(name)")
+            }
+        }
+    }
+
+    @Test("A card not in the own set behaves as before, whatever the set holds")
+    func foreignCardIgnoresTheOwnSet() {
+        let incoming = makeShapedCard(expiresAt: self.later)
+        let unrelated: Set<Data> = [randomBytes(65), randomBytes(65), Data(), Data(incoming.agreementKey.dropLast())]
+        let expected: [String: CardImportDecision] = ["empty": .importNew, "imported": .replace, "conversation": .refuse(.alreadyTalking)]
+        for keys in [Set<Data>(), unrelated] {
+            for (name, state) in self.everyState() where name != "issued" {
+                #expect(CardRules.importDecision(current: state, incoming: incoming, now: self.now, ownIssuedAgreementKeys: keys) == expected[name], "\(name)")
+            }
+        }
+    }
+
+    @Test("The own-card check compares whole keys: a key that differs in one byte is not the user's own")
+    func ownCardNeedsAnExactMatch() {
+        let incoming = makeShapedCard(expiresAt: self.later)
+        var nearly = [UInt8](incoming.agreementKey); nearly[64] ^= 0x01
+        #expect(CardRules.importDecision(current: .empty, incoming: incoming, now: self.now, ownIssuedAgreementKeys: [Data(nearly)]) == .importNew)
+    }
+
+    @available(iOS 26, *)
+    @Test("A copy of the user's own issued card is refused as their own, not as a tie")
+    func copyOfOwnCardIsOwnCard() throws {
+        let own = try CardTestIssuer()
+        let field = self.issued(card: own.card.encoded, expiresAt: self.later)
+        #expect(CardRules.importDecision(current: field, incoming: own.card, now: self.now, ownIssuedAgreementKeys: [own.card.agreementKey]) == .refuse(.ownCard))
+        #expect(CardRules.importDecision(current: .empty, incoming: own.card, now: self.now, ownIssuedAgreementKeys: [own.card.agreementKey]) == .refuse(.ownCard), "on another contact, at another depth")
     }
 
     // MARK: - Sweep

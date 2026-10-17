@@ -32,6 +32,8 @@ enum CardImportDecision: Equatable {
         /// The cards crossed and ours sorts lower, so ours survives.
         case ownCardWins
         case expired
+        /// The card is one of ours. Importing it would start a conversation with ourselves.
+        case ownCard
     }
 }
 
@@ -58,12 +60,15 @@ enum CardRules {
 
     /// Decides what importing `incoming` into a contact whose field is `current` does, at `now`.
     ///
-    /// An expired card is refused whatever the field holds. When the cards crossed (`current` is `issued`),
-    /// the card with the lower agreement public key survives on both phones, compared bytewise, so exactly
-    /// one does. A tie, which only a copy of our own card could cause, keeps ours. An own card that no
-    /// longer parses can't win and is cancelled.
-    static func importDecision(current: CardState, incoming: IntroductionCard, now: Date) -> CardImportDecision {
+    /// An expired card is refused whatever the field holds, and so is one of our own: `ownIssuedAgreementKeys`
+    /// holds the agreement public key of every card we have issued, on any contact at any depth, which the
+    /// caller gathers. When the cards crossed (`current` is `issued`), the card with the lower agreement public
+    /// key survives on both phones, compared bytewise, so exactly one does. A tie can only be a copy of our
+    /// own card, which the own-card refusal already caught; if it got here it keeps ours. An own card that
+    /// no longer parses can't win and is cancelled.
+    static func importDecision(current: CardState, incoming: IntroductionCard, now: Date, ownIssuedAgreementKeys: Set<Data>) -> CardImportDecision {
         guard incoming.expiresAt > now else { return .refuse(.expired) }
+        guard !ownIssuedAgreementKeys.contains(incoming.agreementKey) else { return .refuse(.ownCard) }
 
         switch current {
         case .empty:

@@ -73,6 +73,7 @@ struct IntroCardCopyTests {
             result.append(("importTitle", IntroCardCopy.importTitle))
             result.append(("importOnlyButton", IntroCardCopy.importOnlyButton))
             result.append(("refusedLabel", IntroCardCopy.refusedLabel))
+            result.append(("refusedOwnCard", self.joined(IntroCardCopy.refusedOwnCard())))
             result.append(("notVerifiedChip", IntroCardCopy.notVerifiedChip))
             result.append(("trustLine", self.joined(IntroCardCopy.trustLine)))
             result.append(("notVerifiedListFooter", IntroCardCopy.notVerifiedListFooter))
@@ -186,15 +187,29 @@ struct IntroCardCopyTests {
         #expect(IntroCardCopy.remainingClock(until: self.deadline, now: self.deadline.addingTimeInterval(-59)) == "0h 00m 59s")
     }
 
-    @Test("List lines show whole hours, then minutes in the last hour")
+    @Test("List lines show the full live clock, and Expired at and after the deadline")
     func listLines() {
         let at = { (seconds: TimeInterval) in self.deadline.addingTimeInterval(-seconds) }
-        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: self.now) == "Card · 23h left")
-        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: at(45 * 60)) == "Card · 45m left")
-        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: at(30)) == "Card · <1m left")
-        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: self.now) == "Send by · 23h left")
-        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: at(3_600)) == "Send by · 1h left")
-        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: at(3_599)) == "Send by · 59m left")
+        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: self.now) == "Card · 23h 12m 05s")
+        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: at(45 * 60)) == "Card · 0h 45m 00s")
+        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: at(30)) == "Card · 0h 00m 30s")
+        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: self.deadline) == "Card · Expired")
+        #expect(IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: at(-60)) == "Card · Expired")
+        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: self.now) == "Send by · 23h 12m 05s")
+        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: at(3_600)) == "Send by · 1h 00m 00s")
+        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: at(3_599)) == "Send by · 0h 59m 59s")
+        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: self.deadline) == "Send by · Expired")
+        #expect(IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: at(-60)) == "Send by · Expired")
+        #expect(!IntroCardCopy.issuedListLine(expiresAt: self.deadline, now: self.now).contains("left"))
+        #expect(!IntroCardCopy.sendByListLine(expiresAt: self.deadline, now: self.now).contains("left"))
+    }
+
+    @Test("W-18: importing the user's own card is refused with the FINDINGS wording")
+    func ownCardRefusal() {
+        let message = IntroCardCopy.refusedOwnCard()
+        #expect(message.label == "Can't import")
+        #expect(message.label == IntroCardCopy.refusedLabel)
+        #expect(message.text == "This is your own card.")
     }
 
     // MARK: - FINDINGS' draft copy

@@ -251,6 +251,7 @@ Write `empty`. The blobs exist only in the field, so overwriting it deletes the 
 
    | Field | Result |
    |---|---|
+   | any, when the card is one of the user's own (its agreement key matches an `issued` card on any contact, at any depth) | **Refuse** (W-18), checked first after expiry (decided 2026-10-17). Otherwise a person could start a conversation with themselves |
    | `empty` (pending) | Import |
    | `imported` (waiting on an earlier card from Bob) | **Replace.** Write the new `imported` state over the old one, which deletes its keys. Bob can only issue a card from a pending contact, so a new card means his side never got Carol's message, or he discarded the conversation |
    | `conversation` | **Refuse** (W-16). A card claiming to be from Bob must not replace a live conversation: anyone could send one |
