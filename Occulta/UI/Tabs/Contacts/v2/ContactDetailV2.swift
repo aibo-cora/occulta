@@ -569,7 +569,7 @@ private struct ComposeHeroV2: View {
 
             // Its own line, below the size and the Encrypt button, with its description (D2).
             if let secrecy = self.secrecy {
-                SecrecyIndicator(secrecy: secrecy, standard: self.cardIsStandard, isNotVerified: self.isNotVerified)
+                SecrecyIndicator(secrecy: secrecy, name: self.firstName, standard: self.cardIsStandard, isNotVerified: self.isNotVerified)
                     .padding(.top, 10)
             }
 

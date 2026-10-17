@@ -50,6 +50,10 @@ struct IntroCardCopyTests {
             result.append(("exchangeMatch", self.joined(IntroCardCopy.exchangeMatch(name: name))))
             result.append(("meetToVerifyTitle", IntroCardCopy.meetToVerifyTitle(name: name)))
             result.append(("refusedExpired", self.joined(IntroCardCopy.refusedExpired(name: name))))
+            // Compose's secrecy line, shown for every contact: names in place of "they" too (decided 2026-10-17).
+            for secrecy in [NextSendSecrecy.forwardSecret, .temporaryKey, .longTerm] {
+                result.append(("secrecy \(secrecy)", SecrecyIndicator.description(secrecy, name: name)))
+            }
         return result
     }
 
@@ -107,6 +111,13 @@ struct IntroCardCopyTests {
         for (description, string) in strings where string.contains(banned) { offenders.append("\(description): \(string)") }
         #expect(offenders.isEmpty, "\(offenders)")
         #expect(strings.count > 50, "control: the list covers the strings")
+    }
+
+    @Test("Compose's secrecy line stands in a phrase for a contact with no given name")
+    func secrecyWithoutName() {
+        for secrecy in [NextSendSecrecy.forwardSecret, .temporaryKey, .longTerm] {
+            #expect(SecrecyIndicator.description(secrecy, name: "").contains("the recipient"))
+        }
     }
 
     @Test("The check can fail: the same expression finds the banned words")

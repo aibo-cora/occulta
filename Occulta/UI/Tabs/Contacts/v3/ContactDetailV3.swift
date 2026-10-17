@@ -100,6 +100,7 @@ struct ContactDetailV3: View {
                             headerRight:     "→ TO \(self.givenName.uppercased())",
                             encryptLabel:    "Encrypt",
                             secrecy:         self.secrecy,
+                            recipientName:   self.givenName,
                             onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm) }
                         )
                     }
