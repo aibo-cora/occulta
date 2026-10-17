@@ -235,7 +235,7 @@ struct NextSendSecrecyTests {
     func neither() throws {
         let (cm, _) = try makeContactManager()
         let contact = try self.contact(groupCapable: true, in: cm)
-        try cm.store(.empty, for: contact)
+        try cm.store(PrekeyRecord.empty, for: contact)
         #expect(cm.nextSendSecrecy(for: contact) == .longTerm)
     }
 
