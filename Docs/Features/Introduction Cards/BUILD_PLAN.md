@@ -1,6 +1,6 @@
 # Introduction Cards — Build plan, phase 2 (wiring)
 
-**Status:** Draft for review, 2026-10-17. Phase 1 (standalone pieces) is done: `b82d704`, `52ce4df`, 160 tests passing.
+**Status:** Built 2026-10-17. Phase 1 (standalone pieces): `b82d704`, `52ce4df`. Phase 2 stages A–E: `c37051f` (logic), `ed317b4` (screens), tests through `a8ceeb8`. Stage F's docs are done; its device checks are not (see `Docs/Audit/SECURITY_CHECKLIST.md` §3).
 **Design:** [SPEC.md](SPEC.md) (formats and procedures), [FINDINGS.md](FINDINGS.md) (decisions and copy).
 
 Phase 2 wires the phase-1 pieces into storage, sending, receiving, the in-person exchange and the screens. Each
@@ -131,7 +131,7 @@ stage leaves the app shippable: until stage E puts card UI on screen, nothing a 
 | Step | Files | Change |
 |---|---|---|
 | E1 · Tier | `Contacts+DesignTokens.swift`, `ContactsListV2.swift`, `ContactDetailV2.swift`, `ShareRecipientPicker.swift`, `ContactClassification.swift` | `.unverified` becomes Not verified, computed with `CardRules.tier` from the card field (Q-14). The "UNVERIFIED" label goes away. `UnverifiedNoticeV2` is replaced by W-06's trust line |
-| E2 · Hard blocks | `Group+FormV3.swift` (group eligibility), `Vault+ShardSetup.swift` | Card contacts are excluded explicitly with `CardRules.isHardBlocked`, and the row shows W-10. Groups need the explicit check: card contacts can reach a group-capable `maxBundleVersion` from received messages |
+| E2 · Hard blocks | `Group+FormV3.swift` (group eligibility), `Vault+ShardSetup.swift` | Card contacts are excluded explicitly with `CardState.isCardContact`, and the row shows W-10. Groups need the explicit check: card contacts can reach a group-capable `maxBundleVersion` from received messages |
 | E3 · Contact details | `ContactDetailV2.swift` | The card section (§3's grouping rule): pending (create, active card with countdown, share, cancel), imported (trust line, deadline), conversation (trust line, "Wasn't {Name}?" and discard). Create is disabled below iOS 26 |
 | E4 · List and import | `ContactsListV2.swift`, `OccultaApp.swift` | The live list lines. The import sheet with "Import and write to {Name}", and the W-16, W-17 and W-18 refusals |
 | E5 · Messages | Read view, compose | "Reply to {Name}" on the first message (W-08). The compose secrecy label |

@@ -605,8 +605,8 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
   - the pending-card record (Q-05);
   - the receive-path order (contacts first, then pending cards);
   - the in-person linking step (§5, Q-10).
-- Plan stages with tests and a no-data-loss migration per stage. The new records are additive and no existing row changes, but the per-contact own-key change (Q-08) touches every send path.
-- Tests:
+- ~~Plan stages with tests and a no-data-loss migration per stage.~~ Done 2026-10-17 as [BUILD_PLAN.md](BUILD_PLAN.md).
+- ~~Tests:~~ Done 2026-10-17, in `OccultaTests/IntroductionCards/`. Each item below has a test; the two-phone and duress cases are in `CardConversationTests.swift`, the meeting cases in `CardMeetingCheckTests.swift`.
   - every gate in §6 refuses a card contact;
   - every warning renders identically at every depth;
   - an ML-KEM-key-only swap fails recognition (the §2 signature);
@@ -620,7 +620,7 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
   - the exchange completes on a mismatch, and the card keys are deleted on both sides (§5);
   - a hidden contact's active card is tried and redeemed at a duress depth (Q-03);
   - an expired card is refused on arrival at every depth, and cleanup leaves the row the same size (Q-03).
-- Update `README.md` claims in the same change that makes the feature reachable (Q-01).
+- ~~Update `README.md` claims in the same change that makes the feature reachable (Q-01).~~ Done 2026-10-17: the two impersonation claims are now limited to contacts verified in person, and a Features section describes cards.
 
 ---
 
