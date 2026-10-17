@@ -32,7 +32,9 @@ struct ContactCardSection: View {
             case .issued(_, _, _, _, let expiresAt):
                 // An expired card is no card the moment the clock passes its deadline, not at the next unlock's
                 // sweep: nothing on it can be shared, and a new one can be made.
-                TimelineView(.explicit([expiresAt])) { context in
+                // Ticks every second, as the countdown does: an explicit schedule of `[expiresAt]` alone renders its
+                // first frame at that date, which showed a fresh card as expired.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
                     VStack(alignment: .leading, spacing: 12) {
                         if context.date < expiresAt {
                             self.issuedContent(expiresAt: expiresAt)
