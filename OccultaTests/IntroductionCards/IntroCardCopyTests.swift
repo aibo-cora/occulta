@@ -49,6 +49,7 @@ struct IntroCardCopyTests {
             result.append(("exchangeMismatch", self.joined(IntroCardCopy.exchangeMismatch(name: name))))
             result.append(("exchangeMatch", self.joined(IntroCardCopy.exchangeMatch(name: name))))
             result.append(("meetToVerifyTitle", IntroCardCopy.meetToVerifyTitle(name: name)))
+            result.append(("refusedExpired", self.joined(IntroCardCopy.refusedExpired(name: name))))
         return result
     }
 
@@ -74,6 +75,13 @@ struct IntroCardCopyTests {
             result.append(("importOnlyButton", IntroCardCopy.importOnlyButton))
             result.append(("refusedLabel", IntroCardCopy.refusedLabel))
             result.append(("refusedOwnCard", self.joined(IntroCardCopy.refusedOwnCard())))
+            result.append(("notACard", self.joined(IntroCardCopy.notACard)))
+            result.append(("createFailed", self.joined(IntroCardCopy.createFailed)))
+            result.append(("cancelFailed", self.joined(IntroCardCopy.cancelFailed)))
+            result.append(("discardFailed", self.joined(IntroCardCopy.discardFailed)))
+            result.append(("shareFailed", self.joined(IntroCardCopy.shareFailed)))
+            result.append(("importFailed", self.joined(IntroCardCopy.importFailed)))
+            result.append(("standardEncryptionLabel", IntroCardCopy.standardEncryptionLabel))
             result.append(("notVerifiedChip", IntroCardCopy.notVerifiedChip))
             result.append(("trustLine", self.joined(IntroCardCopy.trustLine)))
             result.append(("notVerifiedListFooter", IntroCardCopy.notVerifiedListFooter))

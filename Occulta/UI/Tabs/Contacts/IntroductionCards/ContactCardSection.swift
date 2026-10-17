@@ -149,7 +149,7 @@ struct ContactCardSection: View {
             try self.contactManager.cancelCard(for: self.profile)
             self.failure = nil
         } catch {
-            self.failure = IntroCardCopy.createFailed
+            self.failure = IntroCardCopy.cancelFailed
         }
     }
 
@@ -158,7 +158,7 @@ struct ContactCardSection: View {
             try self.contactManager.discardCardConversation(for: self.profile)
             self.failure = nil
         } catch {
-            self.failure = IntroCardCopy.createFailed
+            self.failure = IntroCardCopy.discardFailed
         }
     }
 }
@@ -280,7 +280,7 @@ struct CardShareSheet: View {
             self.shareFile = ShareFile(url: try self.contactManager.cardShareFile(for: self.profile))
             self.failure = nil
         } catch {
-            self.failure = IntroCardCopy.createFailed
+            self.failure = IntroCardCopy.shareFailed
         }
     }
 }

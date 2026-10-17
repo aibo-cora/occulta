@@ -161,7 +161,8 @@ struct ComposeHeroV3: View {
 /// received messages aren't stored after they're closed: if message history ships, "Single View" must change.
 struct SecrecyIndicator: View {
     let secrecy: NextSendSecrecy
-    /// A card contact's messages sealed to the card key (SPEC §4.3): Standard Encryption, whatever `secrecy` says.
+    /// A card contact's messages sealed to the card key (SPEC §4.3): labelled Standard Encryption, and otherwise
+    /// shown as the long-term key, whatever `secrecy` says. The card key stays until the meeting or a discard.
     var standard = false
     /// A Not verified contact: the forward-secret state drops its green, keeping its label and description (Q-09).
     var isNotVerified = false
@@ -185,9 +186,10 @@ struct SecrecyIndicator: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var shown: NextSendSecrecy { self.standard ? .longTerm : self.secrecy }
+
     private var colour: Color {
-        if self.standard { return Color.occultaWarn }
-        switch self.secrecy {
+        switch self.shown {
         case .forwardSecret: return self.isNotVerified ? Color.secondary : Color.occultaVerified
         case .temporaryKey:  return Color.occultaTemporary
         case .longTerm:      return Color.occultaWarn
@@ -195,7 +197,7 @@ struct SecrecyIndicator: View {
     }
 
     private var label: String {
-        if self.standard { return IntroCardCopy.standardEncryption.label }
+        if self.standard { return IntroCardCopy.standardEncryptionLabel }
         switch self.secrecy {
         case .forwardSecret: return "Single View · Forward Secret"
         case .temporaryKey:  return "Multiple Views · Temporary Key"
@@ -204,8 +206,7 @@ struct SecrecyIndicator: View {
     }
 
     private var description: String {
-        if self.standard { return IntroCardCopy.standardEncryption.text }
-        switch self.secrecy {
+        switch self.shown {
         case .forwardSecret:
             return "Once they open it, their phone can no longer open saved copies."
         case .temporaryKey:
