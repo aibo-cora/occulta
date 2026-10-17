@@ -154,11 +154,17 @@ extension ContactManager {
     /// sender who has no batch of ours waiting. CryptoKit leaves no keychain item, so if anything later fails,
     /// nothing is left behind.
     func installFreshBatch(into prekeys: SenderPrekeys) throws {
+        try self.installFreshBatch(into: &prekeys.record)
+    }
+
+    /// `installFreshBatch(into:)` on a record held outside an inbound open: introduction cards make Carol's batch
+    /// at import this way. Precondition as `PrekeyBookkeeper.install`: no batch is pending.
+    func installFreshBatch(into record: inout PrekeyRecord) throws {
         let batchSize = Manager.PrekeySecretsManager.defaultBatchSize
         // One more than the batch: the last-resort key (prekey continuity §3.1), the same kind of Enclave key.
         let blobs = try Manager.PrekeySecretsManager().generateEnclaveKeys(count: batchSize + 1)
         PrekeyBookkeeper().install(Array(blobs.prefix(batchSize)), lastResort: blobs[batchSize],
-                                   into: &prekeys.record, now: Date())
+                                   into: &record, now: Date())
     }
 
     // MARK: - Sweep
@@ -192,7 +198,7 @@ extension ContactManager {
 
     /// `secure_delete` scrubs the freed page, but the write-ahead log still holds the previous record, deleted keys
     /// and all, until a checkpoint.
-    private func saveAndFlush() throws {
+    func saveAndFlush() throws {
         try self.modelContext.save()
         self.security.checkpointStore()
     }

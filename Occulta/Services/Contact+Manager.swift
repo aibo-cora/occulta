@@ -14,6 +14,7 @@ import CoreData
 import Foundation
 import CryptoKit
 import OccultaFormats
+import OccultaCore
 
 @Observable
 class ContactManager {
@@ -60,10 +61,24 @@ class ContactManager {
     @ObservationIgnored
     let security: Manager.Security
 
-    init(modelContainer: ModelContainer, security: Manager.Security) {
+    /// The Enclave keys and the ML-KEM provider introduction cards use (`ContactManager+Cards.swift`). Injected so
+    /// tests can run with software keys; `cardPostQuantum` is nil below iOS 26, where cards are unsupported.
+    @ObservationIgnored
+    let cardKeys: any CardKeyProviding
+    @ObservationIgnored
+    let cardPostQuantum: (any PostQuantumProvider)?
+
+    init(
+        modelContainer: ModelContainer,
+        security: Manager.Security,
+        cardKeys: any CardKeyProviding = EnclaveCardKeys(),
+        cardPostQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.create()
+    ) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
         self.security = security
+        self.cardKeys = cardKeys
+        self.cardPostQuantum = cardPostQuantum
     }
     
     var dateFormatter: DateFormatter {
@@ -205,7 +220,9 @@ class ContactManager {
             newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             // The prekey record is never nil either: an empty one, the same size as any other, so the field
             // doesn't tell contacts who've exchanged messages from those who haven't (Bug 161).
-            try self.store(.empty, for: newContact)
+            try self.store(PrekeyRecord.empty, for: newContact)
+            // Never nil either, for the same reason: the introduction card field, empty and the same size as any other.
+            try self.store(CardState.empty, for: newContact)
             self.modelContext.insert(newContact)
         }
 
@@ -396,7 +413,9 @@ class ContactManager {
             newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             // The prekey record is never nil either: an empty one, the same size as any other, so the field
             // doesn't tell contacts who've exchanged messages from those who haven't (Bug 161).
-            try self.store(.empty, for: newContact)
+            try self.store(PrekeyRecord.empty, for: newContact)
+            // Never nil either, for the same reason: the introduction card field, empty and the same size as any other.
+            try self.store(CardState.empty, for: newContact)
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -507,7 +526,9 @@ class ContactManager {
         contact.originDepth         = try DepthCodec.encode(0).encrypt()
         // The prekey record, for the same reason: an empty record, the same size as any other, drops our private
         // keys for this contact while reading as an ordinary row.
-        try self.store(.empty, for: contact)
+        try self.store(PrekeyRecord.empty, for: contact)
+        // The card field too: empty at the same size, which drops the Enclave keys a card holds.
+        try self.store(CardState.empty, for: contact)
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
@@ -590,6 +611,9 @@ extension ContactManager {
             keyRotated = SHA256.hash(data: storedMaterial) != SHA256.hash(data: newMaterial)
         }
 
+        // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
+        let clearedCard = try self.clearCard(afterMeetingOf: contact)
+
         contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
         
         #if DEBUG
@@ -597,6 +621,7 @@ extension ContactManager {
         #endif
 
         try self.modelContext.save()
+        if clearedCard { self.security.checkpointStore() }
 
         self.contactKeyUpdated.send(identifier)
         if keyRotated { self.contactKeyRotated.send(identifier) }
@@ -1043,6 +1068,14 @@ extension ContactManager {
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
+        // A card conversation seals under the card keys, never the identity key (introduction cards, SPEC §3).
+        if CardRules.isHardBlocked(contact.cardState) {
+            return try self.encryptCardBundle(
+                basket: basket, for: contact, shardOperations: shardOperations,
+                custodyManifest: custodyManifest, identityChallenge: identityChallenge
+            )
+        }
+
         // Shard ops carry private key material — ML-KEM is always required so a
         // quantum adversary cannot retroactively break the wrapping key.
         let isCarryingShard = shardOperations?.contains(where: { $0.attribute != nil }) == true
@@ -1274,6 +1307,8 @@ extension ContactManager {
 
         // ── Pass 1: resolve per-member key material + real (unpadded) shard content ──
         let pending: [PendingGroupRecipient] = try members.map { contact in
+            // Groups refuse a card contact (SPEC §8), whatever the form let through.
+            guard !CardRules.isHardBlocked(contact.cardState) else { throw CardError.hardBlocked }
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
 
             var record = try self.prekeyRecord(for: contact)
@@ -1575,19 +1610,34 @@ extension ContactManager {
         let contacts = try self.fetchAllContacts()
         var sender: Contact.Profile?
  
+        let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+
         for contact in contacts {
-            guard
+            if
                 let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
-                let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material)
-            else { continue }
- 
-            if contact.isLikelySender(of: bundle, contactPublicKey: pubKey) {
+                let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material),
+                contact.isLikelySender(of: bundle, contactPublicKey: pubKey)
+            {
                 sender = contact
                 
                 break
             }
+
+            // A card conversation's sender is the peer's card agreement key (SPEC §6.6 step 2).
+            if
+                let localKey,
+                let cardKey = self.cardPeerAgreementKey(of: contact, using: localKey),
+                contact.isLikelySender(of: bundle, contactPublicKey: cardKey)
+            {
+                sender = contact
+
+                break
+            }
         }
-        
+
+        // No match: the bundle may redeem one of our issued cards (SPEC §6.6 step 4), at every depth.
+        if sender == nil { sender = try self.redeemCard(for: bundle) }
+
         guard let sender else { throw Errors.noPublicKeyToEncryptWith }
         
         return sender
@@ -1858,18 +1908,36 @@ extension ContactManager {
         let prekeys = try self.senderPrekeys(for: sender)
 
         // ── 2. Resolve sender key material ─────────────────────────────
-        let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
-        let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+        // A card conversation's sender has the peer's card keys in place of an identity key (SPEC §3).
+        let cardContext = try self.cardReceiveContext(for: sender)
+        let senderPublicKey: Data
+        let recipientPayload: OccultaBundle.RecipientPayload
+        let used: InboundPrekeyUse
+        let recipientMode: OccultaBundle.Mode
+        let slotEphemeralKey: Data
+        var cardOpening: CardSlotOpening?
 
         // ── 3. Trial-decrypt: find our slot and open it ─────────────────
-        let (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
-            in: bundle,
-            blind: envelope.blind,
-            senderContactID: sender.identifier,
-            senderPublicKey: senderPublicKey,
-            quantumMaterial: quantumMaterial,
-            prekeys: prekeys
-        )
+        if let cardContext {
+            senderPublicKey = cardContext.peerAgreementKey
+            let opening = try cryptoOps.openCardSlot(
+                in: bundle, blind: envelope.blind, senderContactID: sender.identifier, card: cardContext, prekeys: prekeys
+            )
+            try self.checkCardIntroduction(opening, for: sender)
+            (recipientPayload, used, recipientMode, slotEphemeralKey) = (opening.payload, opening.used, opening.mode, opening.ephemeralPublicKey)
+            cardOpening = opening
+        } else {
+            senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
+            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+            (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
+                in: bundle,
+                blind: envelope.blind,
+                senderContactID: sender.identifier,
+                senderPublicKey: senderPublicKey,
+                quantumMaterial: quantumMaterial,
+                prekeys: prekeys
+            )
+        }
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
         // FS mode's session key never involves the sender's long-term identity (finding
@@ -1932,6 +2000,8 @@ extension ContactManager {
         // in the prefixed form, whatever tier is recorded. Unsigned is refused here even from a contact with no tier
         // recorded, which the gate in 3.5 lets through for messages. `IdentityChallenge.Authenticated` can only be
         // built in this file, so nothing else can hand the coordinator an envelope as if it had passed these checks.
+        // A card contact is refused identity challenges (SPEC §8): reject as an unrecognised sender.
+        if cardOpening != nil, decoded.identityChallenge != nil { throw Errors.noPublicKeyToEncryptWith }
         let challenge: IdentityChallenge.Authenticated?
         if let identityChallenge = decoded.identityChallenge {
             guard recipientPayload.bodyDigest != nil else { throw GroupDecryptError.missingBodyDigest }
@@ -1977,6 +2047,8 @@ extension ContactManager {
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
         try self.acceptInboundBatch(recipientPayload.prekeyBatch, openedWith: used, into: prekeys)
+        // The card field's step, stored with the record below (SPEC §6.6 step 3).
+        if let cardOpening { try self.applyCardOpening(cardOpening, to: sender) }
 
         // ── 6.5. A new batch if the sender is out of our keys ────────────
         // A one-time prekey is already gone — `findAndOpenRecipientSlot` consumes it the moment
@@ -2001,6 +2073,7 @@ extension ContactManager {
         // A last-resort slot is treated the same: its key stays, so the bundle opens again
         // on every redelivery, and a replayed piece operation could undo a newer one (D5).
         let isFallback = recipientMode == .longTermFallback || recipientMode == .longTermNoPQ || used.isLastResort
+                      || cardOpening != nil // shard content needs a verified contact (SPEC §8)
         let recipOps = isFallback ? [] : recipientPayload.shardOperations.filter { $0.kind != .unsupported }
 
         // custodyManifest: `custodyManifestCount == 0` is genuinely ambiguous on its

@@ -167,7 +167,7 @@ RecipientPayload.introduction: CardIntroduction? {
 
 **Signing payload:** `"Occulta-card-introduction-v1"` ‖ SHA-256(Bob's 1,770 card bytes) ‖ `agreementKey` ‖ `signingKey` ‖ `mlkemEncapsulationKey`.
 
-The card digest ties the introduction to this card, so it can't be replayed against another card. The signature ties Carol's agreement key to her signing key, which an agreement key can't do itself. Carol's prekey batch travels in the existing `RecipientPayload.prekeyBatch`. The slot's `senderEphemeralSignature`, made with the same signing key, authenticates it. **Every bootstrap message from Carol carries the identical introduction.**
+The card digest ties the introduction to this card, so it can't be replayed against another card. The signature ties Carol's agreement key to her signing key, which an agreement key can't do itself. Carol's prekey batch travels in the existing `RecipientPayload.prekeyBatch`. The slot's `senderEphemeralSignature`, made with the same signing key, authenticates it. **Every bootstrap message from Carol carries the same introduction keys.** The signature bytes differ between messages: an ECDSA signature is randomised and Carol holds no stored copy to resend (decided 2026-10-17, stage C), so "identical" means the three keys, and Bob compares those (§6.6).
 
 ### 4.5 Size (decided 2026-10-16: no padding)
 
@@ -252,6 +252,7 @@ Write `empty`. The blobs exist only in the field, so overwriting it deletes the 
    | Field | Result |
    |---|---|
    | any, when the card is one of the user's own (its agreement key matches an `issued` card on any contact, at any depth) | **Refuse** (W-18), checked first after expiry (decided 2026-10-17). Otherwise a person could start a conversation with themselves |
+   | any, when the contact already has in-person keys (Verified) | **Refuse**, as for creating a card (§6.1): a card is only for someone you haven't met (decided 2026-10-17, phase 2). Pickers list only pending and waiting contacts |
    | `empty` (pending) | Import |
    | `imported` (waiting on an earlier card from Bob) | **Replace.** Write the new `imported` state over the old one, which deletes its keys. Bob can only issue a card from a pending contact, so a new card means his side never got Carol's message, or he discarded the conversation |
    | `conversation` | **Refuse** (W-16). A card claiming to be from Bob must not replace a live conversation: anyone could send one |
@@ -285,7 +286,7 @@ Any failure on these paths throws. A card contact never gets a classical-only or
 1. **Parse** the bundle.
 2. **Identify the sender** by `senderFingerprint` across all contacts, hidden ones included. The candidate key is the identity key from `contactPublicKeys`, or the peer card agreement key from an `imported` field (Bob's, read from `peerCard`) or a `conversation` field.
 3. **Matched:** open as today. A side in bootstrap uses §4.3's order.
-   - **Bob** checks that a repeated introduction is byte-identical to the stored one, and rejects a bundle whose introduction differs.
+   - **Bob** checks that a repeated introduction has the same three keys as the stored one (the signature is checked once, at redemption; see §4.4), and rejects a bundle whose introduction differs, or a bootstrap slot with none.
    - **Carol** treats the first message she opens from Bob as `ss2`: she decapsulates `ct2`, stores full material and deletes her ML-KEM key.
    - **Bob** clears `bootstrapOpen` on the first non-bootstrap slot from Carol.
 4. **No match: redemption.** For each contact whose field is `issued`, at every depth, and for each `.forwardSecret` slot:

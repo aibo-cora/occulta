@@ -64,6 +64,13 @@ public protocol PostQuantumProvider {
     ///
     /// - Returns: 32-byte shared secret, or nil if the blob or ciphertext is invalid.
     func decapsulate(ciphertext: Data, keyBlob: Data) -> Data?
+
+    /// The public key of a blob from `generatePersistentKeyPair`, for a caller that kept only the blob (an
+    /// introduction card's recipient signs her ML-KEM public key into her first messages, long after the pair
+    /// was made).
+    ///
+    /// - Returns: The public key bytes, or nil if the blob is invalid.
+    func publicKey(forKeyBlob keyBlob: Data) -> Data?
 }
 
 // MARK: - Factory
@@ -164,6 +171,10 @@ private final class SecureEnclavePostQuantumProvider: PostQuantumProvider {
 
         return sharedSecret.withUnsafeBytes { Data($0) }
     }
+
+    func publicKey(forKeyBlob keyBlob: Data) -> Data? {
+        (try? SecureEnclave.MLKEM1024.PrivateKey(dataRepresentation: keyBlob))?.publicKey.rawRepresentation
+    }
 }
 
 // MARK: - Testing: In-memory ML-KEM-1024
@@ -224,5 +235,14 @@ private final class InMemoryPostQuantumProvider: PostQuantumProvider {
         else { return nil }
 
         return sharedSecret.withUnsafeBytes { Data($0) }
+    }
+
+    func publicKey(forKeyBlob keyBlob: Data) -> Data? {
+        guard
+            keyBlob.count == 64,
+            let privateKey = try? MLKEM1024.PrivateKey(seedRepresentation: keyBlob, publicKey: nil)
+        else { return nil }
+
+        return privateKey.publicKey.rawRepresentation
     }
 }
