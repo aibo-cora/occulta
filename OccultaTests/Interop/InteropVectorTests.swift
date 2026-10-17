@@ -197,6 +197,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let agreementKey: String
         let signingKey: String
         let mlkemEncapsulationKey: String
+        /// Only `recipientPayload` vectors carry it: the DER signature that travels with the introduction.
+        let signature: String?
     }
 
     struct BootstrapInput: Decodable, Sendable {
@@ -412,7 +414,15 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                 custodyManifestCount:     self.custodyManifestCount ?? 0,
                 shardMetadataAttempted:   self.shardMetadataAttempted ?? false,
                 senderEphemeralSignature: try self.senderEphemeralSignature.map(Self.bytes),
-                bodyDigest:               try self.bodyDigest.map(Self.bytes)
+                bodyDigest:               try self.bodyDigest.map(Self.bytes),
+                introduction:             try self.introduction.map {
+                    CardIntroduction(
+                        agreementKey:          try Self.bytes($0.agreementKey),
+                        signingKey:            try Self.bytes($0.signingKey),
+                        mlkemEncapsulationKey: try Self.bytes($0.mlkemEncapsulationKey),
+                        signature:             try Self.bytes(try #require($0.signature))
+                    )
+                }
             )
             // Mirrors `wrapRecipient` (Crypto+Manager+GroupEncrypt.swift), which encodes the
             // payload with a sorted-keys JSONEncoder before wrapping it. Keep the two in step.
