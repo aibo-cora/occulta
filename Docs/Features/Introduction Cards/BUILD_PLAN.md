@@ -108,7 +108,7 @@ stage leaves the app shippable: until stage E puts card UI on screen, nothing a 
 | File | Change |
 |---|---|
 | `Data Models/Exchange.swift` | An optional `cardProof: Data?` field, and `isCardProof`, checked **before** `isDiscovery` |
-| `Services/Exchange+Manager.swift` | Once the ML-KEM step completes, compute `CardMeeting.transcript` from `HybridExchangeResult` and send a proof message: a real proof if this contact has a card conversation, otherwise `CardMeeting.filler()`. Receive and keep the peer's proof |
+| `Services/Exchange+Manager.swift` | Once the ML-KEM step completes, compute `CardMeeting.transcript` from `HybridExchangeResult` and send a proof message: a real proof whenever the card field holds this side's card signing key (`issued`, `imported`, `conversation`), otherwise `CardMeeting.filler()`. Receive and keep the peer's proof. Which side shows a verdict, and how each state is cleared, follows SPEC §7's table |
 | `UI/Tabs/Contacts/Key+Exchange/KeyExchange.swift` | After the ceremony's own confirmation, show the verdict. W-12, or W-11 with an explicit acknowledgment that can't be swiped away. A ceremony that fails gives no verdict |
 | `Services/Contact+Manager.swift` / `ContactManager+Cards.swift` | Saving the exchange (`update(key:for:)`): the contact takes the identity keys and material, the card field is written `.empty`, and the card batches are dropped from the record. Nothing about the verdict is stored |
 
@@ -116,6 +116,7 @@ stage leaves the app shippable: until stage E puts card UI on screen, nothing a 
 
 **Tests:**
 - Proof match gives W-12. A filler, a bad signature, or no proof message gives W-11.
+- Every row of SPEC §7's table. In particular, Carol `imported` with a message sent, meeting Bob in `conversation`, gets W-12 on both phones, not a false W-11. `issued` and unsent `imported` show nothing and are cleared.
 - The proof message is the same length either way.
 - An older decoder drops it harmlessly.
 - After the exchange the card field is `.empty`.

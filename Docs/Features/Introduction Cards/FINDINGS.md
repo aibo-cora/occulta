@@ -210,6 +210,7 @@ The card itself doesn't matter by now; it was spent when it was used. What remai
 - **Mismatch (W-11).** Everything exchanged with this contact before the meeting went to someone else.
 - **Either way,** the card keys are deleted on both sides. After a mismatch, that cuts off whoever was on the other end.
 - **No card conversation** (the card was never used): a plain exchange. Any active card is cancelled.
+- **The two phones can be in different states when they meet (decided 2026-10-17).** If Carol has written but hasn't seen Bob's reply, Bob is in a conversation while Carol is still waiting. So each phone signs whenever it holds a card key for the contact, and shows a verdict whenever earlier messages exist: Bob in a conversation, and Carol once she has sent something. A phone that signed only from a conversation would give Bob a false W-11. In every case the contact ends up Verified with the card cleared. The full table is in [SPEC.md](SPEC.md) §7.
 
 Without this check, the exchange would quietly upgrade the contact. A conversation with whoever swapped the card would then read as one continuous conversation with Carol, and the user would never learn that what they sent earlier went to someone else.
 

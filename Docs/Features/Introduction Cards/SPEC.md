@@ -315,7 +315,7 @@ Write `empty`. Drop the contact's inbound batch, own batches and accepted batch 
 
 ## 7. Meeting check
 
-It runs only when the exchange is started from a contact whose field is `conversation`, and **only after the ceremony's own confirmation succeeds**. A ceremony that fails gives no card verdict.
+It runs on every exchange started from a contact whose card field isn't `empty`, and the verdict is shown **only after the ceremony's own confirmation succeeds**. A ceremony that fails gives no card verdict.
 
 **Transcript.** Every value below is one both sides hold identically once the ML-KEM step completes (`HybridExchangeResult`):
 
@@ -329,16 +329,28 @@ T = SHA-256("Occulta-card-meeting-v1"
 Each element is written as its length (UInt16, big-endian) followed by its bytes (decided 2026-10-17). The inputs are fixed-width today (65, 16 and 1,568 bytes), but without a length prefix, inputs of other lengths could produce the same transcript (testing found `("ab","c")` and `("a","bc")`). Sorting is on the raw element bytes.
 
 **Proof message.** A new ceremony message, which every card-capable build sends:
-- 64 bytes: a raw ECDSA signature by the card signing key over `"Occulta-card-meeting-proof-v1" ‖ T ‖ signerIdentityKey`;
-- or, with no card conversation for this contact, 64 random bytes.
+- 64 bytes: a raw ECDSA signature by the card signing key over `"Occulta-card-meeting-proof-v1" ‖ T ‖ signerIdentityKey`, whenever the field holds this side's card signing key for the contact (`issued`, `imported` or `conversation`);
+- or, with an `empty` field, 64 random bytes.
 
 The signer's identity key in the payload stops a proof being reflected back to its sender. A random filler is indistinguishable from `r ‖ s`, so the message doesn't tell the person in front whether you have a card conversation with them.
 
-**Verdict,** on a side with a card conversation:
-- **The peer's proof verifies** under the stored `peerSigningKey`: **W-12**.
-- **Otherwise: W-11.** That covers a filler, a bad signature, or no proof message from an older build. The real Carol always has a card-capable build.
+**What each side sends and shows** (decided 2026-10-17). The two phones' fields can differ when they meet. If Carol has written but hasn't seen Bob's reply, Bob is in a `conversation` while Carol is still `imported`. A proof sent only from `conversation` would give Bob a false W-11. So each side signs whenever it holds a card signing key, and judges whenever earlier messages exist to vouch for:
 
-**Either way:** the contact takes the identity keys and material from the ceremony, the card field is written `empty`, and the card batches are dropped from the record (§6.7's cleanup). Nothing about the verdict is stored (Q-10).
+| This side's field | Sends | Shows | Afterwards |
+|---|---|---|---|
+| `empty` | Filler | Nothing | — |
+| `issued` (own card out, unused) | Real proof, own card signing key | Nothing: no messages yet | Card cancelled |
+| `imported`, `sentFirstMessage == false` | Real proof | Nothing | Cleared |
+| `imported`, `sentFirstMessage == true` | Real proof | **W-12 or W-11**, checking the peer's proof against the signing key in `peerCard` | Cleared |
+| `conversation` | Real proof | **W-12 or W-11**, checking against the stored `peerSigningKey` | Cleared |
+
+**Verdict,** where the table shows one:
+- **The peer's proof verifies:** **W-12**.
+- **Otherwise: W-11.** That covers a filler, a bad signature, or no proof message from an older build. A card-capable build always signs when it holds a card key, and the real peer always has one.
+
+The proof message is the same 64 bytes in every row, so it doesn't tell the person in front which state this side is in.
+
+**In every row:** the contact takes the identity keys and material from the ceremony, so it is Verified, because in-person keys win the tier (§5). The card field is written `empty`, which deletes every card key, and the card batches are dropped from the record (§6.7's cleanup). Their next messages bootstrap prekeys as for any contact who just met. Nothing about the verdict is stored (Q-10).
 
 ---
 
@@ -394,6 +406,7 @@ FINDINGS' action-item tests, plus these:
 - Bootstrap ends on both sides exactly as in §4.2, including Bob's late bootstrap arriving after Carol is out of it.
 - The card field is the same length in every state, before and after sealing.
 - A proof filler and a real proof are the same length. W-11 for no proof message.
+- The §7 table: each field state sends and shows exactly what its row says. A side `imported` with a message sent, meeting a side in `conversation`, gets W-12 on both phones, not a false W-11. Every row ends with an `empty` field and a Verified contact.
 - Every §8 feature refuses `imported` and `conversation` contacts.
 - A card agreement key's Enclave blob can't be loaded as a signing key, or the reverse. This needs a real Enclave. The two-key design doesn't depend on the answer, but if loading does work, one key could do both jobs later.
 
