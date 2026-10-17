@@ -63,8 +63,8 @@ struct CardFirstMessageFrame<Content: View>: View {
         .task(id: self.owner) {
             guard
                 let contact = self.contacts.first,
-                case .conversation(_, _, _, _, _, _, let bootstrapOpen, let peerIntroduction) = contact.cardState,
-                bootstrapOpen, peerIntroduction != nil
+                case .conversation(_, _, _, _, _, let bootstrapOpen, let isIssuer) = contact.cardState,
+                bootstrapOpen, isIssuer
             else { return }
             self.name = IntroCardCopy.firstName(of: contact.givenName.decrypt())
         }

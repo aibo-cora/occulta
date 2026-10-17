@@ -32,18 +32,6 @@ protocol CardKeyProviding {
     func signingPublicKey(blob: Data) throws -> Data
 }
 
-extension CardKeyProviding {
-    /// Defaults so a conformer written before these two existed still compiles; a provider used for messages
-    /// must implement them.
-    func agreementPublicKey(blob: Data) throws -> Data { throw CardKeyError.publicKeyUnavailable }
-    func signingPublicKey(blob: Data) throws -> Data { throw CardKeyError.publicKeyUnavailable }
-}
-
-nonisolated
-enum CardKeyError: Error {
-    case publicKeyUnavailable
-}
-
 /// Production: Secure Enclave keys, `WhenUnlockedThisDeviceOnly` with `.privateKeyUsage` (the policy of the
 /// card's ML-KEM key, not CryptoKit's default `AfterFirstUnlock`).
 nonisolated

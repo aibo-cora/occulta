@@ -96,14 +96,11 @@ private func importedState(sent: Bool) -> CardState {
     )
 }
 
-private func conversationState(quantum: Bool, mlkem: Bool, introduction: Bool) -> CardState {
+private func conversationState(isIssuer: Bool, bootstrapOpen: Bool) -> CardState {
     .conversation(
         agreementKey: randomBytes(143), signingKey: randomBytes(143),
         peerAgreementKey: randomBytes(65), peerSigningKey: randomBytes(65),
-        mlkemKey: mlkem ? randomBytes(4_788) : nil,
-        quantum: quantum ? distinctQuantum() : nil,
-        bootstrapOpen: true,
-        peerIntroduction: introduction ? randomBytes(2_000) : nil
+        quantum: distinctQuantum(), bootstrapOpen: bootstrapOpen, isIssuer: isIssuer
     )
 }
 
@@ -114,10 +111,10 @@ private func everyState() -> [(name: String, state: CardState)] {
         ("issued", issuedState()),
         ("imported, not yet sent", importedState(sent: false)),
         ("imported, sent", importedState(sent: true)),
-        ("conversation, bare", conversationState(quantum: false, mlkem: false, introduction: false)),
-        ("conversation, Carol before ss2", conversationState(quantum: false, mlkem: true, introduction: false)),
-        ("conversation, Bob with introduction", conversationState(quantum: true, mlkem: false, introduction: true)),
-        ("conversation, everything", conversationState(quantum: true, mlkem: true, introduction: true)),
+        ("conversation, Bob, bootstrap open", conversationState(isIssuer: true, bootstrapOpen: true)),
+        ("conversation, Bob, settled", conversationState(isIssuer: true, bootstrapOpen: false)),
+        ("conversation, Carol, settled", conversationState(isIssuer: false, bootstrapOpen: false)),
+        ("conversation, Carol, bootstrap open", conversationState(isIssuer: false, bootstrapOpen: true)),
     ]
 }
 
@@ -558,7 +555,7 @@ struct CardTierTests {
         let (name, state) = everyState()[index]
         try cm.store(state, for: row)
 
-        #expect(row.cardTier == .verified, "\(name)")
+        #expect(cardTier(of: row) == .verified, "\(name)")
     }
 
     @Test("A contact without in-person keys: imported or in conversation is not verified", .ambientTestKeyManager,
@@ -569,7 +566,7 @@ struct CardTierTests {
         let (name, state) = everyState()[index]
         try cm.store(state, for: row)
 
-        #expect(row.cardTier == .notVerified, "\(name)")
+        #expect(cardTier(of: row) == .notVerified, "\(name)")
     }
 
     @Test("A pending contact with an imported card is not verified", .ambientTestKeyManager)
@@ -577,7 +574,7 @@ struct CardTierTests {
         let (cm, _) = try makeContactManager()
         let row = try self.contact(ownerHash: nil, in: cm)
         try cm.store(importedState(sent: false), for: row)
-        #expect(row.cardTier == .notVerified)
+        #expect(cardTier(of: row) == .notVerified)
     }
 
     @Test("An issued card leaves the contact pending", .ambientTestKeyManager)
@@ -585,7 +582,7 @@ struct CardTierTests {
         let (cm, _) = try makeContactManager()
         let row = try self.contact(ownerHash: nil, in: cm)
         try cm.store(issuedState(), for: row)
-        #expect(row.cardTier == .pending)
+        #expect(cardTier(of: row) == .pending)
     }
 
     @Test("No card and no keys is pending; a nil field is too", .ambientTestKeyManager)
@@ -593,9 +590,9 @@ struct CardTierTests {
         let (cm, _) = try makeContactManager()
         let row = try self.contact(ownerHash: nil, in: cm)
         #expect(row.introductionCardEncrypted == nil)
-        #expect(row.cardTier == .pending)
+        #expect(cardTier(of: row) == .pending)
         try cm.store(CardState.empty, for: row)
-        #expect(row.cardTier == .pending)
+        #expect(cardTier(of: row) == .pending)
     }
 
     @Test("An expired in-person key stops overriding the card", .ambientTestKeyManager)
@@ -603,6 +600,6 @@ struct CardTierTests {
         let (cm, _) = try makeContactManager()
         let row = try self.contact(ownerHash: self.ourHash(), expired: true, in: cm)
         try cm.store(importedState(sent: true), for: row)
-        #expect(row.cardTier == .notVerified)
+        #expect(cardTier(of: row) == .notVerified)
     }
 }

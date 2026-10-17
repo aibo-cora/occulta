@@ -59,11 +59,30 @@ final class CardPhone {
     }
 
     /// A new pending contact; its stored identifier, found by comparing before and after, since it is sealed.
-    func newContact(_ name: String) throws -> String {
+    func newContact(_ name: String, depth: Int = 0) throws -> String {
         try self.run {
             let before = Set(try self.cm.fetchAllContacts().map(\.identifier))
-            try self.cm.save(contact: Contact.Draft(identifier: UUID().uuidString, givenName: name, familyName: ""))
+            try self.cm.save(contact: Contact.Draft(identifier: UUID().uuidString, givenName: name, familyName: ""), currentDepth: depth)
             return try #require(try self.cm.fetchAllContacts().first { !before.contains($0.identifier) }).identifier
+        }
+    }
+
+    /// A contact as an ordinary exchange leaves it: the other phone's identity key, no card.
+    func addOrdinary(_ other: CardPhone, as id: String) throws {
+        try self.run {
+            let profile = Contact.Profile(
+                identifier: id, givenName: "", familyName: "", middleName: "",
+                nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+            )
+            profile.contactPublicKeys = [Contact.Profile.Key(
+                material: try #require(try Manager.Crypto().encrypt(data: try other.keyManager.retrieveIdentity())),
+                owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
+            )]
+            let tier = try #require(OccultaBundle.Version.prefixedSenderSignatureCapable.wireByte)
+            profile.maxBundleVersion = try Manager.Crypto().encrypt(data: Data([tier]))
+            profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(.empty).encrypt()
+            profile.introductionCardEncrypted = try CardStateCodec().encode(.empty).encrypt()
+            try self.cm.insertProfile(profile)
         }
     }
 
@@ -102,13 +121,31 @@ final class CardPhone {
         try self.run { self.cm.cardMeetingContext(for: try self.contact(id)) }
     }
 
+    /// Unused one-time keys we hold the private halves of.
+    func ownKeyCount(_ id: String) throws -> Int {
+        try self.record(id).ownBatches.reduce(0) { $0 + $1.keys.filter { $0.blob != nil }.count }
+    }
+
+    /// One-time keys the contact gave us that we have not used.
+    func heldKeyCount(_ id: String) throws -> Int {
+        try self.record(id).inboundBatches.reduce(0) { $0 + $1.keys.count }
+    }
+
+    func hasPendingBatch(_ id: String) throws -> Bool {
+        try self.record(id).ownBatches.contains(where: \.isPending)
+    }
+
     func send(to id: String, _ text: String = "hello") throws -> Data {
         try self.run { try self.cm.encryptBundle(basket: Self.basket(text), for: id) }
     }
 
     @discardableResult
-    func receive(_ data: Data) throws -> String {
-        try self.run { try self.cm.openGroup(bundle: try OccultaBundle.decoded(from: data)).ownerID }
+    func receive(_ data: Data) throws -> (ownerID: String, text: String?) {
+        try self.run {
+            let opened = try self.cm.openGroup(bundle: try OccultaBundle.decoded(from: data))
+            let basket = try WireHandle.decode(basket: opened.sealed.message)
+            return (opened.ownerID, basket.files.first?.content.flatMap { String(data: $0, encoding: .utf8) })
+        }
     }
 
     static func basket(_ text: String) -> Basket {
@@ -125,13 +162,25 @@ struct CardPhonePair {
     let carolSide: String
     let card: IntroductionCard
 
-    init() throws {
+    init(hiddenAtDuressDepth: Bool = false) throws {
         let bob = try CardPhone(), carol = try CardPhone()
         let bobSide = try bob.newContact("Carol"), carolSide = try carol.newContact("Bob")
         let card = try bob.run { try bob.cm.createCard(for: try bob.contact(bobSide)) }
         let outcome = try carol.run { try carol.cm.importCard(card.encoded, into: try carol.contact(carolSide), newContactName: nil) }
         #expect(outcome == .imported(contactIdentifier: carolSide), "precondition")
         (self.bob, self.carol, self.bobSide, self.carolSide, self.card) = (bob, carol, bobSide, carolSide, card)
+        if hiddenAtDuressDepth { try self.hideBobsContact() }
+    }
+
+    /// Bob's contact hidden at a duress depth, and the phone at that depth.
+    func hideBobsContact() throws {
+        try self.bob.run {
+            let contact = try self.bob.contact(self.bobSide)
+            contact.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
+            try self.bob.cm.modelContext.save()
+            self.bob.cm.security.applyVerifyState(for: .duress)
+            #expect(!contact.isVisible(atDepth: self.bob.cm.security.currentDepth), "precondition: hidden at this depth")
+        }
     }
 
     /// Carol's two bootstrap messages, and Bob opening the second: Bob is a `conversation`, Carol still `imported`
@@ -139,7 +188,8 @@ struct CardPhonePair {
     func redeem() throws -> (first: Data, second: Data) {
         let first = try self.carol.send(to: self.carolSide, "first")
         let second = try self.carol.send(to: self.carolSide, "second")
-        try self.bob.receive(second)
+        let opened = try self.bob.receive(second)
+        #expect(opened.ownerID == self.bobSide && opened.text == "second")
         return (first, second)
     }
 
@@ -149,4 +199,18 @@ struct CardPhonePair {
         try self.bob.receive(first)
         try self.carol.receive(try self.bob.send(to: self.bobSide, "reply"))
     }
+}
+
+/// What the card says about the contact: computed from the field and the in-person keys, never stored.
+@MainActor
+func cardTier(of contact: Contact.Profile) -> CardTier {
+    CardRules.tier(contact.cardState, hasInPersonKeys: contact.hasInPersonKeys)
+}
+
+/// Full material with distinct bytes everywhere, for a stored `conversation`.
+func cardTestQuantum() -> QuantumKeyMaterial {
+    QuantumKeyMaterial(
+        encapsulatedSecret: randomBytes(32), decapsulatedSecret: randomBytes(32),
+        ourCiphertext: randomBytes(1_568), peerCiphertext: randomBytes(1_568)
+    )
 }

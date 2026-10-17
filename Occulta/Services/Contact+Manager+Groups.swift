@@ -123,7 +123,7 @@ extension ContactManager {
     /// Returns false if the contact is not found.
     func isGroupEligible(identifier: String, crypto: Manager.Crypto = Manager.Crypto()) throws -> Bool {
         guard let contact = try self.fetchContact(by: identifier) else { return false }
-        guard !CardRules.isHardBlocked(contact.cardState) else { return false }
+        guard !contact.cardState.isCardContact else { return false }
         
         return Self.resolveTargetVersion(for: contact, using: crypto).supportsGroups
     }
@@ -153,7 +153,7 @@ extension ContactManager {
     /// Returns nil if the contact is not found.
     func groupIneligibilityReason(for identifier: String, crypto: Manager.Crypto = Manager.Crypto()) throws -> IneligibilityReason? {
         guard let contact = try self.fetchContact(by: identifier) else { return nil }
-        if CardRules.isHardBlocked(contact.cardState) { return .cardConversation }
+        if contact.cardState.isCardContact { return .cardConversation }
         guard !Self.resolveTargetVersion(for: contact, using: crypto).supportsGroups else { return nil }
 
         // Unreadable counts as unknown, not as old — see `hasReadableBundleVersion`.

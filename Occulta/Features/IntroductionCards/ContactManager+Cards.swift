@@ -51,10 +51,6 @@ extension Contact.Profile {
         return ownerHash == ourHash
     }
 
-    /// What the card says about the contact, computed from the field and the in-person keys and never stored.
-    var cardTier: CardTier {
-        CardRules.tier(self.cardState, hasInPersonKeys: self.hasInPersonKeys)
-    }
 }
 
 extension ContactManager {
@@ -63,13 +59,9 @@ extension ContactManager {
     /// the caller does.
     func store(_ state: CardState, for contact: Contact.Profile) throws {
         guard let sealed = try CardStateCodec().encode(state).encrypt() else {
-            throw CardStoreError.encryptionFailed
+            throw CardError.encryptionFailed
         }
         contact.introductionCardEncrypted = sealed
-    }
-
-    enum CardStoreError: Error {
-        case encryptionFailed
     }
 
     enum CardError: Error, Equatable {
@@ -89,6 +81,8 @@ extension ContactManager {
         case hardBlocked
         /// `CardRules.canSend` says no: Carol's card has expired before she sent anything.
         case cannotSend
+        /// Sealing a state into the card field failed. Nothing was stored.
+        case encryptionFailed
         /// The card field lacks what this send needs, or holds keys that won't parse. Nothing was sent.
         case keyMaterialMissing
     }
@@ -200,7 +194,7 @@ extension ContactManager {
                 sign: { try keys.signRaw($0, signingBlob: signingKey) },
                 peerSigningKey: sentFirstMessage ? IntroductionCard.recognize(peerCard)?.signingKey : nil
             )
-        case .conversation(_, let signingKey, _, let peerSigningKey, _, _, _, _):
+        case .conversation(_, let signingKey, _, let peerSigningKey, _, _, _):
             return CardMeetingContext(sign: { try keys.signRaw($0, signingBlob: signingKey) }, peerSigningKey: peerSigningKey)
         }
     }
@@ -316,7 +310,7 @@ extension ContactManager {
 
     // MARK: - Expiry (§6.4)
 
-    /// The unlock sweep: `CardRules.sweep` over every contact at every depth. A cleared card is written `.empty`
+    /// The unlock sweep: `CardRules.sweepClears` over every contact at every depth. A cleared card is written `.empty`
     /// at the same size; Carol's also drops the pending prekey batch she made at import, which was never delivered
     /// (she hasn't sent, so nothing has used it). Saves once. A contact that fails doesn't stop the others; the
     /// first error is thrown at the end.
@@ -326,7 +320,7 @@ extension ContactManager {
 
         for contact in try self.fetchAllContacts() {
             let state = contact.cardState
-            guard CardRules.sweep(state, now: now) == .clear else { continue }
+            guard CardRules.sweepClears(state, now: now) else { continue }
             do {
                 if case .imported = state, var record = try? self.prekeyRecord(for: contact) {
                     record.ownBatches.removeAll(where: \.isPending)
@@ -417,8 +411,7 @@ extension ContactManager {
                 )
             }
 
-        case .conversation(let agreementKey, let signingKey, let peerKey, _, _, let held, let bootstrapOpen, _):
-            guard let held else { throw CardError.keyMaterialMissing }
+        case .conversation(let agreementKey, let signingKey, let peerKey, _, let held, let bootstrapOpen, _):
             quantum = held
             slot = CardSlot(
                 keys: self.cardKeys, agreementBlob: agreementKey, signingBlob: signingKey,
@@ -506,10 +499,10 @@ extension ContactManager {
                 peerAgreementKey: peer.agreementKey, peerSigningKey: peer.signingKey, quantum: nil,
                 pending: .init(ss1: ss1, ct1: ct1, mlkemBlob: mlkemKey, postQuantum: postQuantum)
             )
-        case .conversation(let agreementKey, _, let peerAgreementKey, let peerSigningKey, _, let quantum, _, let peerIntroduction):
+        case .conversation(let agreementKey, _, let peerAgreementKey, let peerSigningKey, let quantum, _, let isIssuer):
             // Carol until she holds `ss2` is `imported`; a `conversation` always has the material.
             return CardReceiveContext(
-                role: peerIntroduction != nil ? .bob : .carol, keys: self.cardKeys, agreementBlob: agreementKey,
+                role: isIssuer ? .bob : .carol, keys: self.cardKeys, agreementBlob: agreementKey,
                 ownAgreementKey: try self.cardKeys.agreementPublicKey(blob: agreementKey),
                 peerAgreementKey: peerAgreementKey, peerSigningKey: peerSigningKey, quantum: quantum, pending: nil
             )
@@ -523,15 +516,15 @@ extension ContactManager {
     func cardPeerAgreementKey(of contact: Contact.Profile, using key: SymmetricKey) -> Data? {
         switch contact.cardState(using: key) {
         case .imported(let peerCard, _, _, _, _, _, _, _): return IntroductionCard.recognize(peerCard)?.agreementKey
-        case .conversation(_, _, let peerAgreementKey, _, _, _, _, _): return peerAgreementKey
+        case .conversation(_, _, let peerAgreementKey, _, _, _, _): return peerAgreementKey
         case .empty, .issued: return nil
         }
     }
 
     /// After a card slot opened and every check passed (SPEC §6.6 step 3). Doesn't save; `save(_:for:)` does.
     ///
-    /// - Bob rejects an introduction other than the one he redeemed, compared by its keys (see
-    ///   `sameIntroduction`), and a bootstrap slot without one.
+    /// - Bob rejects an introduction other than the one he redeemed (see `checkCardIntroduction`), and a
+    ///   bootstrap slot without one.
     /// - Carol's first message from Bob gives her `ss2`: the field becomes `conversation` with full material,
     ///   and her ML-KEM key goes with the old state.
     /// - Bob's first non-bootstrap slot from Carol closes his bootstrap.
@@ -543,18 +536,17 @@ extension ContactManager {
                 .conversation(
                     agreementKey: agreementKey, signingKey: signingKey,
                     peerAgreementKey: peer.agreementKey, peerSigningKey: peer.signingKey,
-                    mlkemKey: nil, quantum: quantum, bootstrapOpen: false, peerIntroduction: nil
+                    quantum: quantum, bootstrapOpen: false, isIssuer: false
                 ),
                 for: contact
             )
 
-        case .conversation(let agreementKey, let signingKey, let peerAgreementKey, let peerSigningKey, let mlkemKey, let quantum, let bootstrapOpen, let peerIntroduction)
-            where peerIntroduction != nil && bootstrapOpen && !opening.wasBootstrap:
+        case .conversation(let agreementKey, let signingKey, let peerAgreementKey, let peerSigningKey, let quantum, true, true)
+            where !opening.wasBootstrap:
             try self.store(
                 .conversation(
                     agreementKey: agreementKey, signingKey: signingKey, peerAgreementKey: peerAgreementKey,
-                    peerSigningKey: peerSigningKey, mlkemKey: mlkemKey, quantum: quantum,
-                    bootstrapOpen: false, peerIntroduction: peerIntroduction
+                    peerSigningKey: peerSigningKey, quantum: quantum, bootstrapOpen: false, isIssuer: true
                 ),
                 for: contact
             )
@@ -565,23 +557,19 @@ extension ContactManager {
     }
 
     /// Bob's check on an opened slot: a bootstrap slot from Carol carries her introduction, and any introduction
-    /// is the one he redeemed. Throws `GroupDecryptError.cardIntroductionMismatch`.
+    /// names the keys he redeemed. Compared by the agreement and signing keys, not by bytes or ML-KEM key: Carol
+    /// signs afresh for each message so the signature differs every time, Bob checked it against the card once at
+    /// redemption, the slot's own signature is verified under `peerSigningKey`, and he never uses her ML-KEM key
+    /// again. Throws `GroupDecryptError.cardIntroductionMismatch`.
     func checkCardIntroduction(_ opening: CardSlotOpening, for contact: Contact.Profile) throws {
-        guard case .conversation(_, _, _, _, _, _, _, let stored?) = contact.cardState else { return }
+        guard case .conversation(_, _, let peerAgreementKey, let peerSigningKey, _, _, true) = contact.cardState else { return }
         guard let introduction = opening.payload.introduction else {
             if opening.wasBootstrap { throw GroupDecryptError.cardIntroductionMismatch }
             return
         }
-        guard let known = try? JSONDecoder().decode(CardIntroduction.self, from: stored),
-              Self.sameIntroduction(known, introduction)
-        else { throw GroupDecryptError.cardIntroductionMismatch }
-    }
-
-    /// Whether two introductions name the same keys. Compared by keys, not bytes: Carol signs afresh for each
-    /// message and an ECDSA signature differs every time, so the signature can't be part of the comparison. Bob
-    /// checked it against the card once, at redemption; afterwards the slot's own signature authenticates her.
-    static func sameIntroduction(_ a: CardIntroduction, _ b: CardIntroduction) -> Bool {
-        a.agreementKey == b.agreementKey && a.signingKey == b.signingKey && a.mlkemEncapsulationKey == b.mlkemEncapsulationKey
+        guard introduction.agreementKey == peerAgreementKey, introduction.signingKey == peerSigningKey else {
+            throw GroupDecryptError.cardIntroductionMismatch
+        }
     }
 
     // MARK: - Redemption (§6.6 step 4)
@@ -620,8 +608,7 @@ extension ContactManager {
                         entry, bundle: bundle, blind: envelope.blind, card: card, mlkemBlob: mlkemBlob,
                         ecdhOutput: Manager.Crypto.cardECDHOutput(raw), postQuantum: postQuantum, cryptoOps: cryptoOps
                     ),
-                    let encapsulation = postQuantum.encapsulate(peerPublicKeyData: outcome.introduction.mlkemEncapsulationKey),
-                    let storedIntroduction = try? JSONEncoder().encode(outcome.introduction)
+                    let encapsulation = postQuantum.encapsulate(peerPublicKeyData: outcome.introduction.mlkemEncapsulationKey)
                 else { continue }
 
                 // `ss1` is what Bob decapsulated, `ss2` what he just encapsulated: Carol holds them the other way
@@ -636,7 +623,7 @@ extension ContactManager {
                         .conversation(
                             agreementKey: agreementBlob, signingKey: signingBlob,
                             peerAgreementKey: outcome.introduction.agreementKey, peerSigningKey: outcome.introduction.signingKey,
-                            mlkemKey: nil, quantum: quantum, bootstrapOpen: true, peerIntroduction: storedIntroduction
+                            quantum: quantum, bootstrapOpen: true, isIssuer: true
                         ),
                         for: contact
                     )

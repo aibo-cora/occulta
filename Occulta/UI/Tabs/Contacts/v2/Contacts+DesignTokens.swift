@@ -95,12 +95,7 @@ extension Contact.Profile {
             return (CardRules.tier(card, hasInPersonKeys: false) == .notVerified ? .unverified : .pending, card)
         }
 
-        let ownerHash = try? Manager.Crypto().decrypt(data: keys.last?.owner)
-        let ourHash   = (try? Manager.Key().retrieveIdentity())?.sha256
-
-        guard let ownerHash, let ourHash, !ownerHash.isEmpty else { return (.unverified, nil) }
-
-        return (ownerHash == ourHash ? .verified : .unverified, nil)
+        return (self.hasInPersonKeys ? .verified : .unverified, nil)
     }
 
     var fingerprintPreview: String? {

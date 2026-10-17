@@ -41,12 +41,11 @@ private func importedState(sent: Bool = true) -> CardState {
     )
 }
 
-private func conversationState(peerIntroduction: Int?) -> CardState {
+private func conversationState(isIssuer: Bool, bootstrapOpen: Bool) -> CardState {
     .conversation(
         agreementKey: randomBytes(143), signingKey: randomBytes(143),
         peerAgreementKey: randomBytes(65), peerSigningKey: randomBytes(65),
-        mlkemKey: randomBytes(4_788), quantum: distinctQuantum(), bootstrapOpen: true,
-        peerIntroduction: peerIntroduction.map { randomBytes($0) }
+        quantum: distinctQuantum(), bootstrapOpen: bootstrapOpen, isIssuer: isIssuer
     )
 }
 
@@ -61,17 +60,9 @@ struct CardStateCodecTests {
             ("issued", issuedState()),
             ("imported, not sent", importedState(sent: false)),
             ("imported, sent", importedState(sent: true)),
-            ("conversation, Carol in bootstrap", .conversation(
-                agreementKey: randomBytes(143), signingKey: randomBytes(143),
-                peerAgreementKey: randomBytes(65), peerSigningKey: randomBytes(65),
-                mlkemKey: randomBytes(4_788), quantum: nil, bootstrapOpen: true, peerIntroduction: nil
-            )),
-            ("conversation, Bob", conversationState(peerIntroduction: 2_400)),
-            ("conversation, settled", .conversation(
-                agreementKey: randomBytes(143), signingKey: randomBytes(143),
-                peerAgreementKey: randomBytes(65), peerSigningKey: randomBytes(65),
-                mlkemKey: nil, quantum: distinctQuantum(), bootstrapOpen: false, peerIntroduction: nil
-            )),
+            ("conversation, Bob in bootstrap", conversationState(isIssuer: true, bootstrapOpen: true)),
+            ("conversation, Bob, settled", conversationState(isIssuer: true, bootstrapOpen: false)),
+            ("conversation, Carol, settled", conversationState(isIssuer: false, bootstrapOpen: false)),
         ]
     }
 
@@ -229,10 +220,8 @@ struct CardStateCodecTests {
         let measured: [(name: String, state: CardState, inputs: String)] = [
             ("imported (Carol)", importedState(sent: true),
              "peerCard 1,770 + 2 x 143 blobs + ML-KEM blob 4,788 + ss1 32 + ct1 1,568 + expiry"),
-            ("conversation (full material, ML-KEM blob, peerIntroduction ~1,800)", conversationState(peerIntroduction: 1_800),
-             "2 x 143 blobs + peer keys 65 + 65 + ML-KEM blob 4,788 + QKM 32 + 32 + 1,568 + 1,568 + peerIntroduction 1,800"),
-            ("conversation (full material, ML-KEM blob, peerIntroduction 2,400 = JSON of a CardIntroduction)", conversationState(peerIntroduction: 2_400),
-             "same, with peerIntroduction 2,400"),
+            ("conversation (full material)", conversationState(isIssuer: true, bootstrapOpen: true),
+             "2 x 143 blobs + peer keys 65 + 65 + QKM 32 + 32 + 1,568 + 1,568"),
             ("issued (Bob)", issuedState(),
              "card 1,770 + 2 x 143 blobs + ML-KEM blob 4,788 + expiry"),
         ]

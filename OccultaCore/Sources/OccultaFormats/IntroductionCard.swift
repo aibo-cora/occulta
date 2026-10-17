@@ -125,8 +125,6 @@ public struct IntroductionCard: Equatable, Sendable {
         let signingEnd   = agreementEnd + self.publicKeyByteCount
         let expiryEnd    = signingEnd + 8
         let mlkemEnd     = expiryEnd + self.mlkemKeyByteCount
-        guard mlkemEnd == self.signedByteCount, mlkemEnd + self.signatureByteCount == self.byteCount else { return nil }
-
         let agreementKey = bytes.subdata(in: 0 ..< agreementEnd)
         let signingKey   = bytes.subdata(in: agreementEnd ..< signingEnd)
         let mlkemKey     = bytes.subdata(in: expiryEnd ..< mlkemEnd)

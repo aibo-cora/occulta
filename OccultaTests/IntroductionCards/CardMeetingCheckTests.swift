@@ -178,7 +178,7 @@ struct CardMeetingTableTests {
         _ = try pair.redeem()
         #expect(try pair.carol.meetingContext(pair.carolSide).peerSigningKey == pair.card.signingKey, "imported after a send: Bob's card signing key")
         let bobKey = try #require(try pair.bob.meetingContext(pair.bobSide).peerSigningKey)
-        guard case .conversation(_, _, _, let stored, _, _, _, _) = try pair.bob.state(pair.bobSide) else { Issue.record("precondition"); return }
+        guard case .conversation(_, _, _, let stored, _, _, _) = try pair.bob.state(pair.bobSide) else { Issue.record("precondition"); return }
         #expect(bobKey == stored, "conversation: the stored peerSigningKey")
     }
 
@@ -474,7 +474,7 @@ struct CardMeetingSaveTests {
 
         #expect(try phone.run { try phone.contact(id).contactPublicKeys?.count } == (keysBefore ?? 0) + 1)
         #expect(try phone.run { try phone.contact(id).hasInPersonKeys })
-        #expect(try phone.run { try phone.contact(id).cardTier } == .verified)
+        #expect(try phone.run { cardTier(of: try phone.contact(id)) } == .verified)
     }
 
     @Test("A second meeting leaves the record the first one's contact built", .ambientTestKeyManager)
@@ -557,7 +557,7 @@ struct CardMeetingConversationSaveTests {
             let ours = try phone.keyManager.retrieveIdentity()
             try phone.run { try phone.cm.update(key: try inPersonKey(for: ours), for: id) }
             #expect(try phone.state(id) == .empty)
-            #expect(try phone.run { try phone.contact(id).cardTier } == .verified)
+            #expect(try phone.run { cardTier(of: try phone.contact(id)) } == .verified)
         }
         #expect(throws: (any Error).self) { try pair.bob.receive(stale) }
     }

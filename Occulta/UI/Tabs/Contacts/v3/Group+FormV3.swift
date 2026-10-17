@@ -294,7 +294,7 @@ extension Group {
             for contact in self.contacts where contact.isVisible(atDepth: depth, usingKey: key) {
                 // The card hard block (W-10) is checked before the version: a card contact can reach a
                 // group-capable `maxBundleVersion` from messages it has received, so it would otherwise qualify.
-                if CardRules.isHardBlocked(contact.cardState(using: key)) {
+                if contact.cardState(using: key).isCardContact {
                     blocked.append(contact)
                     continue
                 }

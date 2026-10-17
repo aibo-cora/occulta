@@ -10,18 +10,6 @@
 import SwiftUI
 import OccultaFormats
 
-extension CardState {
-
-    /// Carol's or Bob's card conversation, or Carol waiting on a card: the contacts the card section replaces
-    /// "No key yet" for.
-    nonisolated var isCardContact: Bool {
-        switch self {
-        case .imported, .conversation: true
-        case .empty, .issued:          false
-        }
-    }
-}
-
 struct ContactCardSection: View {
     let profile: Contact.Profile
     let state:   CardState
@@ -45,8 +33,8 @@ struct ContactCardSection: View {
                 self.issuedContent(expiresAt: expiresAt)
             case .imported(_, _, _, _, _, _, let expiresAt, let sentFirstMessage):
                 self.importedContent(expiresAt: expiresAt, sentFirstMessage: sentFirstMessage)
-            case .conversation(_, _, _, _, _, _, _, let peerIntroduction):
-                self.conversationContent(isIssuer: peerIntroduction != nil)
+            case .conversation(_, _, _, _, _, _, let isIssuer):
+                self.conversationContent(isIssuer: isIssuer)
             }
 
             if let failure = self.failure {

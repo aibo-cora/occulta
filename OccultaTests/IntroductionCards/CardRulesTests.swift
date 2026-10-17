@@ -36,7 +36,11 @@ struct CardRulesTests {
         .conversation(
             agreementKey: randomBytes(143), signingKey: randomBytes(143),
             peerAgreementKey: randomBytes(65), peerSigningKey: randomBytes(65),
-            mlkemKey: nil, quantum: nil, bootstrapOpen: bootstrapOpen, peerIntroduction: nil
+            quantum: QuantumKeyMaterial(
+                encapsulatedSecret: randomBytes(32), decapsulatedSecret: randomBytes(32),
+                ourCiphertext: randomBytes(1_568), peerCiphertext: randomBytes(1_568)
+            ),
+            bootstrapOpen: bootstrapOpen, isIssuer: false
         )
     }
 
@@ -227,25 +231,25 @@ struct CardRulesTests {
 
     @Test("Sweep: an expired issued card is cleared; an unexpired one is kept")
     func sweepIssued() {
-        #expect(CardRules.sweep(self.issued(expiresAt: self.earlier), now: self.now) == .clear)
-        #expect(CardRules.sweep(self.issued(expiresAt: self.now), now: self.now) == .clear, "at the deadline")
-        #expect(CardRules.sweep(self.issued(expiresAt: self.later), now: self.now) == .keep)
+        #expect(CardRules.sweepClears(self.issued(expiresAt: self.earlier), now: self.now))
+        #expect(CardRules.sweepClears(self.issued(expiresAt: self.now), now: self.now), "at the deadline")
+        #expect(!CardRules.sweepClears(self.issued(expiresAt: self.later), now: self.now))
     }
 
     @Test("Sweep: an expired imported card is cleared only if no first message may have left")
     func sweepImported() {
-        #expect(CardRules.sweep(self.imported(expiresAt: self.earlier, sent: false), now: self.now) == .clear)
-        #expect(CardRules.sweep(self.imported(expiresAt: self.now, sent: false), now: self.now) == .clear, "at the deadline")
-        #expect(CardRules.sweep(self.imported(expiresAt: self.earlier, sent: true), now: self.now) == .keep, "a message may have left")
-        #expect(CardRules.sweep(self.imported(expiresAt: self.later, sent: false), now: self.now) == .keep)
-        #expect(CardRules.sweep(self.imported(expiresAt: self.later, sent: true), now: self.now) == .keep)
+        #expect(CardRules.sweepClears(self.imported(expiresAt: self.earlier, sent: false), now: self.now))
+        #expect(CardRules.sweepClears(self.imported(expiresAt: self.now, sent: false), now: self.now), "at the deadline")
+        #expect(!CardRules.sweepClears(self.imported(expiresAt: self.earlier, sent: true), now: self.now), "a message may have left")
+        #expect(!CardRules.sweepClears(self.imported(expiresAt: self.later, sent: false), now: self.now))
+        #expect(!CardRules.sweepClears(self.imported(expiresAt: self.later, sent: true), now: self.now))
     }
 
     @Test("Sweep keeps empty and conversation fields")
     func sweepKeepsTheRest() {
-        #expect(CardRules.sweep(.empty, now: self.now) == .keep)
-        #expect(CardRules.sweep(self.conversation(bootstrapOpen: true), now: self.now) == .keep)
-        #expect(CardRules.sweep(self.conversation(bootstrapOpen: false), now: self.now) == .keep)
+        #expect(!CardRules.sweepClears(.empty, now: self.now))
+        #expect(!CardRules.sweepClears(self.conversation(bootstrapOpen: true), now: self.now))
+        #expect(!CardRules.sweepClears(self.conversation(bootstrapOpen: false), now: self.now))
     }
 
     // MARK: - Send
@@ -271,13 +275,13 @@ struct CardRulesTests {
 
     @Test("Hard blocks: imported and conversation, nothing else")
     func hardBlocks() {
-        #expect(!CardRules.isHardBlocked(.empty))
-        #expect(!CardRules.isHardBlocked(self.issued(expiresAt: self.later)))
-        #expect(!CardRules.isHardBlocked(self.issued(expiresAt: self.earlier)))
-        #expect(CardRules.isHardBlocked(self.imported(expiresAt: self.later, sent: false)))
-        #expect(CardRules.isHardBlocked(self.imported(expiresAt: self.earlier, sent: true)))
-        #expect(CardRules.isHardBlocked(self.conversation(bootstrapOpen: true)))
-        #expect(CardRules.isHardBlocked(self.conversation(bootstrapOpen: false)))
+        #expect(!(CardState.empty).isCardContact)
+        #expect(!(self.issued(expiresAt: self.later)).isCardContact)
+        #expect(!(self.issued(expiresAt: self.earlier)).isCardContact)
+        #expect((self.imported(expiresAt: self.later, sent: false)).isCardContact)
+        #expect((self.imported(expiresAt: self.earlier, sent: true)).isCardContact)
+        #expect((self.conversation(bootstrapOpen: true)).isCardContact)
+        #expect((self.conversation(bootstrapOpen: false)).isCardContact)
     }
 
     @Test("A hard-blocked state is never pending: the block and the tier agree")
@@ -287,7 +291,7 @@ struct CardRulesTests {
             self.imported(expiresAt: self.earlier, sent: true), self.conversation(),
         ]
         for state in states {
-            #expect(CardRules.isHardBlocked(state) == (CardRules.tier(state, hasInPersonKeys: false) == .notVerified))
+            #expect((state).isCardContact == (CardRules.tier(state, hasInPersonKeys: false) == .notVerified))
         }
     }
 }

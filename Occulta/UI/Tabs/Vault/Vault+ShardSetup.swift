@@ -40,7 +40,7 @@ struct VaultShardSetup: View {
     /// holds by rule and not by that accident. There are no ineligible rows on this screen to show W-10 on.
     private var mlkemContacts: [Contact.Profile] {
         guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
-        return self.contactManager.mlkemEligibleContacts(usingKey: key).filter { !CardRules.isHardBlocked($0.cardState(using: key)) }
+        return self.contactManager.mlkemEligibleContacts(usingKey: key).filter { !$0.cardState(using: key).isCardContact }
     }
 
     private var isDirty: Bool {

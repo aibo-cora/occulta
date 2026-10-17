@@ -37,12 +37,6 @@ enum CardImportDecision: Equatable {
     }
 }
 
-nonisolated
-enum CardSweepAction: Equatable {
-    case keep
-    case clear
-}
-
 /// The rules for a contact's card field. Pure: it reads the values it's given and touches nothing else.
 /// Keys, storage and the clock belong to the callers.
 nonisolated
@@ -52,10 +46,7 @@ enum CardRules {
     /// whatever the field says.
     static func tier(_ state: CardState, hasInPersonKeys: Bool) -> CardTier {
         if hasInPersonKeys { return .verified }
-        switch state {
-        case .imported, .conversation: return .notVerified
-        case .empty, .issued:          return .pending
-        }
+        return state.isCardContact ? .notVerified : .pending
     }
 
     /// Decides what importing `incoming` into a contact whose field is `current` does, at `now`.
@@ -85,14 +76,14 @@ enum CardRules {
 
     /// The unlock sweep (§6.4): an expired `issued` card is cancelled, and an expired `imported` one is
     /// cleared unless a first message may have left.
-    static func sweep(_ state: CardState, now: Date) -> CardSweepAction {
+    static func sweepClears(_ state: CardState, now: Date) -> Bool {
         switch state {
         case .issued(_, _, _, _, let expiresAt):
-            return expiresAt <= now ? .clear : .keep
+            return expiresAt <= now
         case .imported(_, _, _, _, _, _, let expiresAt, let sentFirstMessage):
-            return expiresAt <= now && !sentFirstMessage ? .clear : .keep
+            return expiresAt <= now && !sentFirstMessage
         case .empty, .conversation:
-            return .keep
+            return false
         }
     }
 
@@ -106,15 +97,6 @@ enum CardRules {
             return true
         case .empty, .issued:
             return false
-        }
-    }
-
-    /// The §8 hard blocks: vault trustee, shard content, payment cards, identity challenge, Presence
-    /// Verification and groups refuse a contact for whom this is true.
-    static func isHardBlocked(_ state: CardState) -> Bool {
-        switch state {
-        case .imported, .conversation: return true
-        case .empty, .issued:          return false
         }
     }
 }

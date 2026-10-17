@@ -140,7 +140,7 @@ private func conversationState() -> CardState {
     .conversation(
         agreementKey: randomBytes(143), signingKey: randomBytes(143),
         peerAgreementKey: randomBytes(65), peerSigningKey: randomBytes(65),
-        mlkemKey: randomBytes(4_788), quantum: nil, bootstrapOpen: true, peerIntroduction: nil
+        quantum: cardTestQuantum(), bootstrapOpen: true, isIssuer: true
     )
 }
 
@@ -407,7 +407,7 @@ struct CardImportTests {
         #expect(try P256.KeyAgreement.PrivateKey(rawRepresentation: agreement).publicKey.x963Representation != card.agreementKey)
         _ = try P256.Signing.PrivateKey(rawRepresentation: signing)
         #expect(mlkem.isEmpty == false)
-        #expect(carolContact.cardTier == .notVerified)
+        #expect(cardTier(of: carolContact) == .notVerified)
     }
 
     @Test("Carol's contact holds a pending own prekey batch afterwards", .ambientTestKeyManager, .enabled(if: enclave))
@@ -865,8 +865,8 @@ struct CardScreenBehaviourTests {
         for (name, state, blocked) in states {
             let contact = try phone.contact(name)
             try phone.cm.store(state, for: contact)
-            #expect(CardRules.isHardBlocked(contact.cardState(using: key)) == blocked, "\(name)")
-            #expect(CardRules.isHardBlocked(contact.cardState) == blocked, "\(name)")
+            #expect(contact.cardState(using: key).isCardContact == blocked, "\(name)")
+            #expect(contact.cardState.isCardContact == blocked, "\(name)")
         }
     }
 
@@ -879,12 +879,12 @@ struct CardScreenBehaviourTests {
         let garbage = try phone.contact("Garbage")
         garbage.introductionCardEncrypted = randomBytes(300)
 
-        #expect(CardRules.isHardBlocked(nilField.cardState(using: key)) == false)
-        #expect(CardRules.isHardBlocked(garbage.cardState(using: key)) == false)
+        #expect(nilField.cardState(using: key).isCardContact == false)
+        #expect(garbage.cardState(using: key).isCardContact == false)
     }
 
     /// The group form and the vault trustee list both filter what `mlkemEligibleContacts` returns, or the contacts
-    /// the group form partitions, with `CardRules.isHardBlocked(cardState(using:))`. The loops are private to those views, so this runs the
+    /// the group form partitions, with `cardState(using:).isCardContact`. The loops are private to those views, so this runs the
     /// same composition on real stored states: a card contact that would otherwise qualify is excluded.
     @Test("A card contact that holds ML-KEM material is eligible by key but excluded by the hard block", .ambientTestKeyManager)
     func mlkemEligibleAndHardBlock() throws {
@@ -910,7 +910,7 @@ struct CardScreenBehaviourTests {
         let byKey = phone.cm.mlkemEligibleContacts(usingKey: key).map(\.identifier)
         #expect(Set(byKey) == Set([ordinary, issued, talking, imported].map(\.identifier)), "precondition: all hold ML-KEM material")
 
-        let eligible = phone.cm.mlkemEligibleContacts(usingKey: key).filter { !CardRules.isHardBlocked($0.cardState(using: key)) }.map(\.identifier)
+        let eligible = phone.cm.mlkemEligibleContacts(usingKey: key).filter { !$0.cardState(using: key).isCardContact }.map(\.identifier)
         #expect(Set(eligible) == Set([ordinary, issued].map(\.identifier)))
         #expect(!eligible.contains(talking.identifier) && !eligible.contains(imported.identifier))
     }

@@ -34,13 +34,24 @@ enum CardState: Codable, Equatable {
 
     /// Both sides, until the meeting or a discard.
     /// - `agreementKey`, `signingKey`: own Enclave blobs.
-    /// - `peerAgreementKey`, `peerSigningKey`: the peer's public keys.
-    /// - `mlkemKey`: Carol's blob, until she holds `ss2`.
-    /// - `quantum`: full material once held.
+    /// - `peerAgreementKey`, `peerSigningKey`: the peer's public keys; Bob's come from Carol's introduction, which
+    ///   a later bootstrap message must repeat.
+    /// - `quantum`: the full material, held from the start (Bob at redemption, Carol when she opens Bob's first
+    ///   message), so Carol's ML-KEM blob is gone by then.
     /// - `bootstrapOpen`: still sending bootstrap (§4.2).
-    /// - `peerIntroduction`: Bob: Carol's introduction, to check duplicates.
+    /// - `isIssuer`: Bob. Decides which bootstrap slots this side opens and whether it checks introductions.
     case conversation(
         agreementKey: Data, signingKey: Data, peerAgreementKey: Data, peerSigningKey: Data,
-        mlkemKey: Data?, quantum: QuantumKeyMaterial?, bootstrapOpen: Bool, peerIntroduction: Data?
+        quantum: QuantumKeyMaterial, bootstrapOpen: Bool, isIssuer: Bool
     )
+
+    /// Carol waiting on or holding a card conversation, or Bob in one: the contacts the §8 hard blocks apply to
+    /// (vault trustee, shard content, payment cards, identity challenge, Presence Verification and groups refuse
+    /// them), and the ones the card section replaces "No key yet" for.
+    var isCardContact: Bool {
+        switch self {
+        case .imported, .conversation: true
+        case .empty, .issued:          false
+        }
+    }
 }

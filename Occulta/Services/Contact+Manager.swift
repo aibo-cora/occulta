@@ -1069,7 +1069,7 @@ extension ContactManager {
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
         // A card conversation seals under the card keys, never the identity key (introduction cards, SPEC §3).
-        if CardRules.isHardBlocked(contact.cardState) {
+        if contact.cardState.isCardContact {
             return try self.encryptCardBundle(
                 basket: basket, for: contact, shardOperations: shardOperations,
                 custodyManifest: custodyManifest, identityChallenge: identityChallenge
@@ -1308,7 +1308,7 @@ extension ContactManager {
         // ── Pass 1: resolve per-member key material + real (unpadded) shard content ──
         let pending: [PendingGroupRecipient] = try members.map { contact in
             // Groups refuse a card contact (SPEC §8), whatever the form let through.
-            guard !CardRules.isHardBlocked(contact.cardState) else { throw CardError.hardBlocked }
+            guard !contact.cardState.isCardContact else { throw CardError.hardBlocked }
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
 
             var record = try self.prekeyRecord(for: contact)

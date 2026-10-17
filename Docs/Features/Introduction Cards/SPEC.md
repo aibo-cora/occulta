@@ -208,10 +208,9 @@ enum CardState {
   case conversation( // both sides, until the meeting or a discard
       agreementKey: Data, signingKey: Data,                   // own blobs
       peerAgreementKey: Data, peerSigningKey: Data,
-      mlkemKey: Data?,               // Carol's, until she holds ss2
-      quantum: QuantumKeyMaterial?,  // full material once held
+      quantum: QuantumKeyMaterial,   // full material, held from the start (Carol stays `imported` until she has ss2)
       bootstrapOpen: Bool,           // still sending bootstrap (§4.2)
-      peerIntroduction: Data?)       // Bob: Carol's introduction, to check duplicates
+      isIssuer: Bool)                // Bob: opens Carol's bootstrap slots and checks her introduction (§6.6)
 }
 ```
 
