@@ -382,7 +382,9 @@ extension ContactManager {
         custodyManifest: [UUID]? = nil,
         identityChallenge: IdentityChallengeEnvelope? = nil
     ) throws -> Data {
-        guard let basket, shardOperations == nil, custodyManifest == nil, identityChallenge == nil else {
+        // Compose passes an empty custody manifest for every contact: empty says nothing, and is dropped. Any
+        // shard content at all is refused.
+        guard let basket, shardOperations?.isEmpty != false, custodyManifest?.isEmpty != false, identityChallenge == nil else {
             throw CardError.hardBlocked
         }
         let state = contact.cardState

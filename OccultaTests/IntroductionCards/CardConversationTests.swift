@@ -773,6 +773,25 @@ struct CardHardBlockTests {
         }
     }
 
+    @Test("Compose's send, with an empty shard list and an empty custody manifest, goes through and carries neither")
+    func composeShapedSend() throws {
+        let pair = try CardPhonePair()
+        // What `ComposeViewModel` passes for every contact: the manifest is `[]`, not nil (found in the Simulator).
+        let first = try pair.carol.run {
+            try pair.carol.cm.encryptBundle(basket: CardPhone.basket("first"), for: pair.carolSide, shardOperations: nil, custodyManifest: [])
+        }
+        let opened = try pair.bob.run { try pair.bob.cm.openGroup(bundle: try OccultaBundle.decoded(from: first)) }
+
+        #expect(opened.ownerID == pair.bobSide)
+        #expect(opened.sealed.custodyManifest == nil || opened.sealed.custodyManifest?.isEmpty == true)
+        #expect(opened.sealed.shardOperations == nil || opened.sealed.shardOperations?.isEmpty == true)
+
+        let reply = try pair.bob.run {
+            try pair.bob.cm.encryptBundle(basket: CardPhone.basket("reply"), for: pair.bobSide, shardOperations: [], custodyManifest: [])
+        }
+        #expect(try pair.carol.receive(reply).text == "reply")
+    }
+
     @Test("Shard content and a manifest in a bundle from a card contact are stripped on receive")
     func shardStrippedOnReceive() throws {
         let pair = try CardPhonePair()
