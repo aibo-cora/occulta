@@ -30,7 +30,17 @@ struct ContactCardSection: View {
             case .empty:
                 self.pendingContent
             case .issued(_, _, _, _, let expiresAt):
-                self.issuedContent(expiresAt: expiresAt)
+                // An expired card is no card the moment the clock passes its deadline, not at the next unlock's
+                // sweep: nothing on it can be shared, and a new one can be made.
+                TimelineView(.explicit([expiresAt])) { context in
+                    VStack(alignment: .leading, spacing: 12) {
+                        if context.date < expiresAt {
+                            self.issuedContent(expiresAt: expiresAt)
+                        } else {
+                            self.pendingContent
+                        }
+                    }
+                }
             case .imported(_, _, _, _, _, _, let expiresAt, let sentFirstMessage):
                 self.importedContent(expiresAt: expiresAt, sentFirstMessage: sentFirstMessage)
             case .conversation(_, _, _, _, _, _, let isIssuer):
@@ -272,6 +282,11 @@ struct CardShareSheet: View {
                 try? FileManager.default.removeItem(at: file.url)
             })
             .onDisappear { try? FileManager.default.removeItem(at: file.url) }
+        }
+        // The card stops being shareable when it expires: the screen closes, and the share sheet with it.
+        .task {
+            try? await Task.sleep(for: .seconds(max(0, self.expiresAt.timeIntervalSinceNow)))
+            if !Task.isCancelled { self.dismiss() }
         }
     }
 

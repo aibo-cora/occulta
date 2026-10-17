@@ -69,7 +69,7 @@ extension ContactManager {
         case unsupported
         /// A card needs a pending contact: not one holding `imported` or `conversation`, or in-person keys.
         case contactNotPending
-        /// `cardShareFile`: the contact has no issued card.
+        /// `cardShareFile`: the contact has no issued card, or it has expired.
         case noIssuedCard
         /// `discardCardConversation`: the contact's field isn't `conversation`.
         case noCardConversation
@@ -217,9 +217,10 @@ extension ContactManager {
 
     /// The issued card's bytes in a temporary file for the share sheet: a random 12-hex-character name, no
     /// extension, protected and out of backups. The caller deletes it after sharing; the app's launch and
-    /// background clean-up of the temporary directory catches one it doesn't.
-    func cardShareFile(for contact: Contact.Profile) throws -> URL {
-        guard case .issued(let card, _, _, _, _) = contact.cardState else { throw CardError.noIssuedCard }
+    /// background clean-up of the temporary directory catches one it doesn't. An expired card, not yet swept, is
+    /// refused: nothing past its deadline leaves the phone.
+    func cardShareFile(for contact: Contact.Profile, now: Date = .now) throws -> URL {
+        guard case .issued(let card, _, _, _, let expiresAt) = contact.cardState, now < expiresAt else { throw CardError.noIssuedCard }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(Data.randomBytes(6).hexEncodedString())
         try card.writeProtected(to: url)
         return url
@@ -241,7 +242,9 @@ extension ContactManager {
 
     /// Carol: imports `data` into `contact`, or into a new contact named `newContactName` at the current depth.
     ///
-    /// Not a card gives `.notACard`; below iOS 26, `.unsupported`. Otherwise `CardRules.importDecision` decides.
+    /// Not a card gives `.notACard`. The same card again, already on a contact visible at the current depth, gives
+    /// that contact and changes nothing (`CardRules.holds`), whichever contact was picked and even past the card's
+    /// expiry. Below iOS 26, `.unsupported`. Otherwise `CardRules.importDecision` decides.
     /// Her keys, her ML-KEM key and her pending prekey batch are generated, and the one encapsulation to Bob's
     /// ML-KEM key made, before anything is stored. Replacing or cancelling overwrites the old state, which
     /// deletes its keys, and drops the pending batch the old import made. Throws `contactNotPending` for a contact
@@ -249,6 +252,10 @@ extension ContactManager {
     @discardableResult
     func importCard(_ data: Data, into contact: Contact.Profile?, newContactName: String?, now: Date = .now) throws -> CardImportOutcome {
         guard let card = IntroductionCard.recognize(data) else { return .notACard }
+        let depth = self.security.currentDepth
+        if let holder = try self.fetchAllContacts().first(where: { $0.isVisible(atDepth: depth) && CardRules.holds($0.cardState, card: card) }) {
+            return .imported(contactIdentifier: holder.identifier)
+        }
         guard let postQuantum = self.cardPostQuantum else { return .unsupported }
 
         switch CardRules.importDecision(

@@ -87,6 +87,20 @@ enum CardRules {
         }
     }
 
+    /// Whether `state` already holds `card` as the recipient: `imported` from these exact bytes, or a `conversation`
+    /// it led to (Carol's side, whose peer agreement key is the card's). Importing it again would make new keys,
+    /// which Bob, who may already hold Carol's first message, wouldn't recognise.
+    static func holds(_ state: CardState, card: IntroductionCard) -> Bool {
+        switch state {
+        case .imported(let peerCard, _, _, _, _, _, _, _):
+            return peerCard == card.encoded
+        case .conversation(_, _, let peerAgreementKey, _, _, _, let isIssuer):
+            return !isIssuer && peerAgreementKey == card.agreementKey
+        case .empty, .issued:
+            return false
+        }
+    }
+
     /// Whether Carol's phone may send. Past `expiresAt` she may not send a first message, so it doesn't
     /// send one that can't open; once she has sent one, she may keep sending.
     static func canSend(_ state: CardState, now: Date) -> Bool {

@@ -243,9 +243,11 @@ Key generation is all or nothing: if any step fails, nothing is stored and no bl
 
 Write `empty`. The blobs exist only in the field, so overwriting it deletes the keys.
 
+An `issued` card past `expiresAt` that the sweep hasn't cleared yet is treated as cancelled from the moment it expires (decided 2026-10-17): it can't be shared (`cardShareFile` refuses it), an open share screen closes, and the contact's card section offers a new card.
+
 ### 6.3 Import (Carol)
 
-1. **Recognise** the file (§2). **Refuse** it if it's expired, or below iOS 26.
+1. **Recognise** the file (§2). **If it's the same card again,** already on a contact visible at the current depth, open that contact and change nothing, whichever contact was picked and even past the card's expiry (decided 2026-10-17, `CardRules.holds`). "The same card" is an `imported` field from these exact bytes, or Carol's side of the `conversation` it led to (her peer agreement key is the card's). Importing it again would make new keys that Bob, who may already hold her first message, wouldn't recognise, and Carol would wait for a reply that never comes. A contact hidden at the current depth isn't matched, so the import goes on as below and shows nothing of it. Otherwise **refuse** the card if it's expired, or below iOS 26.
 2. **Attach** it to a contact Carol picks, or a new one. What happens depends on that contact's field (decided 2026-10-16):
 
    | Field | Result |

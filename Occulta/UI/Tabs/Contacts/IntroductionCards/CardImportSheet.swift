@@ -201,6 +201,12 @@ struct CardImportSheet: View {
         let visible = ContactListFilter.sortedContacts(
             ContactListFilter.visibleContacts(self.contacts, atDepth: self.security.currentDepth), matching: ""
         )
+        // The same card again: open the contact it's already on, and change nothing (`CardRules.holds`).
+        if let card = self.card, let holder = visible.first(where: { CardRules.holds($0.cardState, card: card) }) {
+            self.loaded = true
+            self.onFinish(ContactOpenRequest(identifier: holder.identifier, focusCompose: false))
+            return
+        }
         self.entries = visible.compactMap { profile in
             let (status, card) = profile.statusAndCard
             let state = card ?? .empty

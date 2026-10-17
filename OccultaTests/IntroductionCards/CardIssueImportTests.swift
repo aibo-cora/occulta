@@ -359,6 +359,19 @@ struct CardCreateTests {
         #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact) }
     }
 
+    @Test("An expired card can't be shared, before the sweep has cleared it", .ambientTestKeyManager)
+    func shareRefusesExpired() throws {
+        let bob = try Phone()
+        let contact = try bob.contact()
+        let card = try bob.cm.createCard(for: contact, now: t0)
+
+        let lastSecond = try bob.cm.cardShareFile(for: contact, now: card.expiresAt - 1)
+        try? FileManager.default.removeItem(at: lastSecond)
+        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact, now: card.expiresAt) }
+        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact, now: card.expiresAt + day) }
+        #expect(issuedCard(contact.cardState) == card.encoded, "refusing changes nothing: the sweep clears it")
+    }
+
     @Test("ownIssuedAgreementKeys covers every contact, hidden ones included", .ambientTestKeyManager)
     func ownKeysCoverEveryDepth() throws {
         let bob = try Phone()
@@ -372,6 +385,114 @@ struct CardCreateTests {
         #expect(!hidden.isVisible(atDepth: bob.cm.security.currentDepth), "precondition: hidden at this depth")
 
         #expect(try bob.cm.ownIssuedAgreementKeys() == [first.agreementKey, second.agreementKey])
+    }
+}
+
+// MARK: - The same card again
+
+/// Carol on Bob's card: imported from these bytes, with nothing Enclave-made, so these run anywhere.
+private func carolHolding(_ card: IntroductionCard, sent: Bool) -> CardState {
+    .imported(
+        peerCard: card.encoded, agreementKey: randomBytes(32), signingKey: randomBytes(32),
+        mlkemKey: randomBytes(4_788), ss1: randomBytes(32), ct1: randomBytes(1_568),
+        expiresAt: card.expiresAt, sentFirstMessage: sent
+    )
+}
+
+@MainActor
+@Suite("Card — importing the same card again opens its contact and changes nothing", .serialized)
+struct CardReimportTests {
+
+    @Test("Into the contact that holds it, before and after a first send, and past the expiry",
+          .ambientTestKeyManager, arguments: [(false, 0.0), (true, 0.0), (true, 2 * day)])
+    func sameContact(sent: Bool, after: TimeInterval) throws {
+        let bob = try Phone(), carol = try Phone()
+        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let contact = try carol.contact("Bob")
+        try carol.cm.store(carolHolding(card, sent: sent), for: contact)
+        try carol.cm.modelContext.save()
+        let field  = contact.introductionCardEncrypted
+        let record = contact.prekeyRecordEncrypted
+
+        let outcome = try carol.cm.importCard(card.encoded, into: contact, newContactName: nil, now: t0 + hour + after)
+
+        #expect(outcome == .imported(contactIdentifier: contact.identifier))
+        #expect(contact.introductionCardEncrypted == field, "the field is byte-identical: no new keys")
+        #expect(contact.prekeyRecordEncrypted == record, "no new batch")
+    }
+
+    @Test("Into another contact or a new one: the contact that holds it, and nothing is created",
+          .ambientTestKeyManager, arguments: [true, false])
+    func otherTarget(intoExisting: Bool) throws {
+        let bob = try Phone(), carol = try Phone()
+        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let holder = try carol.contact("Bob")
+        let other  = try carol.contact("Pat")
+        try carol.cm.store(carolHolding(card, sent: true), for: holder)
+        try carol.cm.modelContext.save()
+        let otherField = other.introductionCardEncrypted
+
+        let outcome = try carol.cm.importCard(
+            card.encoded, into: intoExisting ? other : nil, newContactName: intoExisting ? nil : "Bob again", now: t0 + hour
+        )
+
+        #expect(outcome == .imported(contactIdentifier: holder.identifier))
+        #expect(try carol.cm.fetchAllContacts().count == 2)
+        #expect(other.introductionCardEncrypted == otherField)
+    }
+
+    @Test("Once Bob has replied: Carol's conversation holds the card, so it opens the contact", .ambientTestKeyManager)
+    func conversation() throws {
+        let bob = try Phone(), carol = try Phone()
+        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let contact = try carol.contact("Bob")
+        try carol.cm.store(.conversation(
+            agreementKey: randomBytes(32), signingKey: randomBytes(32), peerAgreementKey: card.agreementKey,
+            peerSigningKey: card.signingKey, quantum: cardTestQuantum(), bootstrapOpen: false, isIssuer: false
+        ), for: contact)
+        let field = contact.introductionCardEncrypted
+
+        #expect(try carol.cm.importCard(card.encoded, into: contact, newContactName: nil, now: t0) == .imported(contactIdentifier: contact.identifier))
+        #expect(contact.introductionCardEncrypted == field)
+    }
+
+    @Test("A contact hidden at the current depth is not matched: the import goes on as if it weren't there",
+          .ambientTestKeyManager)
+    func hiddenHolder() throws {
+        let bob = try Phone(), carol = try Phone()
+        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let hidden = try carol.contact("Bob")
+        try carol.cm.store(carolHolding(card, sent: true), for: hidden)
+        hidden.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
+        try carol.cm.modelContext.save()
+        carol.cm.security.applyVerifyState(for: .duress)
+        #expect(!hidden.isVisible(atDepth: carol.cm.security.currentDepth), "precondition: hidden at this depth")
+
+        // Past the expiry, so going on is visible as the ordinary refusal rather than the hidden contact.
+        let outcome = try carol.cm.importCard(card.encoded, into: nil, newContactName: "Bob", now: card.expiresAt + hour)
+
+        #expect(outcome == .refused(.expired))
+    }
+
+    @Test("CardRules.holds: these bytes while waiting, the card's key in Carol's conversation, nothing else")
+    func rule() throws {
+        let bob = try Phone()
+        let card  = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let other = try bob.cm.createCard(for: try bob.contact("Other"), now: t0)
+
+        #expect(CardRules.holds(carolHolding(card, sent: false), card: card))
+        #expect(!CardRules.holds(carolHolding(other, sent: false), card: card))
+        let carolSide = CardState.conversation(
+            agreementKey: randomBytes(32), signingKey: randomBytes(32), peerAgreementKey: card.agreementKey,
+            peerSigningKey: card.signingKey, quantum: cardTestQuantum(), bootstrapOpen: false, isIssuer: false
+        )
+        #expect(CardRules.holds(carolSide, card: card))
+        guard case .conversation(let a, let s, let pa, let ps, let q, let b, _) = carolSide else { return }
+        #expect(!CardRules.holds(.conversation(agreementKey: a, signingKey: s, peerAgreementKey: pa, peerSigningKey: ps,
+                                               quantum: q, bootstrapOpen: b, isIssuer: true), card: card),
+                "Bob's side of a conversation never holds a card as its recipient")
+        #expect(!CardRules.holds(.empty, card: card))
+        #expect(!CardRules.holds(issuedState(expiresAt: t0 + day), card: card))
     }
 }
 
