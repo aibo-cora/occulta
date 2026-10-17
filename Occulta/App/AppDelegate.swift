@@ -21,6 +21,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         options: UIScene.ConnectionOptions
     ) -> UISceneConfiguration {
         let config = UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
+        #if DEBUG
+        // Introduction card mocks show no app data and never wire security, so the cover would never lift.
+        if ProcessInfo.processInfo.arguments.contains("-IntroCardMocks") { return config }
+        #endif
         config.delegateClass = AppScreen.self
         return config
     }
