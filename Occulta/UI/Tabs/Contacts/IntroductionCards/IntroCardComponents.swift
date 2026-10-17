@@ -127,6 +127,66 @@ struct CardCountdown: View {
     }
 }
 
+// MARK: - Button, fact row, screen
+
+/// The filled accent button the card screens use for their main action.
+struct CardPrimaryButton: View {
+    let title: String
+    var enabled = true
+    var action: () -> Void = {}
+
+    var body: some View {
+        Button(action: self.action) {
+            Text(self.title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(self.enabled ? .white : .secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(self.enabled ? Color.occultaAccent : Color(.tertiarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .disabled(!self.enabled)
+    }
+}
+
+/// A label and a value on one row, as the key details use.
+struct CardFactRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(self.label)
+                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 50, alignment: .leading)
+            Text(self.value)
+                .font(.system(size: 13))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+}
+
+/// The scrolling page the card sheets are built on.
+struct CardScreen<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                self.content
+            }
+            .padding(16)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 // MARK: - Previews
 
 #Preview("Not verified card contact") {

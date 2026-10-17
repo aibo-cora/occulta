@@ -125,6 +125,42 @@ enum ShareSession {
         return files
     }
 
+    // MARK: - Introduction card
+
+    /// The staged file's bytes, if the session is one file and it is an introduction card (Q-04: a card has no
+    /// name or extension, so the extension can't tell it from any other attachment; the app can, once unlocked).
+    ///
+    /// Reads nothing but the manifest and, when it names one small file, that file. Doesn't delete the session
+    /// and doesn't throw: anything else, including a stale or unreadable session, is nil and the caller carries on
+    /// as before.
+    static func introductionCard(
+        id: String,
+        in container: URL,
+        keyManager: any ShareSessionDecrypting,
+        now: Date = .now
+    ) -> Data? {
+        let sessionDir = self.directory(for: id, in: container)
+
+        guard
+            let manifestData = try? keyManager.decrypt(data: Data(contentsOf: sessionDir.appendingPathComponent("manifest.enc"))),
+            let manifest = try? JSONDecoder().decode(ShareManifest.self, from: manifestData),
+            manifest.createdAt > now.addingTimeInterval(-Self.staleAfter),
+            manifest.files.count == 1,
+            let entry = manifest.files.first
+        else { return nil }
+
+        let file = sessionDir.appendingPathComponent(entry.filename)
+        // The sealed file is a little longer than the card, so this keeps a large attachment from being read.
+        guard
+            let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+            size >= IntroductionCard.byteCount, size <= IntroductionCard.byteCount + 1024,
+            let plaintext = try? keyManager.decrypt(data: Data(contentsOf: file)),
+            IntroductionCard.recognize(plaintext) != nil
+        else { return nil }
+
+        return plaintext
+    }
+
     // MARK: - Cleanup
 
     static func delete(id: String, in container: URL) {

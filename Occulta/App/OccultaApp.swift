@@ -193,6 +193,15 @@ struct OccultaApp: App {
             #endif
         }
 
+        // Introduction cards, stage A: the card field is never nil either.
+        do {
+            try DatabaseMigration.migrateCardFields(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("card field migration error: \(error)")
+            #endif
+        }
+
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
         do {
@@ -214,16 +223,7 @@ struct OccultaApp: App {
 
     var body: some Scene {
         WindowGroup {
-            #if DEBUG
-            // Introduction card mocks, for review where the vault can't be unlocked (the Simulator).
-            if ProcessInfo.processInfo.arguments.contains("-IntroCardMocks") {
-                IntroCardMock.Gallery()
-            } else {
-                RootView(storeURL: self.storeURL)
-            }
-            #else
             RootView(storeURL: self.storeURL)
-            #endif
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
@@ -334,6 +334,11 @@ struct RootView: View {
     /// PIN gate is up presents its picker once the PIN is answered. Nothing is decrypted and no
     /// key material moves until a recipient is chosen — which is the whole of Bug 84 Part A.
     @State private var pendingShareSession: PendingShareSession?
+    /// An introduction card that arrived as a file, waiting in the import sheet. Session state: cleared by
+    /// `endSession()`, unlike `pendingFileData`, which is the raw bytes queued before anyone authenticated.
+    @State private var cardImport: CardImportData?
+    /// Set when an import asks to open a contact; `ContactsV2` consumes it.
+    @State private var contactOpenRequest: ContactOpenRequest?
 
     // MARK: Body
 
@@ -517,12 +522,18 @@ struct RootView: View {
             } content: { data in
                 let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
                     .map { AttachmentManager(contactKey: $0) }
-                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
-                    .onDisappear {
-                        data.basket.files.forEach { file in
-                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
-                        }
+                // Messages on Bob's card get W-08 and a reply button around them; any other sender's don't.
+                CardFirstMessageFrame(owner: data.owner) { request in
+                    self.openedFileContents = nil
+                    self.finishCardImport(request)
+                } content: {
+                    ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
+                }
+                .onDisappear {
+                    data.basket.files.forEach { file in
+                        if let url = file.url { try? FileManager.default.removeItem(at: url) }
                     }
+                }
             }
             .sheet(item: self.$shareResult) { result in
                 ShareActivityView(url: result.url)
@@ -533,7 +544,7 @@ struct RootView: View {
             // Recipient choice for a staged share-extension session. Reachable only from
             // here, which is why it cannot run before the PIN.
             .sheet(item: self.$pendingShareSession) { session in
-                ShareRecipientPicker { recipient in
+                ShareSessionEntry(sessionID: session.id) { recipient in
                     self.pendingShareSession = nil
                     self.encryptShareSession(session.id, to: recipient)
                 } onCancel: {
@@ -541,8 +552,18 @@ struct RootView: View {
                     if let container = ShareSession.sharedContainer {
                         ShareSession.delete(id: session.id, in: container)
                     }
+                } onCardFinished: { request in
+                    self.pendingShareSession = nil
+                    self.finishCardImport(request)
                 }
                 .environment(self.security)
+            }
+            // An introduction card that arrived as a file.
+            .sheet(item: self.$cardImport) { card in
+                CardImportSheet(data: card.data) { request in
+                    self.cardImport = nil
+                    self.finishCardImport(request)
+                }
             }
             // Identity-challenge outbound share (challenge OR response `.occ`).
             .sheet(item: Binding(
@@ -581,6 +602,13 @@ struct RootView: View {
         }
     }
 
+    /// After the import sheet: opens the contact it asked for, in the Contacts tab.
+    private func finishCardImport(_ request: ContactOpenRequest?) {
+        guard let request else { return }
+        self.selectedTab         = .contacts
+        self.contactOpenRequest  = request
+    }
+
     /// Ends the session's state held above the unlocked tree (`bugs.md` Bug 140): what this
     /// session presented or staged, and the vault's unlocked session, so a new depth needs its
     /// own Face ID. Queued pre-authentication input is left alone (see the list above).
@@ -608,6 +636,8 @@ struct RootView: View {
         self.identityChallenge.outboundShare       = nil
         self.identityChallenge.incomingChallenge   = nil
         self.identityChallenge.verificationOutcome = nil
+        self.cardImport              = nil
+        self.contactOpenRequest      = nil
         self.vaultManager.lock()
     }
 
@@ -616,7 +646,7 @@ struct RootView: View {
     @ViewBuilder
     private var tabContent: some View {
         TabView(selection: self.$selectedTab) {
-            ContactsV2()
+            ContactsV2(openRequest: self.$contactOpenRequest)
                 .tag(Tabs.contacts)
                 .tabItem {
                     Tabs.contacts.image
@@ -834,6 +864,14 @@ struct RootView: View {
     /// period mid-decryption; `AppScreen.lockIfGracePeriodExpired` closes the common case. Losing
     /// the message then is an accepted cost (`Docs/General/decisions.md`).
     private func processInboundFile(_ data: Data) async {
+        // An introduction card goes to the import sheet, before any bundle decoding (SPEC §2). A card is exactly
+        // 1,770 bytes with a valid signature, which no bundle is, and a mismatch costs one length check.
+        if IntroductionCard.recognize(data) != nil {
+            guard self.appScreen.phase == .unlocked else { return }
+            self.cardImport = CardImportData(data: data)
+            return
+        }
+
         let epoch = self.sessionEpoch
         let result: Result<OwnedBasket?, Error>
         do {
@@ -957,7 +995,10 @@ struct RootView: View {
         // The launch pass again, which does nothing once it has succeeded. A launch while the local DB key was
         // unavailable, such as in the background before the first unlock, leaves rows it has yet to convert.
         try? DatabaseMigration.migratePrekeyRecords(modelContext: self.contactManager.modelContext)
+        try? DatabaseMigration.migrateCardFields(modelContext: self.contactManager.modelContext)
         try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
+        // Introduction cards (SPEC §6.4): every contact at every depth, unlike the prekey sweep above.
+        try? self.contactManager.sweepCards()
     }
 
     /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,
@@ -1328,6 +1369,49 @@ private struct ShareResult: Identifiable {
 /// already validated as a UUID by `handleOpenURL` before it reaches a path component.
 private struct PendingShareSession: Identifiable {
     let id: String
+}
+
+/// What a staged share session opens: the recipient picker, or the card import sheet when the one file shared
+/// is an introduction card (it has no extension, so the extension can't route it). Checked here, after the PIN,
+/// since reading a staged file needs the share staging key; nothing is decrypted before the session is unlocked.
+private struct ShareSessionEntry: View {
+    let sessionID: String
+    let onSelect: (ShareRecipientPicker.Recipient) -> Void
+    let onCancel: () -> Void
+    let onCardFinished: (ContactOpenRequest?) -> Void
+
+    private enum Phase {
+        case checking
+        case picker
+        case card(Data)
+    }
+
+    @State private var phase = Phase.checking
+
+    var body: some View {
+        switch self.phase {
+        case .checking:
+            ProgressView()
+                .task { self.check() }
+        case .picker:
+            ShareRecipientPicker(onSelect: self.onSelect, onCancel: self.onCancel)
+        case .card(let data):
+            CardImportSheet(data: data, onFinish: self.onCardFinished)
+        }
+    }
+
+    private func check() {
+        guard
+            let container = ShareSession.sharedContainer,
+            let data = ShareSession.introductionCard(id: self.sessionID, in: container, keyManager: ShareStagingKeyManager())
+        else {
+            self.phase = .picker
+            return
+        }
+        // The card is held in memory now; the staged copy has no further use.
+        ShareSession.delete(id: self.sessionID, in: container)
+        self.phase = .card(data)
+    }
 }
 
 /// Wraps `UIActivityViewController` for SwiftUI. Presents the system share sheet

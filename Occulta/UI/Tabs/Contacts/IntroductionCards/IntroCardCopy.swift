@@ -228,6 +228,18 @@ nonisolated enum IntroCardCopy {
         Message(label: Self.refusedLabel, text: "This is your own card.")
     }
 
+    /// The card's deadline has passed, so the import is refused (SPEC §6.3). Not in FINDINGS' W table.
+    static func refusedExpired(name: String) -> Message {
+        Message(label: Self.refusedLabel, text: "This card has expired. Ask \(name) for a new one.")
+    }
+
+    /// The file isn't a card. Routing recognises a card before the sheet opens, so this is a fallback.
+    static let notACard = Message(label: Self.refusedLabel, text: "This file isn't an introduction card.")
+
+    /// An error from making or importing a card. Says nothing about the cause.
+    static let createFailed = Message(label: "Couldn't make the card", text: "Nothing was changed. Try again.")
+    static let importFailed = Message(label: Self.refusedLabel, text: "Nothing was changed. Try again.")
+
     // MARK: - Recipient: waiting (W-07)
 
     /// W-07. After the first send.
@@ -251,6 +263,15 @@ nonisolated enum IntroCardCopy {
 
     /// The contact list's Not verified footer.
     static let notVerifiedListFooter = "You haven't met and exchanged keys with these contacts in person yet. If the app a card traveled through was compromised, someone else could be reading that conversation."
+
+    // MARK: - Standard Encryption (SPEC §4.3)
+
+    /// The compose label while Carol's messages are sealed to the card key. Not in FINDINGS' W table: it claims no
+    /// more than the design delivers, and says the message can be opened again.
+    static let standardEncryption = Message(
+        label: "Standard Encryption",
+        text:  "This message is sealed to the card's key, which can open it again. Anyone who gets into either device could read it. Hold back anything sensitive."
+    )
 
     // MARK: - Blocked features (W-10)
 

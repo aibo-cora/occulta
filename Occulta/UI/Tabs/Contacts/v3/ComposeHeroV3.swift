@@ -161,6 +161,10 @@ struct ComposeHeroV3: View {
 /// received messages aren't stored after they're closed: if message history ships, "Single View" must change.
 struct SecrecyIndicator: View {
     let secrecy: NextSendSecrecy
+    /// A card contact's messages sealed to the card key (SPEC §4.3): Standard Encryption, whatever `secrecy` says.
+    var standard = false
+    /// A Not verified contact: the forward-secret state drops its green, keeping its label and description (Q-09).
+    var isNotVerified = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -182,29 +186,32 @@ struct SecrecyIndicator: View {
     }
 
     private var colour: Color {
+        if self.standard { return Color.occultaWarn }
         switch self.secrecy {
-        case .forwardSecret: .occultaVerified
-        case .temporaryKey:  .occultaTemporary
-        case .longTerm:      .occultaWarn
+        case .forwardSecret: return self.isNotVerified ? Color.secondary : Color.occultaVerified
+        case .temporaryKey:  return Color.occultaTemporary
+        case .longTerm:      return Color.occultaWarn
         }
     }
 
     private var label: String {
+        if self.standard { return IntroCardCopy.standardEncryption.label }
         switch self.secrecy {
-        case .forwardSecret: "Single View · Forward Secret"
-        case .temporaryKey:  "Multiple Views · Temporary Key"
-        case .longTerm:      "Multiple Views · Long-Term Key"
+        case .forwardSecret: return "Single View · Forward Secret"
+        case .temporaryKey:  return "Multiple Views · Temporary Key"
+        case .longTerm:      return "Multiple Views · Long-Term Key"
         }
     }
 
     private var description: String {
+        if self.standard { return IntroCardCopy.standardEncryption.text }
         switch self.secrecy {
         case .forwardSecret:
-            "Once they open it, their phone can no longer open saved copies."
+            return "Once they open it, their phone can no longer open saved copies."
         case .temporaryKey:
-            "This message can be opened by anyone who gets into the recipient's device for 30 days or more, until the temporary key expires. Wait for their reply before sending anything sensitive."
+            return "This message can be opened by anyone who gets into the recipient's device for 30 days or more, until the temporary key expires. Wait for their reply before sending anything sensitive."
         case .longTerm:
-            "This message can be opened by anyone who gets into either device, yours or theirs, with no time limit. Hold back anything sensitive."
+            return "This message can be opened by anyone who gets into either device, yours or theirs, with no time limit. Hold back anything sensitive."
         }
     }
 }

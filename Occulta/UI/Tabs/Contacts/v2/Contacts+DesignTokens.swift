@@ -19,6 +19,8 @@ nonisolated extension Color {
 
 // MARK: - Verification Status
 
+/// `.unverified` is the one Not verified tier (Q-14): a contact whose card says so, and a contact whose
+/// keys came from another identity (shared or transferred). It is never green.
 nonisolated enum VerificationStatus {
     case verified, unverified, pending
 
@@ -38,7 +40,7 @@ nonisolated enum VerificationStatus {
         case .verified:   
             "✓ VERIFIED"
         case .unverified: 
-            "! UNVERIFIED"
+            "! \(IntroCardCopy.notVerifiedChip.uppercased())"
         case .pending:   
             "… PENDING"
         }
@@ -49,7 +51,7 @@ nonisolated enum VerificationStatus {
         case .verified:   
             "VERIFIED"
         case .unverified: 
-            "UNVERIFIED"
+            IntroCardCopy.notVerifiedChip.uppercased()
         case .pending:    
             "PENDING EXCHANGE"
         }
@@ -77,16 +79,28 @@ func avatarGradientV2(for id: String) -> LinearGradient {
 
 extension Contact.Profile {
     var verificationStatus: VerificationStatus {
+        self.statusAndCard.status
+    }
+
+    /// The status, and the card state when reading it was needed to decide (a contact with no usable key), so a
+    /// screen that wants both decrypts the card field once. Opens the key owner hash too: a list reads this once
+    /// per contact per pass, not in each row and filter.
+    var statusAndCard: (status: VerificationStatus, card: CardState?) {
         let keys = self.contactPublicKeys
-        
-        guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else { return .pending }
-        
+
+        // No usable key: only a card can make the contact Not verified (Q-14). It's read here and not before,
+        // so a contact with keys never pays for the card field's decryption.
+        guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else {
+            let card = self.cardState
+            return (CardRules.tier(card, hasInPersonKeys: false) == .notVerified ? .unverified : .pending, card)
+        }
+
         let ownerHash = try? Manager.Crypto().decrypt(data: keys.last?.owner)
         let ourHash   = (try? Manager.Key().retrieveIdentity())?.sha256
-        
-        guard let ownerHash, let ourHash, !ownerHash.isEmpty else { return .unverified }
-        
-        return ownerHash == ourHash ? .verified : .unverified
+
+        guard let ownerHash, let ourHash, !ownerHash.isEmpty else { return (.unverified, nil) }
+
+        return (ownerHash == ourHash ? .verified : .unverified, nil)
     }
 
     var fingerprintPreview: String? {

@@ -36,8 +36,11 @@ struct VaultShardSetup: View {
     /// Shards in these two states count toward active recovery coverage.
     private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
 
+    /// ML-KEM contacts the card hard blocks (W-10) don't refuse. They lack the ML-KEM material already, so this
+    /// holds by rule and not by that accident. There are no ineligible rows on this screen to show W-10 on.
     private var mlkemContacts: [Contact.Profile] {
-        self.contactManager.mlkemEligibleContacts()
+        guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
+        return self.contactManager.mlkemEligibleContacts(usingKey: key).filter { !CardRules.isHardBlocked($0.cardState(using: key)) }
     }
 
     private var isDirty: Bool {
