@@ -308,6 +308,7 @@ W-01 and W-03 also counter H5's downgrade point: *"attackers don't break crypto 
 - **Whose card it is travels by word of mouth.** A card carries no name. The recipient believes it's Bob's because the person who gave it said so, and on an open card that may be second-hand.
 - **Named versus open can't be enforced.** A modified app can pass on a named card. Single use is the only hard limit.
 - **No help for people who aren't on Occulta.**
+- **The first messages of a card conversation stand out by size (decided 2026-10-18: no padding).** Measured in the test harness with a five-character text: Carol's first messages are about 10.3 KB, against 1.2 KB for an ordinary message and about 4.7 KB for one carrying prekeys; Bob's first reply is about 6.9 KB, against 4.6 KB. The extra is her introduction and the two ML-KEM ciphertexts (SPEC §4). Anyone who can see file sizes in the chat they travel through can tell a card conversation is starting. Not padded, because the same chat has already carried the card itself, which is a fixed 1,770 bytes with no extension (Q-04): the message sizes add almost nothing to what that reveals, and padding would cost about 5.5 KB on most ordinary messages that carry prekeys. Hiding sizes for all bundles is a separate, app-wide question.
 - ~~Anyone holding the card can link Carol's first messages to it~~ (recorded 2026-10-16; **no longer applies** since the card carries no prekeys, [SPEC.md](SPEC.md) §4.6).
 
 ---
