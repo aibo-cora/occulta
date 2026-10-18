@@ -13770,3 +13770,19 @@ mechanism is the same.
 ### Guard
 
 None yet.
+
+## Bug 169 — The Files app shows an "Occulta" folder
+
+**Status:** Fixed 2026-10-18 on `v2.0.0/hide-files-folder`. Found in the Simulator while testing introduction cards.
+
+### What happens
+
+The app target set `INFOPLIST_KEY_UISupportsDocumentBrowser = YES` (Debug and Release) from the project's start. That key is for apps that browse their own documents, which Occulta doesn't, and with it Files lists the app's `Documents/` folder under On My iPhone › Occulta. It's empty in normal use, but it's a visible trace of the app outside every duress depth, and it would show anything that ever reached `Documents/`. Today that is only `Documents/Inbox/`, between iOS delivering an opened file and `handleOpenURL` deleting it after the read (Bug 101, step 1), or longer after a crash in between.
+
+### Fix
+
+The key is removed from the app target. Opening `.occ` and `.occbak` files doesn't depend on it: that is `CFBundleDocumentTypes` and `LSSupportsOpeningDocumentsInPlace = NO`, both unchanged. The Quick Look preview extension also sets the key; there it has no effect, and it was left alone.
+
+### Guard
+
+None automated: the folder is decided by iOS from `Info.plist`. Checked in the Simulator: no Occulta folder in Files, and a `.occ` opened from Files still reaches the app.
