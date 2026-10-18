@@ -344,7 +344,8 @@ extension ContactManager {
         if let firstError { throw firstError }
     }
 
-    private static let cardLifetime: TimeInterval = 24 * 60 * 60
+    /// How long a card lasts: 24 hours from its creation.
+    static let cardLifetime: TimeInterval = 24 * 60 * 60
 
     // MARK: - For compose
 

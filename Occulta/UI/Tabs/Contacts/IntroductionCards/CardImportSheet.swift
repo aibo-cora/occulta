@@ -148,7 +148,7 @@ struct CardImportSheet: View {
 
             Button(IntroCardCopy.importOnlyButton) { self.runImport(thenWrite: false) }
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.occultaAccent)
+                .foregroundStyle(self.canImport ? Color.occultaAccent : Color.secondary)
                 .frame(maxWidth: .infinity)
                 .disabled(!self.canImport)
         }

@@ -635,9 +635,13 @@ That split is why the gate has to be run by a human on real hardware before a re
       eight days before the change that broke it, went unnoticed for months, and has never
       executed in CI
 - [x] Identity challenge tests cover all three phases and the replay/timestamp rejection cases
-- [x] Secure Mode key-rotation guards pass (`GroupKeyRotationTests`, `AppLayerConfigRotationTests`,
-      `EncryptedFieldCoverageTests`) — the tripwires fail on any new encrypted model property that
-      has not been added to a re-encryption path
+- [x] Secure Mode key-rotation leftovers are guarded (`LegacyRotationArtefactTests`,
+      `EncryptedFieldCoverageTests`) — **reworded 2026-10-18.** Key rotation was removed (Removal
+      Stage 3, `Features/SecureMode/plan.md`), and with it `GroupKeyRotationTests`,
+      `AppLayerConfigRotationTests` and the tripwires for unrotated fields, so a new encrypted field
+      no longer needs a re-encryption path. What remains: "Erase all data" deletes the keys an
+      interrupted v1.10.3 rotation could leave (Bug 139), and a bundle version stranded by an old
+      rotation reads as unreadable, not as never seen (Bug 80).
 
 ### Why this is a manual gate rather than automation
 

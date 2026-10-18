@@ -201,9 +201,15 @@ struct CardCreateSheet: View {
     }
 
     private var createStep: some View {
-        let deadline = Date.now.addingTimeInterval(24 * 60 * 60)
+        // The deadline the card would get if made now, kept current while the screen is open.
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            self.createContent(deadline: context.date.addingTimeInterval(ContactManager.cardLifetime))
+        }
+        .navigationTitle("Introduction card")
+    }
 
-        return CardScreen {
+    private func createContent(deadline: Date) -> some View {
+        CardScreen {
             Text(IntroCardCopy.createTitle(name: self.name))
                 .font(.title3.bold())
 
@@ -225,7 +231,6 @@ struct CardCreateSheet: View {
 
             CardPrimaryButton(title: IntroCardCopy.createCardButton) { self.create() }
         }
-        .navigationTitle("Introduction card")
     }
 
     private func create() {
