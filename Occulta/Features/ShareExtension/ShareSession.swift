@@ -177,6 +177,24 @@ enum ShareSession {
         }
     }
 
+    /// Delete everything the share extension has left in the App Group. Erase All Data calls
+    /// this before it deletes the share-staging key.
+    ///
+    /// - `pending/` — staged sessions, including fresh ones `sweep` would keep
+    /// - `inbound/` — `.occ` handoffs. Nothing sweeps these: one whose handoff never reached
+    ///   the app stays until this runs
+    /// - the legacy contact index
+    ///
+    /// Removes the two directories themselves, not just what is in them. The extension
+    /// creates each one on first use, so its creation date records the first share into
+    /// Occulta just as the key's does.
+    static func removeAll(in container: URL) {
+        for name in ["pending", "inbound"] {
+            try? FileManager.default.removeItem(at: container.appendingPathComponent(name))
+        }
+        self.removeLegacyContactIndex(in: container)
+    }
+
     // MARK: - Private
 
     /// Strip EXIF, GPS, and camera metadata using CGImageSource/CGImageDestination.

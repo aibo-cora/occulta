@@ -16,6 +16,7 @@
 import Testing
 import Foundation
 import CryptoKit
+import Security
 import ImageIO
 import UniformTypeIdentifiers
 @testable import Occulta
@@ -365,14 +366,98 @@ struct ShareSessionLegacyIndexTests {
     }
 }
 
+// MARK: - Erase
+
+@Suite("ShareSession — erase")
+struct ShareSessionEraseTests {
+
+    /// Erase All Data must leave nothing of the share pipeline in the App Group (`bugs.md`
+    /// Bug 170): no staged session, not even a fresh one `sweep` would keep; no `.occ`
+    /// handoff, which nothing sweeps; and not the two directories, whose creation dates
+    /// record the first share into Occulta.
+    @Test func removeAll_deletesEverythingTheExtensionLeft() throws {
+        let container = try makeContainer()
+        try stage(in: container)
+
+        let inbound = container.appendingPathComponent("inbound")
+        try FileManager.default.createDirectory(at: inbound, withIntermediateDirectories: true)
+        try Data("sealed by the sender".utf8).write(to: inbound.appendingPathComponent("\(UUID().uuidString).occ"))
+
+        try Data("stale".utf8).write(to: container.appendingPathComponent("ShareIndex.sqlite"))
+
+        ShareSession.removeAll(in: container)
+
+        for name in ["pending", "inbound", "ShareIndex.sqlite"] {
+            #expect(!FileManager.default.fileExists(atPath: container.appendingPathComponent(name).path), "\(name) survived")
+        }
+    }
+
+    @Test func removeAll_whenNothingWasStaged_isANoOp() throws {
+        let container = try makeContainer()
+        ShareSession.removeAll(in: container)
+        ShareSession.removeAll(in: container)
+    }
+}
+
 // MARK: - The real key manager
+
+/// The share-staging key's public key, or nil when there is none. Asks the keychain directly,
+/// since every `ShareStagingKeyManager` entry point creates the key when it is missing. Tag
+/// and group are written out rather than read from the type: both are persisted, so renaming
+/// either has to fail here.
+private func stagingPublicKey() -> Data? {
+    let query: [String: Any] = [
+        kSecClass as String:              kSecClassKey,
+        kSecAttrApplicationTag as String: "share.index.se.key.occulta".data(using: .utf8)!,
+        kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
+        kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave,
+        kSecAttrAccessGroup as String:    "group.com.occulta.shared",
+        kSecReturnRef as String:          true
+    ]
+    var item: CFTypeRef?
+    guard
+        SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+        let publicKey = SecKeyCopyPublicKey(item as! SecKey)
+    else { return nil }
+    return SecKeyCopyExternalRepresentation(publicKey, nil) as Data?
+}
 
 /// `ShareStagingKeyManager` itself, which the suites above stand in for. Its key lives in the
 /// Secure Enclave, so this needs one. What the share handoff depends on is that two separate
 /// instances derive the same key: the extension seals with its own and the app opens with
 /// another.
-@Suite("ShareStagingKeyManager — Enclave key", .enabled(if: shareKeyAvailable()))
+///
+/// Serialized because two cases delete the key, which would pull it out from under a
+/// concurrent seal-then-open.
+@Suite("ShareStagingKeyManager — Enclave key", .enabled(if: shareKeyAvailable()), .serialized)
 struct ShareStagingKeyManagerTests {
+
+    /// Erase All Data deletes this key (`bugs.md` Bug 170): it and its creation date outlived
+    /// the wipe. The next access must create a fresh key rather than fail, and nothing sealed
+    /// under the old one may open with the new.
+    @Test("Deleting the key removes it, and the next access creates a fresh one")
+    func deleteKeyRemovesItAndNextAccessCreatesAFreshOne() throws {
+        let sealedBefore = try ShareStagingKeyManager().encrypt(data: Data("staged".utf8))
+        let original     = try #require(stagingPublicKey())
+
+        #expect(ShareStagingKeyManager().deleteKey())
+        #expect(stagingPublicKey() == nil)
+
+        let plaintext = Data("staged after the erase".utf8)
+        let sealed    = try ShareStagingKeyManager().encrypt(data: plaintext)
+        #expect(try ShareStagingKeyManager().decrypt(data: sealed) == plaintext)
+
+        let fresh = try #require(stagingPublicKey())
+        #expect(fresh != original)
+        #expect(throws: (any Error).self) { try ShareStagingKeyManager().decrypt(data: sealedBefore) }
+    }
+
+    @Test("Deleting a key that is already gone succeeds")
+    func deleteKeyWhenAbsentSucceeds() {
+        ShareStagingKeyManager().deleteKey()
+        #expect(stagingPublicKey() == nil)
+        #expect(ShareStagingKeyManager().deleteKey())
+    }
 
     @Test("What one instance seals, another opens")
     func separateInstancesShareTheKey() throws {
