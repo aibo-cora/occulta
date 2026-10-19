@@ -252,7 +252,7 @@ An `issued` card past `expiresAt` that the sweep hasn't cleared yet is treated a
 
    | Field | Result |
    |---|---|
-   | any, when the card is one of the user's own (its agreement key matches an `issued` card on any contact, at any depth) | **Refuse** (W-18), checked first after expiry (decided 2026-10-17). Otherwise a person could start a conversation with themselves |
+   | any, when the card is one of the user's own (its agreement key matches an `issued` card on any contact, at any depth) | **Refuse** (W-18), checked first after expiry (decided 2026-10-17). Otherwise a person could start a conversation with themselves. At a duress depth this shows a hidden issued card exists to someone who holds its file; kept (decided 2026-10-19, FINDINGS limits) |
    | any, when the contact already has in-person keys (Verified) | **Refuse**, as for creating a card (§6.1): a card is only for someone you haven't met (decided 2026-10-17, phase 2). Pickers list only pending and waiting contacts |
    | `empty` (pending) | Import |
    | `imported` (waiting on an earlier card from Bob) | **Replace.** Write the new `imported` state over the old one, which deletes its keys. Bob can only issue a card from a pending contact, so a new card means his side never got Carol's message, or he discarded the conversation |
@@ -370,6 +370,7 @@ Card keys never enter `contactPublicKeys`, so code that reads verified keys find
 - **Receipt (§6.6) and expiry (§6.4) ignore the current depth.**
 - **Every write keeps the field's size.**
 - **A hidden contact's card opening at a duress depth** is the presence oracle accepted on 2026-08-13, with no new shape.
+- **Nothing a card adds behaves differently at a duress depth, and nothing leads into a hidden contact** (decided 2026-10-19). The first-message view (W-08, Standard Encryption, the trust line) is the same at every depth and has no button into the contact; Bob replies from the contact's details, which the depth-filtered list reaches. A view that changed at a duress depth would tell a coercer the depth; one that opened a hidden contact would let them act on it.
 
 ---
 

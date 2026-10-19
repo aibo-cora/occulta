@@ -102,6 +102,16 @@ enum CardRules {
         }
     }
 
+    /// How long a card lasts: 24 hours from its creation.
+    static let cardLifetime: TimeInterval = 24 * 60 * 60
+
+    /// The deadline Carol's phone keeps for `card`: its own, but never more than two lifetimes from `now`. Only a
+    /// modified issuer writes a later one, and Bob's phone enforces its own deadline either way (§6.4); Carol's
+    /// countdown and sweep need one that ends. Two lifetimes leave room for the two clocks to differ.
+    static func recipientDeadline(of card: IntroductionCard, now: Date) -> Date {
+        min(card.expiresAt, now.addingTimeInterval(2 * self.cardLifetime))
+    }
+
     /// Whether Carol's phone may send. Past `expiresAt` she may not send a first message, so it doesn't
     /// send one that can't open; once she has sent one, she may keep sending.
     static func canSend(_ state: CardState, now: Date) -> Bool {

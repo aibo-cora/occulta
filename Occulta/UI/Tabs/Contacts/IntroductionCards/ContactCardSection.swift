@@ -45,8 +45,8 @@ struct ContactCardSection: View {
                 }
             case .imported(_, _, _, _, _, _, let expiresAt, let sentFirstMessage):
                 self.importedContent(expiresAt: expiresAt, sentFirstMessage: sentFirstMessage)
-            case .conversation(_, _, _, _, _, _, let isIssuer):
-                self.conversationContent(isIssuer: isIssuer)
+            case .conversation(_, _, _, _, _, let bootstrapOpen, let isIssuer):
+                self.conversationContent(isIssuer: isIssuer, awaitingReply: isIssuer && bootstrapOpen)
             }
 
             if let failure = self.failure {
@@ -131,11 +131,20 @@ struct ContactCardSection: View {
         }
     }
 
-    /// Both sides, until the meeting. "Wasn't {Name}?" is Bob's (W-15): only he made the card, and only his
-    /// field holds Carol's introduction.
+    /// Both sides, until the meeting. "Wasn't {Name}?" is Bob's (W-15): only he made the card. Until Carol hears
+    /// back (`awaitingReply`), Bob also sees W-08 and why replying helps: the first-message view no longer has a
+    /// Reply button, so this is where he answers, with compose just below.
     @ViewBuilder
-    private func conversationContent(isIssuer: Bool) -> some View {
+    private func conversationContent(isIssuer: Bool, awaitingReply: Bool) -> some View {
         CardNotice(tone: .warn, IntroCardCopy.trustLine)
+
+        if awaitingReply {
+            CardNotice(tone: .warn, IntroCardCopy.firstMessage(name: self.name))
+            Text(IntroCardCopy.replyNote(name: self.name))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
 
         if isIssuer {
             Text(IntroCardCopy.wasntHeading(name: self.name).uppercased())
@@ -203,7 +212,7 @@ struct CardCreateSheet: View {
     private var createStep: some View {
         // The deadline the card would get if made now, kept current while the screen is open.
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            self.createContent(deadline: context.date.addingTimeInterval(ContactManager.cardLifetime))
+            self.createContent(deadline: context.date.addingTimeInterval(CardRules.cardLifetime))
         }
         .navigationTitle("Introduction card")
     }

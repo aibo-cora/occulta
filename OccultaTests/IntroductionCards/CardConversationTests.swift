@@ -460,6 +460,34 @@ struct CardConversationTests {
         guard case .issued = try pair.bob.state(pair.bobSide) else { Issue.record("an issued card is untouched"); return }
     }
 
+    @Test("The same card on two of Carol's contacts (one hidden): Bob's reply opens on the one he redeemed",
+          arguments: [true, false])
+    func sameCardOnTwoContacts(bobRedeemsHidden: Bool) throws {
+        let pair = try CardPhonePair()
+        let (bob, carol) = (pair.bob, pair.carol)
+        // Carol writes from her first contact, then hides it and, at the duress depth, imports the same card
+        // into a second one: the same-card check doesn't see a hidden contact, so the second gets its own keys.
+        let fromHidden = try carol.send(to: pair.carolSide, "from the hidden contact")
+        try carol.run {
+            let hidden = try carol.contact(pair.carolSide)
+            hidden.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
+            try carol.cm.modelContext.save()
+            carol.cm.security.applyVerifyState(for: .duress)
+        }
+        let second = try carol.newContact("Bob again", depth: carol.cm.security.currentDepth)
+        let outcome = try carol.run { try carol.cm.importCard(pair.card.encoded, into: try carol.contact(second), newContactName: nil) }
+        #expect(outcome == .imported(contactIdentifier: second), "precondition: a second, separate import")
+        let fromSecond = try carol.send(to: second, "from the second contact")
+
+        // Bob redeems one of them; his reply goes to that contact's keys.
+        try bob.receive(bobRedeemsHidden ? fromHidden : fromSecond)
+        let reply = try bob.send(to: pair.bobSide, "reply")
+
+        let opened = try carol.receive(reply)
+        #expect(opened.ownerID == (bobRedeemsHidden ? pair.carolSide : second))
+        #expect(opened.text == "reply")
+    }
+
     @Test("Only Bob discards; it also drops the bundle version the card's messages recorded")
     func discardIsBobsAndClearsVersion() throws {
         let pair = try CardPhonePair()

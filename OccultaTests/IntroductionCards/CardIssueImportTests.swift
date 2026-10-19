@@ -388,6 +388,58 @@ struct CardCreateTests {
     }
 }
 
+// MARK: - A card field that won't read
+
+@MainActor
+@Suite("Card — a field that won't open is never overwritten as if it were empty", .serialized)
+struct CardUnreadableFieldTests {
+
+    /// A sealed-length field that doesn't open: what corruption leaves.
+    private func corrupt(_ contact: Contact.Profile) {
+        contact.introductionCardEncrypted = randomBytes(contact.introductionCardEncrypted?.count ?? 12_316)
+    }
+
+    @Test("Display reads it as empty; a write that would replace it throws, and the field stays", .ambientTestKeyManager)
+    func createAndImportRefuse() throws {
+        let bob = try Phone(), carol = try Phone()
+        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let contact = try carol.contact("Bob")
+        self.corrupt(contact)
+        let field = contact.introductionCardEncrypted
+
+        #expect(contact.cardState == .empty, "display still reads it as empty")
+        #expect(throws: ContactManager.CardError.fieldUnreadable) { try carol.cm.cardStateForWrite(of: contact) }
+        #expect(throws: ContactManager.CardError.fieldUnreadable) { try carol.cm.createCard(for: contact, now: t0) }
+        #expect(throws: ContactManager.CardError.fieldUnreadable) {
+            try carol.cm.importCard(card.encoded, into: contact, newContactName: nil, now: t0)
+        }
+        #expect(contact.introductionCardEncrypted == field, "nothing replaced it")
+    }
+
+    @Test("A nil field, a row the migration hasn't reached, reads as empty for a write", .ambientTestKeyManager)
+    func nilIsEmpty() throws {
+        let carol = try Phone()
+        let contact = try carol.contact()
+        contact.introductionCardEncrypted = nil
+        #expect(try carol.cm.cardStateForWrite(of: contact) == .empty)
+    }
+
+    @Test("Meeting in person clears it and drops the record's batches, as for a card", .ambientTestKeyManager)
+    func meetingClearsIt() throws {
+        let carol = try Phone()
+        let contact = try carol.contact()
+        var record = try carol.cm.prekeyRecord(for: contact)
+        record.ownBatches = [pendingBatch()]
+        try carol.cm.store(record, for: contact)
+        self.corrupt(contact)
+
+        try carol.cm.clearCard(afterMeetingOf: contact)
+
+        #expect(try carol.cm.cardStateForWrite(of: contact) == .empty)
+        #expect(try carol.cm.prekeyRecord(for: contact).ownBatches.isEmpty, "it may have held card-era batches")
+    }
+}
+
 // MARK: - The same card again
 
 /// Carol on Bob's card: imported from these bytes, with nothing Enclave-made, so these run anywhere.
@@ -472,6 +524,21 @@ struct CardReimportTests {
         let outcome = try carol.cm.importCard(card.encoded, into: nil, newContactName: "Bob", now: card.expiresAt + hour)
 
         #expect(outcome == .refused(.expired))
+    }
+
+    @available(iOS 26, *)
+    @Test("A card claiming a far-future deadline is kept with one two lifetimes away; an ordinary one keeps its own",
+          .ambientTestKeyManager, .enabled(if: enclave))
+    func deadlineCapped() throws {
+        let carol = try Phone()
+        let issuer = try CardTestIssuer(expiresAt: t0 + 365 * day)
+        let contact = try carol.contact("Bob")
+        try carol.cm.importCard(issuer.card.encoded, into: contact, newContactName: nil, now: t0)
+        guard case .imported(_, _, _, _, _, _, let expiresAt, _) = contact.cardState else { Issue.record("should import"); return }
+        #expect(expiresAt == t0 + 2 * day)
+
+        let ordinary = try CardTestIssuer(expiresAt: t0 + day)
+        #expect(CardRules.recipientDeadline(of: ordinary.card, now: t0) == t0 + day)
     }
 
     @Test("CardRules.holds: these bytes while waiting, the card's key in Carol's conversation, nothing else", .ambientTestKeyManager)

@@ -143,12 +143,8 @@ nonisolated enum IntroCardCopy {
         )
     }
 
-    /// The first-message view's button (decided 2026-10-16).
-    static func replyButton(name: String) -> String {
-        "Reply to \(name)"
-    }
-
-    /// The note under the reply button.
+    /// Under W-08 in Bob's card section, while his bootstrap is open (the first-message view's Reply button was
+    /// removed 2026-10-19: see `CardFirstMessageFrame`).
     static func replyNote(name: String) -> String {
         "Your reply also gives \(name) your prekeys, so \(name)'s next messages are forward-secret."
     }

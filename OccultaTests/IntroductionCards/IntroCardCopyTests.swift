@@ -33,7 +33,6 @@ struct IntroCardCopyTests {
             result.append(("activeCard", self.joined(IntroCardCopy.activeCard(name: name, deadline: deadline))))
             result.append(("cancelCardTitle", IntroCardCopy.cancelCardTitle(name: name)))
             result.append(("firstMessage", self.joined(IntroCardCopy.firstMessage(name: name))))
-            result.append(("replyButton", IntroCardCopy.replyButton(name: name)))
             result.append(("replyNote", IntroCardCopy.replyNote(name: name)))
             result.append(("wasntHeading", IntroCardCopy.wasntHeading(name: name)))
             result.append(("wasntText", IntroCardCopy.wasntText(name: name)))

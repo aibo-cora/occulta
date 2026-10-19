@@ -85,6 +85,19 @@ extension ContactManager {
         case encryptionFailed
         /// The card field lacks what this send needs, or holds keys that won't parse. Nothing was sent.
         case keyMaterialMissing
+        /// The card field is there but won't open or decode. Nothing replaces it: it may hold a live card.
+        case fieldUnreadable
+    }
+
+    /// The card field, for a write that would replace it. A nil field, a row the migration hasn't reached yet,
+    /// reads as `.empty`. A field that won't open or decode throws `fieldUnreadable`, unlike `cardState`, which
+    /// reads it as `.empty` for display: a create or an import mustn't overwrite a conversation it couldn't read.
+    func cardStateForWrite(of contact: Contact.Profile) throws -> CardState {
+        guard let sealed = contact.introductionCardEncrypted else { return .empty }
+        guard let plaintext = sealed.decrypt(), let state = try? CardStateCodec().decode(plaintext) else {
+            throw CardError.fieldUnreadable
+        }
+        return state
     }
 
     // MARK: - Create and cancel (§6.1, §6.2)
@@ -97,13 +110,13 @@ extension ContactManager {
     @discardableResult
     func createCard(for contact: Contact.Profile, now: Date = .now) throws -> IntroductionCard {
         guard let postQuantum = self.cardPostQuantum else { throw CardError.unsupported }
-        switch contact.cardState {
+        switch try self.cardStateForWrite(of: contact) {
         case .empty, .issued: break
         case .imported, .conversation: throw CardError.contactNotPending
         }
         guard !contact.hasInPersonKeys else { throw CardError.contactNotPending }
 
-        let expiresAt = Date(timeIntervalSince1970: (now.timeIntervalSince1970 + Self.cardLifetime).rounded(.down))
+        let expiresAt = Date(timeIntervalSince1970: (now.timeIntervalSince1970 + CardRules.cardLifetime).rounded(.down))
         let agreement = try self.cardKeys.makeAgreementKey()
         let signing   = try self.cardKeys.makeSigningKey()
         guard let mlkem = postQuantum.generatePersistentKeyPair() else { throw CardError.keyGenerationFailed }
@@ -211,7 +224,8 @@ extension ContactManager {
     /// - Returns: whether a card key could have existed, so the caller checkpoints after its save.
     @discardableResult
     func clearCard(afterMeetingOf contact: Contact.Profile) throws -> Bool {
-        let hadCard = contact.cardState != .empty
+        // A field that won't read may have held card keys, so its batches go too.
+        let hadCard = (try? self.cardStateForWrite(of: contact)) != .empty
         if hadCard { try self.dropCardEraBatches(of: contact) }
         try self.store(CardState.empty, for: contact)
         return hadCard
@@ -263,7 +277,7 @@ extension ContactManager {
         guard let postQuantum = self.cardPostQuantum else { return .unsupported }
 
         switch CardRules.importDecision(
-            current: contact?.cardState ?? .empty, incoming: card, now: now,
+            current: try contact.map(self.cardStateForWrite) ?? .empty, incoming: card, now: now,
             ownIssuedAgreementKeys: try self.ownIssuedAgreementKeys()
         ) {
         case .refuse(let refusal): return .refused(refusal)
@@ -294,7 +308,7 @@ extension ContactManager {
             try self.store(
                 .imported(
                     peerCard: card.encoded, agreementKey: agreement.blob, signingKey: signing.blob, mlkemKey: mlkem.keyBlob,
-                    ss1: encapsulation.sharedSecret, ct1: encapsulation.ciphertext, expiresAt: card.expiresAt,
+                    ss1: encapsulation.sharedSecret, ct1: encapsulation.ciphertext, expiresAt: CardRules.recipientDeadline(of: card, now: now),
                     sentFirstMessage: false
                 ),
                 for: target
@@ -350,8 +364,6 @@ extension ContactManager {
         if let firstError { throw firstError }
     }
 
-    /// How long a card lasts: 24 hours from its creation.
-    static let cardLifetime: TimeInterval = 24 * 60 * 60
 
     // MARK: - For compose
 

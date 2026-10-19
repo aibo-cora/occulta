@@ -133,8 +133,10 @@ struct CardImportSheet: View {
         if let refusal = self.refusal {
             CardNotice(tone: .danger, self.message(for: refusal))
         } else if let card = self.card {
-            CardCountdown(expiresAt: card.expiresAt)
-            CardNotice(tone: .warn, IntroCardCopy.recipientDeadline(name: self.chosenName, deadline: card.expiresAt))
+            // The deadline the import will keep (`CardRules.recipientDeadline`), not a far-future one a card may claim.
+            let deadline = CardRules.recipientDeadline(of: card, now: .now)
+            CardCountdown(expiresAt: deadline)
+            CardNotice(tone: .warn, IntroCardCopy.recipientDeadline(name: self.chosenName, deadline: deadline))
         }
 
         if let failure = self.failure {

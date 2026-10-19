@@ -1609,6 +1609,7 @@ extension ContactManager {
         
         let contacts = try self.fetchAllContacts()
         var sender: Contact.Profile?
+        var cardHolders: [Contact.Profile] = []
  
         let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 
@@ -1629,11 +1630,11 @@ extension ContactManager {
                 let cardKey = self.cardPeerAgreementKey(of: contact, using: localKey),
                 contact.isLikelySender(of: bundle, contactPublicKey: cardKey)
             {
-                sender = contact
-
-                break
+                cardHolders.append(contact)
             }
         }
+
+        if sender == nil, !cardHolders.isEmpty { sender = self.cardHolder(among: cardHolders, of: bundle) }
 
         // No match: the bundle may redeem one of our issued cards (SPEC §6.6 step 4), at every depth.
         if sender == nil { sender = try self.redeemCard(for: bundle) }
@@ -1643,6 +1644,20 @@ extension ContactManager {
         return sender
     }
     
+    /// The contact a card conversation's bundle is for, when more than one holds the same peer card key: the same
+    /// card imported at two depths (the same-card check skips a contact hidden at the current depth, SPEC §6.3).
+    /// Only one of them holds the keys the peer seals to, so the one a slot's `prekeyID` names is it. Read from the
+    /// record, so nothing is consumed. A long-term slot names no prekey: then the first.
+    private func cardHolder(among holders: [Contact.Profile], of bundle: OccultaBundle) -> Contact.Profile {
+        guard holders.count > 1 else { return holders[0] }
+        let prekeyIDs = (bundle.group?.recipients ?? []).compactMap(\.secrecyContext.prekeyID)
+        let bookkeeper = PrekeyBookkeeper()
+        return holders.first { holder in
+            guard let record = try? self.prekeyRecord(for: holder) else { return false }
+            return prekeyIDs.contains { bookkeeper.blob(forPrekeyID: $0, in: record) != nil }
+        } ?? holders[0]
+    }
+
     func identifyOwner(of bundle: OccultaBundle) throws -> String? {
         let sender = try self.identifyOwner(for: bundle)
         
