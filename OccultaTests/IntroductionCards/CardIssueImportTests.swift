@@ -474,7 +474,7 @@ struct CardReimportTests {
         #expect(outcome == .refused(.expired))
     }
 
-    @Test("CardRules.holds: these bytes while waiting, the card's key in Carol's conversation, nothing else")
+    @Test("CardRules.holds: these bytes while waiting, the card's key in Carol's conversation, nothing else", .ambientTestKeyManager)
     func rule() throws {
         let bob = try Phone()
         let card  = try bob.cm.createCard(for: try bob.contact(), now: t0)
