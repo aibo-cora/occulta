@@ -15,6 +15,7 @@ the two disagree, the spec owns the cryptographic design and this folder owns se
 |---|---|
 | [HARDENING_STEPS.md](HARDENING_STEPS.md) | What to change, and why each change is needed |
 | [ROLLOUT_PLAN.md](ROLLOUT_PLAN.md) | How to ship it in stages without creating a new tell |
+| [PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) | How the phrase itself ships: entry, migration from the PIN and the local DB key, depths, effort (proposed, 2026-10-19) |
 | [PROTECTION_ASSESSMENT.md](PROTECTION_ASSESSMENT.md) | What an adversary gets today, and after every stage |
 
 ## Threat model

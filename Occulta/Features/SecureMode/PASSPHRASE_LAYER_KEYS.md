@@ -11,6 +11,15 @@ deliberately accepts.
 wider hardening plan: the steps around it, a proposed staged rollout, and a protection assessment. This
 document stays the owner of the cryptographic design, and that folder owns sequencing.
 
+**Passphrase rollout, 2026-10-19 — [`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md).
+Proposed, not decided.** It plans phrase entry, migration from the PIN and the local DB key, and depths
+under phrases. It proposes two changes to §1, both open:
+- key slots: the phrase unlocks a random depth key instead of being the key;
+- one salt and one Enclave key per install instead of one per depth.
+
+It also touches §2's open shape, §4's entry and recovery requirements, and §5. Until decided, this document
+stands as written.
+
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
 shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
 confirmed gone (grepped, zero matches, repeatedly this session). The blocker §5 names is cleared —
@@ -116,6 +125,11 @@ Every guess now needs the seized phone's SE, one at a time, at SE speed; nothing
 unless the SEP itself is broken. At 90 bits this is margin rather than the thing holding the line — but it
 is exactly the margin that matters if the SEP does fall, and it costs one SE call per unlock. (`s_D` outside
 the P-256 scalar range fails `rawRepresentation:`; probability ~2⁻³², handle by re-deriving with a counter.)
+
+**Proposed changes, 2026-10-19, open, needs a decision** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1–§1.2):
+- **Key slots.** `layerKey_D` would unlock a slot holding a random depth key, not seal data itself.
+- **One salt and one Enclave key per install.** A typed phrase doesn't name its depth. So per-depth salts
+  and Enclave keys would run this derivation once per slot on every unlock attempt, about 32 s.
 
 ---
 
@@ -390,3 +404,7 @@ contacts, then the remaining depth-stamped records. It never splits by requireme
 row and field AAD, all at once. Every depth on a device migrates in one step. The phrase replaces the
 PIN for every lock user, not only for users with duress depths. §2 remains the blocker. Design it for
 vault and contacts together, even though the vault would ship first.
+
+**Passphrase rollout, 2026-10-19 — `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §7. Proposed, not decided.** With
+key slots, the reseal could ship silently on every install before any phrase exists, and phrase setup would
+follow in a later release. Stages and effort are estimated there.

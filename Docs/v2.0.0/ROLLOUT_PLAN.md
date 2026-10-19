@@ -5,6 +5,11 @@
 assumption in [`PASSPHRASE_LAYER_KEYS.md`](../../Occulta/Features/SecureMode/PASSPHRASE_LAYER_KEYS.md)
 §5.
 
+**Passphrase rollout, 2026-10-19 — [PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md). Proposed, not
+decided.** It covers how stages 2–4 would ship the phrase: entry, migration from the PIN and the local DB
+key, depths, and effort. It proposes narrowing Rule 1, and an alternative release cut. This plan stands until
+those are decided.
+
 **Summary.** Steps 6–16 and 17a don't depend on each other and can ship one at a time, in any order.
 Steps 1–5 can be split by data (vault first, then contacts), but not step by step. 17b ships with the
 contacts slice. (Since 2026-10-06, 17b for prekeys means moving their Enclave blobs into the contact record,
@@ -18,6 +23,9 @@ however the stages are cut.
    but it also costs a second full reseal. That is the riskiest operation in the app, and this
    codebase's data-loss bugs have clustered there (Bugs 75–78, 138). Each slice of data gets all five
    steps at once.
+   *Proposed narrowing, 2026-10-19, open, needs a decision ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md)
+   §1.1):* with key slots, steps 1 and 2 rewrap a depth key instead of resealing, so only steps 3–5 ride
+   each slice's reseal.
 2. **All depths on a device switch together.** If each depth switched on its next unlock, the everyday
    depth would switch first and the duress depths would stay on PIN verifiers for weeks. That
    difference points straight at the real depth. The user sets up every depth's phrase in one sitting.
