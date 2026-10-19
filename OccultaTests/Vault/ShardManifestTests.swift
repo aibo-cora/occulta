@@ -195,6 +195,33 @@ private func distribute(
         #expect(manifest.contains(newAttr.id))
         #expect(!manifest.contains(oldAttr.id))
     }
+
+    /// G1 (prekey continuity D5): a `.replace` delivered twice must not leave two rows of the same piece. Without the
+    /// check the second delivery stored the new piece again, as Case 15 already prevents for `.distribute`.
+    @Test("A repeated .replace stores nothing")
+    func repeatedReplaceStoresNothing() throws {
+        let (vault, _, km, _) = try makeAlice()
+        let (bobCustody, _, bobCont) = try makeBob()
+        vault.unlock(context: LAContext())
+
+        let entryID  = UUID()
+        let oldAttr  = try makeAttr(signer: km, entryID: entryID, shardBytes: Data([0x01]))
+        let newAttr  = try makeAttr(signer: km, entryID: entryID, shardBytes: Data([0x02]))
+        let alicePub = try km.retrieveIdentity()
+        let deliver = { (op: OccultaBundle.ShardOperation) in
+            _ = bobCustody.handleInbound(
+                shardOperations: [op], custodyManifest: nil,
+                senderPublicKey: alicePub, senderIdentifier: "alice", vaultManager: vault
+            )
+        }
+
+        deliver(.init(kind: .distribute, attribute: oldAttr))
+        deliver(.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id))
+        deliver(.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id))
+
+        #expect(try custodyCount(in: bobCont) == 1)
+        #expect(try bobCustody.buildCustodyManifest(for: "alice") == [newAttr.id])
+    }
 }
 
 // MARK: - Case 7: Owner key rotation triggers .handback

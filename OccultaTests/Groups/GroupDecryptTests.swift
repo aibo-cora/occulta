@@ -52,7 +52,7 @@ private struct DecryptPair {
             senderContactID: "sender",
             senderPublicKey: senderPub,
             quantumMaterial: nil,
-            prekeyManager: Manager.PrekeyManager()
+            prekeys: Manager.PrekeySecretsManager()
         )
         #expect(payload.sessionKey.count == 32)
     }
@@ -69,7 +69,7 @@ private struct DecryptPair {
             try crypto.findAndOpenRecipientSlot(
                 in: bundle, blind: Data(count: 32),
                 senderContactID: "sender", senderPublicKey: Data(count: 65),
-                quantumMaterial: nil, prekeyManager: Manager.PrekeyManager()
+                quantumMaterial: nil, prekeys: Manager.PrekeySecretsManager()
             )
         }
     }
@@ -86,7 +86,7 @@ private struct DecryptPair {
                 senderContactID: "sender",
                 senderPublicKey: senderPub,
                 quantumMaterial: nil,
-                prekeyManager: Manager.PrekeyManager()
+                prekeys: Manager.PrekeySecretsManager()
             )
         }
     }
@@ -117,7 +117,7 @@ private struct DecryptPair {
                 senderContactID: "sender",
                 senderPublicKey: senderPub,
                 quantumMaterial: nil,
-                prekeyManager: Manager.PrekeyManager()
+                prekeys: Manager.PrekeySecretsManager()
             )
         }
     }
@@ -144,7 +144,7 @@ private struct DecryptPair {
             senderContactID: "sender",
             senderPublicKey: senderPub,
             quantumMaterial: nil,
-            prekeyManager: Manager.PrekeyManager()
+            prekeys: Manager.PrekeySecretsManager()
         )
         #expect(payload.sessionKey.count == 32)
     }
@@ -454,14 +454,14 @@ private struct DecryptPair {
 
         // Inbound: recipient derives wrapping key from sender
         let recipientCrypto = Manager.Crypto(keyManager: recipientKM)
-        let (inboundKey, consumable) = try recipientCrypto.deriveInboundKey(
+        let (inboundKey, used) = try recipientCrypto.deriveInboundKey(
             secrecy: context,
             senderContactID: "test",
             senderPublicKey: senderPub,
             quantumMaterial: nil,
-            prekeyManager: Manager.PrekeyManager()
+            prekeys: Manager.PrekeySecretsManager()
         )
-        #expect(consumable == nil)
+        #expect(used == .longTerm)
 
         // Both sides derive the same key (ECDH symmetry + XOR salt symmetry in TestKeyManager)
         let outboundBytes = outboundKey.withUnsafeBytes { Data($0) }
@@ -479,7 +479,7 @@ private struct DecryptPair {
                 senderContactID: "test",
                 senderPublicKey: Data(count: 65),
                 quantumMaterial: nil,
-                prekeyManager: Manager.PrekeyManager()
+                prekeys: Manager.PrekeySecretsManager()
             )
         }
     }

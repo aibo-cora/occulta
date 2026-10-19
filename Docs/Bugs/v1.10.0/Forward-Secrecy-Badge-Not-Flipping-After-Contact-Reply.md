@@ -36,6 +36,8 @@ All `#if DEBUG`-gated, in `Occulta/Services/Contact+Manager.swift`'s `openGroup`
 
 Also in `Occulta/Features/Forward+Secrecy/Contact+Model+Profile.swift`: `debugLogPrekeyStateAtCompose(_:)`, wired into both `ContactDetailV3.swift` and `ContactDetailV2.swift`'s compose views (`.onAppear` + `.onChange(of: availableInboundPrekeyCount)`).
 
+**Removed 2026-10-09** (`debugLogPrekeyStateAtCompose` and both views' hooks): prekey continuity stage 1 replaces the profile helpers it read (`Docs/Features/Prekey Continuity/DESIGN.md` §8). The `openGroup`/`decryptSealed` logs above are rewritten with that stage.
+
 ## Resolved
 
 Repro captured: a subsequent bundle arrived with `RecipientPayload.prekeyBatch` present, `storeInboundBatch` persisted it, and the compose badge flipped to "Forward Secrecy" correctly. Of the three candidates this doc's investigation couldn't distinguish from code alone (batch never left their device / never arrived / arrived but failed to persist), none of them held up — the batch did arrive and did persist, just not on the very first reply. No fix needed; closing.

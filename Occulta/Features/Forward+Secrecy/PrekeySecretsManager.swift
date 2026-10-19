@@ -1,5 +1,5 @@
 //
-//  Prekey+Manager.swift
+//  PrekeySecretsManager.swift
 //  Occulta
 //
 //  Created by Yura on 3/17/26.
@@ -13,18 +13,46 @@ extension Manager {
     ///
     /// All private keys are stored in the Secure Enclave tagged
     /// `"prekey.<contactID>.<uuid>"`.
-    class PrekeyManager {
+    class PrekeySecretsManager {
 
         // MARK: - Constants
 
         static let defaultBatchSize   = 15
-        static let replenishThreshold = 5
 
         // MARK: - Generation
 
-        /// Generate a batch of prekey pairs for a specific contact.
+        /// Generate prekeys as Enclave keys held by their wrapped blobs (`dataRepresentation`), for
+        /// `PrekeyBookkeeper.install` to put into the contact's record (prekey continuity D9).
         ///
+        /// CryptoKit creates no keychain item: the blob returned is the only copy, so the record holds the key
+        /// and deleting it from the record deletes the key (`PrekeyGenerationMeasurementTests` asserts no item
+        /// appears). Same access control as the keychain prekeys before them.
         ///
+        /// Returns the blobs only: a public key is derived from its blob when needed (`publicKey(ofBlob:)`).
+        ///
+        /// - Throws: If the Enclave can't create a key. All or nothing, as with `generateBatch`.
+        func generateEnclaveKeys(count: Int = PrekeySecretsManager.defaultBatchSize) throws -> [Data] {
+            var error: Unmanaged<CFError>?
+            guard let access = SecAccessControlCreateWithFlags(
+                kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage], &error
+            ) else {
+                throw error!.takeRetainedValue() as Error
+            }
+            return try (0..<count).map { _ in
+                try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access).dataRepresentation
+            }
+        }
+
+        /// The X9.63 public key of a prekey held as an Enclave blob, or `nil` if the blob can't be loaded.
+        nonisolated static func publicKey(ofBlob blob: Data) -> Data? {
+            (try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob))?.publicKey.x963Representation
+        }
+
+        /// Generate a batch of prekey pairs for a specific contact, as keychain items.
+        ///
+        /// How prekeys were stored before stage 1. Production now generates through `generateEnclaveKeys`;
+        /// this stays so tests can create the legacy keychain prekeys that existing installs still hold and
+        /// the receive path must still open until they retire.
         ///
         /// - Parameters:
         ///   - contactID:       Identifier of the contact this batch is for.
@@ -33,7 +61,7 @@ extension Manager {
         /// - Returns:
         ///   - `prekeys`:      Generated ``Prekey`` structs (public side only).
         /// - Throws: If SE key creation fails.
-        func generateBatch(contactID: String, count: Int = PrekeyManager.defaultBatchSize) throws -> [Prekey] {
+        func generateBatch(contactID: String, count: Int = PrekeySecretsManager.defaultBatchSize) throws -> [Prekey] {
             var prekeys: [Prekey] = []
 
             for _ in 0..<count {
@@ -223,11 +251,6 @@ extension Manager {
             return tags
         }
 
-        /// Whether a fresh batch should be generated for this contact.
-        func needsReplenishment(for contactID: String) -> Bool {
-            self.remainingCount(for: contactID) < Self.replenishThreshold
-        }
-
         /// Delete ALL prekey private keys from the SE, across all contacts.
         func deleteAllKeys() {
             for tag in self.findAllTags() {
@@ -286,9 +309,47 @@ extension Manager {
     }
 }
 
+// MARK: - Finding and destroying a prekey's private half
+
+/// One of our prekeys' private halves, as the receive path uses it.
+enum PrekeyPrivateKey {
+    /// A keychain item: every prekey from before stage 1.
+    case keychain(SecKey)
+    /// An Enclave key rebuilt from its blob in the contact's record (prekey continuity D9).
+    case enclave(SecureEnclave.P256.KeyAgreement.PrivateKey)
+}
+
+/// Where the receive path finds the private half of the prekey a bundle names, and destroys it once the bundle
+/// opens. `Manager.Crypto` holds no database, so the caller supplies this: `ContactManager` passes one that reads
+/// the sender's record first and the keychain second, and saves at once when a key is used.
+protocol PrekeyPrivateKeys {
+    func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey?
+    /// The last-resort key a derived `prekeyID` names, with its own ID (prekey continuity §3.1). It isn't consumed.
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)?
+    /// Destroys it. Called the moment the slot opens, before anything can still reject the bundle (§2.2 of
+    /// `SECURITY_CHECKLIST.md`), so it doesn't throw: by then the key has done its work either way.
+    func consume(prekeyID: String, contactID: String)
+}
+
+/// The keychain alone: what tests pass, and what holds every legacy prekey.
+extension Manager.PrekeySecretsManager: PrekeyPrivateKeys {
+    func privateKey(forPrekeyID prekeyID: String, contactID: String) -> PrekeyPrivateKey? {
+        self.retrievePrivateKey(for: Prekey(id: prekeyID, contactID: contactID, publicKey: Data())).map(PrekeyPrivateKey.keychain)
+    }
+
+    func consume(prekeyID: String, contactID: String) {
+        self.consume(prekey: Prekey(id: prekeyID, contactID: contactID, publicKey: Data()))
+    }
+
+    /// Last-resort keys live only in the record, never in the keychain.
+    func lastResortKey(forPrekeyID prekeyID: String, ephemeralPublicKey: Data) -> (keyID: String, key: PrekeyPrivateKey)? {
+        nil
+    }
+}
+
 // MARK: - Errors
 
-extension Manager.PrekeyManager {
+extension Manager.PrekeySecretsManager {
     enum PrekeyError: Error {
         /// `SecKeyCreateRandomKey` returned nil during batch generation.
         /// The SE may be temporarily unavailable or under resource pressure.

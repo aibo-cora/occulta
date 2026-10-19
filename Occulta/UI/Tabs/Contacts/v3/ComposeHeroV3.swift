@@ -18,7 +18,7 @@ struct ComposeHeroV3: View {
     /// path (a prekey is available) or fall back to the long-term key.
     /// `nil` hides the indicator — used for group compose, where the answer
     /// is per-recipient rather than a single yes/no.
-    var isForwardSecret: Bool? = nil
+    var secrecy: NextSendSecrecy? = nil
     let onEncrypt:        () async -> Void
 
     @State private var showMediaPicker = false
@@ -108,9 +108,6 @@ struct ComposeHeroV3: View {
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
 
-                    if let isForwardSecret = self.isForwardSecret {
-                        SecrecyIndicator(isForwardSecret: isForwardSecret)
-                    }
                 }
                 Spacer()
                 Button {
@@ -128,6 +125,12 @@ struct ComposeHeroV3: View {
                 .buttonStyle(.plain)
             }
             .padding(.top, 10)
+
+            // Its own line, below the size and the Encrypt button, with its description (D2).
+            if let secrecy = self.secrecy {
+                SecrecyIndicator(secrecy: secrecy)
+                    .padding(.top, 10)
+            }
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
@@ -153,17 +156,55 @@ struct ComposeHeroV3: View {
 /// Mirrors `OccultaBundle.securityLabel`'s wording so the pre-send tag and any
 /// post-send label agree. A prediction, not a guarantee — the actual mode is
 /// still decided inside `ContactManager.encryptBundle` at send time.
+/// How the next message will be sealed, with what that means always shown under it, so the user can hold back
+/// sensitive material before sending (prekey continuity D2; wording signed off 2026-10-07). The wording assumes
+/// received messages aren't stored after they're closed: if message history ships, "Single View" must change.
 struct SecrecyIndicator: View {
-    let isForwardSecret: Bool
+    let secrecy: NextSendSecrecy
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(self.isForwardSecret ? Color.occultaVerified : Color.occultaWarn)
-                .frame(width: 6, height: 6)
-            Text(self.isForwardSecret ? "Forward Secret" : "Standard Encryption")
-                .font(.system(size: 10, weight: .regular, design: .monospaced))
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(self.colour)
+                    .frame(width: 6, height: 6)
+                Text(self.label)
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Text(self.description)
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var colour: Color {
+        switch self.secrecy {
+        case .forwardSecret: .occultaVerified
+        case .temporaryKey:  .occultaTemporary
+        case .longTerm:      .occultaWarn
+        }
+    }
+
+    private var label: String {
+        switch self.secrecy {
+        case .forwardSecret: "Single View · Forward Secret"
+        case .temporaryKey:  "Multiple Views · Temporary Key"
+        case .longTerm:      "Multiple Views · Long-Term Key"
+        }
+    }
+
+    private var description: String {
+        switch self.secrecy {
+        case .forwardSecret:
+            "Once they open it, their phone can no longer open saved copies."
+        case .temporaryKey:
+            "This message can be opened by anyone who gets into the recipient's device for 30 days or more, until the temporary key expires. Wait for their reply before sending anything sensitive."
+        case .longTerm:
+            "This message can be opened by anyone who gets into either device, yours or theirs, with no time limit. Hold back anything sensitive."
         }
     }
 }

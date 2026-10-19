@@ -30,7 +30,7 @@ public struct Basket: Identifiable, Codable {
 
 
 /// Container with plaintext content.
-public struct File: Identifiable, Codable, Hashable {
+public struct File: Identifiable, Codable, Hashable, Sendable {
     public var id = UUID()
     
     public var url: URL?
@@ -46,7 +46,7 @@ public struct File: Identifiable, Codable, Hashable {
         self.date    = date
     }
 
-    public struct Metadata: Codable, Equatable, Hashable {
+    public struct Metadata: Codable, Equatable, Hashable, Sendable {
         public var name: String?
         public var `extension`: String?
         /// Message accompanying the file.
@@ -80,7 +80,7 @@ public struct File: Identifiable, Codable, Hashable {
         }
     }
 
-    public enum Format: Codable, Equatable, Hashable {
+    public enum Format: Codable, Equatable, Hashable, Sendable {
         case contacts, text, file(Metadata), link
     }
 }
