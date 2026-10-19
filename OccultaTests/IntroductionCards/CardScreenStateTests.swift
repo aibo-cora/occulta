@@ -32,10 +32,10 @@ private func state(_ name: String) -> CardState {
     case "empty":
         return .empty
     case "issued":
-        return .issued(card: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+        return .issued(card: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
                        mlkemKey: randomBytes(4_788), expiresAt: future)
     case "imported, unsent", "imported, sent":
-        return .imported(peerCard: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+        return .imported(peerCard: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
                          mlkemKey: randomBytes(4_788), ss1: randomBytes(32), ct1: randomBytes(1_568),
                          expiresAt: future, sentFirstMessage: name == "imported, sent")
     default:

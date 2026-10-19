@@ -446,9 +446,9 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             return DepthCodec.encode(try #require(self.value))
 
         case "card":
-            // The 1,770 bytes of a card from fixed parts. The signature is an input: signatures are random.
+            // The 1,768 bytes of a card from fixed parts. The signature is an input: signatures are random.
             let encoded = try Self.introductionCard(try #require(self.card)).encoded
-            #expect(encoded.count == IntroductionCard.byteCount, "\(self.name): a card is 1,770 bytes")
+            #expect(encoded.count == IntroductionCard.byteCount, "\(self.name): a card is 1,768 bytes")
             return encoded
 
         case "cardSigningPayload":

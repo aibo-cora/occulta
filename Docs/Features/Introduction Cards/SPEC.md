@@ -47,23 +47,25 @@ This replaces the 2026-10-15 decision to put a batch of 15 on the card, which ga
 
 ## 2. The card (wire, unbranded)
 
-A card is a fixed **1,770-byte** binary blob. It has no magic bytes, no version byte, no extension and no file type (Q-04). It is shared as a file with a random 12-hex-character name.
+A card is a fixed **1,768-byte** binary blob. It has no magic bytes, no version byte, no extension and no file type (Q-04). It is shared as a file with a random 12-hex-character name.
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 65 | Card agreement public key, X9.63 |
-| 65 | 65 | Card signing public key, X9.63 |
-| 130 | 8 | Expiry, Unix seconds, UInt64 big-endian |
-| 138 | 1,568 | ML-KEM-1024 encapsulation key |
-| 1,706 | 64 | ECDSA P-256 signature, raw `r ‖ s` |
+| 0 | 64 | Card agreement public key, P-256 `X ‖ Y` (X9.63 without its `0x04` prefix) |
+| 64 | 64 | Card signing public key, P-256 `X ‖ Y` |
+| 128 | 8 | Expiry, Unix seconds, UInt64 big-endian, XOR the first 8 bytes of SHA-256(bytes 0..<64) |
+| 136 | 1,568 | ML-KEM-1024 encapsulation key |
+| 1,704 | 64 | ECDSA P-256 signature, raw `r ‖ s` |
 
-**Signing payload:** `"Occulta-introduction-card-v1"` ‖ bytes 0..<1706. The signature is made with the card signing key over that payload (CryptoKit hashes with SHA-256).
+**No constant bytes outside the ML-KEM key (decided 2026-10-19).** X9.63's `0x04` prefix would put the same byte at two fixed offsets, and a plain expiry starts with four zero bytes for decades. Either, with the fixed length, is a marker a scanner can match without any cryptography. So the keys go without the prefix, and the expiry is masked with a hash of the agreement key, which any phone recomputes from the bytes just before it. This stops a scanner, not an analyst who knows the format (Q-04's limits). In memory both keys stay X9.63, as every other key in the app.
+
+**Signing payload:** `"Occulta-introduction-card-v1"` ‖ bytes 0..<1704. The signature is made with the card signing key over that payload (CryptoKit hashes with SHA-256).
 
 **Raw, not DER.** A DER signature is 70 to 72 bytes, so the card's length would vary.
 
 **Recognition (Q-04 rule).** A file is a card if and only if all of the following hold:
-- it is exactly 1,770 bytes;
-- every public key parses as a valid P-256 point;
+- it is exactly 1,768 bytes;
+- every public key parses as a valid P-256 point. Each is parsed as X9.63 with the prefix restored: that parse checks the point is on the curve, which CryptoKit's raw parse may not;
 - the encapsulation key is a valid ML-KEM-1024 key: FIPS 203's modulus check, meaning every one of the 1,024 12-bit coefficients is below 3329, run on every iOS version (decided 2026-10-17). CryptoKit's `MLKEM1024.PublicKey(rawRepresentation:)` checks only the length on iOS 26.2, so a correctly signed card with a garbage key would otherwise be recognised and then fail when Carol encapsulates. `CardIntroduction.verify` applies the same check to Carol's key;
 - the signature verifies under the signing key in the card.
 
@@ -165,7 +167,7 @@ RecipientPayload.introduction: CardIntroduction? {
 }
 ```
 
-**Signing payload:** `"Occulta-card-introduction-v1"` ‖ SHA-256(Bob's 1,770 card bytes) ‖ `agreementKey` ‖ `signingKey` ‖ `mlkemEncapsulationKey`.
+**Signing payload:** `"Occulta-card-introduction-v1"` ‖ SHA-256(Bob's 1,768 card bytes) ‖ `agreementKey` ‖ `signingKey` ‖ `mlkemEncapsulationKey`.
 
 The card digest ties the introduction to this card, so it can't be replayed against another card. The signature ties Carol's agreement key to her signing key, which an agreement key can't do itself. Carol's prekey batch travels in the existing `RecipientPayload.prekeyBatch`. The slot's `senderEphemeralSignature`, made with the same signing key, authenticates it. **Every bootstrap message from Carol carries the same introduction keys.** The signature bytes differ between messages: an ECDSA signature is randomised and Carol holds no stored copy to resend (decided 2026-10-17, stage C), so "identical" means the same keys. Bob compares the agreement and signing keys with the ones he stored at redemption (§6.6). He doesn't compare the ML-KEM key (decided 2026-10-18): the slot's signature already binds Carol's signing key, and Bob never uses her ML-KEM key after redemption.
 
@@ -173,7 +175,7 @@ The card digest ties the introduction to this card, so it can't be replayed agai
 
 A bootstrap slot is about 1.6 KB larger than an ordinary one, from the ML-KEM ciphertext. Carol's slots add the introduction on top, about 2.3 KB in JSON. Slots aren't padded to hide this.
 
-**Decided 2026-10-16: no padding.** Anyone who can see these bundles on the channel has already seen the 1,770-byte card cross the same channel, so the size adds nothing they don't know. Padding every slot to bootstrap size would cost about 4 KB on every message from every contact, for no measurable gain.
+**Decided 2026-10-16: no padding.** Anyone who can see these bundles on the channel has already seen the 1,768-byte card cross the same channel, so the size adds nothing they don't know. Padding every slot to bootstrap size would cost about 4 KB on every message from every contact, for no measurable gain.
 
 ### 4.6 Prekey IDs and the card (no longer applies)
 
@@ -191,17 +193,17 @@ A new property, `Contact.Profile.introductionCardEncrypted: Data`, sealed with t
 
 - **Never nil.** It is written when a contact is created and overwritten with the sealed empty state on delete. A launch migration writes it for every existing row, as `migratePrekeyRecords` did, so a NULL can't tell contacts apart.
 - **Discarding a card overwrites** the field with the empty state, at the same size.
-- **N is set by a size test** on the largest state, with distinct values everywhere (FORWARD_SECRECY_GUIDE mistakes 19 and 20). The provisional value is **12 KB**. Measured blob sizes: ML-KEM-1024 4,788 bytes, P-256 143 bytes each. The largest state, Carol's `imported`, comes to about 8.5 KB before plist overhead (card 1,770 + 2 × 143 + 4,788 + ss1 32 + ct1 1,568 + expiry). 12 KB leaves about 3 KB of margin. The sizes came from a Simulator, so the size test also runs on a device before release.
+- **N is set by a size test** on the largest state, with distinct values everywhere (FORWARD_SECRECY_GUIDE mistakes 19 and 20). The provisional value is **12 KB**. Measured blob sizes: ML-KEM-1024 4,788 bytes, P-256 143 bytes each. The largest state, Carol's `imported`, comes to about 8.5 KB before plist overhead (card 1,768 + 2 × 143 + 4,788 + ss1 32 + ct1 1,568 + expiry). 12 KB leaves about 3 KB of margin. The sizes came from a Simulator, so the size test also runs on a device before release.
 
 ```
 enum CardState {
   case empty
   case issued(       // Bob, card out and unused
-      card: Data,                    // the 1,770 bytes, for "Share card…" again
+      card: Data,                    // the 1,768 bytes, for "Share card…" again
       agreementKey: Data, signingKey: Data, mlkemKey: Data,   // Enclave blobs
       expiresAt: Date)
   case imported(     // Carol, until she opens Bob's first message
-      peerCard: Data,                // Bob's 1,770 bytes: his card keys and ML-KEM key, and the digest for the introduction
+      peerCard: Data,                // Bob's 1,768 bytes: his card keys and ML-KEM key, and the digest for the introduction
       agreementKey: Data, signingKey: Data, mlkemKey: Data,   // Carol's blobs
       ss1: Data, ct1: Data, expiresAt: Date,
       sentFirstMessage: Bool)        // set on her first send; decides the sweep (§6.4)
@@ -380,8 +382,8 @@ These are recorded from the Swift implementation into `OccultaTests/Interop/Inte
 
 | Name | Kind | Pins |
 |---|---|---|
-| `card.v1.encoding` | new `card` | The 1,770 bytes from fixed keys and expiry, with the signature taken as input |
-| `card.v1.signingPayload` | `signingPayload` | Label ‖ bytes 0..<1706 |
+| `card.v1.encoding` | new `card` | The 1,768 bytes from fixed keys and expiry, with the signature taken as input |
+| `card.v1.signingPayload` | `signingPayload` | Label ‖ bytes 0..<1704 |
 | `card.v1.introduction.signingPayload` | `signingPayload` | Label ‖ card digest ‖ the three keys |
 | `card.v1.bootstrapKey.carol` | `fsKey` | `K_inner` from a fixed `ecdh`, keys and `ss1` |
 | `card.v1.bootstrapLayer` | `gcm` | Outer and inner GCM with fixed keys and nonces |

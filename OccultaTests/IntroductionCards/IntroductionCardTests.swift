@@ -20,24 +20,37 @@ struct IntroductionCardTests {
     // MARK: - Encoding
 
     @available(iOS 26, *)
-    @Test("A card encodes to exactly 1,770 bytes in the SPEC §2 layout")
+    @Test("A card encodes to exactly 1,768 bytes in the SPEC §2 layout")
     func encodesToLayout() throws {
         let issuer = try CardTestIssuer()
         let bytes  = issuer.card.encoded
 
-        #expect(IntroductionCard.byteCount == 1_770)
-        #expect(IntroductionCard.signedByteCount == 1_706)
-        #expect(bytes.count == 1_770)
-        #expect(Data(bytes[0 ..< 65]) == issuer.agreement.publicKey.x963Representation)
-        #expect(Data(bytes[65 ..< 130]) == issuer.signing.publicKey.x963Representation)
-        #expect(Data(bytes[130 ..< 138]) == Data([0, 0, 0, 0, 0x6B, 0x49, 0xD2, 0x00]), "1,800,000,000 big-endian")
-        #expect(Data(bytes[138 ..< 1_706]) == issuer.mlkem.publicKey.rawRepresentation)
-        #expect(Data(bytes[1_706 ..< 1_770]) == issuer.card.signature)
+        #expect(IntroductionCard.byteCount == 1_768)
+        #expect(IntroductionCard.signedByteCount == 1_704)
+        #expect(bytes.count == 1_768)
+        #expect(Data(bytes[0 ..< 64]) == issuer.agreement.publicKey.rawRepresentation, "X ‖ Y, no 0x04 prefix")
+        #expect(Data(bytes[64 ..< 128]) == issuer.signing.publicKey.rawRepresentation, "X ‖ Y, no 0x04 prefix")
+        let mask = Data(SHA256.hash(data: Data(bytes[0 ..< 64])).prefix(8))
+        let plain = Data([0, 0, 0, 0, 0x6B, 0x49, 0xD2, 0x00])
+        #expect(Data(bytes[128 ..< 136]) == Data(zip(plain, mask).map { $0 ^ $1 }), "1,800,000,000 big-endian, masked")
+        #expect(Data(bytes[136 ..< 1_704]) == issuer.mlkem.publicKey.rawRepresentation)
+        #expect(Data(bytes[1_704 ..< 1_768]) == issuer.card.signature)
         #expect(issuer.card.signature.count == 64, "raw r‖s, not DER")
+        #expect(issuer.card.agreementKey == issuer.agreement.publicKey.x963Representation, "in memory, X9.63")
     }
 
     @available(iOS 26, *)
-    @Test("The signing payload is the label followed by the first 1,706 bytes")
+    @Test("No byte outside the ML-KEM key is the same across cards made at the same moment")
+    func noConstantBytes() throws {
+        let cards = try (0 ..< 40).map { _ in try CardTestIssuer().card.encoded }
+        let constant = (Array(0 ..< 136) + Array(1_704 ..< 1_768)).filter { offset in
+            Set(cards.map { $0[offset] }).count == 1
+        }
+        #expect(constant.isEmpty, "offsets with the same byte in every card: \(constant)")
+    }
+
+    @available(iOS 26, *)
+    @Test("The signing payload is the label followed by the first 1,704 bytes")
     func signingPayloadIsLabelPlusSignedLayout() throws {
         let issuer  = try CardTestIssuer()
         let card    = issuer.card
@@ -47,8 +60,8 @@ struct IntroductionCardTests {
         )
 
         #expect(IntroductionCard.signingLabel == Data("Occulta-introduction-card-v1".utf8))
-        #expect(payload == IntroductionCard.signingLabel + card.encoded.prefix(1_706))
-        #expect(payload.count == 28 + 1_706)
+        #expect(payload == IntroductionCard.signingLabel + card.encoded.prefix(1_704))
+        #expect(payload.count == 28 + 1_704)
         #expect(!card.encoded.starts(with: IntroductionCard.signingLabel), "the label is never in the file")
     }
 
@@ -96,10 +109,10 @@ struct IntroductionCardTests {
     }
 
     @available(iOS 26, *)
-    @Test("Flipping any single byte makes recognition fail, at every one of the 1,770 offsets")
+    @Test("Flipping any single byte makes recognition fail, at every one of the 1,768 offsets")
     func anySingleByteFlipIsRefused() throws {
         let valid = try CardTestIssuer().card.encoded
-        #expect(valid.count == 1_770)
+        #expect(valid.count == 1_768)
         try #require(IntroductionCard.recognize(valid) != nil, "control: the unflipped card must be recognised")
 
         var accepted: [String] = []
@@ -118,16 +131,17 @@ struct IntroductionCardTests {
     func wrongInputsAreRefused() throws {
         let valid = try CardTestIssuer().card.encoded
 
-        #expect(IntroductionCard.recognize(Data(valid.dropLast())) == nil, "1,769 bytes")
-        #expect(IntroductionCard.recognize(valid + Data([0])) == nil, "1,771 bytes")
+        #expect(IntroductionCard.recognize(Data(valid.dropLast())) == nil, "1,767 bytes")
+        #expect(IntroductionCard.recognize(valid + Data([0])) == nil, "1,769 bytes")
         #expect(IntroductionCard.recognize(Data(valid.dropFirst())) == nil, "shifted by one")
         #expect(IntroductionCard.recognize(valid + valid) == nil, "two cards")
         #expect(IntroductionCard.recognize(Data()) == nil, "empty")
-        #expect(IntroductionCard.recognize(Data(count: 1_770)) == nil, "all zero")
-        #expect(IntroductionCard.recognize(Data(repeating: 0xFF, count: 1_770)) == nil, "all 0xFF")
-        #expect(IntroductionCard.recognize(randomBytes(1_770)) == nil, "random")
+        #expect(IntroductionCard.recognize(Data(count: 1_768)) == nil, "all zero")
+        #expect(IntroductionCard.recognize(Data(repeating: 0xFF, count: 1_768)) == nil, "all 0xFF")
+        #expect(IntroductionCard.recognize(randomBytes(1_768)) == nil, "random")
+        #expect(IntroductionCard.recognize(Data(count: 1_767)) == nil)
         #expect(IntroductionCard.recognize(Data(count: 1_769)) == nil)
-        #expect(IntroductionCard.recognize(Data(count: 1_771)) == nil)
+        #expect(IntroductionCard.recognize(Data(count: 1_770)) == nil, "the old 1,770-byte size")
     }
 
     @available(iOS 26, *)
@@ -135,12 +149,12 @@ struct IntroductionCardTests {
     func sliceInputWorks() throws {
         let issuer = try CardTestIssuer()
         let framed = Data(repeating: 0xAA, count: 10) + issuer.card.encoded + Data(repeating: 0xBB, count: 5)
-        let slice  = framed[10 ..< 1_780]
+        let slice  = framed[10 ..< 1_778]
 
         #expect(slice.startIndex == 10)
         #expect(IntroductionCard.recognize(slice) == issuer.card)
-        #expect(IntroductionCard.recognize(framed[9 ..< 1_779]) == nil, "a slice that is shifted by one byte")
-        #expect(IntroductionCard.recognize(framed[10 ..< 1_779]) == nil, "a slice that is a byte short")
+        #expect(IntroductionCard.recognize(framed[9 ..< 1_777]) == nil, "a slice that is shifted by one byte")
+        #expect(IntroductionCard.recognize(framed[10 ..< 1_777]) == nil, "a slice that is a byte short")
     }
 
     // MARK: - Fields the signature doesn't excuse
@@ -154,7 +168,7 @@ struct IntroductionCardTests {
             signingPrivateKey: P256.Signing.PrivateKey(),
             mlkemKey: Data(repeating: 0xFF, count: 1_568)
         )
-        #expect(card.encoded.count == 1_770)
+        #expect(card.encoded.count == 1_768)
         #expect(IntroductionCard.recognize(card.encoded) == nil)
     }
 
@@ -205,9 +219,9 @@ struct IntroductionCardTests {
         let issuer = try CardTestIssuer()
         let other  = try MLKEM1024.PrivateKey().publicKey.rawRepresentation
         var bytes  = issuer.card.encoded
-        bytes.replaceSubrange(138 ..< 1_706, with: other)
+        bytes.replaceSubrange(136 ..< 1_704, with: other)
 
-        #expect(bytes.count == 1_770)
+        #expect(bytes.count == 1_768)
         #expect(IntroductionCard.recognize(bytes) == nil)
     }
 
@@ -233,7 +247,7 @@ struct IntroductionCardTests {
     func unlabelledSignatureIsRefused() throws {
         let issuer = try CardTestIssuer()
         let card   = issuer.card
-        let unlabelled = Data(card.encoded.prefix(1_706))
+        let unlabelled = Data(card.encoded.prefix(1_704))
         let forged = IntroductionCard(
             agreementKey: card.agreementKey, signingKey: card.signingKey, expiresAt: card.expiresAt,
             mlkemEncapsulationKey: card.mlkemEncapsulationKey,
@@ -264,14 +278,16 @@ struct IntroductionCardTests {
     func absurdExpiryIsRefused() throws {
         let issuer = try CardTestIssuer()
         var bytes  = issuer.card.encoded
-        bytes.replaceSubrange(130 ..< 138, with: Data(repeating: 0xFF, count: 8))
+        // All-ones seconds, masked as the format writes them.
+        let mask = Data(SHA256.hash(data: Data(bytes[0 ..< 64])).prefix(8))
+        bytes.replaceSubrange(128 ..< 136, with: Data(mask.map { $0 ^ 0xFF }))
 
         // Re-sign so that only the expiry is wrong.
-        let payload = IntroductionCard.signingLabel + bytes.prefix(1_706)
+        let payload = IntroductionCard.signingLabel + bytes.prefix(1_704)
         let signature = try issuer.signing.signature(for: payload).rawRepresentation
-        bytes.replaceSubrange(1_706 ..< 1_770, with: signature)
+        bytes.replaceSubrange(1_704 ..< 1_768, with: signature)
 
-        #expect(bytes.count == 1_770)
+        #expect(bytes.count == 1_768)
         #expect(IntroductionCard.recognize(bytes) == nil)
     }
 
@@ -279,8 +295,9 @@ struct IntroductionCardTests {
     @Test("A negative expiry encodes as zero rather than trapping")
     func negativeExpiryClampsToZero() throws {
         let issuer = try CardTestIssuer(expiresAt: Date(timeIntervalSince1970: -5))
-        #expect(issuer.card.encoded.count == 1_770)
-        #expect(Data(issuer.card.encoded[130 ..< 138]) == Data(count: 8))
+        #expect(issuer.card.encoded.count == 1_768)
+        let mask = Data(SHA256.hash(data: Data(issuer.card.encoded[0 ..< 64])).prefix(8))
+        #expect(Data(issuer.card.encoded[128 ..< 136]) == mask, "zero, masked")
         #expect(IntroductionCard.recognize(issuer.card.encoded)?.expiresAt == Date(timeIntervalSince1970: 0))
     }
 }

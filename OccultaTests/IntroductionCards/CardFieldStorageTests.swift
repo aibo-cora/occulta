@@ -83,14 +83,14 @@ private func distinctQuantum() -> QuantumKeyMaterial {
 
 private func issuedState() -> CardState {
     .issued(
-        card: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+        card: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
         mlkemKey: randomBytes(4_788), expiresAt: Date(timeIntervalSinceReferenceDate: 800_000_000.25)
     )
 }
 
 private func importedState(sent: Bool) -> CardState {
     .imported(
-        peerCard: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+        peerCard: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
         mlkemKey: randomBytes(4_788), ss1: randomBytes(32), ct1: randomBytes(1_568),
         expiresAt: Date(timeIntervalSinceReferenceDate: 800_086_400.5), sentFirstMessage: sent
     )

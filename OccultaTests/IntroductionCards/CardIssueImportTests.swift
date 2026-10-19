@@ -125,14 +125,14 @@ private func issuedCard(_ state: CardState) -> Data? {
 
 private func importedState(expiresAt: Date, sent: Bool) -> CardState {
     .imported(
-        peerCard: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+        peerCard: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
         mlkemKey: randomBytes(4_788), ss1: randomBytes(32), ct1: randomBytes(1_568),
         expiresAt: expiresAt, sentFirstMessage: sent
     )
 }
 
 private func issuedState(expiresAt: Date) -> CardState {
-    .issued(card: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+    .issued(card: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
             mlkemKey: randomBytes(4_788), expiresAt: expiresAt)
 }
 
@@ -330,7 +330,7 @@ struct CardCreateTests {
         #expect(url.lastPathComponent.range(of: "^[0-9a-f]{12}$", options: .regularExpression) != nil, "\(url.lastPathComponent)")
         #expect(url.pathExtension.isEmpty)
         #expect(try Data(contentsOf: url) == card.encoded)
-        #expect(try Data(contentsOf: url).count == 1_770)
+        #expect(try Data(contentsOf: url).count == 1_768)
     }
 
     @Test("Two share files do not share a name", .ambientTestKeyManager)
@@ -728,13 +728,13 @@ struct CardImportTests {
     func notACard() throws {
         let carol = try Phone()
         let carolContact = try carol.contact()
-        #expect(try carol.cm.importCard(randomBytes(1_770), into: carolContact, newContactName: nil, now: t0) == .notACard)
+        #expect(try carol.cm.importCard(randomBytes(1_768), into: carolContact, newContactName: nil, now: t0) == .notACard)
         #expect(try carol.cm.importCard(randomBytes(64), into: carolContact, newContactName: nil, now: t0) == .notACard)
         #expect(try carol.cm.importCard(Data(), into: nil, newContactName: "X", now: t0) == .notACard)
         #expect(carolContact.cardState == .empty)
 
         let old = try Phone(withPostQuantum: false)
-        #expect(try old.cm.importCard(randomBytes(1_770), into: try old.contact(), newContactName: nil, now: t0) == .notACard)
+        #expect(try old.cm.importCard(randomBytes(1_768), into: try old.contact(), newContactName: nil, now: t0) == .notACard)
     }
 
     @Test("Without a post-quantum provider, a real card is unsupported and nothing changes", .ambientTestKeyManager)

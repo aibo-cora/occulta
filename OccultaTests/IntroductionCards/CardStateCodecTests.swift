@@ -28,14 +28,14 @@ private func distinctQuantum() -> QuantumKeyMaterial {
 
 private func issuedState() -> CardState {
     .issued(
-        card: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+        card: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
         mlkemKey: randomBytes(4_788), expiresAt: Date(timeIntervalSinceReferenceDate: 800_000_000.25)
     )
 }
 
 private func importedState(sent: Bool = true) -> CardState {
     .imported(
-        peerCard: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143),
+        peerCard: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143),
         mlkemKey: randomBytes(4_788), ss1: randomBytes(32), ct1: randomBytes(1_568),
         expiresAt: Date(timeIntervalSinceReferenceDate: 800_086_400.5), sentFirstMessage: sent
     )
@@ -92,7 +92,7 @@ struct CardStateCodecTests {
         #expect(plaintext.first == 0x01)
         #expect(CardStateCodec.formatVersion == 0x01)
         #expect(CardStateCodec.headerSize == 5)
-        #expect(length > 1_770 + 143 + 143 + 4_788, "the payload holds the blobs")
+        #expect(length > 1_768 + 143 + 143 + 4_788, "the payload holds the blobs")
         #expect(plaintext.dropFirst(5 + length).allSatisfy { $0 == 0 }, "zeros to capacity")
         #expect(Data(plaintext[5 ..< 5 + length]).starts(with: Data("bplist00".utf8)), "a binary plist")
     }
@@ -219,11 +219,11 @@ struct CardStateCodecTests {
 
         let measured: [(name: String, state: CardState, inputs: String)] = [
             ("imported (Carol)", importedState(sent: true),
-             "peerCard 1,770 + 2 x 143 blobs + ML-KEM blob 4,788 + ss1 32 + ct1 1,568 + expiry"),
+             "peerCard 1,768 + 2 x 143 blobs + ML-KEM blob 4,788 + ss1 32 + ct1 1,568 + expiry"),
             ("conversation (full material)", conversationState(isIssuer: true, bootstrapOpen: true),
              "2 x 143 blobs + peer keys 65 + 65 + QKM 32 + 32 + 1,568 + 1,568"),
             ("issued (Bob)", issuedState(),
-             "card 1,770 + 2 x 143 blobs + ML-KEM blob 4,788 + expiry"),
+             "card 1,768 + 2 x 143 blobs + ML-KEM blob 4,788 + expiry"),
         ]
 
         var report = ["capacity: \(CardStateCodec.capacity) bytes, header \(CardStateCodec.headerSize), payload limit \(limit)", ""]
@@ -241,7 +241,7 @@ struct CardStateCodecTests {
         // which is why the states above use distinct bytes.
         let repeated = Data(repeating: 0x5A, count: 4_788)
         let naive = CardState.imported(
-            peerCard: Data(repeating: 0x5A, count: 1_770), agreementKey: Data(repeating: 0x5A, count: 143),
+            peerCard: Data(repeating: 0x5A, count: 1_768), agreementKey: Data(repeating: 0x5A, count: 143),
             signingKey: Data(repeating: 0x5A, count: 143), mlkemKey: repeated, ss1: Data(repeating: 0x5A, count: 32),
             ct1: Data(repeating: 0x5A, count: 1_568), expiresAt: Date(timeIntervalSinceReferenceDate: 800_086_400.5), sentFirstMessage: true
         )

@@ -21,13 +21,13 @@ struct CardRulesTests {
 
     // MARK: - States
 
-    private func issued(card: Data = randomBytes(1_770), expiresAt: Date) -> CardState {
+    private func issued(card: Data = randomBytes(1_768), expiresAt: Date) -> CardState {
         .issued(card: card, agreementKey: randomBytes(143), signingKey: randomBytes(143), mlkemKey: randomBytes(4_788), expiresAt: expiresAt)
     }
 
     private func imported(expiresAt: Date, sent: Bool) -> CardState {
         .imported(
-            peerCard: randomBytes(1_770), agreementKey: randomBytes(143), signingKey: randomBytes(143), mlkemKey: randomBytes(4_788),
+            peerCard: randomBytes(1_768), agreementKey: randomBytes(143), signingKey: randomBytes(143), mlkemKey: randomBytes(4_788),
             ss1: randomBytes(32), ct1: randomBytes(1_568), expiresAt: expiresAt, sentFirstMessage: sent
         )
     }
@@ -166,7 +166,7 @@ struct CardRulesTests {
     @Test("An own card that no longer parses can't win: it is cancelled")
     func unparseableOwnCardIsCancelled() {
         let incoming = makeShapedCard(expiresAt: self.later)
-        #expect(CardRules.importDecision(current: self.issued(card: randomBytes(1_770), expiresAt: self.later), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .cancelOwnAndImport)
+        #expect(CardRules.importDecision(current: self.issued(card: randomBytes(1_768), expiresAt: self.later), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .cancelOwnAndImport)
         #expect(CardRules.importDecision(current: self.issued(card: Data(), expiresAt: self.later), incoming: incoming, now: self.now, ownIssuedAgreementKeys: []) == .cancelOwnAndImport)
     }
 

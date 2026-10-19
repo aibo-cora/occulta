@@ -17,12 +17,12 @@ enum CardState: Codable, Equatable {
     case empty
 
     /// Bob: a card out and unused.
-    /// - `card`: the 1,770 bytes, for "Share card…" again.
+    /// - `card`: the 1,768 bytes, for "Share card…" again.
     /// - `agreementKey`, `signingKey`, `mlkemKey`: his Enclave blobs.
     case issued(card: Data, agreementKey: Data, signingKey: Data, mlkemKey: Data, expiresAt: Date)
 
     /// Carol: until she opens Bob's first message.
-    /// - `peerCard`: Bob's 1,770 bytes, which hold his card keys and ML-KEM key and give the digest her
+    /// - `peerCard`: Bob's 1,768 bytes, which hold his card keys and ML-KEM key and give the digest her
     ///   introduction signs.
     /// - `agreementKey`, `signingKey`, `mlkemKey`: her Enclave blobs.
     /// - `ss1`, `ct1`: her one encapsulation to Bob's ML-KEM key.

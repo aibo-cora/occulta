@@ -862,7 +862,7 @@ struct RootView: View {
     /// the message then is an accepted cost (`Docs/General/decisions.md`).
     private func processInboundFile(_ data: Data) async {
         // An introduction card goes to the import sheet, before any bundle decoding (SPEC §2). A card is exactly
-        // 1,770 bytes with a valid signature, which no bundle is, and a mismatch costs one length check.
+        // 1,768 bytes with a valid signature, which no bundle is, and a mismatch costs one length check.
         if IntroductionCard.recognize(data) != nil {
             guard self.appScreen.phase == .unlocked else { return }
             self.cardImport = CardImportData(data: data)
