@@ -523,7 +523,7 @@ struct RootView: View {
                 let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
                     .map { AttachmentManager(contactKey: $0) }
                 // Messages on Bob's card get W-08 and a reply button around them; any other sender's don't.
-                CardFirstMessageFrame(owner: data.owner) { request in
+                CardFirstMessageFrame(owner: data.owner, depth: self.security.currentDepth) { request in
                     self.openedFileContents = nil
                     self.finishCardImport(request)
                 } content: {

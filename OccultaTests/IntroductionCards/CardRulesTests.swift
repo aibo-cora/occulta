@@ -129,6 +129,15 @@ struct CardRulesTests {
             #expect(survivorOnAlice == survivorOnBob)
             #expect(survivorOnAlice == lower.card, "the lower agreement key wins")
         }
+
+        // Our own card past its deadline, not yet swept, is cancelled (SPEC §6.2): it can't win the key order,
+        // though unexpired it would have.
+        let ownLower = self.issued(card: lower.card.encoded, expiresAt: self.later)
+        #expect(CardRules.importDecision(current: ownLower, incoming: higher.card, now: self.now, ownIssuedAgreementKeys: []) == .refuse(.ownCardWins), "control")
+        for deadline in [self.now, self.earlier] {
+            let expired = self.issued(card: lower.card.encoded, expiresAt: deadline)
+            #expect(CardRules.importDecision(current: expired, incoming: higher.card, now: self.now, ownIssuedAgreementKeys: []) == .cancelOwnAndImport)
+        }
     }
 
     @available(iOS 26, *)

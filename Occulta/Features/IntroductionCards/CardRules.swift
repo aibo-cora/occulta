@@ -68,8 +68,9 @@ enum CardRules {
             return .replace
         case .conversation:
             return .refuse(.alreadyTalking)
-        case .issued(let card, _, _, _, _):
-            guard let own = IntroductionCard.recognize(card) else { return .cancelOwnAndImport }
+        case .issued(let card, _, _, _, let expiresAt):
+            // Our card expired is our card cancelled (SPEC §6.2), swept or not: it can't win.
+            guard expiresAt > now, let own = IntroductionCard.recognize(card) else { return .cancelOwnAndImport }
             return incoming.agreementKey.lexicographicallyPrecedes(own.agreementKey) ? .cancelOwnAndImport : .refuse(.ownCardWins)
         }
     }

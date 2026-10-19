@@ -71,7 +71,7 @@ extension ContactManager {
         case contactNotPending
         /// `cardShareFile`: the contact has no issued card, or it has expired.
         case noIssuedCard
-        /// `discardCardConversation`: the contact's field isn't `conversation`.
+        /// `discardCardConversation`: the contact's field isn't Bob's side of a `conversation`.
         case noCardConversation
         /// Importing into a new contact needs a name.
         case newContactNameMissing
@@ -146,19 +146,23 @@ extension ContactManager {
 
     /// W-15 (SPEC §6.7): Bob discards a card conversation. The field is written `.empty`, which deletes the
     /// card keys, and the contact's record loses its inbound batches, own batches and accepted batch IDs, so
-    /// the contact is Pending again. Only valid for `conversation`.
+    /// the contact is Pending again. The bundle version its messages recorded goes too: whoever sent them is cut
+    /// off. Only valid for Bob's side of a `conversation`.
     func discardCardConversation(for contact: Contact.Profile) throws {
-        guard case .conversation = contact.cardState else { throw CardError.noCardConversation }
+        guard case .conversation(_, _, _, _, _, _, true) = contact.cardState else { throw CardError.noCardConversation }
 
-        let previousField  = contact.introductionCardEncrypted
-        let previousRecord = contact.prekeyRecordEncrypted
+        let previousField   = contact.introductionCardEncrypted
+        let previousRecord  = contact.prekeyRecordEncrypted
+        let previousVersion = contact.maxBundleVersion
         do {
             try self.dropCardEraBatches(of: contact)
             try self.store(CardState.empty, for: contact)
+            contact.maxBundleVersion = nil
             try self.saveAndFlush()
         } catch {
             contact.introductionCardEncrypted = previousField
             contact.prekeyRecordEncrypted = previousRecord
+            contact.maxBundleVersion = previousVersion
             throw error
         }
     }
@@ -299,6 +303,8 @@ extension ContactManager {
         } catch {
             target.introductionCardEncrypted = previousField
             target.prekeyRecordEncrypted = previousRecord
+            // A contact this import created goes too, as an ordinary delete would leave it: "Nothing was changed".
+            if contact == nil { try? self.deleteContact(identifier: target.identifier) }
             throw error
         }
         return .imported(contactIdentifier: target.identifier)

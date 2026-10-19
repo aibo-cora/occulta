@@ -304,6 +304,16 @@ private struct LegacyExchange: Codable {
 @Suite("Meeting check — the proof message", .serialized)
 struct CardProofMessageTests {
 
+    @MainActor
+    @Test("Ending an exchange drops the card's meeting context: the signing blob and the peer's key")
+    func finishDropsContext() {
+        let manager = ExchangeManager()
+        manager.cardMeeting = CardMeetingContext(sign: { $0 }, peerSigningKey: randomBytes(65))
+        manager.finish()
+        #expect(manager.cardMeeting.sign == nil)
+        #expect(manager.cardMeeting.peerSigningKey == nil)
+    }
+
     private func realProof() throws -> Data {
         let keys = SoftwareCardKeys()
         return try keys.signRaw(Data("payload".utf8), signingBlob: try keys.makeSigningKey().blob)

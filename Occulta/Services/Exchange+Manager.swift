@@ -202,6 +202,8 @@ class ExchangeManager: NSObject {
 
     func finish() {
         self.teardownSessions()
+        // The card's signing blob and the peer's key go with the exchange, not with the view holding the manager.
+        self.cardMeeting = .none
         self.phase = .resting
     }
 

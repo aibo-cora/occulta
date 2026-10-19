@@ -459,6 +459,27 @@ struct CardConversationTests {
         }
         guard case .issued = try pair.bob.state(pair.bobSide) else { Issue.record("an issued card is untouched"); return }
     }
+
+    @Test("Only Bob discards; it also drops the bundle version the card's messages recorded")
+    func discardIsBobsAndClearsVersion() throws {
+        let pair = try CardPhonePair()
+        try pair.converse()
+
+        // Carol's side of the same conversation can't be discarded (W-15 is Bob's).
+        let carolField = try pair.carol.rawField(pair.carolSide)
+        #expect {
+            try pair.carol.run { try pair.carol.cm.discardCardConversation(for: try pair.carol.contact(pair.carolSide)) }
+        } throws: { error in
+            if case ContactManager.CardError.noCardConversation = error { return true }
+            return false
+        }
+        #expect(try pair.carol.rawField(pair.carolSide) == carolField)
+
+        let before = try pair.bob.run { try pair.bob.contact(pair.bobSide).maxBundleVersion }
+        #expect(before != nil, "precondition: Carol's messages recorded a version")
+        try pair.bob.run { try pair.bob.cm.discardCardConversation(for: try pair.bob.contact(pair.bobSide)) }
+        #expect(try pair.bob.run { try pair.bob.contact(pair.bobSide).maxBundleVersion } == nil, "Pending again, with nothing from whoever used the card")
+    }
 }
 
 // MARK: - 4: rejections

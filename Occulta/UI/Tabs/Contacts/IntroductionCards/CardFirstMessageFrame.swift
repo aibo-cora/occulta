@@ -13,6 +13,9 @@ import SwiftData
 struct CardFirstMessageFrame<Content: View>: View {
     /// The identifier of the contact the message came from.
     let owner: String
+    /// The depth the app is at. A sender hidden at it gets the plain message view: a card message can open at a
+    /// duress depth (redemption runs at every depth), but nothing here may lead into the hidden contact.
+    let depth: Int
     /// Where "Reply to {Name}" goes: the contact's details, with compose focused.
     let onReply: (ContactOpenRequest) -> Void
     @ViewBuilder let content: Content
@@ -22,8 +25,9 @@ struct CardFirstMessageFrame<Content: View>: View {
     /// The sender's first name, set only when the sender is on Bob's side of a card whose bootstrap is still open.
     @State private var name: String?
 
-    init(owner: String, onReply: @escaping (ContactOpenRequest) -> Void, @ViewBuilder content: () -> Content) {
+    init(owner: String, depth: Int, onReply: @escaping (ContactOpenRequest) -> Void, @ViewBuilder content: () -> Content) {
         self.owner   = owner
+        self.depth   = depth
         self.onReply = onReply
         self.content = content()
         self._contacts = Query(filter: #Predicate { $0.identifier == owner })
@@ -63,6 +67,7 @@ struct CardFirstMessageFrame<Content: View>: View {
         .task(id: self.owner) {
             guard
                 let contact = self.contacts.first,
+                contact.isVisible(atDepth: self.depth),
                 case .conversation(_, _, _, _, _, let bootstrapOpen, let isIssuer) = contact.cardState,
                 bootstrapOpen, isIssuer
             else { return }

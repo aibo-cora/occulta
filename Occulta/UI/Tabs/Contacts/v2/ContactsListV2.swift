@@ -245,6 +245,10 @@ struct ContactsV2: View {
                 self.openRequest = nil
                 self.open(request)
             }
+            // Focus compose only on the screen the request opened, not when the contact is opened again later.
+            .onChange(of: self.path) { _, path in
+                if path.isEmpty { self.focusComposeFor = nil }
+            }
             .navigationDestination(for: String.self) { identifier in
                 Contact.DetailsV2(identifier: identifier, focusCompose: identifier == self.focusComposeFor)
             }
@@ -270,8 +274,10 @@ struct ContactsV2: View {
         }
     }
 
-    /// Opens a contact's details, replacing whatever was pushed.
+    /// Opens a contact's details, replacing whatever was pushed. Only a contact this list shows at the current
+    /// depth: a request for a hidden one does nothing, so no route reaches a contact the depth filter hides.
     private func open(_ request: ContactOpenRequest) {
+        guard self.visibleContacts.contains(where: { $0.identifier == request.identifier }) else { return }
         self.showGroups      = false
         self.focusComposeFor = request.focusCompose ? request.identifier : nil
         self.path            = NavigationPath()

@@ -167,7 +167,7 @@ RecipientPayload.introduction: CardIntroduction? {
 
 **Signing payload:** `"Occulta-card-introduction-v1"` ‖ SHA-256(Bob's 1,770 card bytes) ‖ `agreementKey` ‖ `signingKey` ‖ `mlkemEncapsulationKey`.
 
-The card digest ties the introduction to this card, so it can't be replayed against another card. The signature ties Carol's agreement key to her signing key, which an agreement key can't do itself. Carol's prekey batch travels in the existing `RecipientPayload.prekeyBatch`. The slot's `senderEphemeralSignature`, made with the same signing key, authenticates it. **Every bootstrap message from Carol carries the same introduction keys.** The signature bytes differ between messages: an ECDSA signature is randomised and Carol holds no stored copy to resend (decided 2026-10-17, stage C), so "identical" means the three keys, and Bob compares those (§6.6).
+The card digest ties the introduction to this card, so it can't be replayed against another card. The signature ties Carol's agreement key to her signing key, which an agreement key can't do itself. Carol's prekey batch travels in the existing `RecipientPayload.prekeyBatch`. The slot's `senderEphemeralSignature`, made with the same signing key, authenticates it. **Every bootstrap message from Carol carries the same introduction keys.** The signature bytes differ between messages: an ECDSA signature is randomised and Carol holds no stored copy to resend (decided 2026-10-17, stage C), so "identical" means the same keys. Bob compares the agreement and signing keys with the ones he stored at redemption (§6.6). He doesn't compare the ML-KEM key (decided 2026-10-18): the slot's signature already binds Carol's signing key, and Bob never uses her ML-KEM key after redemption.
 
 ### 4.5 Size (decided 2026-10-16: no padding)
 
@@ -287,7 +287,7 @@ Any failure on these paths throws. A card contact never gets a classical-only or
 1. **Parse** the bundle.
 2. **Identify the sender** by `senderFingerprint` across all contacts, hidden ones included. The candidate key is the identity key from `contactPublicKeys`, or the peer card agreement key from an `imported` field (Bob's, read from `peerCard`) or a `conversation` field.
 3. **Matched:** open as today. A side in bootstrap uses §4.3's order.
-   - **Bob** checks that a repeated introduction has the same three keys as the stored one (the signature is checked once, at redemption; see §4.4), and rejects a bundle whose introduction differs, or a bootstrap slot with none.
+   - **Bob** checks that a repeated introduction has the same agreement and signing keys as the ones he stored at redemption (the signature is checked once, at redemption; see §4.4), and rejects a bundle whose introduction differs, or a bootstrap slot with none.
    - **Carol** treats the first message she opens from Bob as `ss2`: she decapsulates `ct2`, stores full material and deletes her ML-KEM key.
    - **Bob** clears `bootstrapOpen` on the first non-bootstrap slot from Carol.
 4. **No match: redemption.** For each contact whose field is `issued`, at every depth, and for each `.forwardSecret` slot:
