@@ -6,7 +6,7 @@
 //  All iOS 26 / CryptoKit ML-KEM availability gating is confined to this file.
 //
 //  Production: SecureEnclave.MLKEM1024.PrivateKey — private key never leaves hardware.
-//  Tests:      In-memory MLKEM1024 — no SE required in test runner.
+//  Tests:      In-memory MLKEM1024 — no SE required in test runner. Debug builds only.
 //
 
 import Foundation
@@ -62,14 +62,19 @@ public enum PostQuantumProviderFactory {
         return nil
     }
 
+    #if DEBUG
     /// Returns an in-memory PQ provider for unit tests (no Secure Enclave required).
     /// Returns nil on iOS < 26.
+    ///
+    /// Debug builds only. Its private keys live in app memory, not the Secure Enclave, so a
+    /// Release build must not be able to reach it.
     public static func createForTesting() -> PostQuantumProvider? {
         if #available(iOS 26, *) {
             return InMemoryPostQuantumProvider()
         }
         return nil
     }
+    #endif
 }
 
 // MARK: - Production: Secure Enclave ML-KEM-1024
@@ -127,6 +132,7 @@ private final class SecureEnclavePostQuantumProvider: PostQuantumProvider {
 
 // MARK: - Testing: In-memory ML-KEM-1024
 
+#if DEBUG
 /// In-memory ML-KEM-1024 for unit tests. No Secure Enclave required.
 /// Cryptographic operations are identical — only the key storage differs.
 @available(iOS 26, *)
@@ -166,3 +172,4 @@ private final class InMemoryPostQuantumProvider: PostQuantumProvider {
         return sharedSecret.withUnsafeBytes { Data($0) }
     }
 }
+#endif
