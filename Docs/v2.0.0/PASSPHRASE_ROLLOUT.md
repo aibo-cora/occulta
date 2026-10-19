@@ -1,6 +1,29 @@
 # v2.0.0 — Passphrase Rollout
 
-**Status:** Proposed, 2026-10-19. Nothing here is decided. Every item in §8 is open, needs a decision.
+**Status:** Proposed, 2026-10-19. The owner went through §8 on 2026-10-19. Each decision is marked where it
+applies and logged in `decisions.md`.
+
+**Decided:**
+- 2, direct derivation;
+- 3, the release after 2.0.0;
+- 4, a new store file with the old one as the way back;
+- 5, every install migrates;
+- 7a, 7b, 7c and 7d, the coercion gate;
+- 8a and 8b, setup in a decoy;
+- 9a and 9b, removing a depth;
+- 10, setup required at once;
+- 12, the full list with 7 words;
+- 13a and 13b, no suggestion bar, and VoiceOver as in password fields;
+- 14, rehearsal;
+- 15a, 15b, 15c and 15d, keys stay in the keychain, and erase deletes the share key.
+
+**Open, needs a decision:**
+- 1, adopting the 2026-10-15 storage design;
+- 6, a test phone;
+- 11a and 11b, the vault's keys;
+- how 7c is made identical to an ordinary lock-on;
+- whether the data slices ship together;
+- the spec's own 2026-10-15 sub-items.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -30,7 +53,7 @@ waiting for this work, and a downgrade must lose nothing, through a new store fi
 - Rule 4's way back (§1.2).
 - The coercion gate under phrases (§1.3).
 - Installs with no lock (§1.4).
-- Key slots as an option (§1.1).
+- Key slots, considered and not adopted (§1.1).
 - Stages and effort (§7).
 
 Code references are against `75e86c39`.
@@ -39,7 +62,11 @@ Code references are against `75e86c39`.
 
 ## 1. Proposals and findings
 
-### 1.1 Key slots: an option, with a narrow gain
+### 1.1 Key slots: not adopted
+
+**Decided 2026-10-19 by the owner: direct derivation.** Rows are sealed directly under `layerKey_D`, as the spec
+has it, and key slots are not adopted. Release order B (§7.1) drops out with them. The comparison below is kept
+as the record (`decisions.md`, 2026-10-19).
 
 **The 2026-10-15 design.** A depth's header slot holds the canary, the key of the depth below it, and the
 shared key. Rows are sealed under `layerKey_D` itself.
@@ -74,6 +101,10 @@ reseal. **Open, needs a decision.**
 
 ### 1.2 Rule 4's way back: the old store file
 
+**Decided 2026-10-19 by the owner: adopted as proposed below,** both the new store file and the old store as
+the way back (`decisions.md`, 2026-10-19). Still open: what a newer build does with a store an older build wrote
+to in the meantime (ROLLOUT_PLAN, "A downgrade loses nothing").
+
 Rule 4 keeps a way back until every phrase is proven. The migration requirement of 2026-10-16 proposes
 writing the migrated data to a new store file and removing the old store only after the switch (ROLLOUT_PLAN,
 "A downgrade loses nothing"). That old store can be the way back, with no new key escrowed anywhere.
@@ -97,9 +128,30 @@ writing the migrated data to a new store file and removing the old store only af
 **Compared with device slots (§1.1),** this leaves nothing that opens the new store once graduation is done.
 **Open, needs a decision.**
 
-### 1.3 The coercion gate has no phrase equivalent yet
+### 1.3 The coercion gate under phrases
 
 Today the user chooses the PIN. Two coercion paths depend on that, and so does an absolute depth number.
+
+**Decided 2026-10-19 by the owner (7a–7d; `decisions.md`, 2026-10-19).** The governing rule, raised by the owner:
+lock off and lock on must behave identically at every depth and on every install, Secure Mode or not. That
+covers the screens, the time taken, what Settings shows afterwards and what changes on disk. Any difference
+identifies duress.
+- **7a, lock off: kept, built one way for everyone.** Lock off stores the current depth's key under a
+  device-only key, so the app opens without a phrase.
+  - On an install without Secure Mode, that depth is depth 0. At a duress depth, it is that depth.
+  - The container for that key exists on every install, filled with random bytes when no depth has its lock
+    off, so its presence says nothing.
+  - Images taken while a depth's lock is off can open that depth until it is resealed.
+- **7b, the real depth: refused while duress depths exist.** To go lock-free, the real user removes Secure Mode
+  first. A coercer is never at the real depth without its phrase, so the refusal is never observed.
+- **7c, lock on in a decoy: a new depth below it.** A new phrase means a new key, which the parent's chain copy
+  can't follow. Requirement: it takes the same steps and time, and shows the same contacts, as an ordinary
+  install's lock-on, which reseals depth 0 under the new phrase. How is design work, **open, needs a
+  decision.** The real user doesn't need this flow to accept an existing phrase: once the lock is on, the lock
+  screen does that.
+- **7d:** below, under "Depths a coercer created".
+
+The reasoning before the decision follows.
 
 **The absolute depth number goes regardless.** Requirement 1 of the 2026-10-15 storage drops absolute depth
 numbers: the persisted `currentDepth`, `coercerBaseDepth` and the verifier indices. The logic from Bugs 37,
@@ -131,17 +183,31 @@ Phrases are generated by the app, so the flow can't be carried over as is.
 **Open, needs a decision.**
 
 **Depths a coercer created** through that path. The real user doesn't know their PINs, yet Rule 2 needs every
-depth's phrase in one sitting. **Open, needs a decision** (§3.1).
+depth's phrase in one sitting. **Decided 2026-10-19 by the owner (7d): dropped at phrase setup** (§3.1), as
+`forceDeactivateForRecovery` drops every layer today:
+- **The contacts those depths created go with them,** as deletions (orphan-in-place). Under the 2026-10-15
+  storage, a contact created at a duress depth stays hidden from the depths above only through that depth's
+  origin list. Dropping the list without the contacts would put them in the real user's contact list.
+- **A returning coercer** finds their PIN dead, as everyone's is after the release. During the probation week
+  the old store still opens with it, as it was at setup.
+- `decisions.md`, 2026-10-19.
+
 
 ### 1.4 Installs with no lock
+
+**Decided 2026-10-19 by the owner: option 2, migrate everyone** (`decisions.md`, 2026-10-19).
+- Depth 0's key is derived from an empty phrase, with the install's salt and Enclave key. Protection stays at
+  today's level.
+- With no phrase to forget, there is no probation week. The old store and its keys are deleted once the reseal
+  checks out.
+- Turning a lock on later reseals depth 0 through the same path.
 
 The 2026-10-15 storage doesn't say what an install with no app lock does. Two options:
 
 1. **It stays on today's store and key until a lock is turned on,** which runs the migration then. The code
    keeps two formats for as long as such installs exist.
-2. **It migrates too,** with depth 0's key derived without a phrase (a fixed empty input), or held in a device
-   slot (§1.1). The code has one format. Turning a lock on later reseals depth 0, or rewraps it with §1.1's
-   cost.
+2. **It migrates too,** with depth 0's key derived without a phrase (a fixed empty input). The code has one
+   format. Turning a lock on later reseals depth 0.
 
 Either way:
 - an install with no lock keeps today's protection;
@@ -172,10 +238,18 @@ confirm step.
 
 ### 2.2 Keyboard
 
-**Proposed design.**
-- In-app letter keys. Letters that can't continue any list word are disabled, so a typo can't happen.
-- A word commits when its prefix is unique. A suggestion bar appears from the third letter.
-- Committed words show as dots, with press-and-hold to show them.
+**Design, with the decisions of 2026-10-19 (12, 13a, 13b; `decisions.md`).**
+- **Keys.** In-app letter keys. Letters that can't continue any list word are disabled, so a typo can't
+  happen.
+- **Completion.** A word commits when its prefix is unique, about 5.3 letters on average, so 37 taps for 7
+  words.
+- **No suggestion bar** (13a). It would save about 3 taps a phrase, and it puts whole words on screen, which are
+  easier to read from a distance or on CCTV than taps on keys.
+- **No visual feedback on a tap,** haptics only. Committed words show as dots, with press-and-hold to show them.
+- **What it can't stop.** A camera that can see the keys still sees which keys are tapped. So the setup screen
+  tells the user to shield the screen while typing, which belongs in step 16's guidance.
+- **VoiceOver** (13b) behaves as it does in iOS's own password fields. The setup screen suggests headphones to
+  VoiceOver users, because keys are read aloud as they are touched.
 
 **Why not the system keyboard.** Nothing reaches the keyboard's learned words, and there is no paste, no
 dictation and no third-party keyboard. Spec §4 requires this whichever way the rest is settled.
@@ -208,7 +282,9 @@ With a subset, entry can be fully blind: no suggestion bar, nothing on screen bu
 or two more words to memorise. Spec §4's word count assumes the full list; a subset changes the count, not the
 strength target.
 
-**Open, needs a decision.**
+**Decided 2026-10-19 by the owner (decision 12): the full list, 7 words** (`decisions.md`, 2026-10-19). Fewest
+words to memorise. The cost is the suggestion bar of §2.2, which shows candidate words on screen as they are
+typed (decision 13).
 
 ### 2.5 Learning, and where gamification fits
 
@@ -221,7 +297,13 @@ layers. Gamification goes there.
   When it completes, the app graduates (§3.2).
 - **Rehearse.** At the real depth, check any depth's phrase without changing depth. It counts toward that
   depth's Rule 4 progress. After graduation, duress phrases are rarely typed. A periodic rehearsal prompt
-  would need a stored "last rehearsed" per depth. **Open, needs a decision.**
+  would need a stored "last rehearsed" per depth. **Decided 2026-10-19 by the owner (decision 14):**
+  - **A prompt about monthly at unlock,** with "Later", plus "Rehearse phrases" in Settings.
+  - **What it covers.** Each depth prompts for the phrases of the depths below it. A depth with nothing below it
+    never prompts, like an install without Secure Mode.
+  - **What it stores.** The last-rehearsed date is one ordinary row in the general pool, sealed under that depth's
+    key (requirements 1 and 7).
+  - `decisions.md`, 2026-10-19.
 
 **Constraints.**
 - No notifications or badges; `OSTraceTests` forbids them.
@@ -232,9 +314,8 @@ layers. Gamification goes there.
 - The screens are the same at every depth. A duress depth shows only its own phrase's progress.
 - Every lock user gets them (Rule 3).
 
-**Open, needs a decision:**
-- VoiceOver speaks each key and suggestion aloud on a custom keyboard.
-- The suggestion bar shows the word being typed to any camera in view.
+**Decided 2026-10-19 (13a, 13b; §2.2):** no suggestion bar, and VoiceOver as in iOS's password fields, with a
+headphones suggestion.
 
 ---
 
@@ -246,12 +327,27 @@ Assuming §1.2: the reseal happens at phrase setup, into a new store.
 
 | Today | At phrase setup | Notes |
 |---|---|---|
-| No lock | Nothing, or the migration of §1.4 | §1.4 |
+| No lock | The reseal, with depth 0's key from an empty phrase; no probation week | The old store and its keys go once the reseal checks out (§1.4) |
 | PIN only | 1 phrase; the reseal into the new store | The old store stays until graduation |
 | Secure Mode with K duress layers | At the real depth, after the master PIN: K+1 phrases in one sitting (Rule 2), then one reseal of every depth | Only the real user can give every phrase |
-| Unlocked at duress depth N | The prompt must look the same as at the real depth. Setup can't complete there, because Rule 2 needs every phrase | **Open, needs a decision** |
-| Gate lowered at depth N | Presents as an install with no lock. How the real user gets back to set up | **Open, needs a decision** |
-| Depths a coercer created (`coercerBaseDepth > 0`) | The real user doesn't know their PINs. Drop them at setup, as `forceDeactivateForRecovery` does today? | **Open, needs a decision** |
+| Unlocked at duress depth N | The same prompt as everywhere. Setup there sets up that depth for real: its phrase, and the data it can see, in the new store. The real user finishes the other depths later from the real depth, typing the decoy's phrase again | **Decided 2026-10-19** (8a, below) |
+| Gate lowered at depth N | Behaves like an install with no lock: silent migration, no prompt, the depth's key under a device-only key (7a). The real user gets back by turning the lock on (7c) and using the lock screen, then finishes setup | **Decided 2026-10-19** (8b, below) |
+| Depths a coercer created (`coercerBaseDepth > 0`) | Dropped at setup, as `forceDeactivateForRecovery` does today, together with the contacts they created | **Decided 2026-10-19** (§1.3) |
+
+**Decided 2026-10-19 by the owner (8a, 8b; `decisions.md`, 2026-10-19).**
+- **8a. A setup started in a decoy is real for that decoy.** Its phrase is set, and the data it can see moves
+  into the new store, under its key and the shared key.
+  - The real user finishes the other depths later, from the real depth, typing the decoy's phrase again. Rule 2
+    holds from then on.
+  - The exception to Rule 2 is visible only by comparing images over time, the leak the spec already lists as
+    open (Bug 120).
+  - Until the real user finishes, the old store opens with the passcode, as all data does today. So the window
+    is no weaker than today.
+- **8b. A decoy with its lock off behaves like an install with no lock.** It migrates silently, with no prompt,
+  and its key stays under a device-only key (7a).
+  - The real user gets back by turning the lock on (7c) and typing the real phrase or PIN at the lock screen,
+    then finishes setup.
+  - The depth 7c creates on the way is removed later (decision 9).
 
 ### 3.2 Probation and graduation
 
@@ -263,11 +359,18 @@ Assuming §1.2: the reseal happens at phrase setup, into a new store.
 - the local DB Enclave key and the keychain random (`local.db.random.key.occulta`);
 - the Secure Mode PIN Enclave key (`app.layer.key.occulta.v1`).
 
-**What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. With
-§1.4's first option, the old key's absence says the install has a lock. That is no more than today's
-verifier scalar says.
+**What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. Since every
+install migrates (§1.4), every install loses the old keys: at once with no lock, at graduation with one. Their
+absence says only that the install has migrated. The deletion's date can still differ by about a week between
+the two, which says no more than today's verifier scalar about whether there is a lock.
 
-**Open, needs a decision:** a deadline after which a lock user who hasn't set up a phrase must.
+**Setup deadline. Decided 2026-10-19 by the owner (decision 10): required at the first unlock after the update,**
+with no "Later" (`decisions.md`, 2026-10-19).
+- There is no opt-in period, so setting up early marks no one (Rule 3).
+- After the update, no install keeps the PIN path beyond the probation week.
+- The cost: after the update, a lock user can't use the app until setup and its learning steps are done, even
+  at a bad moment.
+- A decoy is no different (8a).
 
 ---
 
@@ -316,12 +419,18 @@ Rule 3 allows only two visible states: lock off and lock on.
   memorise.
 - **Adding a depth.** The new depth's header slot is written, and its parent's slot gains the new key (spec
   §2, 2026-10-15). That shows across images; the spec has it as open.
-- **Removing a depth.** The 2026-10-15 design doesn't cover this. Proposed:
-  - the depth's header slot goes back to filler, and its parent's slot drops its key;
-  - rows under its key become unopenable, which requirement 2 explains as deletions;
-  - it shows across images the same way creation does.
-
-  **Open, needs a decision.**
+- **Removing a depth.** The 2026-10-15 design doesn't cover this. **Decided 2026-10-19 by the owner (9a, 9b;
+  `decisions.md`, 2026-10-19):**
+  - **9a, who.** Any depth can remove the depths below it. Removing one removes everything below it too, since
+    it holds their keys. No depth removes itself or anything above it.
+    - The same option behaves the same at every depth.
+    - It replaces today's rule that only the real depth or a coercer's home depth (`coercerBaseDepth`) may
+      deactivate, which needs the absolute depth numbers requirement 1 drops.
+  - **9b, what.** The removed depths' header slots go back to filler, and the depth above drops their key.
+    - Rows sealed only under those keys become unopenable, which requirement 2 explains as deletions. That is
+      today's vault orphaning (`orphanVaultEntries`) generalised.
+    - The contacts those depths created are deleted, for 7d's reason.
+  - **Still open:** it shows across images the same way creating a depth does (spec §2, 2026-10-15, open).
 - **Repeated images.** The spec's finding stands: a duress depth doesn't survive comparison across images
   once its phrase is surrendered. Step 16's guidance has to say so.
 
@@ -334,10 +443,22 @@ more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ agains
 
 ## 6. Other things it touches
 
-- **Vault Face ID.** The 2026-10-15 depth keys replace the vault key for the data they cover. Today the vault
-  key accepts the device passcode in place of Face ID
-  ([Key+Manager.swift:653](../../Occulta/Services/Key+Manager.swift)), so Face ID adds no protection against
-  this adversary. Keep it as a second gate on screen, or drop it: **open, needs a decision.**
+- **The vault's keys** (decision 11, reframed 2026-10-19 by the owner's question "is it not better to keep vault
+  data isolated?").
+  - **Already depth-bound.** Under the 2026-10-15 design each depth's vault entries are sealed under that depth's
+    key. A decoy can't read the real vault, which is stricter than today's single vault key for every depth.
+  - **What it gives up against today's separate vault key:**
+    - **11a, a key of its own.** It can be restored for free: a per-depth vault key derived from the depth key
+      with a vault-only label. The unlock stays the same, and a depth's vault can then be erased on its own.
+    - **11b, a second unlock.** Today the vault key is in memory only while the vault is open, after Face ID. To
+      keep that, mix one Face ID-or-passcode Enclave key per install into each depth's vault key. One per
+      install, so the depth count doesn't leak.
+      - It keeps a keychain item (Bug 170) unless decision 15 moves it to a file.
+      - It narrows the memory window.
+      - This adversary has the passcode and can compel Face ID, so it mainly stops weaker attackers.
+      - The cheaper alternative is an on-screen Face ID gate with no key behind it. Today the vault key accepts
+        the device passcode in place of Face ID ([Key+Manager.swift:653](../../Occulta/Services/Key+Manager.swift)).
+  - **Both open, needs a decision** (2026-10-19).
 - **Recovery.**
   - A Shamir backup restores vault content without the phrase. Nothing restores contacts. The setup copy must
     say so plainly (spec §4, Recovery).
@@ -345,6 +466,23 @@ more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ agains
 - **Bug 92's export passphrase** reuses the keyboard (§2.2). It can ship first and field-test typing before
   anything depends on it.
 - **Erase All Data and `forceDeactivateForRecovery`** become header destruction.
+- **Where per-install keys live** (decision 15, added 2026-10-19; `bugs.md` Bug 170). The keychain keeps an
+  app's items after the app is deleted, so Occulta's keys and their creation dates survive a deletion. So do
+  the legacy prekey tags that name contacts. Enclave blobs in files in the app's container go with the app.
+  - **The new per-install phrase key** could start as a blob at no cost.
+  - **The identity key** can't move without a new identity, which strands every contact (Bug 82).
+  - **The keys graduation retires** survive a deletion until then.
+  - **Separately, Erase All Data** doesn't delete the share staging key.
+
+  **Decided 2026-10-19 by the owner (15a–15d; `decisions.md`, 2026-10-19).**
+  - **15a.** The new per-install phrase key is a keychain item, like the app's other keys.
+  - **15b.** The identity key stays in the keychain.
+  - **15c.** The keys graduation retires aren't moved first.
+  - **15d.** Erase All Data deletes the share staging key, which stays a keychain item. This doesn't depend on the
+    passphrase work and can ship in 2.0.0.
+
+  So per-install keys keep outliving an app deletion, with their creation dates. Still open in Bug 170: the
+  legacy keychain prekeys, and the shard custody key, which waits on stage 5.
 - **Device Migration** (`Docs/Features/Device Migration/FINDINGS.md`, exploratory) means a new Enclave, so
   phrases are set up again on the new phone. Out of scope here.
 - **Tests.**
@@ -383,8 +521,15 @@ come in a later one.
 - Graduation then needs a rekey, a second reseal (§1.1).
 - About 2–3 more weeks than A.
 
-**Open, needs a decision,** together with which release carries the work. Since 2026-10-16 that no longer
-depends on the prekey refactor.
+**B dropped out on 2026-10-19** with key slots (§1.1). That doesn't settle whether the data slices ship
+together. A is the owner's 2026-10-15 lean; ROLLOUT_PLAN's stages 2–4 split them by data. That is still open,
+needs a decision.
+
+**Decided 2026-10-19 by the owner: the passphrase work ships in the release after 2.0.0.**
+- 2.0.0 ships what is merged into `release/v2.0.0` without it.
+- Stage 0's groundwork and stage 1's keyboard may go into 2.0.0 if they're ready.
+- Why: the prekey records and the reseal are each a large migration, and the app sends no telemetry. Kept in
+  separate releases, a failure points at one of them (`decisions.md`, 2026-10-19).
 
 ### 7.2 Stages, for order A
 
@@ -406,21 +551,44 @@ lands.
 
 ## 8. Open, needs a decision
 
-The spec's own 2026-10-15 items stay open there and aren't repeated here.
+Numbered as they are being decided, one by one, from 2026-10-19. The spec's own 2026-10-15 sub-items stay open
+there and aren't repeated here.
 
-1. **Key slots,** or rows directly under `layerKey_D` (§1.1).
-2. **Release order A or B,** and which release carries the work (§7.1).
-3. **Rule 4's way back** through the old store (§1.2).
-4. **Installs with no lock** (§1.4).
-5. **The coercion gate** under phrases, lowering it at the real depth, and depths a coercer created (§1.3).
-6. **Phrase setup seen from a duress depth**, and from a depth with the gate lowered (§3.1).
-7. **Removing a depth,** and how it shows across images (§5).
-8. **The wordlist**: full list or a short-prefix subset (§2.4).
-9. **VoiceOver and the suggestion bar** (§2.5).
-10. **Rehearsal reminders** after graduation (§2.5).
-11. **A setup deadline** for lock users without a phrase (§3.2).
-12. **Vault Face ID** once depth keys replace the vault key (§6).
-13. **A test phone with no real data.** Which one?
+1. **Adopt the 2026-10-15 storage design** (spec §2) as the shape to build. Left open on 2026-10-19, to come
+   back to.
+2. ~~**Key slots,** or rows directly under `layerKey_D` (§1.1).~~ **Decided 2026-10-19:** direct derivation.
+3. ~~**Which release carries the work** (§7.1).~~ **Decided 2026-10-19:** the release after 2.0.0. Whether
+   the data slices ship together stays open (ROLLOUT_PLAN, release mechanics).
+4. ~~**Rule 4's way back** through the old store (§1.2).~~ **Decided 2026-10-19:** adopted, with a new store
+   file.
+5. ~~**Installs with no lock** (§1.4).~~ **Decided 2026-10-19:** migrate everyone, with an empty phrase for
+   depth 0.
+6. **A test phone with no real data.** Which one? As of 2026-10-19 none is cleared: the iPhone 11 still holds real
+   data. Stage 0's timing and every stage from 3 on wait for one.
+7. **The coercion gate** under phrases (§1.3):
+   - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
+   - 7b: ~~lowering it at the real depth~~ **Decided:** refused while duress depths exist.
+   - 7c: ~~turning it back on~~ **Decided:** a new depth below, behaving like an ordinary lock-on; how is open.
+   - 7d: depths a coercer created. ~~Open~~ **Decided 2026-10-19:** dropped at setup, with the contacts they
+     created.
+8. ~~**Phrase setup seen from a duress depth**, and from a depth with the gate lowered (§3.1).~~ **Decided
+   2026-10-19:** a decoy's setup is real and the real depth finishes later (8a); a decoy with its lock off migrates
+   like an install with no lock (8b).
+9. ~~**Removing a depth** (§5).~~ **Decided 2026-10-19:** any depth removes the depths below it, cascading;
+   their data becomes unopenable and the contacts they created are deleted. How it shows across images stays
+   open, with depth creation.
+10. ~~**A setup deadline** for lock users without a phrase (§3.2).~~ **Decided 2026-10-19:** required at the
+    first unlock after the update.
+11. **The vault's keys** (§6): 11a, a per-depth vault key derived from the depth key; 11b, a second unlock
+    (an on-screen Face ID gate, or a real Face ID-or-passcode key). Both open.
+12. ~~**The wordlist**: full list or a short-prefix subset (§2.4).~~ **Decided 2026-10-19:** the full list, 7
+    words.
+13. ~~**VoiceOver and the suggestion bar** (§2.5).~~ **Decided 2026-10-19:** no suggestion bar, with haptic-only
+    feedback; VoiceOver as in iOS's password fields, with a headphones suggestion.
+14. ~~**Rehearsal reminders** after graduation (§2.5).~~ **Decided 2026-10-19:** a dismissable prompt about
+    monthly at unlock, plus a manual entry in Settings.
+15. ~~**Where per-install keys live** (§6, `bugs.md` Bug 170).~~ **Decided 2026-10-19:** the keychain, for the
+    new phrase key and the identity key; retired keys aren't moved; Erase All Data deletes the share staging key.
 
 ---
 
@@ -444,6 +612,7 @@ depends on or changes.
 | Bug 148 | A file opened from outside shows before the PIN screen | Fixed 2026-09-28 | A file arriving behind the lock must still wait, and with phrases it also has no key to open with |
 | Bug 162 | A trustee's piece count shows how many depths have a backup | On-screen count and manifest size fixed (PR #114); stored rows and piece dates open, needs a decision | Stage 5 |
 | Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; a new store file for the passphrase migration proposed, not decided | §1.2, stage 0 |
+| Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix decided, not built; legacy prekeys and the custody key open | §6, decision 15 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
 | Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |
 | Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |

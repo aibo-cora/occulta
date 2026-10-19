@@ -69,6 +69,7 @@ depends on.
 | Bug 166 | A response we aren't waiting for shows "Verification failed — this may not be <contact>" | Fixed (PR #102), merged into `v2.0.0/prekey-refactor` | none |
 | Bug 167 | Identity challenges and responses can be recognised by their size | Open, needs a decision | prekey continuity stage 3 |
 | Bug 168 | A downgraded build migrates the store back and deletes every contact's prekey record; D6's release order doesn't prevent it | Accepted 2026-10-16 for TestFlight and sideload users; the refactor ships in 2.0.0 without waiting for the passphrase work | release mechanics; the migration requirements before stages 2 and 3 |
+| Bug 170 | Deleting the app leaves its keychain items, with their creation dates and the legacy prekey tags that name contacts | Per-install keys stay in the keychain (decision 15, 2026-10-19); Erase All Data deleting the share key decided, not built; legacy prekeys and the custody key open, needs a decision | [PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) decision 15 |
 
 Steps 6, 7, 10, 13, 15, 16 and 17 are not tracked anywhere else yet.
 

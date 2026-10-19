@@ -19,7 +19,7 @@ below. It covers:
 - depths under phrases;
 - stages and effort.
 
-It proposes one change to §1, key slots, which is open, needs a decision. It also touches §4's entry and
+It proposed one change to §1, key slots, which was not adopted on 2026-10-19. It also touches §4's entry and
 recovery requirements and §5. Until decided, this document stands as written.
 
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
@@ -152,7 +152,12 @@ Each attempt is one PBKDF2 run and one Enclave call, then a trial open of the 32
 2026-10-15), which is cheap. The cost: each guess is tested against every depth at once, about 5 bits off
 90 at 32 slots. The salt only has to be unique per install, which is what defeats precomputation.
 
-**Proposed 2026-10-19: key slots** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1). Open, needs a decision.
+**Proposed 2026-10-19: key slots** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1). **Not adopted, decided
+2026-10-19 by the owner:** depth keys come directly from the phrase, as above (`decisions.md`).
+
+**Decided 2026-10-19: installs with no lock** use the same derivation, with an empty phrase for depth 0, so
+every install has the same storage. Turning a lock on reseals depth 0 under the new phrase
+(`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.4).
 - **What changes.** A depth's header slot would also hold a random depth key, and rows would be sealed
   under that key instead of under `layerKey_D`.
 - **What it buys.** A later change to this derivation, such as the iteration count or the KDF itself,

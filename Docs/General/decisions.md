@@ -893,9 +893,380 @@ upgrading again. Only TestFlight and sideloaded builds can downgrade on iOS.
 **Consequences:**
 - The acceptance covers the refactor's prekey records only. For the passphrase migration, `ROLLOUT_PLAN.md` still
   proposes that a downgrade lose nothing, with a new store file, because there a downgrade would delete everything
-  resealed. That is not decided.
+  resealed. That is not decided. *2026-10-19:* decided for the passphrase migration; see "The passphrase
+  migration writes a new store file" below.
 - Which release carries the passphrase work is open.
 
 **Full reasoning:** Prekey Continuity `DESIGN.md` §5 (D6); `bugs.md` Bug 168; `Docs/v2.0.0/ROLLOUT_PLAN.md`,
 release mechanics.
 
+
+## Depth keys come directly from the phrase; no key slots
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** The passphrase rollout plan (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1) compared two ways to key a
+depth. In the spec's way, rows are sealed under `layerKey_D`, derived from the phrase and the install's Enclave
+key. In the other, each depth gets a random key held in a slot that `layerKey_D` opens. Slots would let a later
+change to the derivation rewrap one slot instead of resealing, and would let every install reseal before any
+phrase exists.
+
+**Decision:** Direct derivation, as `PASSPHRASE_LAYER_KEYS.md` §1 has it. No key slots.
+
+**Why:**
+- A key once wrapped under a device key stays unwrappable from older images, because nothing documents that
+  deleting an Enclave key revokes an older copy (Prekey Continuity D9). So a silent reseal ahead of phrase setup
+  needs a second reseal at graduation, which is what Rule 1 exists to avoid. So does raising a lowered gate, or
+  replacing an exposed phrase.
+- What remains is a cheaper change to the derivation later, which should be rare and can ride a planned reseal.
+  It doesn't justify another key layer.
+
+**Consequences:**
+- Release order B in the plan (§7.1), a silent reseal first, drops out. The reseal runs at phrase setup.
+- Changing the derivation later (the PBKDF2 count, the KDF, the Enclave step) reseals every row.
+- `ROLLOUT_PLAN.md` Rule 1 stands as written.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1; `PASSPHRASE_LAYER_KEYS.md` §1.
+
+## The passphrase work ships in the release after 2.0.0
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** Since 2026-10-16 the prekey refactor ships in 2.0.0 without waiting for the passphrase work, so
+nothing tied that work to 2.0.0 any more. Bug 165's capability tier needs only the 2.0.0 version number. The
+passphrase work is about 3–5 months of build (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §7).
+
+**Decision:**
+- The passphrase work ships in the release after 2.0.0.
+- 2.0.0 ships what is merged into `release/v2.0.0` without it.
+- Stage 0's groundwork and stage 1's phrase keyboard may go into 2.0.0 if they're ready. The keyboard would go
+  through Bug 92's export passphrase.
+
+**Why:**
+- The prekey records and the reseal are each a large migration.
+- The app sends no telemetry, so problems arrive only as user reports. In separate releases, a failure points at
+  one migration.
+- Holding 2.0.0 back would also hold back everything already merged for it.
+
+**Consequences:**
+- 2.0.0 adds no protection against the device-seizure case. Bug 119 stays open through it.
+- Whether the passphrase work's data slices ship together in that release is still open (the owner's
+  2026-10-15 lean, `ROLLOUT_PLAN.md`, release mechanics).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §7.1; `Docs/v2.0.0/ROLLOUT_PLAN.md`, release mechanics.
+
+## The passphrase migration writes a new store file; the old store is Rule 4's way back
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- Rule 4 of `ROLLOUT_PLAN.md` keeps a way back until every phrase has been entered correctly a few times over
+  about a week.
+- Bug 168 showed that an older build migrates a newer store back to its own schema, dropping what it doesn't
+  know. In the same store file, a downgrade would delete everything resealed.
+- Keeping the way back by wrapping the new depth keys under a device key would leave older images able to open
+  them for good. That is the reasoning that ruled out key slots the same day.
+
+**Decision:**
+- **A new store file.** The reseal writes the migrated data to it, under phrase-derived keys only.
+- **The old store stays until graduation,** with its keys (the local DB Enclave key and the keychain random) and
+  the PIN verifiers inside it.
+- **The way back.** A phrase forgotten during the week can be bypassed with the old PIN, which opens the old
+  store as it was at setup. Changes made since are lost, and the screen says so.
+- **Graduation** deletes the old store, its keys and the Secure Mode PIN key together.
+
+**Why:**
+- No new key is ever stored where the passcode alone can reach it.
+- An image taken during the week shows the old store, which is exactly as exposed as all data is today, and
+  a new store that needs the phrases.
+- The same file also makes a downgrade lose nothing. During the week an older build finds the old store as
+  it was at setup.
+
+**Consequences:**
+- A phrase forgotten during the week loses that week's changes.
+- Two stores sit on disk for the week.
+- Still open: what a newer build does with a store an older build wrote to in the meantime.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.2; `ROLLOUT_PLAN.md` Rule 4 and "A downgrade loses
+nothing"; `bugs.md` Bug 168.
+
+## Installs with no lock migrate too, with an empty phrase for depth 0
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** The 2026-10-15 storage design (`PASSPHRASE_LAYER_KEYS.md` §2) didn't say what an install with no
+app lock does. Such an install has only depth 0, since Secure Mode needs a lock. It could stay on today's store
+until a lock is turned on, or migrate with everyone else.
+
+**Decision:**
+- **Every install migrates in the passphrase release.** Depth 0's key on an install with no lock is derived
+  from an empty phrase, with the install's salt and Enclave key.
+- **No probation week for these installs.** With no phrase to forget, the old store and its keys are deleted
+  once the reseal checks out.
+- **Turning a lock on later** reseals depth 0 under the new phrase, through the same path.
+
+**Why:**
+- Staying behind would keep two data layers in the code, old per-field encryption and new padded blobs,
+  possibly for good, with every contact feature written for both.
+- One format means the old one's code can eventually be deleted.
+- A depth-0-only install is the reseal's simplest case.
+
+**Consequences:**
+- Every install goes through the reseal, including those that never set a lock. It is the riskiest operation in
+  the app (Bugs 75–78, 138).
+- An install with no lock keeps today's protection: the empty phrase opens it for anyone with the passcode.
+- Every install eventually loses the old keys, so their absence says nothing about a lock (`PASSPHRASE_ROLLOUT.md`
+  §3.2).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.4.
+
+## Depths a coercer created are dropped at phrase setup, with the contacts they created
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** `reEnablePIN`'s Bug 37 path turns an unknown PIN entered at a lowered gate into a new layer. So some
+installs reach the passphrase release with depths whose PINs only a coercer knows. Phrase setup needs every
+depth's phrase in one sitting (`ROLLOUT_PLAN.md` Rule 2), and the real user can't give these.
+
+**Decision:**
+- **Drop those depths at phrase setup,** as `forceDeactivateForRecovery` drops every layer today.
+- **Delete the contacts they created with them,** orphan-in-place.
+
+**Why:**
+- They hold only what a coercer created.
+- After the release no PIN works for anyone, so a returning coercer's dead PIN shows nothing.
+- The contacts have to go too. Under the 2026-10-15 storage, a contact created at a duress depth is hidden from
+  the depths above only through that depth's origin list. Without the list it would appear in the real user's
+  contact list, which `Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md` rules out.
+
+**Consequences:**
+- During the probation week the old store still opens with that PIN, as it was at setup (Rule 4's way back).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.3 and §3.1.
+
+## Lock off and lock on behave identically at every depth and on every install
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** Under coercion, Secure Mode lets the user turn the lock off at a duress depth (`disablePIN`). The app
+then opens straight into the decoy, as it would for an ordinary user who turned their lock off. Turning it back on
+with an unknown PIN makes a new layer (`reEnablePIN`, Bug 37). A PIN never locked any data, so these were screen
+changes. A phrase does lock the data. So lock off has to keep the depth's key where the app can reach it without
+the phrase, and a new phrase means a new key.
+
+**Decision:**
+- **The rule.** Lock off and lock on must behave identically at every depth and on every install, Secure Mode or
+  not: the same screens, the same time, the same Settings afterwards, the same changes on disk.
+- **Lock off is kept, built one way for everyone.** It stores the current depth's key under a device-only key.
+  The container for that key exists on every install, filled with random bytes when unused.
+- **At the real depth, while duress depths exist, lock off is refused.** The user removes Secure Mode first.
+- **Lock on in a decoy creates a new depth below it.** It must take the same steps and time, and show the same
+  contacts, as an ordinary install's lock-on. How is open.
+
+**Why:**
+- Any difference a coercer can observe identifies duress.
+- Lock off at the real depth would leave the real data open to anyone with the passcode. A coercer is never at the
+  real depth without its phrase, so refusing there is never observed.
+- With keys derived directly from the phrase, the parent depth's chain copy can't follow a changed key. So a new
+  phrase has to be a new depth.
+
+**Consequences:**
+- Images taken while a depth's lock is off can open that depth until it is resealed.
+- Each lock-on in a decoy adds a depth. Removing unwanted ones is decision 9 of the rollout plan, open.
+- Making a decoy's lock-on match an ordinary lock-on is open design work.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.3.
+
+## Phrase setup in a decoy is real for that decoy; a decoy with its lock off migrates like an install with no lock
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- Every lock user is asked to set up a phrase (`ROLLOUT_PLAN.md` Rule 3), and the prompt must behave the same at
+  every depth.
+- A coercer at a decoy can demand that setup finish.
+- Rule 2 wants every depth's phrase in one sitting, which only the real user at the real depth can give.
+- A decoy whose lock was turned off looks to a coercer like an install with no lock.
+
+**Decision:**
+- **Setup started in a decoy sets up that decoy for real:** its phrase, and the data it can see, in the new store.
+  The real user finishes the other depths later from the real depth, typing the decoy's phrase again. This is an
+  exception to Rule 2.
+- **A decoy with its lock off migrates silently, like an install with no lock,** and its key stays under a
+  device-only key. The real user gets back by turning the lock on and using the lock screen, then finishes
+  setup.
+
+**Why:**
+- A setup a coercer can't complete, or one that leaves the install looking unset in an image taken right after,
+  identifies the decoy.
+- Until the real user finishes, the old store opens with the passcode, as all data does today, so the window
+  loses nothing.
+
+**Consequences:**
+- Comparing images over time shows that more was set up later. That is the repeated-images leak the spec already
+  lists as open (Bug 120).
+- The real user has to learn a phrase that was shown under coercion.
+- The depth created by turning the lock on in 8b's path has to be removed later (removing a depth, open).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §3.1.
+
+## Any depth can remove the depths below it; their data becomes unopenable
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- Today "Deactivate Protection" removes a layer and every layer below it, and orphans their vault entries.
+- It is offered only at the real depth or at a coercer's home depth (`coercerBaseDepth`).
+- The 2026-10-15 storage drops absolute depth numbers (requirement 1), and each depth holds the keys of the
+  depths below it.
+- Phrase setup and the lock-on path (7c) can leave depths the real user wants gone.
+
+**Decision:**
+- **9a.** Any depth can remove the depths below it, and removing one removes everything below it. No depth removes
+  itself or anything above it.
+- **9b.** The removed depths' header slots go back to filler, and the depth above drops their key. Rows sealed only
+  under those keys become unopenable and read as deletions. The contacts those depths created are deleted.
+
+**Why:**
+- The option behaves the same at every depth, so it shows a coercer nothing. A decoy with nothing below it looks
+  like an install without Secure Mode.
+- Deleting the created contacts follows from origin lists: without the removed depth's list they would surface at
+  the depths above.
+
+**Consequences:**
+- Removing a depth erases what was reachable only through it, for good.
+- It still shows across images, as creating a depth does (spec §2, 2026-10-15, open).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §5.
+
+## Phrase setup is required at the first unlock after the update
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- After the passphrase release, a lock user who hasn't set up a phrase stays on the old store with the PIN, at
+  today's protection.
+- `ROLLOUT_PLAN.md` Rule 3 allows an opt-in period only if it is short, because early adopters mark themselves.
+- Options considered: about two weeks of "Later" and then required; required at once; no deadline.
+
+**Decision:** Setup is required at the first unlock after the update, with no "Later".
+
+**Why:**
+- No opt-in period means nothing marks an early adopter.
+- No install keeps the PIN path beyond the probation week, so the old lock path can leave the code.
+- Images taken over time show no difference between users who set up early and those who set up late.
+
+**Consequences:**
+- After the update, a lock user can't use the app until setup and its learning steps are done, even at a bad
+  moment. The learning steps have to be quick enough for that.
+- A decoy behaves the same way (setup in a decoy, decided the same day).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §3.2.
+
+## Phrases are 7 words from the full EFF list
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** Phrases are typed on an in-app letter keyboard (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2). Three lists
+were compared:
+- the full EFF list (7,776 words): 7 words, about 34 taps, with a suggestion bar;
+- one word per 4-letter prefix (3,745 words without the hyphenated ones): 8 words, 4 letters each, blind entry;
+- one word per 3-letter prefix (1,373 words): 9 words, 3 letters each, blind entry.
+
+**Decision:** The full list, 7 words, as `PASSPHRASE_LAYER_KEYS.md` §4 assumes. The 4 hyphenated words are skipped
+when generating.
+
+**Why:** Memorising is the larger burden, at 7 words per depth. The full list asks for the fewest. All three
+options are far beyond guessing once every guess needs the Enclave.
+
+**Consequences:**
+- Typing needs a suggestion bar from the third letter, because a prefix can match up to 85 words. The bar shows
+  candidate words on screen, so a camera in view can see what is typed. Whether the bar can be hidden is decision
+  13 of the rollout plan, open. *2026-10-19:* decision 13 dropped the bar; see the next entry.
+- Bug 92's 6-word export passphrase keeps its 77.5 bits.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2.1–§2.4.
+
+## The phrase keyboard has no suggestion bar; VoiceOver behaves as in iOS password fields
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** With the full EFF list, a 3-letter prefix still matches a median of 12 words, and up to 85. A
+suggestion bar from the third letter would let the user tap the word. The keyboard is the app's own, so iOS's
+behaviour for password fields doesn't apply on its own.
+
+**Decision:**
+- **No suggestion bar.** A word completes itself once its prefix is unique, and letters that can't continue a list
+  word are disabled.
+- **No visual feedback on a tap,** haptics only. Committed words show as dots.
+- **VoiceOver** behaves as it does in iOS's own password fields. The setup screen suggests headphones to VoiceOver
+  users.
+- **The setup screen tells the user to shield the screen** while typing.
+
+**Why:**
+- The bar saves about 3 taps a phrase (34 against 37).
+- It puts whole words on screen, which are readable from further away and on poorer video than taps on keys.
+- No keyboard stops a camera that can see the keys, so shielding is the user's part.
+
+**Consequences:**
+- About 37 taps per 7-word phrase.
+- VoiceOver users hear keys read aloud unless they use headphones.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2.1–§2.2.
+
+## Duress phrases are rehearsed through a monthly in-app prompt and a Settings entry
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- The real phrase is typed at every unlock. Duress phrases may go unused for months, and an unused phrase is
+  forgotten.
+- A forgotten duress phrase leaves the decoy unreachable when it is needed.
+- Notifications are forbidden (`OSTraceTests`), so any reminder has to appear inside the app.
+
+**Decision:**
+- **A prompt about monthly at unlock,** with "Later": "Rehearse your other phrases."
+- **A "Rehearse phrases" entry in Settings.**
+- **The check.** Each depth rehearses the phrases of the depths below it, without changing depth.
+- **What it stores.** The last-rehearsed date is one ordinary row in the general pool, sealed under that depth's key.
+
+**Why:**
+- The prompt keeps duress phrases usable without relying on the user to remember to practise.
+- It behaves the same at every depth. A depth with nothing below it never prompts, like an install without
+  Secure Mode.
+
+**Consequences:**
+- One more stored row per depth that has depths below it, written about monthly.
+- The user types duress phrases in front of whoever is present when they choose to rehearse.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2.5.
+
+## Per-install keys stay in the keychain; Erase All Data deletes the share staging key
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** iOS keeps an app's keychain items after the app is deleted, so Occulta's keys and their creation dates
+outlive an uninstall (`bugs.md` Bug 170). CryptoKit Enclave blobs in files inside the app's container would be
+deleted with the app, as prekeys' blobs are under Prekey Continuity D9. Separately, Erase All Data doesn't delete
+the share staging key.
+
+**Decision:**
+- **15a.** The passphrase work's new per-install Enclave key is a keychain item.
+- **15b.** The identity key stays in the keychain.
+- **15c.** The keys graduation retires (the local DB key and its random component, the Secure Mode PIN key, the
+  vault key) aren't moved first.
+- **15d.** Erase All Data deletes the share staging key, which stays a keychain item.
+
+**Why:**
+- Moving the identity key means a new identity, which strands every contact (Bug 82). Keeping it in the keychain
+  also lets a reinstall keep the identity.
+- Moving the retired keys would need a migration of its own, for keys about to be deleted.
+- The new key follows the others.
+- The share key's survival of an erase is a plain defect, and fixing it doesn't depend on the passphrase work.
+
+**Consequences:**
+- Deleting the app still leaves per-install keys and their creation dates, which show the app was set up and when.
+- Still open in Bug 170: the legacy keychain prekeys, whose tags name contacts, and the shard custody key (stage 5).
+- The erase fix can ship in 2.0.0.
+
+**Full reasoning:** `bugs.md` Bug 170; `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §6.
