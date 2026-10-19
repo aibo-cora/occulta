@@ -49,7 +49,11 @@ struct ContactClassification: View {
     }
 
     private var unverifiedVisible: [Contact.Profile] {
-        self.visibleContacts.filter { self.status(of: $0) != .verified }
+        self.visibleContacts.filter { self.status(of: $0) == .unverified }
+    }
+
+    private var pendingVisible: [Contact.Profile] {
+        self.visibleContacts.filter { self.status(of: $0) == .pending }
     }
 
     private var sensitiveContacts: [Contact.Profile] {
@@ -67,7 +71,7 @@ struct ContactClassification: View {
                     .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
 
                 // MARK: Visible
-                if !self.verifiedVisible.isEmpty || !self.unverifiedVisible.isEmpty {
+                if !self.visibleContacts.isEmpty {
                     Section {
                         if !self.verifiedVisible.isEmpty {
                             groupHeader("Verified")
@@ -83,6 +87,18 @@ struct ContactClassification: View {
                         if !self.unverifiedVisible.isEmpty {
                             groupHeader("Not verified")
                             ForEach(self.unverifiedVisible) { contact in
+                                ClassificationRow(
+                                    contact:     contact,
+                                    status:      self.status(of: contact),
+                                    inSensitive: false,
+                                    onTap:       { self.sensitiveIDs.insert(contact.identifier) }
+                                )
+                                .opacity(0.45)
+                            }
+                        }
+                        if !self.pendingVisible.isEmpty {
+                            groupHeader("Pending")
+                            ForEach(self.pendingVisible) { contact in
                                 ClassificationRow(
                                     contact:     contact,
                                     status:      self.status(of: contact),
