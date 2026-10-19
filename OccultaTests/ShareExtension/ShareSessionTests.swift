@@ -324,6 +324,53 @@ struct ShareSessionSweepTests {
     }
 }
 
+// MARK: - Inbound sweep
+
+/// Hand off a `.occ` the way the extension does, last modified `age` seconds ago.
+private func handoff(in container: URL, age: TimeInterval = 0) throws -> URL {
+    let inbound = container.appendingPathComponent("inbound")
+    try FileManager.default.createDirectory(at: inbound, withIntermediateDirectories: true)
+
+    let file = inbound.appendingPathComponent("\(UUID().uuidString).occ")
+    try Data("sealed by the sender".utf8).write(to: file)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date.now.addingTimeInterval(-age)],
+        ofItemAtPath: file.path
+    )
+    return file
+}
+
+@Suite("ShareSession — inbound sweep")
+struct ShareSessionInboundSweepTests {
+
+    /// A handoff whose open never reached the app. Nothing else reads `inbound/`, so without
+    /// the sweep it stays until Erase All Data.
+    @Test func sweepInbound_deletesStaleHandoff() throws {
+        let container = try makeContainer()
+        let file = try handoff(in: container, age: ShareSession.staleAfter + 1)
+
+        ShareSession.sweepInbound(in: container)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// The sweep runs when the app comes to the foreground, which is also when a handoff
+    /// opens it, so the file the app is about to read must survive.
+    @Test func sweepInbound_keepsFreshHandoff() throws {
+        let container = try makeContainer()
+        let file = try handoff(in: container)
+
+        ShareSession.sweepInbound(in: container)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test func sweepInbound_onMissingInboundDirectory_isANoOp() throws {
+        let container = try makeContainer()
+
+        ShareSession.sweepInbound(in: container)
+        #expect(!FileManager.default.fileExists(atPath: container.appendingPathComponent("inbound").path))
+    }
+}
+
 // MARK: - Legacy contact mirror
 
 @Suite("ShareSession — legacy contact index removal")
@@ -373,8 +420,8 @@ struct ShareSessionEraseTests {
 
     /// Erase All Data must leave nothing of the share pipeline in the App Group (`bugs.md`
     /// Bug 170): no staged session, not even a fresh one `sweep` would keep; no `.occ`
-    /// handoff, which nothing sweeps; and not the two directories, whose creation dates
-    /// record the first share into Occulta.
+    /// handoff, not even a fresh one `sweepInbound` would keep; and not the two directories,
+    /// whose creation dates record the first share into Occulta.
     @Test func removeAll_deletesEverythingTheExtensionLeft() throws {
         let container = try makeContainer()
         try stage(in: container)
