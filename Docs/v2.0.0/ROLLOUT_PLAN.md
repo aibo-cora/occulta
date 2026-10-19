@@ -6,9 +6,9 @@ assumption in [`PASSPHRASE_LAYER_KEYS.md`](../../Occulta/Features/SecureMode/PAS
 §5.
 
 **Passphrase rollout, 2026-10-19 — [PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md). Proposed, not
-decided.** It covers how stages 2–4 would ship the phrase: entry, migration from the PIN and the local DB
-key, depths, and effort. It proposes narrowing Rule 1, and an alternative release cut. This plan stands until
-those are decided.
+decided.** It covers how stages 2–4 would ship the phrase on top of the 2026-10-15 storage proposal: entry,
+migration from the PIN and the local DB key, Rule 4's way back, depths, and effort. It proposes a narrower
+Rule 1 and compares two release orders. This plan stands until those are decided.
 
 **Summary.** Steps 6–16 and 17a don't depend on each other and can ship one at a time, in any order.
 Steps 1–5 can be split by data (vault first, then contacts), but not step by step. 17b ships with the
@@ -24,8 +24,11 @@ however the stages are cut.
    codebase's data-loss bugs have clustered there (Bugs 75–78, 138). Each slice of data gets all five
    steps at once.
    *Proposed narrowing, 2026-10-19, open, needs a decision ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md)
-   §1.1):* with key slots, steps 1 and 2 rewrap a depth key instead of resealing, so only steps 3–5 ride
-   each slice's reseal.
+   §1.1):*
+   - With key slots, adding or changing step 2 later rewraps a slot instead of resealing. Older images keep
+     the slot as it was.
+   - Steps 3 and 5 still need the reseal.
+   - So does a key leaving device-only protection.
 2. **All depths on a device switch together.** If each depth switched on its next unlock, the everyday
    depth would switch first and the duress depths would stay on PIN verifiers for weeks. That
    difference points straight at the real depth. The user sets up every depth's phrase in one sitting.

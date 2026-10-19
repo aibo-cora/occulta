@@ -5,121 +5,149 @@
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
 - how installs with a PIN migrate;
-- how data moves from the local DB key to phrase-protected depth keys;
+- how data moves from the local DB key to phrase-derived depth keys;
 - how multiple depths work under phrases.
 
 **Where it sits.** [`PASSPHRASE_LAYER_KEYS.md`](../../Occulta/Features/SecureMode/PASSPHRASE_LAYER_KEYS.md)
 owns the cryptographic design. [ROLLOUT_PLAN.md](ROLLOUT_PLAN.md) owns the sequencing of the whole hardening
 plan. This document is a proposed refinement of that plan's stages 2–4 for the phrase alone.
 
-It proposes changes to both:
-- to the spec's §1: key slots (§1.1 below), and one salt and one Enclave key per install (§1.2);
-- to the rollout plan's Rule 1, which key slots would narrow.
+**What it builds on.** The spec's design discussion of 2026-10-15, all of it open there. This document doesn't
+restate it:
+- one salt and one Enclave key per install (§1);
+- storage for per-depth keys: depth keys from phrases, a chain between depths, a shared key, origin lists,
+  and requirements 1–7 (§2);
+- the finding that the write-frequency requirement can't be met against a surrendered phrase (§2);
+- 7 words with PBKDF2 through CommonCrypto (§4);
+- holding the key until the device locks (§4).
 
-Both documents stand as written until those changes are decided. Code references are against `1551a1ec`.
+It also builds on the 2026-10-16 decisions (`bugs.md` Bug 168): the prekey refactor ships in 2.0.0 without
+waiting for this work, and a downgrade must lose nothing, through a new store file (proposed, not decided).
+
+**What is new here.**
+- Phrase entry and learning (§2).
+- Each starting state's migration (§3).
+- Rule 4's way back (§1.2).
+- The coercion gate under phrases (§1.3).
+- Installs with no lock (§1.4).
+- Key slots as an option (§1.1).
+- Stages and effort (§7).
+
+Code references are against `75e86c39`.
 
 ---
 
-## 1. Findings that change the existing plan
+## 1. Proposals and findings
 
-### 1.1 Key slots instead of deriving the depth key from the phrase
+### 1.1 Key slots: an option, with a narrow gain
 
-**Today's spec.** §1 derives `layerKey_D` from the phrase and seals data under it. So the phrase and the reseal
-are one event, and any later change to the derivation reseals the database.
+**The 2026-10-15 design.** A depth's header slot holds the canary, the key of the depth below it, and the
+shared key. Rows are sealed under `layerKey_D` itself.
 
-**Proposed: a random depth key, unlocked through a slot.**
-- Each depth gets a random 32-byte depth key.
-- The phrase-derived key (spec §1, the Enclave inside every guess, unchanged) opens a *slot* that wraps the
-  depth key. Data is sealed under the depth key, or under row keys that the depth key reaches (§5).
-- The slots are a fixed array of 32 entries in `AppLayerConfig`. Unused entries are random bytes of the same
-  size, the same pattern as today's verifier arrays.
+**Key slots.** The header slot would also hold a random depth key, and rows would be sealed under that key.
+The chain would carry the random keys.
 
-**What this buys.**
-- **The reseal can ship apart from the phrase.** A *device slot* wraps a depth key under an Enclave key that
-  needs only an unlocked device, the protection every key has today. So every install can reseal silently,
-  with no user present and no phrase yet. Protection doesn't change at that point, but the riskiest operation
-  in the app ships alone and runs for a release before anything is deleted. Bugs 75–78 and 138 all happened
-  in the reseal.
-- **Rule 1 narrows.** Steps 3–5 still change the stored bytes, so each still ships with its slice's reseal.
-  Steps 1 and 2 don't. Changing the KDF, its cost or the Enclave step later rewraps 32 bytes per depth.
-- **One storage format for every install.** Lock off is a device slot for depth 0. So is a gate lowered under
-  coercion (`disablePIN(at:confirmingPIN:)`, [Manager+Security.swift:857](../../Occulta/Features/SecureMode/Manager+Security.swift)),
-  for that depth.
-- **Smaller operations.** Regenerating an exposed phrase rewraps one slot. Removing a depth destroys its slot.
+**What it buys.**
+- **A later change to the derivation rewraps a slot.** Adding the Enclave step later, raising the PBKDF2
+  count or changing the KDF no longer reseals every row. Older images keep the old slot, which is as strong
+  as the phrase under the old derivation.
+- **A device slot.** A depth key wrapped under an Enclave key that needs only an unlocked device. It gives
+  installs with no lock (§1.4) and a lowered gate (§1.3) the same storage as everyone else. Direct derivation
+  can do the same with a phrase-less derivation, so this is a convenience, not a capability.
+- **A silent reseal before any phrase exists.** Every install reseals under device slots, and phrases come
+  later.
 
-**What it doesn't change.**
-- Rule 2: every depth switches together, at the reseal and at graduation.
-- Rule 4: old keys stay until every phrase is proven.
-- The spec's "no separate stored verifier": a slot's AES-GCM tag is the only check, and opening it costs
-  the Enclave-per-guess derivation, so it isn't a cheap verifier.
+**What it doesn't buy.** The first draft of this document overstated these:
+- **Earlier images can still unwrap a device slot.** A device slot is on disk in every image taken while it
+  exists. If the depth key later moves to phrase-only, those images can still unwrap it, through the old
+  Enclave key's copy in the image. Moves to phrase-only include turning a lock on, raising a lowered gate,
+  and graduation after a silent reseal.
+  - Nothing documents that deleting an Enclave key revokes an older copy (Prekey Continuity §9, D9).
+  - The rows stay under the same key, so those images also open data written later.
+  - Only a rekey cuts them off, and a rekey is a reseal.
+- **So the silent reseal costs a second reseal at graduation.** That is the cost Rule 1 exists to avoid.
+- **Regenerating an exposed phrase needs a reseal either way.** Rewrapping protects only if no image was taken
+  while the old slot existed, which can't be known.
 
-### 1.2 One salt and one Enclave key per install
+**Without the silent reseal, what remains is the first point:** changing the derivation later without a
+reseal. **Open, needs a decision.**
 
-**The problem.** Spec §1 gives each depth its own salt (`PASSPHRASE_LAYER_KEYS.md`, the `salt:` line of the core
-derivation) and its own Enclave key (`layer.D.se.key.occulta`). A typed phrase doesn't say which depth it
-opens, and unused slots must look like used ones. So each unlock attempt would run the ~1 s KDF and the
-Enclave step once per slot: about 32 s.
+### 1.2 Rule 4's way back: the old store file
 
-There is a second cost. To keep their count from showing how many depths exist, all 32 Enclave keys would
-have to exist on every install from first launch.
+Rule 4 keeps a way back until every phrase is proven. The migration requirement of 2026-10-16 proposes
+writing the migrated data to a new store file and removing the old store only after the switch (ROLLOUT_PLAN,
+"A downgrade loses nothing"). That old store can be the way back, with no new key escrowed anywhere.
 
-**Proposed.** One salt and one Enclave key per install, created at first launch on every install. The Secure
-Mode key is bootstrapped the same way today, for the creation-date reason its comment gives
-(`Manager.Security.init`). Each attempt derives once, then tries the 32 slots, which costs microseconds.
+**How the week runs.**
+- **The reseal runs at phrase setup,** into the new store, sealed under phrase-derived keys only.
+- **The old store stays untouched until graduation,** with its keys (the local DB Enclave key and the keychain
+  random) and the PIN verifiers inside it.
+- **A forgotten phrase during the week:** the old PIN opens the old store as it was at setup. Changes made
+  since are lost, and the screen must say so.
+- **An image taken during the week** holds two stores:
+  - the old one, which shows data as of setup and is readable with the passcode, as all data is today;
+  - the new one, which needs the phrases.
+- **Graduation** deletes the old store, its keys and the Secure Mode PIN key together.
 
-Per-depth Enclave keys add nothing: the Enclave's input point `Q_D` already comes from the phrase, so each
-depth's Enclave output differs anyway.
+**Costs.**
+- A phrase forgotten during the week loses that week's changes.
+- Two stores sit on disk for a week.
+- The old store stays as exposed as today's data until graduation.
+
+**Compared with device slots (§1.1),** this leaves nothing that opens the new store once graduation is done.
+**Open, needs a decision.**
 
 ### 1.3 The coercion gate has no phrase equivalent yet
 
-Today the user chooses the PIN. Two coercion paths depend on that.
+Today the user chooses the PIN. Two coercion paths depend on that, and so does an absolute depth number.
 
-**Lowering the gate** (`disablePIN(at:confirmingPIN:)`) opens the app at that depth with no PIN. Under phrases
-this is a device slot for the depth. It works as is.
+**The absolute depth number goes regardless.** Requirement 1 of the 2026-10-15 storage drops absolute depth
+numbers: the persisted `currentDepth`, `coercerBaseDepth` and the verifier indices. The logic from Bugs 37,
+58 and 61 is built on those, so it is rewritten whatever is decided here.
 
-**Re-enabling the gate** (`reEnablePIN`, [Manager+Security.swift:898](../../Occulta/Features/SecureMode/Manager+Security.swift)).
-The Bug 37 fix accepts an unknown PIN at depth > 0 as a new layer. That keeps re-enabling indistinguishable
-from a first-time setup. Phrases are generated by the app, so the flow can't be carried over as is.
+**Lowering the gate** (`disablePIN(at:confirmingPIN:)`,
+[Manager+Security.swift:857](../../Occulta/Features/SecureMode/Manager+Security.swift)) opens the app at a
+depth with no PIN.
+- Under phrases, that depth's key has to open without its phrase. So it is stored under a device-only key, in
+  either design.
+- Raising the gate again leaves earlier images able to open that depth (§1.1).
+- At a duress depth that may be acceptable. At the real depth it hands the real key to anyone with the
+  passcode.
+- The two options both have a cost. Warning the user leaves the protection in place but exposed. Allowing
+  the switch only at duress depths makes the depths behave differently.
+
+**Open, needs a decision.**
+
+**Re-enabling the gate** (`reEnablePIN`,
+[Manager+Security.swift:898](../../Occulta/Features/SecureMode/Manager+Security.swift)). The Bug 37 fix accepts
+an unknown PIN at depth > 0 as a new layer. That keeps re-enabling indistinguishable from a first-time setup.
+Phrases are generated by the app, so the flow can't be carried over as is.
 - A first-time lock setup shows a new phrase. A real user returning to an existing depth needs to type their
   existing phrase in a flow that looks the same.
 - One candidate: the confirmation step accepts either the phrase just shown (a new layer) or any existing
-  phrase (route there). That mirrors today's outcomes.
+  phrase (route there).
 - Its catch: anyone watching sees the user type something other than what the screen showed.
 
 **Open, needs a decision.**
 
-**Depths a coercer created** through that path are a second problem. The real user doesn't know their PINs,
-yet Rule 2 needs every depth's phrase in one sitting. **Open, needs a decision** (§3).
+**Depths a coercer created** through that path. The real user doesn't know their PINs, yet Rule 2 needs every
+depth's phrase in one sitting. **Open, needs a decision** (§3.1).
 
-### 1.4 The grace period keeps the depth key in memory
+### 1.4 Installs with no lock
 
-`AppScreen.gracePeriod` is 5 minutes ([AppScreen.swift:49](../../Occulta/App/AppScreen.swift)). With a PIN,
-nothing secret has to stay in memory during it. With phrase-gated keys, either the depth key stays in memory,
-or the phrase is retyped on every return. Step 13 says to drop keys on background.
+The 2026-10-15 storage doesn't say what an install with no app lock does. Two options:
 
-**Proposed.**
-- The grace period covers app switching only while the device stays unlocked.
-- The key is dropped when the device locks (`protectedDataWillBecomeUnavailable`) and when the grace period
-  ends.
+1. **It stays on today's store and key until a lock is turned on,** which runs the migration then. The code
+   keeps two formats for as long as such installs exist.
+2. **It migrates too,** with depth 0's key derived without a phrase (a fixed empty input), or held in a device
+   slot (§1.1). The code has one format. Turning a lock on later reseals depth 0, or rewraps it with §1.1's
+   cost.
+
+Either way:
+- an install with no lock keeps today's protection;
+- whether an install has a lock stays visible, as it is today through `sealedNormalVerifier`.
 
 **Open, needs a decision.**
-
-### 1.5 The probation window
-
-Rule 4 keeps a way back for about a week, until every phrase is proven. It can be built two ways, and each
-leaves a gap.
-
-**Depth keys wrapped under the old key** (device slots). An image taken during the week holds the depth
-keys wrapped under a key whose Enclave half may still work from that image after deletion. Prekey Continuity
-§9 (D9) notes that nothing documents that deleting an Enclave key revokes an older copy. The depth keys don't
-change at graduation, so that image would also open data written *after* graduation.
-- Candidate fix 1: row keys that change on every write. The image then opens only rows not written since.
-- Candidate fix 2: a rekey at graduation, which is a second reseal.
-
-**The old ciphertext kept alongside.** The image shows only data as of that week. But a forgotten phrase then
-loses everything written since the migration.
-
-**Open, needs a decision.** This applies with or without key slots.
 
 ---
 
@@ -160,7 +188,7 @@ app-switcher snapshot.
 Generation needs four changes. `Manager.PassphraseGenerator.generate` defaults to 5 words, and its
 `% 7776` has a tiny bias: 2³² mod 7776 = 2560, so the first 2,560 words are very slightly more likely.
 
-- **7 words**, per spec §4's choice of 7 words with PBKDF2.
+- **7 words**, per spec §4.
 - **Rejection sampling** in place of the modulo.
 - **Skip the 4 hyphenated words**, so the keyboard needs letters only. That costs 0.0007 bits per word.
 - **A separate function.** `generate(sharedKey:)` produces the key-exchange comparison words. Those must stay
@@ -191,13 +219,16 @@ layers. Gamification goes there.
   type it unaided. Each step must pass before the next.
 - **Probation progress.** Rule 4 becomes a ring that fills with correct entries spread over several days.
   When it completes, the app graduates (§3.2).
-- **Rehearse.** At depth 0, check any depth's phrase without changing depth. It counts toward that depth's
-  Rule 4 progress. After graduation, duress phrases are rarely typed. A periodic rehearsal prompt at depth 0
+- **Rehearse.** At the real depth, check any depth's phrase without changing depth. It counts toward that
+  depth's Rule 4 progress. After graduation, duress phrases are rarely typed. A periodic rehearsal prompt
   would need a stored "last rehearsed" per depth. **Open, needs a decision.**
 
 **Constraints.**
 - No notifications or badges; `OSTraceTests` forbids them.
-- The only stored state is the Rule 4 counters, in a fixed 32-entry array like `pinEnabledPerDepth`.
+- The only stored state is the Rule 4 progress. Per the 2026-10-15 requirements:
+  - it lives in rows in the general pool, sealed under each depth's key (requirement 7), not in a
+    32-entry array where only real entries change;
+  - it names no absolute depth (requirement 1).
 - The screens are the same at every depth. A duress depth shows only its own phrase's progress.
 - Every lock user gets them (Rule 3).
 
@@ -211,32 +242,30 @@ layers. Gamification goes there.
 
 ### 3.1 Starting states
 
-Assuming key slots (§1.1). The reseal is silent and needs no PIN, because depth keys start in device slots.
+Assuming §1.2: the reseal happens at phrase setup, into a new store.
 
-| Today | Silent reseal | Phrase setup |
+| Today | At phrase setup | Notes |
 |---|---|---|
-| No lock | Depth 0 in a device slot | None. Turning the lock on later means a phrase |
-| PIN only | Same. The PIN still gates the app | Prompted at unlock: 1 phrase |
-| Secure Mode with K duress layers | All K+1 depth keys created at once, each in a device slot | At depth 0, after the master PIN: K+1 phrases in one sitting (Rule 2) |
-| Unlocked at duress depth N | Same | The prompt must look the same as at depth 0. Rule 2 rules out setting up depth N alone. **Open, needs a decision** |
-| Gate lowered at depth N | Depth N keeps its device slot | Presents as a no-lock install. How the real user gets back to depth 0 to set up: **open, needs a decision** |
-| Depths a coercer created (`coercerBaseDepth > 0`) | Same | The real user doesn't know their PINs. Drop them at setup, as `forceDeactivateForRecovery` does today? **Open, needs a decision** |
+| No lock | Nothing, or the migration of §1.4 | §1.4 |
+| PIN only | 1 phrase; the reseal into the new store | The old store stays until graduation |
+| Secure Mode with K duress layers | At the real depth, after the master PIN: K+1 phrases in one sitting (Rule 2), then one reseal of every depth | Only the real user can give every phrase |
+| Unlocked at duress depth N | The prompt must look the same as at the real depth. Setup can't complete there, because Rule 2 needs every phrase | **Open, needs a decision** |
+| Gate lowered at depth N | Presents as an install with no lock. How the real user gets back to set up | **Open, needs a decision** |
+| Depths a coercer created (`coercerBaseDepth > 0`) | The real user doesn't know their PINs. Drop them at setup, as `forceDeactivateForRecovery` does today? | **Open, needs a decision** |
 
 ### 3.2 Probation and graduation
 
-**During probation.** Until graduation, the lock screen offers the old PIN as a fallback, for every lock user.
-The week is therefore no safer than today, which Rule 4 already says.
+**During probation.** Until graduation, the lock screen asks for the phrase. Every lock user also gets
+"use my old PIN", which opens the old store as it was at setup (§1.2).
 
 **Graduation.** When every phrase is proven, these are deleted together:
-- every phrase depth's device slot;
-- both PIN verifier arrays and their scalars;
+- the old store;
+- the local DB Enclave key and the keychain random (`local.db.random.key.occulta`);
 - the Secure Mode PIN Enclave key (`app.layer.key.occulta.v1`).
 
-**Lock-off installs.** Device slots there are the permanent state, not a fallback. So the device-slot Enclave
-key must be a new key, not the local DB key, which goes once every slice is resealed (§4).
-
-**Deletion counts as a write.** Keychain items carry creation dates, and an item's absence is visible. To say
-nothing about locks or depths, delete for every install, at the point where the PIN path leaves the code.
+**What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. With
+§1.4's first option, the old key's absence says the install has a lock. That is no more than today's
+verifier scalar says.
 
 **Open, needs a decision:** a deadline after which a lock user who hasn't set up a phrase must.
 
@@ -245,8 +274,8 @@ nothing about locks or depths, delete for every install, at the point where the 
 ## 4. From the local DB key to depth keys
 
 **Every caller changes.** Every encrypted field is sealed today under the one hybrid local DB key
-(`createHybridLocalEncryptionKey`, [Key+Manager.swift:438](../../Occulta/Services/Key+Manager.swift)). Under
-depth keys, each field is sealed under its row's key. The current callers:
+(`createHybridLocalEncryptionKey`, [Key+Manager.swift:438](../../Occulta/Services/Key+Manager.swift)). The
+current callers:
 
 | Kind | Sites |
 |---|---|
@@ -257,17 +286,20 @@ depth keys, each field is sealed under its row's key. The current callers:
 
 About 175 sites in all.
 
-**The vault is the easy slice.** Each `VaultEntry` already has its own key (PEK), wrapped once under the vault
-key. That single wrap becomes the per-depth table.
+**What the 2026-10-15 storage changes.** Rows are sealed under a depth key or the shared key, with no per-row
+keys.
+- Each contact becomes one sealed blob, padded to a few fixed sizes (requirements 3, 4). The five
+  `@Relationship` tables fold into it.
+- The depth stamps are dropped (requirement 1).
+- A group becomes one row per depth that has it (requirement 5).
+- Origin lists and padding rows are new rows (requirement 2).
+- Vault entries go under their own depth's key.
 
-**Contacts are the hard slice.** They have no row key today, and they make up most of the 175.
+**What that means for the call sites.** Most field-level calls on contacts become one blob decode. The 175
+sites are the scope to sweep, together with requirement 5's "not swept yet" list.
 
 **Register C1 comes first.** `Data.decrypt()` turns any failure into `nil`, and `String.decrypt()` into `""`.
 That is how Bugs 75–78 and 80 became silent loss. The reseal's reads must fail loudly before it ships.
-
-**The local DB key goes last.** It is deleted, Enclave key plus the keychain random
-(`local.db.random.key.occulta`), only once every slice is resealed and verified, and after graduation for
-installs with phrases.
 
 **Not affected: the share extension.** It never links `Manager.Key` or `Manager.Crypto`
 ([ShareViewController.swift](../../ShareExtension/ShareViewController.swift), header).
@@ -282,60 +314,52 @@ Rule 3 allows only two visible states: lock off and lock on.
 **What depths cost and how they change.**
 - **Memory load.** Every depth's phrase has the same length (spec §3). So each depth adds 7 words to
   memorise.
-- **Adding a depth** creates a depth key and a slot. No reseal.
-- **Removing a depth** destroys its slot, which makes content reachable only through it unreadable.
+- **Adding a depth.** The new depth's header slot is written, and its parent's slot gains the new key (spec
+  §2, 2026-10-15). That shows across images; the spec has it as open.
+- **Removing a depth.** The 2026-10-15 design doesn't cover this. Proposed:
+  - the depth's header slot goes back to filler, and its parent's slot drops its key;
+  - rows under its key become unopenable, which requirement 2 explains as deletions;
+  - it shows across images the same way creation does.
 
-**Still the long pole: spec §2, how one row opens under several depths.** Two shapes fit the key-slot model.
-Each has a catch.
+  **Open, needs a decision.**
+- **Repeated images.** The spec's finding stands: a duress depth doesn't survive comparison across images
+  once its phrase is surrendered. Step 16's guidance has to say so.
 
-**A chain: depth N's key wraps depth N+1's.**
-- It fits the existing visibility rules. Under `visibleThroughDepth`, a deeper depth sees a subset.
-- A contact created at depth N (`originDepth`) belongs to N and deeper, which the chain reaches. Shallower
-  depths hide it in the UI already, and their slots can hold filler.
-- Catch: a surrendered depth can follow the chain down. It sees whether deeper depths have content, that is,
-  that duress layers exist below it. That is harmless only if nothing shows the surrendered depth its own
-  index, so slot positions must be random per install.
-
-**A key pair per depth.**
-- Any depth can write every depth's slot without the others' private keys. That makes step 4's requirement
-  (reseal every depth's slot on every write) possible from any depth.
-- Catch: the wraps then rest on elliptic-curve key agreement alone. Today's hybrid local DB key doesn't: its
-  keychain random component exists so that the store needs more than ECDH. Keeping that property needs ML-KEM,
-  which is iOS 26+ against a deployment target of 18.6.
-
-**In both shapes, the row-level questions stay open:** rows a surrendered depth can't open (Bug 109), and which
-rows change between images (Bug 120). **Open, needs a decision.**
+**One addition to the spec's ruled-out option.** The spec names public keys with append-only storage as the
+only full fix for write frequency, and rules it out for v2.0.0. Its wraps would also rest on elliptic-curve key
+agreement alone. Today's hybrid local DB key doesn't: its keychain random component exists so the store needs
+more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ against a deployment target of 18.6.
 
 ---
 
 ## 6. Other things it touches
 
-- **Vault Face ID.** The vault key accepts the device passcode as an alternative
-  ([Key+Manager.swift:653](../../Occulta/Services/Key+Manager.swift)). So once the vault slice ships, Face ID
-  adds no protection against this adversary. Keep it as a second gate on screen, or drop it: **open, needs a
-  decision.**
+- **Vault Face ID.** The 2026-10-15 depth keys replace the vault key for the data they cover. Today the vault
+  key accepts the device passcode in place of Face ID
+  ([Key+Manager.swift:653](../../Occulta/Services/Key+Manager.swift)), so Face ID adds no protection against
+  this adversary. Keep it as a second gate on screen, or drop it: **open, needs a decision.**
 - **Recovery.**
   - A Shamir backup restores vault content without the phrase. Nothing restores contacts. The setup copy must
     say so plainly (spec §4, Recovery).
   - Step 11's counsel pass covers that copy.
 - **Bug 92's export passphrase** reuses the keyboard (§2.2). It can ship first and field-test typing before
   anything depends on it.
-- **Erase All Data and `forceDeactivateForRecovery`** become slot destruction.
+- **Erase All Data and `forceDeactivateForRecovery`** become header destruction.
 - **Device Migration** (`Docs/Features/Device Migration/FINDINGS.md`, exploratory) means a new Enclave, so
   phrases are set up again on the new phone. Out of scope here.
 - **Tests.**
   - 25 test files (about 8,800 lines) use `Manager.Security` or `PINManager`.
   - `TestKeyManager` needs a depth-key path.
   - The KDF's cost must be injectable, or each derivation costs ~1 s in the suite.
-  - The "data survives" reseal test (register C3, TEST-2) is required before any slice counts as done
-    (ROLLOUT_PLAN, "Required before Stages 2 and 3 count as done").
+  - The "data survives" reseal test (register C3, TEST-2) is required before any slice counts as done.
 - **Devices.** The Simulator can't unlock the vault. Timing (§7, stage 0) and every stage from 3 on need a
   physical phone that holds no real data.
 - **Docs to update once decided:**
   - the spec's §1, §4 and §5;
   - ROLLOUT_PLAN's Rule 1 and stages 2–4;
   - `USER_GUIDE.md`, through counsel;
-  - `SECURITY_CHECKLIST.md`'s Testing Gate.
+  - `SECURITY_CHECKLIST.md`'s Testing Gate;
+  - `CLAUDE.md`'s crypto line, if CommonCrypto comes in (spec §4).
 
 ---
 
@@ -345,51 +369,58 @@ rows change between images (Bug 120). **Open, needs a decision.**
 is dated 2026-10-06. Its stages merged between 2026-10-11 (PR #87) and 2026-10-15 (PR #109). That is about two
 weeks from a settled design to merged. Weeks below are build time at that pace.
 
+### 7.1 Two release orders
+
+**A. One passphrase release.** Every data slice ships in one release. The reseal runs at phrase setup, into a
+new store, with the old store as Rule 4's way back (§1.2).
+- One reseal, and no key escrowed anywhere.
+- Matches the owner's 2026-10-15 lean towards shipping all slices together (ROLLOUT_PLAN, release mechanics).
+- Stages 0 and 1 can ship earlier: stage 1 through Bug 92's export passphrase.
+
+**B. Silent reseal first.** Key slots and device slots let every install reseal in an earlier release. Phrases
+come in a later one.
+- The riskiest operation ships and runs alone.
+- Graduation then needs a rekey, a second reseal (§1.1).
+- About 2–3 more weeks than A.
+
+**Open, needs a decision,** together with which release carries the work. Since 2026-10-16 that no longer
+depends on the prekey refactor.
+
+### 7.2 Stages, for order A
+
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1–1.5 |
+| 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Finish the design | Spec §2's shape; the §8 decisions | 1–3, the swing factor |
-| 3 | Depth keys and vault reseal, silent | Every install; device slots; row and field AAD (step 5) | 1.5–2 |
-| 4 | Contacts reseal, silent | Contacts and their sub-records, groups, drafts, depth stamps, prekey blobs (D9); the ~175 sites in §4 | 3–5 |
-| 5 | Remaining records | Backup keys, custody shards, restore records; the Bug 141 queue and Bug 162 decisions (ROLLOUT_PLAN stage 4) | 1–2 |
-| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; rehearsal; adding and removing depths; graduation | 2–3 |
+| 2 | Close the design | §8, plus the spec's own open items: padding range, blob sizes, depth creation across images, the model sweep for requirement 5 | 1–2 |
+| 3 | Key derivation, headers, chain, shared key; vault into the new store | Spec §1 and §2 (2026-10-15); row AAD (step 5) | 2–3 |
+| 4 | Contacts into the new store | One padded blob per contact; groups per depth; origin lists; padding rows; stamps dropped; prekey blobs (D9); the ~175 sites in §4 | 4–7 |
+| 5 | Remaining records | Backup keys, custody shards, restore records; the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
+| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the old-PIN fallback (§1.2); the coercion gate without absolute depths (§1.3); adding and removing depths; graduation | 2.5–4 |
 | 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several depths | 1, plus ~3 calendar weeks: the probation week and a 7-day phased release |
 
-**Total: about 12–19 weeks of build, roughly 3–5 months.** Stage 2 decides where in that range it lands.
-
-**One release cut.** 2.0.0 is stages 0, 3 and 4, with the prekey refactor. That keeps the contacts reseal in
-2.0.0, as ROLLOUT_PLAN decided on 2026-10-14. 2.1 is stages 5–7.
-- Its cost: 2.0.0 adds no protection by itself.
-- Its gain: every slice is resealed and has run for a release before any old key is deleted, and setup happens
-  once, for everything.
-
-**The alternative.** Keep ROLLOUT_PLAN's order: vault and phrase first, then contacts. Key slots still apply.
-But setup then comes before the contacts reseal, and that reseal needs every depth's key. So either:
-- the device slots stay until stage 3, which delays graduation; or
-- the reseal runs only while the real user is unlocked at depth 0. When it ran would then be visible across
-  images.
-
-**Open, needs a decision.**
+**Total: about 13–21 weeks of build, roughly 3–5 months.** Stage 4 and stage 2 decide where in that range it
+lands.
 
 ---
 
 ## 8. Open, needs a decision
 
-1. **Key slots** over deriving the depth key directly (§1.1). This changes spec §1 and Rule 1.
-2. **One salt and one Enclave key per install** (§1.2).
-3. **Spec §2's shape**: chain or key pair per depth, and the row-level questions under either (§5).
-4. **The probation window** (§1.5).
-5. **The coercion gate** under phrases, and depths a coercer created (§1.3, §3.1).
+The spec's own 2026-10-15 items stay open there and aren't repeated here.
+
+1. **Key slots,** or rows directly under `layerKey_D` (§1.1).
+2. **Release order A or B,** and which release carries the work (§7.1).
+3. **Rule 4's way back** through the old store (§1.2).
+4. **Installs with no lock** (§1.4).
+5. **The coercion gate** under phrases, lowering it at the real depth, and depths a coercer created (§1.3).
 6. **Phrase setup seen from a duress depth**, and from a depth with the gate lowered (§3.1).
-7. **The grace period**: drop the key on device lock (§1.4).
+7. **Removing a depth,** and how it shows across images (§5).
 8. **The wordlist**: full list or a short-prefix subset (§2.4).
 9. **VoiceOver and the suggestion bar** (§2.5).
 10. **Rehearsal reminders** after graduation (§2.5).
 11. **A setup deadline** for lock users without a phrase (§3.2).
-12. **Vault Face ID** after the vault slice (§6).
-13. **The release cut**: silent reseal first, or vault and phrase first (§7).
-14. **A test phone with no real data.** Which one?
+12. **Vault Face ID** once depth keys replace the vault key (§6).
+13. **A test phone with no real data.** Which one?
 
 ---
 
@@ -401,18 +432,19 @@ depends on or changes.
 | Item | Summary | Status | Here |
 |---|---|---|---|
 | Bug 37 | Re-enable PIN fails silently at a lowered gate with an unknown PIN | Closed (fixed) | §1.3: the fix has no phrase equivalent yet |
-| Bug 62 | `pinCollision` PIN oracle | Open | Gone with the PIN verifiers at graduation (§3.2) |
+| Bug 62 | `pinCollision` PIN oracle | Open | Gone with the old store at graduation (§3.2) |
 | Bug 92 | Exported backup opens with the backup key alone; opt-in export passphrase unbuilt | Open, re-scoped 2026-09-24 | §6: shares the keyboard |
-| Bug 109 | Per-depth keys leave an authentication-failure tell | Closed moot, 2026-09-10 | §5: returns under either shape |
+| Bug 109 | Per-depth keys leave an authentication-failure tell | Closed moot, 2026-09-10; spec §2 (2026-10-15) argues an all-or-nothing row isn't this tell | §4, §5 |
 | Bug 119 | Vault key is device-level; one key opens every depth | Open | The whole plan |
-| Bug 120 | Write frequency across images shows the real depth | Open | §5 |
+| Bug 120 | Write frequency across images shows the real depth | Open; can't be closed with per-depth keys against a surrendered phrase, needs a decision (2026-10-15) | §5 |
 | Bug 123 | Small sealed fields share one AAD | Closed, subsumed into 119 | Stage 3 (step 5) |
-| Bug 138 | A migration destroyed the only copy before saving the replacement | Fixed 2026-09-26 | The reseal's rule: verify before delete |
+| Bug 138 | A migration destroyed the only copy before saving the replacement | Fixed 2026-09-26 | §1.2: the old store survives until graduation |
 | Bug 139 | Keys from an interrupted rotation never deleted | Fixed 2026-09-26 (wipe) | The reseal's rule: interruption leaves nothing |
 | Bug 141 | Depth-blind owner queue and watch rows | Fixed 2026-09-27; sealing per depth open | Stage 5 |
-| Bug 148 | A file opened from outside shows before the PIN screen | Fixed 2026-09-28 | §1.4: a file arriving behind the lock must still wait, and with phrases it also has no key to open with |
-| Bug 162 | A trustee's piece count shows how many depths have a backup | Open, needs a decision | Stage 5 |
+| Bug 148 | A file opened from outside shows before the PIN screen | Fixed 2026-09-28 | A file arriving behind the lock must still wait, and with phrases it also has no key to open with |
+| Bug 162 | A trustee's piece count shows how many depths have a backup | On-screen count and manifest size fixed (PR #114); stored rows and piece dates open, needs a decision | Stage 5 |
+| Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; a new store file for the passphrase migration proposed, not decided | §1.2, stage 0 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
-| Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0; §1.4 |
+| Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |
 | Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |
 | Register §G | No `VersionedSchema` | Open | Stage 0 |
