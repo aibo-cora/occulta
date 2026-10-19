@@ -47,18 +47,30 @@ however the stages are cut.
   vault.
 - **App Store phased release** spreads a migration release over 7 days for automatic-update users. It
   only limits damage if users report problems, because the app sends no telemetry.
-- **Migrations are one-way.** An older build can't read resealed data.
+- ~~**Migrations are one-way.** An older build can't read resealed data.~~ **Wrong, verified 2026-10-16**
+  (`bugs.md` Bug 168). An older build opens a newer store. Core Data keeps the newer model in the store's
+  `Z_MODELCACHE` table, migrates the store back to the older schema, and drops whatever that schema lacks. A
+  downgrade doesn't stop the app; it deletes data, and upgrading again doesn't bring it back. On iOS only
+  TestFlight and sideloaded builds can downgrade.
 - **Last-resort prekeys ship no earlier than the one-way migration** (stage 3 below; [Prekey
   Continuity](../Features/Prekey%20Continuity/DESIGN.md) D6, 2026-10-07). An older build can't open a
   message sealed to one. This rule means any build that issues one has already migrated, so no working
-  build can be downgraded below it.
+  build can be downgraded below it. *2026-10-16:* the rule rests on the line above, so it protects nothing. A
+  downgrade deletes the record holding the last-resort keys whichever release they ship in. **Decided
+  2026-10-16:** the loss is accepted for TestFlight and sideload users, and the TestFlight notes say so
+  (Bug 168). The rule no longer constrains release order.
 - **The prekey refactor ships in 2.0.0, together with the contacts slice (stage 3)** (decided 2026-10-14), so
   the rule above holds within one release. Nothing numbered 2.0.0 or later goes out without the refactor,
   TestFlight included. Bug 165's capability tier, `bodyDigestCapable`, is keyed on app version
   2.0.0: a contact recorded at 2.0.0 must send the body digest, and a body claiming 2.0.0 without one is
   refused. A build numbered 2.0.0 that predates the digest would have its group and one-to-one messages
   refused by every build that has it. So `v2.0.0/prekey-refactor` merges into the release branch before the
-  version number reaches 2.0.0, and any earlier stage ships under a 1.x number.
+  version number reaches 2.0.0, and any earlier stage ships under a 1.x number. *2026-10-16:* the pairing with
+  the contacts slice existed only to satisfy the rule above, which protects nothing. **Decided 2026-10-16:**
+  the refactor doesn't wait for the passphrase work. It is merged into `release/v2.0.0` (PR #110) and ships in
+  2.0.0. The 2.0.0 numbering that Bug 165's tier needs is unaffected. Which release carries the passphrase work
+  is not decided. The owner leans towards shipping all its data slices together in one release (2026-10-15),
+  also not decided.
 
 ## Stages
 
@@ -105,6 +117,10 @@ bundles.
 for vault and contacts together, even though the vault ships first. Otherwise contacts, where one
 contact can be visible at several depths, may force the vault to be migrated a second time.
 
+**2026-10-15:** a design for §2 is proposed, not decided (spec §2, "Proposed 2026-10-15: storage for
+per-depth keys"). It covers vault and contacts together. Step 4 drops out of the slices: it can't be met
+against a surrendered phrase and is open, needs a decision.
+
 **Why the vault first:** it holds the most sensitive content (seed phrases, keys, passwords), and it
 already has fixed-count rows (`deletionToken` orphan-in-place, Bugs 110–114).
 
@@ -142,7 +158,9 @@ so each depth would have to process its own, as it already does for statuses: **
 
 **And the trustee's piece count (`bugs.md` Bug 162):** a trustee holds one piece per owner depth with a backup,
 which tells the trustee, and anyone with their phone, how many of the owner's depths have one. Stamping custody
-rows with the trustee's depth doesn't change that. Open, needs a decision; the bug lists the options.
+rows with the trustee's depth doesn't change that. The Vault tab no longer shows the count and the custody
+manifest is padded (2026-10-16); the stored rows and the pieces' dates still carry it. Open, needs a decision; the bug
+lists what's left and why owner-side padding was dropped.
 
 ## Required before Stages 2 and 3 count as done
 
@@ -163,3 +181,11 @@ Each needs tests and a no-data-loss migration plan before it counts as done. The
   is ahead of which must not be.
 - **Schema change through a migration plan.** The project has no `VersionedSchema`/`SchemaMigrationPlan`
   (register §G), and a change of this size shouldn't rely on SwiftData's inference.
+- **A downgrade loses nothing** (added 2026-10-16, `bugs.md` Bug 168). An older build migrates a newer store
+  back to its own schema and drops what it doesn't know. Resealed rows in new tables of the same store would
+  therefore be deleted by any downgrade. Proposed, not decided:
+  - **Write the migrated data to a new store file,** with the same file protection, and remove the old store
+    only after the switch. An older build then finds no store and starts empty without touching the new file,
+    and upgrading again brings everything back.
+  - **The new file's name says nothing** about what it holds.
+  - **Still to decide:** what a newer build does with a store an older build created in the meantime.

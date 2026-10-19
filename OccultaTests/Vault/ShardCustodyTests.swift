@@ -270,9 +270,8 @@ private func reconstructShardCount(vault: VaultManager, entryIDs: [UUID]) throws
         let rows = try ctx.fetch(FetchDescriptor<CustodyShard>())
         #expect(rows.count == 2)
 
-        let byOwner = Dictionary(uniqueKeysWithValues: custody.heldShards(from: rows).map { ($0.ownerContactIdentifier, $0.count) })
-        #expect(byOwner["alice"] == 1)
-        #expect(byOwner["mallory"] == 1)
+        // Two rows, two owners: one each.
+        #expect(Set(custody.heldShardOwners(from: rows)) == ["alice", "mallory"])
     }
 }
 
@@ -376,6 +375,48 @@ private func distribute(
 
     private func rowID(of attr: SignedAttribute, in snapshot: [UUID: (bytes: Data, attributeID: UUID)]) throws -> UUID {
         try #require(snapshot.first { $0.value.attributeID == attr.id }?.key)
+    }
+}
+
+// MARK: - Trustee display (Bug 162)
+
+/// Bug 162: each of an owner's depths with a backup sends the trustee its own piece, so a count
+/// per owner tells how many of the owner's depths have one. The display lists owners, never a
+/// number, and an owner with several pieces shows exactly as one with a single piece.
+@Suite("ShardCustodyManager — held-for-others display (Bug 162)")
+@MainActor struct HeldShardOwnersTests {
+
+    /// A trustee holding `aliceDepths` pieces from Alice, one per depth's own split, and one
+    /// from Carol. Returns what the Vault tab would list.
+    private func owners(aliceDepths: Int) throws -> [String?] {
+        let (custody, _, container) = try makeBob()
+        let vault = try makeAlice().vault
+        let alice = TestKeyManager()
+        let carol = TestKeyManager()
+
+        for _ in 0..<aliceDepths {
+            try distribute(try makeShardAttr(signer: alice), from: alice, as: "alice", into: custody, vault: vault)
+        }
+        try distribute(try makeShardAttr(signer: carol), from: carol, as: "carol", into: custody, vault: vault)
+
+        let rows = try ModelContext(container).fetch(FetchDescriptor<CustodyShard>())
+        #expect(rows.count == aliceDepths + 1)
+        return custody.heldShardOwners(from: rows)
+    }
+
+    @Test("An owner with pieces from several depths is listed once")
+    func severalPiecesListedOnce() throws {
+        let listed = try self.owners(aliceDepths: 3)
+        #expect(listed.count == 2)
+        #expect(Set(listed) == ["alice", "carol"])
+    }
+
+    @Test("The list is the same whether the owner has one depth with a backup or several")
+    func sameForOneOrSeveralDepths() throws {
+        // Sorted arrays, not sets: a set would hide an owner listed once per piece.
+        let one     = try self.owners(aliceDepths: 1).map { $0 ?? "" }.sorted()
+        let several = try self.owners(aliceDepths: 3).map { $0 ?? "" }.sorted()
+        #expect(one == several)
     }
 }
 

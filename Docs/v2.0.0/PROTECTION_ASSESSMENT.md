@@ -11,6 +11,9 @@ Once every stage is built, a seized phone gives a well-resourced adversary only 
 surrender. That holds even with the device passcode, and even with a Secure Enclave break. Today the same
 phone gives them everything once they have the passcode.
 
+One exception, found 2026-10-15: an adversary who imaged the phone earlier and later gets a duress phrase
+can tell that another depth exists and is in use (step 4, open, needs a decision).
+
 What no stage fixes: an implant on the phone while it's in use, contacts' phones, the transport's records
 of who exchanged files with whom, and the fact that the user has Occulta at all. Once the cryptography holds, those become the adversary's cheapest routes.
 
@@ -22,8 +25,8 @@ of who exchanged files with whom, and the fact that the user has Occulta at all.
 | **Seized after first unlock, screen locked, no passcode** | Needs an iOS exploit. The store is `FileProtectionType.complete` (`OccultaApp.swift:74`, `:1213`) and every key is `WhenUnlockedThisDeviceOnly`, so everything still depends on the passcode. | Same. |
 | **Passcode obtained, plus forensic extraction** | **Everything:** every depth, the vault, and how many depths exist. | Only what the surrendered phrase opens. Other depths sit behind ~90 bits, and every guess costs a Secure Enclave call on that phone. |
 | **Secure Enclave broken (hardware exploit)** | Everything, with or without the passcode. | The phrases hold: about 27,000 years to crack even with the Bitcoin network's entire SHA-256 throughput (7 words, PBKDF2). |
-| **User compelled to unlock Occulta in person** | The duress depth looks plausible, but a later forensic examination contradicts it. | The examination matches what the user showed. What remains is register §I, below. |
-| **Device imaged repeatedly over time** | Moot, since everything is readable. | Comparing images shows that Occulta is used, not which depth. |
+| **User compelled to unlock Occulta in person** | The duress depth looks plausible, but a later forensic examination contradicts it. | The examination of one image matches what the user showed. What remains is register §I, below. An earlier image contradicts it (next row). |
+| **Device imaged repeatedly over time** | Moot, since everything is readable. | Without a phrase, comparing images shows that Occulta is used, not which depth. With a surrendered duress phrase, rows it can't open that changed between images show that another depth exists and is in use (step 4; open, needs a decision, 2026-10-15). |
 | **Messages copied in transit, phone seized later** | The first message each way, and about 1 in 16 after, can be opened with the phone. Opened forward-secret messages can't. | Only unopened messages from contacts the surrendered depth shows (17), classical-only messages from senders on old versions, and messages to a new contact before their first reply, which use the long-term key while step 6 is deferred (open; the compose indicator warns). Pairs without post-quantum are recorded now to decrypt later, until 7b. |
 | **Keychain listed after a duress phrase is surrendered** | Not needed, since everything is readable. | Without 17: the hidden contacts and how often each messages. With 17, one image: a total that a few hidden contacts can hide in. Repeated images: prekeys appearing and disappearing that the surrendered depth can't account for (open). |
 | **Transport records** (who sent which `.occ` to whom, and when) | An ongoing exchange with any contact. | Same. An ongoing exchange with a contact the surrendered depth doesn't show can't pass as a deleted contact. |
@@ -59,6 +62,10 @@ inside the app to extract.
   with the user's public key, which every contact has, tell which `.occ` files the user sent. 17a keys it
   with the per-contact secret. Files to contacts who haven't upgraded, and group files with any such
   recipient, stay attributable. Open, needs a decision.
+- **Repeated images with a surrendered phrase, found 2026-10-15.** Rows the surrendered depth can't open
+  change during real use, and nothing that depth does could change them. Closing it needs re-randomisable
+  encryption, which CryptoKit doesn't offer, or an append-only redesign of storage (spec §2). Open, needs a
+  decision. Step 16's guidance has to cover it.
 - **Register §I, accepted 2026-09-07.** A coercer who already knows what should be there, or who makes
   the user open several depths and compares them, can still see that a duress depth is thin.
 - **A compelled developer.** Account hardening stops theft, not compulsion.
@@ -76,7 +83,8 @@ The app can narrow the first and last. It can't close any of them.
 ## How much to trust this
 
 The "after" column is a target, not a guarantee, until all of these change:
-- The spec's §2 (how one row opens under every depth's key) is unresolved.
+- The spec's §2 (how rows are stored under per-depth keys) has a design proposed on 2026-10-15, not
+  decided.
 - No independent person has reviewed the code (register D4).
 - The file decoders have never been fuzzed (register D6).
 

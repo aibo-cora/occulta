@@ -266,6 +266,44 @@ private enum TestSetupError: Error { case seUnavailable }
     }
 }
 
+/// Bug 162: a trustee's manifest lists every piece it holds for the owner, one per owner depth
+/// with a backup, and the ciphertext length is in the clear. Measured on the encoded bundle,
+/// as `forwardSecretPathPreservesManifest` does: this fixture can't open the forward-secret slot.
+@Suite("encryptBundle — custody manifest padding (Bug 162)")
+@MainActor struct EncryptBundleManifestPaddingTests {
+
+    /// One encoded ID's worth: a UUID string, its quotes and a comma in the payload's JSON.
+    private let encodedIDSize = 39
+
+    private func encodedSize(manifestCount: Int) throws -> Int {
+        let cm = try makeContactManager()
+        _ = try #require(try makeRecipient(
+            identifier: "dave", contactManager: cm, capability: .groupCapable, hasPrekey: true
+        ))
+        return try cm.encryptBundle(
+            basket: Basket(files: []), for: "dave",
+            shardOperations: nil, custodyManifest: (0..<manifestCount).map { _ in UUID() }
+        ).count
+    }
+
+    @Test("A trustee holding nothing, one piece or three for the owner sends bundles of the same size", .ambientTestKeyManager)
+    func sizeIndependentOfPieceCount() throws {
+        let none  = try self.encodedSize(manifestCount: 0)
+        let one   = try self.encodedSize(manifestCount: 1)
+        let three = try self.encodedSize(manifestCount: 3)
+        // Within less than one ID: the signatures' DER encoding varies by a byte or two.
+        #expect(abs(one - none) < self.encodedIDSize)
+        #expect(abs(three - none) < self.encodedIDSize)
+    }
+
+    @Test("Above the floor the manifest steps up a tier (control: the measurement sees the manifest)", .ambientTestKeyManager)
+    func aboveFloorStepsUp() throws {
+        let floor = try self.encodedSize(manifestCount: ContactManager.custodyManifestFloor)
+        let above = try self.encodedSize(manifestCount: ContactManager.custodyManifestFloor + 1)
+        #expect(above - floor > ContactManager.custodyManifestFloor * self.encodedIDSize / 2)
+    }
+}
+
 // MARK: - 2. Receiver side — ContactManager.openGroup / decryptSealed
 
 // Gated on a real Enclave, not `.ambientTestKeyManager`: receiving a fallback message
