@@ -311,7 +311,7 @@ struct CardConversationTests {
         // A card that expired an hour ago, issued and imported back then.
         let issuedAt = Date.now.addingTimeInterval(-25 * 3_600)
         let card = try bob.run { try bob.cm.createCard(for: try bob.contact(bobSide), now: issuedAt) }
-        try carol.run { try carol.cm.importCard(card.encoded, into: try carol.contact(carolSide), newContactName: nil, now: issuedAt) }
+        _ = try carol.run { try carol.cm.importCard(card.encoded, into: try carol.contact(carolSide), newContactName: nil, now: issuedAt) }
         #expect(card.expiresAt < .now, "precondition")
 
         #expect(try carol.run { carol.cm.canSendToCardContact(try carol.contact(carolSide)) } == false)
@@ -522,7 +522,7 @@ struct CardRedemptionRejectionTests {
         let (bob, carol) = (pair.bob, pair.carol)
         let dave = try CardPhone()
         let daveSide = try dave.newContact("Bob")
-        try dave.run { try dave.cm.importCard(pair.card.encoded, into: try dave.contact(daveSide), newContactName: nil) }
+        _ = try dave.run { try dave.cm.importCard(pair.card.encoded, into: try dave.contact(daveSide), newContactName: nil) }
 
         let fromCarol = try carol.send(to: pair.carolSide, "carol")
         let fromDave = try dave.send(to: daveSide, "dave")
@@ -792,7 +792,7 @@ struct CardHardBlockTests {
         #expect(reason == .cardConversation)
         // An issued card is not yet a card conversation.
         let issuedSide = try pair.bob.newContact("Issued")
-        try pair.bob.run { try pair.bob.cm.createCard(for: try pair.bob.contact(issuedSide)) }
+        _ = try pair.bob.run { try pair.bob.cm.createCard(for: try pair.bob.contact(issuedSide)) }
         let issuedReason = try pair.bob.run { try pair.bob.cm.groupIneligibilityReason(for: issuedSide) }
         #expect(issuedReason != .cardConversation)
     }

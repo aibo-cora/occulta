@@ -92,7 +92,7 @@ private struct Phone {
             Contact.Profile.Key.self,
         ])
         let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let pq        = try #require(PostQuantumProviderFactory.createForTesting())
         let keys      = SoftwareCardKeys()
         self.container = container

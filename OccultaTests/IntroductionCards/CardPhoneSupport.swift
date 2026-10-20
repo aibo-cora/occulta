@@ -45,9 +45,9 @@ final class CardPhone {
         let keys = self.keys
         // Built as this phone, so the manager's own `Manager.Crypto` (which `save` and `update(key:for:)` use) seals
         // under this phone's local DB key, the one every read in `run` opens with.
-        self.cm = try Manager.Ambient.$override.withValue(override) {
+        self.cm = Manager.Ambient.$override.withValue(override) {
             ContactManager(
-                modelContainer: container, security: try Manager.Security(modelContainer: container, keyManager: TestKeyManager()),
+                modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager()),
                 cardKeys: keys, cardPostQuantum: pq
             )
         }
@@ -75,7 +75,7 @@ final class CardPhone {
                 nickname: "", organizationName: "", departmentName: "", jobTitle: ""
             )
             profile.contactPublicKeys = [Contact.Profile.Key(
-                material: try #require(try Manager.Crypto().encrypt(data: try other.keyManager.retrieveIdentity())),
+                material: try Manager.Crypto().encrypt(data: try other.keyManager.retrieveIdentity()),
                 owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
             )]
             let tier = try #require(OccultaBundle.Version.prefixedSenderSignatureCapable.wireByte)

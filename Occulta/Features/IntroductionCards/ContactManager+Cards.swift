@@ -579,7 +579,7 @@ extension ContactManager {
                 for: contact
             )
 
-        case .empty, .issued, .imported, .conversation:
+        case .empty, .issued, .conversation:
             return
         }
     }

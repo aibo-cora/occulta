@@ -43,7 +43,7 @@ private struct Ceremony {
 
     /// This side's `HybridExchangeResult`: ours first, theirs second.
     func result(_ side: Side) -> ExchangeManager.HybridExchangeResult {
-        let (ours, theirs) = side == .bob
+        let (_, theirs) = side == .bob
             ? (self.bobIdentity, self.carolIdentity) : (self.carolIdentity, self.bobIdentity)
         return ExchangeManager.HybridExchangeResult(
             peerP256PublicKey: theirs,
@@ -91,7 +91,7 @@ private struct Ceremony {
 struct CardMeetingTableTests {
 
     /// (setup name, Bob's verdict, Carol's verdict)
-    static let rows: [(String, CardMeetingVerdict, CardMeetingVerdict)] = [
+    nonisolated static let rows: [(String, CardMeetingVerdict, CardMeetingVerdict)] = [
         ("both conversation", .match, .match),
         ("Carol sent, Bob still issued", .none, .match),
         ("Carol sent, Bob conversation", .match, .match),
@@ -301,6 +301,7 @@ private struct LegacyExchange: Codable {
     var isCiphertext: Bool { self.ciphertext != nil }
 }
 
+@MainActor
 @Suite("Meeting check — the proof message", .serialized)
 struct CardProofMessageTests {
 
@@ -553,8 +554,10 @@ struct CardMeetingConversationSaveTests {
         #expect(try phone.state(id) == .empty, "\(name)")
         #expect(try phone.rawField(id)?.count == before.count, "\(name)")
         expectCleared(try phone.record(id), "\(name)")
-        #expect(try phone.run { Untouched(try phone.contact(id)) } == others, "\(name): nothing else changes")
-        #expect(try phone.run { try phone.cm.cardMeetingContext(for: try phone.contact(id)).sign } == nil, "no card key survives")
+        let after = try phone.run { Untouched(try phone.contact(id)) }
+        #expect(after == others, "\(name): nothing else changes")
+        let sign = try phone.run { phone.cm.cardMeetingContext(for: try phone.contact(id)).sign }
+        #expect(sign == nil, "no card key survives")
     }
 
     @Test("Both phones meet: the cards are gone, both contacts are Verified, and the old bundles no longer open")

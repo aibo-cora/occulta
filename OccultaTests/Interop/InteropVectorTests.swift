@@ -420,7 +420,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                         agreementKey:          try Self.bytes($0.agreementKey),
                         signingKey:            try Self.bytes($0.signingKey),
                         mlkemEncapsulationKey: try Self.bytes($0.mlkemEncapsulationKey),
-                        signature:             try Self.bytes(try #require($0.signature))
+                        signature:             try Self.bytes($0.signature)
                     )
                 }
             )

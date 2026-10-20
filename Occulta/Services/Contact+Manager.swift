@@ -1142,7 +1142,7 @@ extension ContactManager {
 
         // ── 4. Build and seal payload ─────────────────────────────────────
         // Padded so the bundle's length doesn't say how many pieces we hold for this contact (`bugs.md` Bug 162).
-        let custodyManifest = custodyManifest.map(Self.paddedCustodyManifest)
+        let custodyManifest = custodyManifest.map { Self.paddedCustodyManifest($0) }
 
         let messageData: Data
         if let basket {

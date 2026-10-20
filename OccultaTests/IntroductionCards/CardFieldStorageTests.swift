@@ -33,7 +33,7 @@ private func makeContactManager() throws -> (ContactManager, ModelContainer) {
         Contact.Profile.Key.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
     return (ContactManager(modelContainer: container, security: security), container)
 }
 
@@ -295,17 +295,17 @@ struct CardFieldRoundTripTests {
             row.introductionCardEncrypted = randomBytes(300)
         case "wrongVersion":
             plaintext[0] = CardStateCodec.formatVersion &+ 1
-            row.introductionCardEncrypted = try #require(try plaintext.encrypt())
+            row.introductionCardEncrypted = try plaintext.encrypt()
         case "wrongLength":
-            row.introductionCardEncrypted = try #require(try plaintext.dropLast().encrypt())
+            row.introductionCardEncrypted = try plaintext.dropLast().encrypt()
         case "garbagePayload":
             var junk = Data([CardStateCodec.formatVersion, 0, 0, 0, 8])
             junk.append(randomBytes(8))
             junk.append(Data(count: CardStateCodec.capacity - junk.count))
-            row.introductionCardEncrypted = try #require(try junk.encrypt())
+            row.introductionCardEncrypted = try junk.encrypt()
         case "lengthPastCapacity":
             plaintext.replaceSubrange(1...4, with: [0xFF, 0xFF, 0xFF, 0xFF])
-            row.introductionCardEncrypted = try #require(try plaintext.encrypt())
+            row.introductionCardEncrypted = try plaintext.encrypt()
         default:
             row.introductionCardEncrypted = Data()
         }
@@ -320,7 +320,7 @@ struct CardFieldRoundTripTests {
         let row = try insertRow(in: cm.modelContext)
         let plaintext = try CardStateCodec().encode(issuedState())
         let foreign = try Manager.Crypto(keyManager: TestKeyManager()).encrypt(data: plaintext)
-        row.introductionCardEncrypted = try #require(foreign)
+        row.introductionCardEncrypted = foreign
 
         #expect(row.cardState == .empty)
     }

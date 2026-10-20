@@ -11,6 +11,7 @@ import Foundation
 import OccultaFormats
 
 /// The meeting check's verdict, shown only after the ceremony's own confirmation succeeds.
+nonisolated
 enum CardMeetingVerdict: Equatable {
     /// No verdict is shown: the field shows none (`empty`, `issued`, `imported` before a first send), the
     /// exchange was classical-only, or there was no ceremony.
