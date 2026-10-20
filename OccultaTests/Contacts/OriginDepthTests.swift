@@ -33,7 +33,7 @@ private func makeContainer() throws -> ModelContainer {
 @MainActor
 private func makeContactManager() throws -> (ContactManager, ModelContainer) {
     let container = try makeContainer()
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
     return (ContactManager(modelContainer: container, security: security), container)
 }
 

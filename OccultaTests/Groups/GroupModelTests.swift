@@ -274,7 +274,7 @@ struct GroupStructuralTests {
         let group = try Group(name: "Full")
         ctx.insert(group)
 
-        var ids = (0..<Group.slotCount).map { _ in UUID().uuidString }
+        let ids = (0..<Group.slotCount).map { _ in UUID().uuidString }
         for id in ids { try group.addMember(id, atDepth: 0) }
 
         // Adding before removing at capacity must throw — this is the failure mode
@@ -347,7 +347,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -378,7 +378,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager(crypto: Manager.Crypto) throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -450,7 +450,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -587,7 +587,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -923,7 +923,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -994,7 +994,7 @@ struct GroupStructuralTests {
             Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self, Contact.Profile.Key.self,
         ])
         let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm        = ContactManager(modelContainer: container, security: security)
         let target    = UUID().uuidString
         try self.insertPlainProfile(identifier: target, in: cm)
@@ -1021,7 +1021,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 

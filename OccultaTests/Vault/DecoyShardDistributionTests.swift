@@ -48,7 +48,7 @@ private func makeRig() throws -> (
         AppLayerConfig.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: km)
+    let security  = Manager.Security(modelContainer: container, keyManager: km)
     let contacts  = ContactManager(modelContainer: container, security: security)
     let vault     = VaultManager(modelContainer: container, keyManager: km)
     let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)

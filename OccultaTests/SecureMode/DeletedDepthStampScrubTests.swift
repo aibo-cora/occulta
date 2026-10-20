@@ -320,7 +320,7 @@ struct ScrubMatchesRowReadabilityTests {
           .ambientTestKeyManager)
     func readableRowGetsBenignValues() throws {
         let context = ModelContext(try makeContainer())
-        try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
+        _ = try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -345,7 +345,7 @@ struct ScrubMatchesRowReadabilityTests {
           .ambientTestKeyManager)
     func readableRowStaysReadable() throws {
         let context = ModelContext(try makeContainer())
-        try self.insertReadableDeleted(visibleThrough: 0, trustee: -1, origin: 3, in: context)
+        _ = try self.insertReadableDeleted(visibleThrough: 0, trustee: -1, origin: 3, in: context)
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -364,7 +364,7 @@ struct ScrubMatchesRowReadabilityTests {
           .ambientTestKeyManager)
     func readableScrubIsIdempotent() throws {
         let context = ModelContext(try makeContainer())
-        try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
+        _ = try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -389,9 +389,7 @@ struct ScrubMatchesRowReadabilityTests {
         let context = ModelContext(try makeContainer())
         let row = try self.insertReadableDeleted(visibleThrough: 0, trustee: -1, origin: 0, in: context)
         // Int.max in the legacy JSON format: benign in value, 19 plaintext bytes in length.
-        row.visibleThroughDepth = try #require(
-            try JSONEncoder().encode(Int.max).encrypt()
-        )
+        row.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -465,7 +463,7 @@ struct FixedWidthPassExcludesDeletedRowsTests {
             identifier: UUID().uuidString, givenName: "", familyName: "", middleName: "",
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
         )
-        profile.visibleThroughDepth = try #require(try JSONEncoder().encode(2).encrypt())
+        profile.visibleThroughDepth = try JSONEncoder().encode(2).encrypt()
         context.insert(profile)
         try context.save()
 
@@ -488,7 +486,7 @@ struct DeleteContactScrubsStampsTests {
           .ambientTestKeyManager)
     func deleteContactScrubsDepthStamps() throws {
         let container = try makeGroupCapableContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let contacts  = ContactManager(modelContainer: container, security: security)
 
         let identifier = UUID().uuidString
@@ -496,8 +494,8 @@ struct DeleteContactScrubsStampsTests {
             identifier: identifier, givenName: "", familyName: "", middleName: "",
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
         )
-        profile.visibleThroughDepth = try #require(try DepthCodec.encode(0).encrypt())
-        profile.originDepth         = try #require(try DepthCodec.encode(2).encrypt())
+        profile.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
+        profile.originDepth         = try DepthCodec.encode(2).encrypt()
         try contacts.insertProfile(profile)
 
         try contacts.deleteContact(identifier: identifier)

@@ -456,7 +456,7 @@ private func makeContainer() throws -> ModelContainer {
         vm.unlock(context: LAContext())
         let entry    = try vm.addEntry(label: "entry", content: Data(), type: .note, currentDepth: 0)
 
-        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        let security = Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
 
         security.applyVerifyState(for: .normal(depth: 0))
         #expect(security.visibleVaultEntries(from: [entry]).map(\.id) == [entry.id])
@@ -471,7 +471,7 @@ private func makeContainer() throws -> ModelContainer {
         vm.unlock(context: LAContext())
         let entry    = try vm.addEntry(label: "entry", content: Data(), type: .note, currentDepth: 2)
 
-        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        let security = Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
 
         security.applyVerifyState(for: .normal(depth: 0))
         #expect(security.visibleVaultEntries(from: [entry]).isEmpty,
@@ -495,7 +495,7 @@ private func makeContainer() throws -> ModelContainer {
         let entry   = try vm.addEntry(label: "pre-existing", content: Data(), type: .note)
         entry.visibleThroughDepth = nil
 
-        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        let security = Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
         security.applyVerifyState(for: .normal(depth: 3))
         #expect(security.visibleVaultEntries(from: [entry]).isEmpty,
                 "a row with no visibleThroughDepth must fail closed at a restricted depth")
@@ -510,7 +510,7 @@ private func makeContainer() throws -> ModelContainer {
         let entry   = try vm.addEntry(label: "pre-existing", content: Data(), type: .note)
         entry.visibleThroughDepth = nil
 
-        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        let security = Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
         security.applyVerifyState(for: .normal(depth: 0))
         #expect(security.visibleVaultEntries(from: [entry]).map(\.id) == [entry.id],
                 "a legacy unclassified entry must stay visible at the real depth 0")
@@ -525,7 +525,7 @@ private func makeContainer() throws -> ModelContainer {
         let entry   = try vm.addEntry(label: "orphaned", content: Data(), type: .note, currentDepth: 0)
         entry.deletionToken = try VaultEntry.orphanedToken.encrypt()
 
-        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        let security = Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
         security.applyVerifyState(for: .normal(depth: 0))
         #expect(security.visibleVaultEntries(from: [entry]).isEmpty,
                 "an orphaned entry must not show even at the depth it was originally stamped with")
@@ -538,7 +538,7 @@ private func makeContainer() throws -> ModelContainer {
         let real  = try vm.addEntry(label: "real",  content: Data(), type: .note, currentDepth: 0)
         let decoy = try vm.addEntry(label: "decoy", content: Data(), type: .note, currentDepth: 3)
 
-        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        let security = Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
         let all      = try vm.fetchAllEntries()
 
         security.applyVerifyState(for: .normal(depth: 0))

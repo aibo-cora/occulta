@@ -218,9 +218,10 @@ struct PrefixedSignatureTierTests {
             .groupShardCapable, .groupCapable, .v4
         ]
         for tier in tiers {
-            let byte = try? #require(tier.wireByte)
-            #expect(byte != nil, "\(tier) has no wireByte")
-            guard let byte else { continue }
+            guard let byte = tier.wireByte else {
+                Issue.record("\(tier) has no wireByte")
+                continue
+            }
             #expect(WireHandle.byteToVersion(byte) == tier,
                     "\(tier) marker byte \(byte) does not map back to it")
         }

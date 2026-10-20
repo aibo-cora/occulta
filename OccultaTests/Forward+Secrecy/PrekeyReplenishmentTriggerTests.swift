@@ -57,7 +57,7 @@ private struct Fixture {
         ])
         let container  = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         self.container = container
-        self.cm        = ContactManager(modelContainer: container, security: try Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
+        self.cm        = ContactManager(modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
         self.senderKM  = TestKeyManager()
         self.senderID  = "trigger.\(UUID().uuidString)"
         self.selfPub   = try Manager.Key().retrieveIdentity()
@@ -561,7 +561,7 @@ private struct Fixture {
         legacy.pendingOutboundBatch = try JSONEncoder().encode(batch)
         let sender = try f.sender
         sender.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
-        sender.retiredForwardSecrecyEncrypted = try #require(try JSONEncoder().encode(legacy).encrypt())
+        sender.retiredForwardSecrecyEncrypted = try JSONEncoder().encode(legacy).encrypt()
         try f.cm.modelContext.save()
         try DatabaseMigration.migratePrekeyRecords(modelContext: f.cm.modelContext)
 
