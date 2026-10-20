@@ -33,7 +33,7 @@ private func makeContactManager() throws -> (ContactManager, ModelContainer) {
         Contact.Profile.Key.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
     return (ContactManager(modelContainer: container, security: security), container)
 }
 

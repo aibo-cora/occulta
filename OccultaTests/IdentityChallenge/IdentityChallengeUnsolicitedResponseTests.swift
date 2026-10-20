@@ -26,7 +26,7 @@ import CryptoKit
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
         )
         profile.contactPublicKeys = [Contact.Profile.Key(
-            material: try #require(try Manager.Crypto().encrypt(data: try self.alice.retrieveIdentity())),
+            material: try Manager.Crypto().encrypt(data: try self.alice.retrieveIdentity()),
             owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
         )]
         return profile

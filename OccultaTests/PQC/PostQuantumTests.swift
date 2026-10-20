@@ -199,7 +199,7 @@ final class QuantumKeyMaterialTests: XCTestCase {
         XCTAssertFalse(material.isValid)
     }
 
-    func testCodableRoundtrip() throws {
+    @MainActor func testCodableRoundtrip() throws {
         let original = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
             decapsulatedSecret: Data(repeating: 0xBB, count: 32),
@@ -544,7 +544,7 @@ final class DicewareKeyDerivationTests: XCTestCase {
 @available(iOS 26, *)
 final class BackwardCompatibilityTests: XCTestCase {
 
-    func testV1PeerDecodesExchangeWithNewFields() throws {
+    @MainActor func testV1PeerDecodesExchangeWithNewFields() throws {
         let exchange = Exchange(
             id: UUID().uuidString,
             token: Data([0x01, 0x02, 0x03]),

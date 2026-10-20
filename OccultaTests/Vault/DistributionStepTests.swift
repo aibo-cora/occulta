@@ -12,7 +12,7 @@ import Testing
 @testable import Occulta
 
 @Suite("Backup Recovery — the button's next step")
-struct DistributionStepTests {
+@MainActor struct DistributionStepTests {
 
     @Test("Locked: unlock first, without reading the distribution or the recipients")
     func lockedUnlocksFirst() {

@@ -75,7 +75,7 @@ struct GlobalTrusteeRetirementTests {
         let container = try makeContainer()
         let atZero   = try insertContact(stamp: try sealed(0), in: container)
         let atTwo    = try insertContact(stamp: try sealed(2), in: container)
-        let legacy   = try insertContact(stamp: try #require(try JSONEncoder().encode(2).encrypt()), in: container)
+        let legacy   = try insertContact(stamp: try JSONEncoder().encode(2).encrypt(), in: container)
         let missing  = try insertContact(stamp: nil, in: container)
 
         try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: ModelContext(container))

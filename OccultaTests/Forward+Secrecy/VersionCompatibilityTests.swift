@@ -476,7 +476,6 @@ struct ModeDecodingTests {
     @Test(.enabled(if: secureEnclaveAvailable())) func crossVersion_olderSender_nonGroupBundle_opensOn_1_9_0() throws {
         let senderKM    = TestKeyManager()
         let recipientKM = TestKeyManager()
-        let senderPub   = try senderKM.retrieveIdentity()
         let recipientPub = try recipientKM.retrieveIdentity()
 
         let contactID = "crossver.\(UUID().uuidString)"

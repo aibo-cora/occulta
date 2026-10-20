@@ -139,7 +139,7 @@ struct BackupTrusteeRotationTests {
 
         let restoreTarget = try makeFreshVault()
         var senders = Set<String>()
-        for (i, shard) in round2.enumerated() {
+        for shard in round2 {
             let sender = realFormatContactIdentifier()
             try restoreTarget.absorbShard(shard, senderIdentifier: sender)
             senders.insert(sender)

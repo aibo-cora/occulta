@@ -104,7 +104,7 @@ private func setUpConfirmedBEK(for vault: VaultManager, currentDepth: Int) throw
 private func restoreOnFreshVault(_ backup: Data, shards: [SignedAttribute], atDepth depth: Int) throws -> ModelContainer {
     let (fresh, container) = try makeVault()
     var senders = Set<String>()
-    for (i, shard) in shards.enumerated() {
+    for shard in shards {
         let sender = realFormatContactIdentifier()
         try fresh.absorbShard(shard, senderIdentifier: sender)
         senders.insert(sender)
@@ -283,7 +283,7 @@ struct VaultBackupRoundTripTests {
     @Test("Staleness for one depth is never derived from another depth's export or entries",
           .ambientTestKeyManager)
     func stalenessIsIsolatedPerDepth() throws {
-        let (vault, container, _) = try makeBackupReadyVault()
+        let (vault, _, _) = try makeBackupReadyVault()
 
         _ = try vault.addEntry(label: "real",  content: Data("real".utf8),  type: .note, currentDepth: 0)
         _ = try vault.addEntry(label: "decoy", content: Data("decoy".utf8), type: .note, currentDepth: 2)
