@@ -79,7 +79,14 @@ constants that are wire format, such as the `OCCB` magic. The package must stay 
 its `Package.swift` declares none, and adding one is the same supply-chain change as adding it to
 the app. It is nonisolated by default and builds in Swift 6 mode, unlike the app's `MainActor`.
 Its tests stay in `OccultaTests` (`@testable import OccultaCore` or `OccultaFormats`) so the one
-test command below still runs them.
+test command below still runs them — except `OccultaCore/Tests/OccultaCoreAPITests`, which uses
+`OccultaCore` as another app would (plain `import`, no `OccultaFormats`) and so can't live in the
+app's test bundle, which links both. Run it from `OccultaCore/` with
+`xcodebuild test -scheme OccultaCore-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`.
+That scheme builds every package target into one directory, so an undeclared
+`import OccultaFormats` there still compiles; `swift build --build-tests
+--explicit-target-dependency-import-check error --triple arm64-apple-ios18.6-simulator --sdk
+"$(xcrun --sdk iphonesimulator --show-sdk-path)"` is the check that catches it. CI runs both.
 `OccultaTests/Interop/InteropVectors.json` pins the formats byte for byte; a change that alters a
 recorded vector breaks compatibility with existing contacts.
 

@@ -29,7 +29,7 @@ private func insertSender(
         nickname: "", organizationName: "", departmentName: "", jobTitle: ""
     )
     profile.contactPublicKeys = [Contact.Profile.Key(
-        material: try #require(try Manager.Crypto().encrypt(data: publicKey)), owner: Data(), date: Data(),
+        material: try Manager.Crypto().encrypt(data: publicKey), owner: Data(), date: Data(),
         quantumKeyMaterialEncrypted: nil
     )]
     profile.maxBundleVersion = marker
@@ -264,7 +264,7 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
     enum RecordedTier: String, CaseIterable {
         case atTheTier, belowTheTier, none, stranded
 
-        func marker() throws -> Data? {
+        @MainActor func marker() throws -> Data? {
             switch self {
             case .atTheTier:    return try Manager.Crypto().encrypt(data: Data([try #require(OccultaBundle.Version.bodyDigestCapable.wireByte)]))
             case .belowTheTier: return try Manager.Crypto().encrypt(data: Data([try #require(OccultaBundle.Version.prefixedSenderSignatureCapable.wireByte)]))

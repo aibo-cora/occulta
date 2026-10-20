@@ -34,7 +34,7 @@ public struct IdentityChallengeEnvelope: Codable, Equatable {
 
     /// Phase discriminator. Raw values are stable wire strings — never
     /// rename or reorder without a wire-format migration.
-    public enum Kind: String, Codable {
+    public enum Kind: String, Codable, Sendable {
         case challenge
         case response
     }

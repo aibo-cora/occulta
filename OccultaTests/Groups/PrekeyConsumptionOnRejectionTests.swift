@@ -28,7 +28,7 @@ private func secureEnclaveAvailable() -> Bool {
 @MainActor struct PrekeyConsumptionOnRejectionTests {
 
     /// One sender, one recipient, one real SE-backed prekey, sealed FS-mode.
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let senderKM: TestKeyManager
         let recipientCrypto: Manager.Crypto
         let prekeySecretsManager: Manager.PrekeySecretsManager

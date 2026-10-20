@@ -17,12 +17,16 @@ extension Manager {
             self.vault = vault
         }
 
-        /// Deletes all app data: prekeys, contacts, vault, and SE keys.
+        /// Deletes all app data: prekeys, contacts, vault, share-extension leftovers, and SE keys.
         /// SE keys are deleted last — once gone, all data encrypted under them is permanently inaccessible.
         func eraseAllData() throws {
             Manager.PrekeySecretsManager().deleteAllKeys()
             try self.contacts.deleteAllContacts()
             try self.vault.deleteAllData()
+            if let container = ShareSession.sharedContainer {
+                ShareSession.removeAll(in: container)
+            }
+            ShareStagingKeyManager().deleteKey()
             Manager.Key().deleteAllKeys()
         }
     }

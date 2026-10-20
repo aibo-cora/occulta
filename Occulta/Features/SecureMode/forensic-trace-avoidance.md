@@ -386,7 +386,20 @@ What remains in the App Group: `pending/<session-uuid>/`, holding files the user
 chosen to share, sealed under the share-staging SE key (`ShareStagingKeyManager`, formerly
 `ShareIndexKeyManager`) with `.completeFileProtection`, named positionally, swept after an hour.
 That key keeps its `share.index` tag and HKDF info string — it still seals staged files and
-manifests, and changing either would strand it.
+manifests, and changing either would strand it. Also `inbound/<session-uuid>.occ`, an incoming
+`.occ` the extension hands to the app, already sealed by its sender and deleted once the app reads
+it. A handoff that never reaches the app is swept after the same hour (`ShareSession.sweepInbound`),
+judged by the file's modification date since it has no manifest to read. Until 2026-10-19 nothing
+swept `inbound/`, so such a file stayed until Erase All Data, recording that someone had sent the
+user an Occulta file.
+
+Erase All Data removes both directories, not just their contents, then deletes the share-staging
+key (`bugs.md` Bug 170). Each directory is created on first use, and its creation date, like the
+key's `kSecAttrCreationDate`, records the first share into Occulta. The normal sweeps leave the
+emptied directories in place, so each also keeps the time of the last share through it as its
+modification date — open, needs a decision. Removing them on every foreground would drop the
+creation date but move the last-share time into the App Group container's own modification date,
+and could delete `inbound/` between the extension creating it and writing into it.
 
 One consequence worth recording here rather than only in the bug: the old `max(currentDepth, 1)`
 clamp meant a contact classified as real-only could not be reached from the iOS share sheet at any

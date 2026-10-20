@@ -27,7 +27,7 @@ private func insertSender(identifier: String, publicKey: Data, in contactManager
         nickname: "", organizationName: "", departmentName: "", jobTitle: ""
     )
     profile.contactPublicKeys = [Contact.Profile.Key(
-        material: try #require(try Manager.Crypto().encrypt(data: publicKey)), owner: Data(), date: Data(),
+        material: try Manager.Crypto().encrypt(data: publicKey), owner: Data(), date: Data(),
         quantumKeyMaterialEncrypted: nil
     )]
     var record = PrekeyRecord.empty

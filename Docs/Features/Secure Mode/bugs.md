@@ -7190,6 +7190,8 @@ The one way out before the fix was blind: deleting the hostile trustee's contact
 
 ### Fix, as built (2026-09-23)
 
+**Moved 2026-10-13** (modularization Phase 3, step 4): the search is now `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)` in `OccultaCore`, and `verifiedKey` passes it the GCM check. Same order, cap and zeroing; the Bug 95 suite in `VaultRestoreTrustTests` passes unchanged.
+
 - **Subset search** (`VaultManager.Backup.verifiedKey`). It tries every shard first. If that fails, it
   retries with shards left out, fewest first, and stops at the first candidate that opens the file.
   Extra honest shards never change the result, so the first subset that works is the full set minus the
@@ -7407,7 +7409,8 @@ be:** `JSONEncoder`/`JSONDecoder` internals, labels while they pass through Swif
 
 **Follow-up, 2026-09-26 (branch code review):** per-entry key reconstruction had the same gap.
 `reconstructEntry` (`Vault+Manager+Reconstruction.swift`) opened the entry's content to check the GCM tag
-and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` does. Not
+and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` did (since 2026-10-13, the check `verifiedKey`
+passes to `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)`). Not
 covered by a test, like the other zeroing points: a leftover copy in freed memory isn't observable from one.
 
 ### 4 — Minor, recorded so they are not rediscovered
@@ -13770,3 +13773,19 @@ mechanism is the same.
 ### Guard
 
 None yet.
+
+## Bug 169 — The Files app shows an "Occulta" folder
+
+**Status:** Fixed 2026-10-18 on `v2.0.0/hide-files-folder`. Found in the Simulator while testing introduction cards.
+
+### What happens
+
+The app target set `INFOPLIST_KEY_UISupportsDocumentBrowser = YES` (Debug and Release) from the project's start. That key is for apps that browse their own documents, which Occulta doesn't, and with it Files lists the app's `Documents/` folder under On My iPhone › Occulta. It's empty in normal use, but it's a visible trace of the app outside every duress depth, and it would show anything that ever reached `Documents/`. Today that is only `Documents/Inbox/`, between iOS delivering an opened file and `handleOpenURL` deleting it after the read (Bug 101, step 1), or longer after a crash in between.
+
+### Fix
+
+The key is removed from the app target. Opening `.occ` and `.occbak` files doesn't depend on it: that is `CFBundleDocumentTypes` and `LSSupportsOpeningDocumentsInPlace = NO`, both unchanged. The Quick Look preview extension also sets the key; there it has no effect, and it was left alone.
+
+### Guard
+
+None automated: the folder is decided by iOS from `Info.plist`. Checked in the Simulator: no Occulta folder in Files, and a `.occ` opened from Files still reaches the app.

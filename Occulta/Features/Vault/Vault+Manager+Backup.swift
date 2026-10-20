@@ -1232,6 +1232,10 @@ extension VaultManager {
         ///   5. If the full set fails, retry with shards left out, fewest first, until a
         ///      candidate opens the file or `maxReconstructionAttempts` is reached.
         ///
+        /// Steps 3 to 5 are `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)`,
+        /// with step 4 as its check. The file is the owner's own, so a trustee can't shape the
+        /// ciphertext, which is what makes the GCM tag a sound check here.
+        ///
         /// Step 5 is `bugs.md` Bug 95. On the new-device path no shard can be checked on its
         /// own (the key that signed them is gone), so one well-formed but wrong shard from a
         /// hostile trustee made every attempt fail, even with k honest shards present. Extra
@@ -1266,50 +1270,25 @@ extension VaultManager {
             let box = try AES.GCM.SealedBox(combined: backupData.dropFirst(4))
 
             let rawShares = shards.map { Array($0.value) }
-            var attempts  = 0
-            for leftOutCount in 0...max(0, rawShares.count - 2) {
-                var leftOut = Array(0..<leftOutCount)
-                repeat {
-                    guard attempts < Self.maxReconstructionAttempts else { throw BackupError.bekReconstructionFailed }
-                    attempts += 1
-
-                    let subset = rawShares.indices.filter { !leftOut.contains($0) }.map { rawShares[$0] }
-                    if let bekData = Self.keyOpening(box, from: subset) {
-                        return (bekData, distributionID)
-                    }
-                } while Self.advance(&leftOut, below: rawShares.count)
+            do {
+                let bekData = try ShamirSecretSharing.reconstruct(
+                    shares: rawShares, maxAttempts: Self.maxReconstructionAttempts
+                ) { candidate in
+                    guard var plaintext = try? AES.GCM.open(box, using: SymmetricKey(data: candidate), authenticating: VaultManager.backupFileAAD)
+                    else { return false }
+                    plaintext.resetBytes(in: plaintext.indices)
+                    return true
+                }
+                return (bekData, distributionID)
+            } catch {
+                throw BackupError.bekReconstructionFailed
             }
-            throw BackupError.bekReconstructionFailed
         }
 
         /// The most reconstructions `verifiedKey` tries for one distribution. One bad shard
         /// needs at most n + 1 tries (n ≤ 255), so this only binds with several bad shards at
         /// once: two among up to 44 shards, three among up to 18, always fit.
         static let maxReconstructionAttempts = 1024
-
-        /// The key `shares` reconstruct, if it opens `box`; nil otherwise, with the wrong
-        /// candidate zeroed.
-        private static func keyOpening(_ box: AES.GCM.SealedBox, from shares: [[UInt8]]) -> Data? {
-            guard var bekData = try? ShamirSecretSharing.reconstruct(shares: shares) else { return nil }
-            if bekData.count == 32,
-               var plaintext = try? AES.GCM.open(box, using: SymmetricKey(data: bekData), authenticating: VaultManager.backupFileAAD) {
-                plaintext.resetBytes(in: plaintext.indices)
-                return bekData
-            }
-            bekData.resetBytes(in: bekData.indices)
-            return nil
-        }
-
-        /// Steps `indices`, a strictly increasing set of positions below `count`, to the next
-        /// such set in lexicographic order. False once there is none, so an empty set runs once.
-        private static func advance(_ indices: inout [Int], below count: Int) -> Bool {
-            var i = indices.count - 1
-            while i >= 0 && indices[i] == count - indices.count + i { i -= 1 }
-            guard i >= 0 else { return false }
-            indices[i] += 1
-            for j in (i + 1)..<indices.count { indices[j] = indices[j - 1] + 1 }
-            return true
-        }
 
         // MARK: - Rotation
 

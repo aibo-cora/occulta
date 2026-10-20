@@ -117,6 +117,27 @@ final class ShareStagingKeyManager {
         }
     }
 
+    // MARK: - SE Key Deletion
+
+    /// Delete the SE key. Erase All Data calls this after the staged files sealed under it.
+    ///
+    /// The key and its `kSecAttrCreationDate` record when the user first shared a file into
+    /// Occulta, so an erased install must not keep them. The next access creates a fresh key.
+    /// Matches the same item `retrievePrivateKey` finds. A missing key counts as deleted.
+    @discardableResult
+    func deleteKey() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrApplicationTag as String: Self.tag.data(using: .utf8)!,
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecAttrAccessGroup as String: Self.accessGroup
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
     // MARK: - Symmetric Key Derivation
 
     /// Derive the symmetric key for encrypting a share session's staged files and manifest.

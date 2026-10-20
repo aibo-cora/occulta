@@ -196,6 +196,35 @@ enum ShareSession {
         }
     }
 
+    /// Delete `.occ` handoffs the app never read.
+    ///
+    /// The extension writes `inbound/<uuid>.occ` and opens the app, which reads and deletes it
+    /// at once, holding the bytes in memory if it is locked. One older than `staleAfter` is a
+    /// handoff whose open never reached the app; nothing else reads `inbound/`, so it would
+    /// stay until Erase All Data, recording that someone sent the user an Occulta file.
+    ///
+    /// Judged by modification date: the file is sealed by its sender, so there is no manifest
+    /// to read a date from.
+    ///
+    /// Leaves `inbound/` itself, even when empty (`forensic-trace-avoidance.md` U6).
+    static func sweepInbound(in container: URL) {
+        let fm = FileManager.default
+
+        guard let files = try? fm.contentsOfDirectory(
+            at: container.appendingPathComponent("inbound"),
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+
+        let cutoff = Date.now.addingTimeInterval(-Self.staleAfter)
+
+        for file in files where file.pathExtension == "occ" {
+            let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            if let modified, modified < cutoff {
+                try? fm.removeItem(at: file)
+            }
+        }
+    }
+
     /// Delete `ShareIndex.sqlite` and its companions, left behind by builds before the picker
     /// moved into the app.
     ///
@@ -211,6 +240,23 @@ enum ShareSession {
         for name in ["ShareIndex.sqlite", "ShareIndex.sqlite-wal", "ShareIndex.sqlite-shm"] {
             try? FileManager.default.removeItem(at: container.appendingPathComponent(name))
         }
+    }
+
+    /// Delete everything the share extension has left in the App Group. Erase All Data calls
+    /// this before it deletes the share-staging key.
+    ///
+    /// - `pending/` — staged sessions, including fresh ones `sweep` would keep
+    /// - `inbound/` — `.occ` handoffs, including fresh ones `sweepInbound` would keep
+    /// - the legacy contact index
+    ///
+    /// Removes the two directories themselves, not just what is in them. The extension
+    /// creates each one on first use, so its creation date records the first share into
+    /// Occulta just as the key's does.
+    static func removeAll(in container: URL) {
+        for name in ["pending", "inbound"] {
+            try? FileManager.default.removeItem(at: container.appendingPathComponent(name))
+        }
+        self.removeLegacyContactIndex(in: container)
     }
 
     // MARK: - Private

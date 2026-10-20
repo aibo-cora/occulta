@@ -29,7 +29,7 @@ private func insertAlice(
         nickname: "", organizationName: "", departmentName: "", jobTitle: ""
     )
     profile.contactPublicKeys = [Contact.Profile.Key(
-        material: try #require(try Manager.Crypto().encrypt(data: try alice.retrieveIdentity())), owner: Data(), date: Data(),
+        material: try Manager.Crypto().encrypt(data: try alice.retrieveIdentity()), owner: Data(), date: Data(),
         quantumKeyMaterialEncrypted: nil
     )]
     profile.maxBundleVersion = marker
@@ -58,7 +58,7 @@ private func challengeFrom(_ alice: TestKeyManager) throws -> IdentityChallengeE
 }
 
 /// `envelope` in a one-recipient group bundle from Alice to `recipient`: long-term with no `prekey`.
-private func groupBundle(
+@MainActor private func groupBundle(
     _ envelope: IdentityChallengeEnvelope, from alice: TestKeyManager, to recipient: Data,
     prekey: Prekey? = nil, prefixesSignature: Bool = true
 ) throws -> OccultaBundle {
@@ -255,12 +255,12 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
 
     /// What Alice's phone does with a group bundle from us: opens her slot and the body.
     private func openOnAlicesPhone(
-        _ bundle: OccultaBundle, prekeys: PrekeyPrivateKeys = Manager.PrekeySecretsManager()
+        _ bundle: OccultaBundle, prekeys: PrekeyPrivateKeys? = nil
     ) throws -> (slot: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, sealed: OccultaBundle.SealedPayload) {
         let crypto = Manager.Crypto(keyManager: self.alice)
         let (slot, used, _) = try crypto.findAndOpenRecipientSlot(
             in: bundle, blind: try #require(bundle.group).blind, senderContactID: "us",
-            senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(), quantumMaterial: nil, prekeys: prekeys
+            senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(), quantumMaterial: nil, prekeys: prekeys ?? Manager.PrekeySecretsManager()
         )
         let sealed = try WireHandle.decode(payload: try crypto.openGroupCiphertext(bundle, using: SymmetricKey(data: slot.sessionKey)))
         return (slot, used, sealed)

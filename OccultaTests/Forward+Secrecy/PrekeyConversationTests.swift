@@ -44,7 +44,7 @@ private final class Phone {
         ])
         let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         self.contactManager = ContactManager(
-            modelContainer: container, security: try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+            modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         )
     }
 
@@ -61,7 +61,7 @@ private final class Phone {
                 nickname: "", organizationName: "", departmentName: "", jobTitle: ""
             )
             profile.contactPublicKeys = [Contact.Profile.Key(
-                material: try #require(try Manager.Crypto().encrypt(data: try other.keyManager.retrieveIdentity())),
+                material: try Manager.Crypto().encrypt(data: try other.keyManager.retrieveIdentity()),
                 owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
             )]
             let tier = try #require(OccultaBundle.Version.prefixedSenderSignatureCapable.wireByte)
