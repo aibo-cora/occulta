@@ -23,7 +23,7 @@ of who exchanged files with whom, and the fact that the user has Occulta at all.
 |---|---|---|
 | **Phone seized while powered off (before first unlock)** | Safe if the device passcode is strong. A 6-digit numeric passcode takes about a day once a tool gets past the Enclave's retry limits. | Same, plus the phrase. |
 | **Seized after first unlock, screen locked, no passcode** | Needs an iOS exploit. The store is `FileProtectionType.complete` (`OccultaApp.swift:74`, `:1213`) and every key is `WhenUnlockedThisDeviceOnly`, so everything still depends on the passcode. | Same. |
-| **Passcode obtained, plus forensic extraction** | **Everything:** every depth, the vault, and how many depths exist. | Only what the surrendered phrase opens. Other depths sit behind ~90 bits, and every guess costs a Secure Enclave call on that phone. |
+| **Passcode obtained, plus forensic extraction** | **Everything:** every depth, the vault, and how many depths exist. | Only what the surrendered phrase opens. Other depths sit behind ~90 bits. The design says every guess costs a Secure Enclave call on that phone; as designed it doesn't, so only the ~90 bits and the KDF hold the line. Open, needs a decision (`bugs.md` Bug 171, 2026-10-21). |
 | **Secure Enclave broken (hardware exploit)** | Everything, with or without the passcode. | The phrases hold: about 27,000 years to crack even with the Bitcoin network's entire SHA-256 throughput (7 words, PBKDF2). |
 | **User compelled to unlock Occulta in person** | The duress depth looks plausible, but a later forensic examination contradicts it. | The examination of one image matches what the user showed. What remains is register §I, below. An earlier image contradicts it (next row). |
 | **Device imaged repeatedly over time** | Moot, since everything is readable. | Without a phrase, comparing images shows that Occulta is used, not which depth. With a surrendered duress phrase, rows it can't open that changed between images show that another depth exists and is in use (step 4; open, needs a decision, 2026-10-15). |
@@ -69,6 +69,14 @@ inside the app to extract.
 - **Register §I, accepted 2026-09-07.** A coercer who already knows what should be there, or who makes
   the user open several depths and compares them, can still see that a duress depth is thin.
 - **A compelled developer.** Account hardening stops theft, not compulsion.
+- **The Enclave half of every key built as `ECDH(Enclave key, G)`, found 2026-10-21.** The output is a
+  function of the key's public point, so it adds no secret. That covers the local DB key, the vault key,
+  the shard custody and restore keys, the Secure Mode PIN key and the share staging key today, and the
+  planned layer keys' "device-binding" half. What the Enclave and biometric gate still protect is use of
+  the private key. The public point needs no authentication, shown for the device-unlock keys on the
+  Simulator and for the vault's biometric-or-passcode key on an iPhone 15 Pro; using the key does need it.
+  Who can reach the keychain item that holds the point is not shown. Open, needs a decision (`bugs.md`
+  Bug 171).
 
 ## Where a capable adversary goes next
 
@@ -87,6 +95,9 @@ The "after" column is a target, not a guarantee, until all of these change:
   decided.
 - No independent person has reviewed the code (register D4).
 - The file decoders have never been fuzzed (register D6).
+- Any claim here that a key needs the Enclave, a biometric, or "this device" because it is
+  `ECDH(Enclave key, G)` rests on the construction Bug 171 found to be a function of a public value. Open,
+  needs a decision.
 
 Against an adversary who has the device passcode today, Occulta adds no protection beyond the passcode
 itself.

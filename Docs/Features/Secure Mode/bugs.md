@@ -13789,3 +13789,86 @@ The key is removed from the app target. Opening `.occ` and `.occbak` files doesn
 ### Guard
 
 None automated: the folder is decided by iOS from `Info.plist`. Checked in the Simulator: no Occulta folder in Files, and a `.occ` opened from Files still reaches the app.
+
+---
+
+## Bug 171 — Keys derived as ECDH(Enclave key, G) are a function of the key's public point
+
+**Status:** Open — needs a decision. Found 2026-10-21 by a trial run of a security-audit skill on `v2.0.0/introduction-cards` (audited at `8c51ad97`), then settled the same day with a test on the iOS Simulator and, for the vault's access control, on an iPhone 15 Pro (iOS 26.7.1) that holds no real data. Numbered 171 because Bug 170 is taken on `v2.0.0/passphrase-rollout-plan`.
+
+**Target:** `v2.0.0`. Present since the local DB key was first derived this way; every later Enclave-derived key copied it.
+
+### Severity: High as a design claim; for shipped data it depends on who can reach the keychain item that holds Q, which is open
+
+### What happens
+
+Each key below is `HKDF(ECDH(enclave_priv, G) …)` with G the P-256 generator. ECDH with peer G computes d·G, which is Q, the Enclave key's own public point. So the exchange output is the ANSI X9.63 KDF (SHA-256, size 32, no shared info) of x(Q), and the HKDF around it takes Q as its salt (or G ⊕ Q for the legacy key). Nothing secret goes in. Anyone who has Q can compute every one of these keys without the Enclave, without the biometric, and on another machine.
+
+| Key | Derived in | Q of | Rebuilt from Q alone |
+|---|---|---|---|
+| Share staging key | `ShareStagingKeyManager.deriveSymmetricKey` | the share staging key | Yes, real class |
+| Local DB key (hybrid) | `Manager.Key.createHybridLocalEncryptionKey` | the local DB key | Yes, real class, together with the Keychain-random half it already mixes in |
+| Local DB key (legacy) | `Manager.Key.createLocalEncryptionKey` | **the identity key** | Yes, mirror of the code on a throwaway key |
+| Vault key | `Manager.Key.deriveVaultKey` | the vault key | Yes, mirror only; the real key can't be made on a Simulator |
+| Shard custody key | `deriveShardCustodyKey` | the shard custody key | Yes, real class |
+| Restore vault key | `deriveRestoreVaultKey` (same Enclave key, other info) | the shard custody key | Yes, real class |
+| Secure Mode PIN key | `deriveSecureModeKey` | the PIN key | Yes, real class |
+
+For the legacy local DB key, Q is the identity public key, which every contact holds by design. Anything still sealed under it (`decryptLegacy`, until migration has rewritten it, and any older copy of that ciphertext) is open to every contact of the user who has the ciphertext.
+
+**What the Enclave and the biometric gate do and don't protect.** They protect the private scalar d: it can't be read out, and an exchange or signature with *any other* peer still needs the chip. The gate decides who may *use* d. None of these keys needs d, so the gate is never reached. In particular `.biometryCurrentSet` invalidating the vault key when the enrolled biometrics change locks nothing that matters here, and the code comment "key unusable if biometrics change" (`Key+Manager.swift`, vault checklist) is true of the Enclave key and false of the symmetric key built from it. The hybrid local DB key is, in effect, its Keychain-random half alone: the Enclave half adds no secrecy.
+
+**Whether Q needs authentication.**
+- **Measured, four keys:** Q came back from `SecKeyCopyPublicKey` on a key reference fetched by tag with no `LAContext` at all, for the share staging, local DB, shard custody and PIN keys, whose access control is `.privateKeyUsage` and device unlock (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Their gate is device unlock and nothing else.
+- **Measured on a device, the vault's access control:** the Simulator refuses it (`SecKeyCreateRandomKey` fails with -25293, underlying LAError -1020, "not supported on iOS Simulator"), so `publicPointOfTheVaultACLKeyNeedsNoEvaluation` is skipped there. On an iPhone 15 Pro (iOS 26.7.1, no real data) it ran and passed. A key created with `[.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode]` was fetched by tag through a fresh `LAContext` with `interactionNotAllowed = true` that had evaluated nothing, and `SecKeyCopyPublicKey` returned the same Q as at creation. ECDH with that same context failed with LAError -1004, "User interaction is required". So the gate holds for *using* d and does not touch Q.
+- **Not checked:** where Q sits at rest, and so whether a keychain extraction yields it, or only code running as the app does. The vault checklist in `Key+Manager.swift` calls its public half "never stored, never exported"; that describes the app's own storage, not the keychain item. The identity key's Q isn't in doubt: it is sent to every contact.
+
+**Where it matters.**
+- **Offline attack off the phone.** An attacker with the ciphertext and Q recomputes the key anywhere. The only secret left in the local DB key is the Keychain-random half, which is itself an ordinary Keychain item (`WhenUnlockedThisDeviceOnly`, no Enclave involvement), readable by the same code that reads Q.
+- **Crypto-erase.** Deleting an Enclave key (Erase All Data deletes the share staging key, `ShareStagingKeyManager.deleteKey`) makes nothing unrecoverable for anyone who recorded Q earlier, since Q is all that was needed.
+- **The planned layer keys** (`PASSPHRASE_LAYER_KEYS.md` §1). Their `ECDH(SE_priv, G)` half is not device-binding. The 2026-09-29 fix, `ECDH(SE_priv, Q_D)` with `Q_D = s·G` for the stretched phrase s, doesn't help: the output is s·d·G = s·Q, which the attacker computes from the guess s and the public Q with no Enclave call. So the requirement "the Enclave takes part in every guess" is not met by either form, and an AFU attacker moves the guessing to a GPU farm after reading Q once. The 90-bit phrase and the KDF are then the whole defence, which the same document calls "margin rather than the thing holding the line".
+
+### Verified, 2026-10-21
+
+`OccultaTests/SecureMode/EnclaveGeneratorECDHTests.swift`, run alone on an iPhone 17 Pro Simulator (iOS 26.1, Apple Silicon host):
+
+```
+xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
+  -destination 'platform=iOS Simulator,id=<simulator udid>' \
+  -only-testing:OccultaTests/EnclaveGeneratorECDHTests test
+```
+
+13 passed, 1 skipped (the vault access control, above), 0 failed. The vault case alone was then run on the iPhone 15 Pro with `-destination 'platform=iOS,id=<device udid>'`: passed, not skipped, and its attachment `vault-acl-public-point.txt` read as quoted above. The two simulators named "iPhone 17 Pro" on this host make `name=` ambiguous, hence the id.
+
+- The exchange, computed as production does (same algorithm, peer G, requested size 32, no shared info), equals `SHA256(x(Q) ∥ 00 00 00 01)` computed from the public key alone.
+- The full HKDF output of each site above equals the rebuild from Q alone.
+- The real `Manager.Key` shard custody, restore vault and PIN keys, the real `ShareStagingKeyManager` key, and the real hybrid local DB key (with its Keychain-random half read from the keychain) equal the rebuild.
+- Control: ECDH against a software key's public point, whose discrete log the test doesn't use, does **not** equal the Q-only value. The equality is a property of G.
+- Corollary: Enclave `ECDH(d, s·G)` equals software `ECDH(s, Q)`.
+
+### Fix — open, needs a decision
+
+The fix is a derivation with a secret input that only the Enclave can supply, not a rewording of what the current one gives. Every option below changes every affected key, so each needs a one-way reseal of what's under it, with the migration plan and tests that stage requires. There is precedent: `kLocalDBHybridKeyInfo` keeps the old and new local DB keys from ever being equivalent. No option helps ciphertext already sealed under the old keys and copied: Q recomputes those.
+
+Options, 2026-10-21 (none built or tested):
+
+1. **Peer with an unknown discrete log.** Replace G with a point P whose discrete log nobody keeps: a software P-256 key generated once, its public point stored (not secret), its private scalar discarded. The output is k·Q = d·P, which needs d (or the discarded scalar). It is the same Enclave call as today with a different peer, so no new API, and the call already ran on a device in the Bug 171 test. The vault's biometric gate then guards a real input. Risks: the scalar existed in memory at creation and CryptoKit can't guarantee it is wiped; the stored P must be integrity-protected, because anyone who can swap in their own P chooses the key. Does not give the layer keys an Enclave call per guess: P can't depend on the phrase, or it is again known to the attacker. Rests on the P-256 discrete log, so a quantum adversary holding Q recovers d.
+2. **Wrap a random key in the Enclave.** A random 256-bit key sealed under the Enclave key with `SecKeyCreateEncryptedData` (ECIES), unwrapped with `SecKeyCreateDecryptedData`. As hardware-bound as option 1, but adds an ECIES unwrap path whose behaviour under these access controls is untested, and a stored blob whose integrity matters the same way (anyone can encrypt a chosen key to Q). Same quantum weakness.
+3. **Keychain secret under an access control.** Drop the exchange. Hold a random key as a generic-password item with `.biometryCurrentSet` or `.devicePasscode`. Simplest, and it makes the vault gate real, but the secret is plain data: a keychain-only extraction yields it, so the device-unlock keys get no hardware binding beyond the keychain itself.
+4. **Hash-to-curve peer, for the layer keys only.** Map the stretched phrase to a point with an unknown multiplier, so each guess needs one Enclave exchange. This is the only way to meet the "Enclave in every guess" requirement; any peer the guess determines by multiplying G is computable from Q. CryptoKit has no hash-to-curve. Try-and-increment over `P256.KeyAgreement.PublicKey(compressedRepresentation:)` works but its loop length leaks. A bespoke construction that needs its own review.
+5. **Keep the construction and correct the claims.** The workaround, not the fix. The Enclave step then adds cost and a false claim for no secrecy, and should go.
+
+Considered and rejected: **one master seed for all keys, derived with HKDF.** Domain separation makes the keys independent but not equal in access policy. The vault key needs biometrics; the custody, PIN and local DB keys need only device unlock; the staging key lives in a shared group for the extension. One seed released at device-unlock level removes the vault's biometric gate. It needs one protected root per access tier, about three. The iOS Secure Enclave also can't store a seed or run HKDF inside it: any seed reaches app memory when used, so "never leaves the enclave" isn't available. Options 2 and 3 are the real forms of that idea.
+
+**Recommendation, not decided:**
+- **Build option 1 for the keys that exist today.** It gives the same off-device guarantee as option 2 with the smallest change, and a stronger one than option 3.
+- **If quantum harvesting counts** (the vault checklist in `Key+Manager.swift` says "no harvest surface for QC", and the app uses ML-KEM elsewhere), the most secure form mixes three inputs into the HKDF: the option 1 term, a term from an Enclave ML-KEM key (encapsulate to its public key, store the ciphertext, have the Enclave decapsulate on use; iOS 26+, proven in this repo for the intro-card keys but not with the vault's biometric access control), and the existing Keychain-random half. Devices on iOS 18.6 to 25 would stay classical-only.
+- **Decide the quantum question before the migration is built.** Adding the ML-KEM term afterwards changes every key and forces a second full reseal. Whether a disk image alone yields Q is unchecked and bears on it: if it can't, quantum harvesting matters less.
+- **Layer keys:** decide whether the "Enclave in every guess" requirement is worth option 4's bespoke construction. If not, the requirement should be dropped from `PASSPHRASE_LAYER_KEYS.md` and `HARDENING_STEPS.md` step 2 instead of kept on a construction that doesn't meet it.
+- **Also separately:** retire the legacy local DB key (`createLocalEncryptionKey`, derived from the identity key whose Q every contact holds) once no v1 ciphertext remains. Until then, anything sealed under it is readable by every contact who has the ciphertext.
+
+Not changed in this pass: production code, including the comments that rely on the opposite (`Key+Manager.swift` "Public half: never stored… no harvest surface", "Device binding", "Biometric gate"). Other documents that rely on it and weren't edited: `Docs/v2.0.0/HARDENING_STEPS.md` step 2, "The Secure Enclave inside every guess"; `Docs/Audit/SECURITY_CHECKLIST.md`, the ticked item "Local DB encryption key is inaccessible after restore to a different device", which rests on "both halves are device-bound" (the conclusion holds only while Q isn't in whatever was restored); `Occulta/Features/ShareExtension/SHARE_EXTENSION_PLAN 16.32.42.md` and `Docs/Features/Vault/VAULT_SSS_GUIDE.md`, which describe the derivations. In `PROTECTION_ASSESSMENT.md` and `PASSPHRASE_LAYER_KEYS.md` the affected claims are marked "open, needs a decision".
+
+### Guard
+
+`EnclaveGeneratorECDHTests` pins today's behaviour: it passes *because* of this bug. When a fix lands, the equality assertions must flip to inequality (the control test already shows the shape). The vault access-control case asserts that Q needs no evaluation and only runs on a device, so it is skipped on the Simulator and on any CI runner; a fix that makes Q irrelevant leaves it true and meaningless, and it should be removed with the equalities.

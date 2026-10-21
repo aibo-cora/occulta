@@ -91,6 +91,14 @@ Two components, two different guarantees: the SE half is device-binding (this ke
 extract from the device, full stop). Losing either half is enough to prevent derivation — an attacker
 needs *both* the physical device (or its SE, which cannot leave it) *and* the phrase.
 
+**Found 2026-10-21 (`Docs/Features/Secure Mode/bugs.md` Bug 171): the SE half above is not device-binding.
+Open, needs a decision.** `ECDH(SE_priv, G)` is `d·G`, which is the Enclave key's public point Q, so
+the half is the X9.63 KDF of x(Q). Anyone with Q computes it off the device, with no Enclave call and no
+biometric. Tested on the Simulator for the keys the app derives this way today, and on an iPhone 15 Pro
+for a key with the vault's biometric-or-passcode access control: Q came back with no authentication,
+while using the key did require it. The "needs both" claim holds only if Q is out of the attacker's
+reach, which was not shown.
+
 **No separate stored verifier.** Unlike today's PIN, correctness isn't checked by comparing against a
 stored hash — a stored verifier is itself an offline dictionary-attack target, and for the numeric PIN
 today that's fine because the entropy is low and the real protection is app-level lockout, not the
@@ -123,6 +131,12 @@ unless the SEP itself is broken. At 90 bits this is margin rather than the thing
 is exactly the margin that matters if the SEP does fall, and it costs one SE call per unlock. (`s_D` outside
 the P-256 scalar range fails `rawRepresentation:`; probability ~2⁻³², handle by re-deriving with a counter.)
 
+**This fix does not do what it says. Open, needs a decision (Bug 171, 2026-10-21).** With `Q_D = s_D·G`,
+`ECDH(SE_priv, Q_D) = s_D·d·G = s_D·Q`. An attacker holding the guess `s_D` and the public Q computes that
+in software, so the Enclave takes no part in a guess. Tested on the Simulator: Enclave `ECDH(d, s·G)` equals
+software `ECDH(s, Q)`. The requirement stands; this construction doesn't meet it. A peer point whose
+discrete log the guess doesn't reveal would (Bug 171, "Fix").
+
 **Proposed 2026-10-15: one salt and one Enclave key per install, not one of each per depth.** Not decided.
 At unlock the app doesn't know which depth a phrase belongs to, and must not learn how many depths exist.
 With a salt per depth it would run the KDF once per slot: 32 runs, about 30 s at §4's ~1 s per run on an
@@ -138,7 +152,7 @@ layerKey_D = HKDF-SHA256(IKM: s ‖ ECDH(SE_priv, Q), …) — one Enclave key p
 ```
 
 Each attempt is one PBKDF2 run and one Enclave call, then a trial open of the 32 header slots (§2,
-2026-10-15), which is cheap. The cost: each guess is tested against every depth at once, about 5 bits off
+2026-10-15), which is cheap. *The Enclave call buys nothing as written: open, needs a decision (Bug 171).* The cost: each guess is tested against every depth at once, about 5 bits off
 90 at 32 slots. The salt only has to be unique per install, which is what defeats precomputation.
 
 ---
@@ -376,7 +390,7 @@ one image. Repeated images are the finding above.
 
 | Key | How many | Where it lives | What it seals |
 |---|---|---|---|
-| Enclave key | 1 per install | Keychain | Nothing directly. It is part of every phrase guess (§1, 2026-10-15) |
+| Enclave key | 1 per install | Keychain | Nothing directly. It is meant to be part of every phrase guess (§1, 2026-10-15); as designed it isn't: open, needs a decision (Bug 171) |
 | Depth key, `layerKey_D` | 1 per configured depth | Derived from that depth's phrase and the Enclave key. The depth above also keeps a copy, sealed under its own key | Contacts visible down to that depth; that depth's vault entries |
 | Shared key | 1 per install | A copy in every depth's header | Unclassified contacts, and contacts created at a duress depth (shown according to the origin lists below) |
 
@@ -602,8 +616,8 @@ or a rebuild of the same scale as what's being removed.
 **Proposed staged rollout, 2026-09-30 — `Docs/v2.0.0/ROLLOUT_PLAN.md`. Not decided.** If adopted, it
 replaces the single migration assumed above. The migration splits by data: the vault first, then
 contacts, then the remaining depth-stamped records. It never splits by requirement: each slice gets §1,
-§1's Enclave-per-guess requirement, §2's every-depth sealing, its write-frequency requirement, and the
-row and field AAD, all at once. Every depth on a device migrates in one step. The phrase replaces the
+§1's Enclave-per-guess requirement (open, needs a decision, Bug 171), §2's every-depth sealing, its
+write-frequency requirement, and the row and field AAD, all at once. Every depth on a device migrates in one step. The phrase replaces the
 PIN for every lock user, not only for users with duress depths. §2 remains the blocker. Design it for
 vault and contacts together, even though the vault would ship first.
 
