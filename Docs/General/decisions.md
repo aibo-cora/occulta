@@ -901,3 +901,33 @@ upgrading again. Only TestFlight and sideloaded builds can downgrade on iOS.
 **Full reasoning:** Prekey Continuity `DESIGN.md` §5 (D6); `bugs.md` Bug 168; `Docs/v2.0.0/ROLLOUT_PLAN.md`,
 release mechanics.
 
+
+## Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+
+
+**Status:** Plan adopted 2026-10-21. One decision is the user's (D1). Everything else here is recommended; open, needs a decision. Stage 1 is built; nothing in production uses the new derivations yet.
+
+**Context:** Seven symmetric keys are `HKDF(ECDH(enclave_priv, G) …)`. ECDH against the generator G is d·G = Q, the key's own public point, so each is a function of Q and the Enclave never takes part (`bugs.md` Bug 171, `EnclaveGeneratorECDHTests`). The fix gives each key an input that needs the Enclave and a post-quantum-safe secret of its own access tier, and moves existing data over with no loss, no new forensic tell, and nothing a coercer can use. Ciphertext already copied with Q stays readable; no option changes that.
+
+**Decision (the user's, 2026-10-21):** D1, the quantum question.
+- Every iOS version gets the same fix: term 1, ECDH against a compiled-in nothing-up-my-sleeve point P, and term 2, a 32-byte Keychain secret per access tier. No OS-version split in them.
+- iOS 26+ also gets term 3, an Enclave ML-KEM secret, for all three tiers (device unlock, biometry or passcode, share staging).
+- Below 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer, stays open, needs a decision, until the device reaches 26 or the passphrase ships.
+
+**Recommended, not decided** (the plan's numbering; each stays open until the user decides it, and any can be overridden at a stage review):
+- **D2. The layer-key "Enclave in every guess" requirement.** Drop it and keep the ECDH(d, P) device-binding term. The spec already sizes 7 words with PBKDF2 to hold with the Secure Enclave broken, and the alternative (a hash-to-curve peer) is bespoke crypto with no independent review. Update `PASSPHRASE_LAYER_KEYS.md` and `HARDENING_STEPS.md` step 2.
+- **D3. One root per tier.** Keep today's Enclave keys, with one Keychain secret per tier (tier U reuses the existing `local.db.random.key.occulta`). Consolidating Enclave keys buys nothing measurable and adds keychain churn.
+- **D4. Whether an image alone yields Q.** Run it on the Simulator, done (`bugs.md` Bug 171, "Where Q sits at rest"): no cleartext column holds Q, only SHA-1(Q). A device answer needs extraction tooling we don't have, so it stays open.
+- **D5. P as a compiled-in NUMS constant, or a stored per-install point.** The constant: it needs no storage, no integrity protection and no scalar.
+- **D6. Downgrade.** Accept it for TestFlight and sideload, as Bug 168 did, and say so in the TestFlight notes. A new store file would keep an old-key copy that any Q-holder can read for as long as it exists.
+- **D7. Sequencing.** Fix all seven keys in 2.0.0. The passphrase release isn't built, and its key-slot question isn't decided.
+- **D8. Vault rewrap timing.** At the first vault unlock. The window until then, with the per-entry keys still under the legacy vault key, is open, needs a decision.
+- **D9. Removing the v1 read path.** Keep it, migration-only: App Store updates jump straight to the newest version, so removing it loses data for installs that skipped versions.
+
+**Why:** The tier secrets are symmetric, so a quantum computer gets only Grover's speed-up against them, and ECDH against P is the same Enclave call as today with a different peer, so no Enclave key is added or replaced. ML-KEM on 26+ closes the keychain-dump case there with an Enclave blob a dump can't use.
+
+**Consequences:**
+- Every affected key needs a one-way reseal of what is sealed under it, with the migration plan and tests each stage carries.
+- Devices below iOS 26 reseal once into the classical form, and once more into the hybrid form if they reach 26 later.
+- The tier secrets are never created by a read. A missing one is nil, a loud failure, once data is sealed under it.
+
+**Full reasoning:** `bugs.md` Bug 171 (Fix, with the stages; Guard).

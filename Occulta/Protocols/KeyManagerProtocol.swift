@@ -8,6 +8,42 @@ import Foundation
 import CryptoKit
 import LocalAuthentication
 
+// MARK: - Bug 171 key forms
+
+/// A key as `KeyManagerProtocol.legacyKey(_:)` derives it: `HKDF(ECDH(enclave_priv, G) …)`, with G the
+/// P-256 generator. ECDH against G is d·G = Q, the key's own public point, so each of these is a function
+/// of Q (`bugs.md` Bug 171). They stay derivable for as long as something sealed under them can exist: data
+/// the reseal has not moved yet, and what a downgraded build writes.
+enum LegacyKey {
+    case localDB
+    case shardCustody
+    case restoreVault
+    /// Needs the vault's pre-evaluated `LAContext`, as `deriveVaultKey(context:)` does.
+    case vault(LAContext)
+}
+
+/// A key as `KeyManagerProtocol.enclaveBoundKey(_:)` derives it: `HKDF(t ‖ r)` with `t = ECDH(enclave_priv, P)`,
+/// P a nothing-up-my-sleeve point whose discrete log nobody knows, and `r` the Keychain secret of the key's
+/// access tier (`TierSecret`). It needs the Enclave key and the secret, and Q alone gives neither.
+enum EnclaveBoundKey {
+    case localDB
+    case shardCustody
+    case restoreVault
+    /// The wrap around the Secure Mode PIN verifiers. The inner verifier key stays `deriveSecureModeKey()`.
+    case secureModeWrap
+    /// Needs the vault's pre-evaluated `LAContext`, for the Enclave key and for the secret `r_B`.
+    case vault(LAContext)
+}
+
+/// A 32-byte secret held in the Keychain for one access tier, the second input of `EnclaveBoundKey`.
+enum TierSecret {
+    /// `r_U`: device unlock, app only. The existing `local.db.random.key.occulta` item, which also serves the
+    /// legacy hybrid local DB key. Feeds the local DB, shard custody, restore and PIN wrap keys.
+    case deviceUnlock
+    /// `r_B`: biometry or passcode, read through the vault's pre-evaluated `LAContext`. Feeds the vault key.
+    case biometry(LAContext)
+}
+
 // MARK: - KeyManagerProtocol
 
 protocol KeyManagerProtocol {
@@ -100,6 +136,34 @@ protocol KeyManagerProtocol {
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
     func deriveSecureModeKey() throws -> SymmetricKey?
+
+    // MARK: - Bug 171
+
+    /// Today's derivation of `key`, ECDH against the generator G (`bugs.md` Bug 171).
+    /// `createHybridLocalEncryptionKey`, `deriveShardCustodyKey`, `deriveRestoreVaultKey` and
+    /// `deriveVaultKey(context:)` are this method under their own names, and compute exactly what they did
+    /// before. Kept to open what the reseal has not moved yet and what a downgraded build writes.
+    func legacyKey(_ key: LegacyKey) throws -> SymmetricKey?
+
+    /// The Enclave-bound derivation of `key`: `HKDF(ECDH(enclave_priv, P) ‖ r_tier)`, so it needs the Enclave
+    /// key and the tier's Keychain secret. No production caller uses it yet.
+    ///
+    /// Reads the tier secret and never creates it: nil when it is missing, before the Enclave key is fetched.
+    /// Creating it is `createTierSecretIfAbsent(_:)`, called on purpose and not as a side effect of a read.
+    /// Throws when the secret or the Enclave key can't be read for a reason other than absence (a locked
+    /// device, a failed biometric context).
+    func enclaveBoundKey(_ key: EnclaveBoundKey) throws -> SymmetricKey?
+
+    /// Creates the tier's Keychain secret if the Keychain has none, and returns whether this call created it.
+    /// An `errSecDuplicateItem` (another process or an earlier launch got there first) re-reads the item
+    /// instead of replacing it.
+    ///
+    /// **Call it only while the tier has never been resealed, or on a fresh install.** Once data is sealed under
+    /// a key that includes the secret, a missing secret must mean nil and a loud failure, never a new secret:
+    /// a new one leaves every row sealed under the old one unreadable. Stage 2 wires the creation in, at the
+    /// launch bootstrap and before the pass.
+    @discardableResult
+    func createTierSecretIfAbsent(_ tier: TierSecret) throws -> Bool
 }
 
 // MARK: - TestKeyManager
@@ -122,24 +186,36 @@ final class TestKeyManager: KeyManagerProtocol {
     private let identityPrivateKey: SecKey
     private let identityPublicKeyData: Data
 
+    // The four dedicated key pairs below are internal, not private, so a test can rebuild what the Enclave-bound
+    // mirror derives from the scalar, as `deriveCustodySEKey` is for the legacy migration tests.
+
     /// Separate key pair simulating the dedicated local DB SE key.
-    private let localDBPrivateKey: SecKey
+    let localDBPrivateKey: SecKey
     private let localDBPublicKeyData: Data
 
     /// Separate key pair simulating the dedicated vault SE key.
-    private let vaultPrivateKey: SecKey
+    let vaultPrivateKey: SecKey
     private let vaultPublicKeyData: Data
 
     /// Separate key pair simulating the dedicated shard custody SE key.
-    private let shardCustodyPrivateKey: SecKey
+    let shardCustodyPrivateKey: SecKey
     private let shardCustodyPublicKeyData: Data
 
     /// Separate key pair simulating the dedicated Secure Mode PIN SE key.
-    private let secureModePrivateKey: SecKey
+    let secureModePrivateKey: SecKey
     private let secureModePublicKeyData: Data
 
-    /// Simulates the random Keychain component for the local DB hybrid key (32 bytes).
-    private let randomComponent: Data
+    /// Simulates the Keychain tier secret `r_U` (32 bytes), the one item the legacy hybrid local DB key and every
+    /// device-unlock `enclaveBoundKey` mix in. nil = the item is missing. The legacy key creates it on a miss, as
+    /// production does; `enclaveBoundKey` does not.
+    var tierSecretU: Data?
+
+    /// Simulates the Keychain tier secret `r_B` (32 bytes) of the vault tier. nil = the item is missing.
+    var tierSecretB: Data?
+
+    /// Makes `enclaveBoundKey(_:)` return nil as production does when it can't read the tier secret, without
+    /// touching `tierSecretU` or `tierSecretB`: nothing is written, and the secrets are still there afterwards.
+    var simulatesTierSecretMissing = false
 
     /// Set to true to make deriveVaultKey(context:) throw — tests lock-on-failure behaviour.
     var simulateVaultKeyFailure = false
@@ -158,6 +234,20 @@ final class TestKeyManager: KeyManagerProtocol {
         0x8E, 0xE7, 0xEB, 0x4A, 0x7C, 0x0F, 0x9E, 0x16,
         0x2B, 0xCE, 0x33, 0x57, 0x6B, 0x31, 0x5E, 0xCE,
         0xCB, 0xB6, 0x40, 0x68, 0x37, 0xBF, 0x51, 0xF5
+    ])
+
+    /// The nothing-up-my-sleeve point P of the Enclave-bound derivations. Its own copy, as `fixedX963` is:
+    /// `Manager.Key().numsX963` would construct a real key manager. `NUMSPointTests` checks it against the seed.
+    let numsX963 = Data([
+        0x04,
+        0x91, 0x8E, 0x1D, 0x3B, 0xBC, 0x67, 0xC9, 0xDE,
+        0xBF, 0x17, 0x5B, 0x38, 0x4E, 0x8D, 0xEB, 0xE1,
+        0xB6, 0x19, 0x34, 0x83, 0x0F, 0xC7, 0x2E, 0x77,
+        0x8B, 0x17, 0xA8, 0xB8, 0x71, 0x69, 0x61, 0x86,
+        0x7B, 0x9E, 0x15, 0xCF, 0xD2, 0xF5, 0x0E, 0x04,
+        0x5A, 0xE4, 0x45, 0x0C, 0x9C, 0xD8, 0xC4, 0xAE,
+        0x93, 0xE1, 0x55, 0xAA, 0x5B, 0xEC, 0x75, 0x37,
+        0x2E, 0x88, 0x46, 0x25, 0x64, 0xA1, 0x3D, 0xE6
     ])
 
     init() {
@@ -198,10 +288,9 @@ final class TestKeyManager: KeyManagerProtocol {
         self.secureModePrivateKey    = secureModePriv
         self.secureModePublicKeyData = SecKeyCopyExternalRepresentation(secureModePub, nil)! as Data
 
-        // Random component (simulates Keychain-stored random bytes)
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
-        self.randomComponent = Data(bytes)
+        // Tier secrets (simulate Keychain-stored random bytes)
+        self.tierSecretU = Self.randomSecret()
+        self.tierSecretB = Self.randomSecret()
     }
 
     func retrieveIdentity() throws -> Data { self.identityPublicKeyData }
@@ -229,25 +318,122 @@ final class TestKeyManager: KeyManagerProtocol {
     /// on a host that has one.
     var simulatesLocalKeyUnavailable = false
 
-    /// v2 — hybrid PQ-reinforced local key.
+    /// v2 — hybrid PQ-reinforced local key. The legacy form, `legacyKey(.localDB)`.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
-        if self.simulatesLocalKeyUnavailable { return nil }
-        guard
-            let seComponent = self.deriveRawECDH(
-                privateKey: self.localDBPrivateKey,
-                peerMaterial: self.fixedX963
+        try self.legacyKey(.localDB)
+    }
+
+    // MARK: - Legacy keys (TestKeyManager)
+
+    /// ECDH against G, as `Manager.Key.legacyKey(_:)`. The four protocol methods of the same names delegate here.
+    func legacyKey(_ key: LegacyKey) throws -> SymmetricKey? {
+        switch key {
+        case .localDB:
+            if self.simulatesLocalKeyUnavailable { return nil }
+            guard
+                let seComponent = self.deriveRawECDH(
+                    privateKey: self.localDBPrivateKey,
+                    peerMaterial: self.fixedX963
+                )
+            else { return nil }
+
+            // Created on a miss, as `retrieveOrCreateRandomComponent` does. `enclaveBoundKey` never does.
+            if self.tierSecretU == nil { self.tierSecretU = Self.randomSecret() }
+
+            var ikm = Data(seComponent)
+            ikm.append(self.tierSecretU!)
+
+            return HKDF<SHA256>.deriveKey(
+                inputKeyMaterial: SymmetricKey(data: ikm),
+                salt: self.localDBPublicKeyData,
+                info: SaltInfo.kLocalDBHybridKeyInfo,
+                outputByteCount: 32
             )
-        else { return nil }
 
-        var ikm = Data(seComponent)
-        ikm.append(self.randomComponent)
+        case .shardCustody:
+            return try self.deriveCustodySEKey(info: SaltInfo.kShardCustodyKeyInfo)
 
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm),
-            salt: self.localDBPublicKeyData,
-            info: SaltInfo.kLocalDBHybridKeyInfo,
-            outputByteCount: 32
-        )
+        case .restoreVault:
+            return try self.deriveCustodySEKey(info: SaltInfo.kRestoreVaultKeyInfo)
+
+        case .vault:
+            // The `context` is ignored in tests — no SE, no biometric evaluation.
+            // `simulateVaultKeyFailure = true` makes this throw to test lock-on-failure.
+            if self.simulateVaultKeyFailure { throw SimulatedFailure() }
+            self.vaultKeyDerivations += 1
+
+            guard let fixedPubKey = self.makePublicKey(from: self.fixedX963) else { return nil }
+
+            var err: Unmanaged<CFError>?
+            guard
+                let rawSecret = SecKeyCopyKeyExchangeResult(
+                    self.vaultPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                    [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                    &err
+                ) as? Data
+            else { return nil }
+
+            return HKDF<SHA256>.deriveKey(
+                inputKeyMaterial: SymmetricKey(data: rawSecret),
+                salt: self.vaultPublicKeyData,
+                info: SaltInfo.kVaultKeyInfo,
+                outputByteCount: 32
+            )
+        }
+    }
+
+    // MARK: - Enclave-bound keys (TestKeyManager)
+
+    /// ECDH against P, then HKDF over `t ‖ r` — the software mirror of `Manager.Key.enclaveBoundKey(_:)`.
+    /// nil when the tier secret is missing (`tierSecretU`/`tierSecretB` nil) or `simulatesTierSecretMissing`
+    /// is set, before anything else is derived. The vault and PIN switches apply as they do to the legacy keys.
+    func enclaveBoundKey(_ key: EnclaveBoundKey) throws -> SymmetricKey? {
+        if self.simulatesTierSecretMissing { return nil }
+
+        switch key {
+        case .localDB:
+            return self.enclaveBound(
+                privateKey: self.localDBPrivateKey, publicKeyData: self.localDBPublicKeyData,
+                secret: self.tierSecretU, info: SaltInfo.kLocalDBEnclaveBoundKeyInfo
+            )
+        case .shardCustody:
+            return self.enclaveBound(
+                privateKey: self.shardCustodyPrivateKey, publicKeyData: self.shardCustodyPublicKeyData,
+                secret: self.tierSecretU, info: SaltInfo.kShardCustodyEnclaveBoundKeyInfo
+            )
+        case .restoreVault:
+            return self.enclaveBound(
+                privateKey: self.shardCustodyPrivateKey, publicKeyData: self.shardCustodyPublicKeyData,
+                secret: self.tierSecretU, info: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo
+            )
+        case .secureModeWrap:
+            if self.simulatesSecureModeKeyUnavailable { return nil }
+            return self.enclaveBound(
+                privateKey: self.secureModePrivateKey, publicKeyData: self.secureModePublicKeyData,
+                secret: self.tierSecretU, info: SaltInfo.kSecureModeWrapKeyInfo
+            )
+        case .vault:
+            if self.simulateVaultKeyFailure { throw SimulatedFailure() }
+            self.vaultKeyDerivations += 1
+            return self.enclaveBound(
+                privateKey: self.vaultPrivateKey, publicKeyData: self.vaultPublicKeyData,
+                secret: self.tierSecretB, info: SaltInfo.kVaultEnclaveBoundKeyInfo
+            )
+        }
+    }
+
+    /// Creates the in-memory secret if there is none. Returns whether it did.
+    @discardableResult
+    func createTierSecretIfAbsent(_ tier: TierSecret) throws -> Bool {
+        switch tier {
+        case .deviceUnlock:
+            guard self.tierSecretU == nil else { return false }
+            self.tierSecretU = Self.randomSecret()
+        case .biometry:
+            guard self.tierSecretB == nil else { return false }
+            self.tierSecretB = Self.randomSecret()
+        }
+        return true
     }
 
     func createSharedSecret(using material: Data?) -> SymmetricKey? {
@@ -295,26 +481,7 @@ final class TestKeyManager: KeyManagerProtocol {
     /// The `context` parameter is ignored in tests — no SE, no biometric evaluation.
     /// `simulateVaultKeyFailure = true` makes this throw to test lock-on-failure.
     func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
-        if simulateVaultKeyFailure { throw SimulatedFailure() }
-        self.vaultKeyDerivations += 1
-
-        guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
-
-        var err: Unmanaged<CFError>?
-        guard
-            let rawSecret = SecKeyCopyKeyExchangeResult(
-                vaultPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
-                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
-                &err
-            ) as? Data
-        else { return nil }
-
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: rawSecret),
-            salt: vaultPublicKeyData,
-            info: SaltInfo.kVaultKeyInfo,
-            outputByteCount: 32
-        )
+        try self.legacyKey(.vault(context))
     }
 
     // MARK: - Shard custody (TestKeyManager)
@@ -323,14 +490,14 @@ final class TestKeyManager: KeyManagerProtocol {
     ///
     /// The context-free signature mirrors the real key (no biometric needed).
     func deriveShardCustodyKey() throws -> SymmetricKey? {
-        try self.deriveCustodySEKey(info: SaltInfo.kShardCustodyKeyInfo)
+        try self.legacyKey(.shardCustody)
     }
 
     /// ECDH(shardCustodyPrivateKey, G) → HKDF with restore-vault info.
     /// Mirrors Manager.Key.deriveRestoreVaultKey() — same SE key, distinct HKDF
     /// info, distinct symmetric key.
     func deriveRestoreVaultKey() throws -> SymmetricKey? {
-        try self.deriveCustodySEKey(info: SaltInfo.kRestoreVaultKeyInfo)
+        try self.legacyKey(.restoreVault)
     }
 
     func deriveSecureModeKey() throws -> SymmetricKey? {
@@ -430,6 +597,30 @@ final class TestKeyManager: KeyManagerProtocol {
             [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
             &err
         ) as? Data
+    }
+
+    /// `HKDF(ECDH(privateKey, P) ‖ secret, salt: the key's public point, info)`. nil without a secret.
+    private func enclaveBound(privateKey: SecKey, publicKeyData: Data, secret: Data?, info: Data) -> SymmetricKey? {
+        guard
+            let secret,
+            let exchange = self.deriveRawECDH(privateKey: privateKey, peerMaterial: self.numsX963)
+        else { return nil }
+
+        var ikm = exchange
+        ikm.append(secret)
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: publicKeyData,
+            info: info,
+            outputByteCount: 32
+        )
+    }
+
+    private static func randomSecret() -> Data {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
+        return Data(bytes)
     }
 
     private func deriveKey(privateKey: SecKey, ourPublicKeyData: Data, peerMaterial: Data, info: Data) -> SymmetricKey? {

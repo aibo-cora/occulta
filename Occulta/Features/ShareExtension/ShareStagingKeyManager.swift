@@ -51,6 +51,42 @@ final class ShareStagingKeyManager {
         0xCB, 0xB6, 0x40, 0x68, 0x37, 0xBF, 0x51, 0xF5
     ])
 
+    /// A nothing-up-my-sleeve P-256 point P, the peer of `deriveEnclaveBoundKey()`: nobody knows its discrete log,
+    /// so ECDH(privKey, P) is a secret only the Enclave holding the key can compute. ECDH(privKey, G) is the key's
+    /// public point, which is not (`bugs.md` Bug 171).
+    ///
+    /// Found by try-and-increment: x = SHA-256("Occulta-NUMS-P256-v1" ‖ be32(ctr)) for ctr = 0, 1, 2, …, taking the
+    /// first x for which 0x02 ‖ x decompresses to a point. That is ctr = 1. Its own copy of `Manager.Key.numsX963`,
+    /// as `generatorG` is of `fixedX963`: the extension links only this file. `NUMSPointTests` checks both against
+    /// the seed. Internal and not private so that test can read it.
+    static let numsX963 = Data([
+        0x04,
+        0x91, 0x8E, 0x1D, 0x3B, 0xBC, 0x67, 0xC9, 0xDE,
+        0xBF, 0x17, 0x5B, 0x38, 0x4E, 0x8D, 0xEB, 0xE1,
+        0xB6, 0x19, 0x34, 0x83, 0x0F, 0xC7, 0x2E, 0x77,
+        0x8B, 0x17, 0xA8, 0xB8, 0x71, 0x69, 0x61, 0x86,
+        0x7B, 0x9E, 0x15, 0xCF, 0xD2, 0xF5, 0x0E, 0x04,
+        0x5A, 0xE4, 0x45, 0x0C, 0x9C, 0xD8, 0xC4, 0xAE,
+        0x93, 0xE1, 0x55, 0xAA, 0x5B, 0xEC, 0x75, 0x37,
+        0x2E, 0x88, 0x46, 0x25, 0x64, 0xA1, 0x3D, 0xE6
+    ])
+
+    /// Domain separator of the Enclave-bound key: ECDH(privKey, P) ‖ r_S. Differs from `hkdfInfo`, which stays the
+    /// legacy derivation's, so the two keys are never equivalent.
+    private static let hkdfInfoEnclaveBound = "Occulta-v2-share-staging-2026".data(using: .utf8)!
+
+    /// Keychain account of `r_S`, the staging tier's secret: a 32-byte generic-password item in the shared access
+    /// group, `WhenUnlockedThisDeviceOnly`, read by the app and the extension alike.
+    static let defaultTierSecretAccount = "share.staging.random.key.occulta"
+
+    private let tierSecretAccount: String
+
+    /// - Parameter tierSecretAccount: The account of `r_S`. Only a test passes one, to use an item of its own and
+    ///   leave the canonical `r_S` alone.
+    init(tierSecretAccount: String = ShareStagingKeyManager.defaultTierSecretAccount) {
+        self.tierSecretAccount = tierSecretAccount
+    }
+
     // MARK: - SE Key Retrieval
 
     /// Retrieve the SE private key, creating it on first access.
@@ -119,11 +155,12 @@ final class ShareStagingKeyManager {
 
     // MARK: - SE Key Deletion
 
-    /// Delete the SE key. Erase All Data calls this after the staged files sealed under it.
+    /// Delete the SE key and the tier secret `r_S`. Erase All Data calls this after the staged files sealed under them.
     ///
     /// The key and its `kSecAttrCreationDate` record when the user first shared a file into
-    /// Occulta, so an erased install must not keep them. The next access creates a fresh key.
-    /// Matches the same item `retrievePrivateKey` finds. A missing key counts as deleted.
+    /// Occulta, so an erased install must not keep them, and neither may `r_S`, which is dated the same way.
+    /// The next access creates a fresh key. Matches the same items `retrievePrivateKey` and `tierSecret()` find.
+    /// A missing item counts as deleted.
     @discardableResult
     func deleteKey() -> Bool {
         let query: [String: Any] = [
@@ -135,12 +172,25 @@ final class ShareStagingKeyManager {
         ]
         let status = SecItemDelete(query as CFDictionary)
 
+        let keyDeleted = status == errSecSuccess || status == errSecItemNotFound
+
+        return self.deleteTierSecret() && keyDeleted
+    }
+
+    /// Delete `r_S` alone. A missing item counts as deleted.
+    @discardableResult
+    func deleteTierSecret() -> Bool {
+        let status = SecItemDelete(self.tierSecretQuery() as CFDictionary)
+
         return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // MARK: - Symmetric Key Derivation
 
     /// Derive the symmetric key for encrypting a share session's staged files and manifest.
+    ///
+    /// The legacy derivation (`bugs.md` Bug 171): ECDH against G is a function of the key's public point alone.
+    /// What `encrypt` and `decrypt` use until Stage 5 moves them to `deriveEnclaveBoundKey()`.
     ///
     /// Both the main app and the extension call this and get the same key because
     /// they share access to the same SE private key via the access group.
@@ -156,7 +206,7 @@ final class ShareStagingKeyManager {
     ///
     /// Salt is the public key (not XOR) — differs from Key+Manager's local DB pattern
     /// because this key has no peer; the public key alone provides per-key uniqueness.
-    func deriveSymmetricKey() throws -> SymmetricKey {
+    func deriveLegacySymmetricKey() throws -> SymmetricKey {
         let privateKey = try self.retrievePrivateKey()
 
         guard let fixedPubKey = Self.convertToSecKey(Self.generatorG) else {
@@ -185,12 +235,121 @@ final class ShareStagingKeyManager {
         )
     }
 
+    /// The Enclave-bound key: needs the Enclave key and the tier secret `r_S`, and the key's public point alone gives
+    /// neither. No caller uses it yet; Stage 5 moves `encrypt` to it.
+    ///
+    /// ```
+    /// t = ECDH(shareStagingSEKey, P)                32 bytes
+    /// HKDF<SHA256>(
+    ///   IKM:  t ‖ r_S                               64 bytes
+    ///   Salt: shareStagingSEKey public key x963     65 bytes, as the legacy derivation
+    ///   Info: "Occulta-v2-share-staging-2026"
+    /// ) → 32 bytes → SymmetricKey (AES-256)
+    /// ```
+    ///
+    /// Reads `r_S` first and never creates it: a missing secret throws `tierSecretMissing` before the Enclave key
+    /// is fetched, let alone created. Creating it is `createTierSecretIfAbsent()`.
+    func deriveEnclaveBoundKey() throws -> SymmetricKey {
+        guard let secret = try self.tierSecret() else { throw KeyError.tierSecretMissing }
+
+        let privateKey = try self.retrievePrivateKey()
+
+        return try Self.enclaveBoundKey(exchangingWith: privateKey, secret: secret)
+    }
+
+    /// The derivation itself, for any P-256 private key reference: the Enclave key in production, a software key
+    /// in a test that rebuilds it.
+    static func enclaveBoundKey(exchangingWith privateKey: SecKey, secret: Data) throws -> SymmetricKey {
+        guard let peer = Self.convertToSecKey(Self.numsX963) else { throw KeyError.ecdhFailed }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let exchange = SecKeyCopyKeyExchangeResult(
+                privateKey, .ecdhKeyExchangeCofactorX963SHA256, peer,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { throw KeyError.ecdhFailed }
+
+        guard
+            let pubKey = SecKeyCopyPublicKey(privateKey),
+            let pubData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data?
+        else { throw KeyError.publicKeyExportFailed }
+
+        var ikm = exchange
+        ikm.append(secret)
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: pubData,
+            info: Self.hkdfInfoEnclaveBound,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Tier secret r_S
+
+    private func tierSecretQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: self.tierSecretAccount,
+            kSecAttrAccessGroup as String: Self.accessGroup
+        ]
+    }
+
+    /// `r_S`, or nil when the Keychain has no item for it, or one that isn't 32 bytes. Reads only. Throws for any
+    /// other failure, such as a locked device: that is not a missing secret.
+    func tierSecret() throws -> Data? {
+        var query = self.tierSecretQuery()
+        query[kSecReturnData as String] = true
+        var item: CFTypeRef?
+
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data, data.count == 32 else { return nil }
+            return data
+        case errSecItemNotFound:
+            return nil
+        default:
+            throw KeyError.retrievalFailed
+        }
+    }
+
+    /// Creates `r_S` in the shared access group if there is none, and returns whether this call created it. Adds
+    /// first and reads on `errSecDuplicateItem`, so the app and the extension racing to create it end with one
+    /// secret. Never replaces an existing item.
+    ///
+    /// **Call it only while the tier has never been resealed, or on a fresh install**, with one exception the
+    /// plan allows: staging holds nothing for longer than an hour, so a lost `r_S` costs only the sessions
+    /// staged under it. Stage 5 decides who calls it.
+    @discardableResult
+    func createTierSecretIfAbsent() throws -> Bool {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw KeyError.creationFailed
+        }
+
+        var attributes = self.tierSecretQuery()
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        attributes[kSecValueData as String] = Data(bytes)
+
+        switch SecItemAdd(attributes as CFDictionary, nil) {
+        case errSecSuccess:
+            return true
+        case errSecDuplicateItem:
+            guard try self.tierSecret() != nil else { throw KeyError.retrievalFailed }
+            return false
+        default:
+            throw KeyError.creationFailed
+        }
+    }
+
     // MARK: - AES-GCM Encrypt / Decrypt
 
     /// AES-256-GCM encrypt. Random 96-bit nonce per call.
     /// Output format: nonce ∥ ciphertext ∥ tag (CryptoKit `.combined`).
     func encrypt(data: Data) throws -> Data {
-        let key = try self.deriveSymmetricKey()
+        let key = try self.deriveLegacySymmetricKey()
         let sealed = try AES.GCM.seal(data, using: key, nonce: AES.GCM.Nonce())
         guard let combined = sealed.combined else { throw KeyError.encryptionFailed }
         return combined
@@ -198,7 +357,7 @@ final class ShareStagingKeyManager {
 
     /// AES-256-GCM decrypt. Authenticates tag before returning plaintext.
     func decrypt(data: Data) throws -> Data {
-        let key = try self.deriveSymmetricKey()
+        let key = try self.deriveLegacySymmetricKey()
         let box = try AES.GCM.SealedBox(combined: data)
         return try AES.GCM.open(box, using: key)
     }
@@ -224,5 +383,7 @@ final class ShareStagingKeyManager {
         case ecdhFailed
         case publicKeyExportFailed
         case encryptionFailed
+        /// `deriveEnclaveBoundKey()` found no `r_S`.
+        case tierSecretMissing
     }
 }

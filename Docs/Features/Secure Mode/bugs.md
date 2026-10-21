@@ -13853,6 +13853,19 @@ xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
 
 ### Fix — open, needs a decision
 
+**Plan adopted 2026-10-21; Stage 1 built.** The fix is staged. Each stage lands with its tests green and changes behaviour only where it says so:
+- **0a:** whether an image alone yields Q. Done on the Simulator ("Where Q sits at rest" above); the device answer is open. **0b:** the vault's access control on a device with no real data. It waits for a phone to be named.
+- **1:** the derivations, the tier secrets, the reseal inventory and the schema guard, with no behaviour change. **Built.** `enclaveBoundKey(_:)` derives `HKDF(ECDH(enclave_priv, P) ‖ r_tier)`, with P a compiled-in nothing-up-my-sleeve point (counter 1 of a SHA-256 try-and-increment) and `r_tier` the access tier's Keychain secret. `legacyKey(_:)` is today's derivations, unchanged, and the existing protocol methods delegate to it. The tier secrets have explicit creators that no production code calls. `ShareStagingKeyManager` carries its own copy, `TestKeyManager` a software mirror, and `KeyReseal+Inventory.swift` the inventory with its schema guard. `EnclaveGeneratorECDHTests` is flipped (see "Guard"). Nothing in production calls the new derivations yet.
+- **1b:** the ML-KEM term on iOS 26+, for tiers U, B and share staging.
+- **2:** the reseal of tier U data (local DB, custody, restore) at launch, before `Manager.Security`.
+- **3:** the PIN verifiers, wrapped.
+- **4:** the vault tier, rewrapped at the first vault unlock.
+- **5:** share staging.
+- **6:** the upgrade pass when a classical device reaches iOS 26.
+- **7:** legacy cleanup, and the comments and documents that claim the opposite.
+
+**Decisions.** D1 is the user's, 2026-10-21: the tier Keychain secrets on every iOS version, plus an Enclave ML-KEM term on iOS 26+ for all three tiers, share staging included. Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer, stays open, needs a decision, until the device reaches 26 or the passphrase ships. D2 to D9 are recommended; open, needs a decision (`Docs/General/decisions.md`, "Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+").
+
 The fix is a derivation with a secret input that only the Enclave can supply, not a rewording of what the current one gives. Every option below changes every affected key, so each needs a one-way reseal of what's under it, with the migration plan and tests that stage requires. There is precedent: `kLocalDBHybridKeyInfo` keeps the old and new local DB keys from ever being equivalent. No option helps ciphertext already sealed under the old keys and copied: Q recomputes those.
 
 Options, 2026-10-21 (none built or tested):
@@ -13877,3 +13890,5 @@ Not changed in this pass: production code, including the comments that rely on t
 ### Guard
 
 `EnclaveGeneratorECDHTests` pins today's behaviour: it passes *because* of this bug. When a fix lands, the equality assertions must flip to inequality (the control test already shows the shape). The vault access-control case asserts that Q needs no evaluation and only runs on a device, so it is skipped on the Simulator and on any CI runner; a fix that makes Q irrelevant leaves it true and meaningless, and it should be removed with the equalities.
+
+**Stage 1, 2026-10-21: flipped.** The peer test asserts that the new peer is P and not G, and that G remains only as the legacy peer. The exchange with P is asserted not to be a function of Q. Every Enclave-bound site asserts `!=` against what a holder of Q can rebuild, with the tier secret and without it, for the share staging, vault, shard custody, restore vault, PIN wrap and local DB sites. The real `Manager.Key` and `ShareStagingKeyManager` keys are asserted too, all but the vault key, which a Simulator can't create. The equalities stay for the legacy derivations, relabelled legacy and migration-only: what is sealed under them is still open to a holder of Q until the reseal moves it. That includes the identity-derived v1 local DB key and the PIN inner verifier key, which Stage 3 wraps. The control and the layer-key corollary stay. `publicPointOfTheVaultACLKeyNeedsNoEvaluation` and its helpers are removed.

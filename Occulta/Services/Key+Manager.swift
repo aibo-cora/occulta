@@ -55,6 +55,24 @@ struct SaltInfo {
     /// `RecoveryBufferKeyTests.infoStringIsV1_10_3s`.
     static let kRestoreVaultKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
     nonisolated static let kFileKeyInfo           = "Occulta-v1-file-key-2025".data(using: .utf8)!
+
+    // MARK: Enclave-bound keys (Bug 171)
+    //
+    // The info strings of `enclaveBoundKey(_:)`: HKDF(ECDH(enclave_priv, P) ‖ r_tier). Each differs from the
+    // legacy string of the same key above, which stays as it is (`kRestoreVaultKeyInfo` is pinned by
+    // `RecoveryBufferKeyTests`), so the two forms of a key are never equivalent. Share staging's is
+    // `ShareStagingKeyManager`'s own, as the extension links only that file.
+
+    /// Local DB key: t_localDB ‖ r_U.
+    static let kLocalDBEnclaveBoundKeyInfo = "Occulta-v3-local-db-2026".data(using: .utf8)!
+    /// Vault key: t_vault ‖ r_B.
+    static let kVaultEnclaveBoundKeyInfo = "Occulta-v2-vault-2026".data(using: .utf8)!
+    /// Shard custody key: t_custody ‖ r_U.
+    static let kShardCustodyEnclaveBoundKeyInfo = "Occulta-v2-shard-custody-2026".data(using: .utf8)!
+    /// Restore buffer key: t_custody ‖ r_U. Same Enclave key as shard custody, as before.
+    static let kRestoreVaultEnclaveBoundKeyInfo = "Occulta-v2-restore-buffer-2026".data(using: .utf8)!
+    /// Wrap around the PIN verifiers: t_pin ‖ r_U. `kSecureModeKeyInfo` stays the inner verifier key's.
+    static let kSecureModeWrapKeyInfo = "Occulta-v2-secure-mode-pin-wrap-2026".data(using: .utf8)!
 }
 
 // MARK: - SE Key Inventory
@@ -143,6 +161,29 @@ extension Manager {
             0x8E, 0xE7, 0xEB, 0x4A, 0x7C, 0x0F, 0x9E, 0x16,
             0x2B, 0xCE, 0x33, 0x57, 0x6B, 0x31, 0x5E, 0xCE,
             0xCB, 0xB6, 0x40, 0x68, 0x37, 0xBF, 0x51, 0xF5
+        ])
+
+        /// A nothing-up-my-sleeve P-256 point P — the peer of `enclaveBoundKey(_:)`. Nobody knows its discrete
+        /// log, so ECDH(d, P) is a secret only the Enclave holding d can compute. ECDH(d, G) = Q is not (`bugs.md`
+        /// Bug 171).
+        ///
+        /// Found by try-and-increment: x = SHA-256("Occulta-NUMS-P256-v1" ‖ be32(ctr)) for ctr = 0, 1, 2, …, taking
+        /// the first x for which 0x02 ‖ x decompresses to a point (`P256.KeyAgreement.PublicKey(compressedRepresentation:)`).
+        /// That is ctr = 1, x = 918e1d3b…696186. Pinned here as uncompressed X9.63; `NUMSPointTests` recomputes it.
+        ///
+        /// Compiled in: there is no stored point to swap and no scalar anywhere. `ShareStagingKeyManager` and
+        /// `TestKeyManager` each carry their own copy, for the reason each carries its own G, and the same test
+        /// checks all three.
+        let numsX963: Data = Data([
+            0x04,
+            0x91, 0x8E, 0x1D, 0x3B, 0xBC, 0x67, 0xC9, 0xDE,
+            0xBF, 0x17, 0x5B, 0x38, 0x4E, 0x8D, 0xEB, 0xE1,
+            0xB6, 0x19, 0x34, 0x83, 0x0F, 0xC7, 0x2E, 0x77,
+            0x8B, 0x17, 0xA8, 0xB8, 0x71, 0x69, 0x61, 0x86,
+            0x7B, 0x9E, 0x15, 0xCF, 0xD2, 0xF5, 0x0E, 0x04,
+            0x5A, 0xE4, 0x45, 0x0C, 0x9C, 0xD8, 0xC4, 0xAE,
+            0x93, 0xE1, 0x55, 0xAA, 0x5B, 0xEC, 0x75, 0x37,
+            0x2E, 0x88, 0x46, 0x25, 0x64, 0xA1, 0x3D, 0xE6
         ])
 
         // MARK: - Local DB encryption key (kLocalDBKeyInfo)
@@ -399,7 +440,13 @@ extension Manager.Key {
 }
 
 extension Manager.Key {
-    enum Errors: Error { case noIdentityAvailable }
+    enum Errors: Error {
+        case noIdentityAvailable
+        /// A tier secret couldn't be generated: no entropy.
+        case entropyUnavailable
+        /// `createTierSecretIfAbsent` found the item already there, but it won't read as a 32-byte secret.
+        case tierSecretUnreadable
+    }
 }
 
 //  Phase 1: Hybrid PQ-reinforced local database encryption key.
@@ -422,9 +469,32 @@ extension Manager.Key: KeyManagerProtocol {
     /// Keychain account identifier for the random symmetric component.
     private static let localDBRandomKeychainAccount = "local.db.random.key.occulta"
 
+    /// Keychain account of `r_B`, the vault tier's secret (`TierSecret.biometry`). Created with the vault's access
+    /// control, so it opens only through the vault's evaluated `LAContext`.
+    private static let vaultRandomKeychainAccount = "vault.random.key.occulta"
+
+    // MARK: - Legacy entry points
+
+    /// Today's derivations, ECDH against the generator G (`bugs.md` Bug 171). The four protocol methods of the
+    /// same names below delegate here, so every existing caller computes exactly what it did before. The
+    /// bodies are the `deriveLegacy…` functions further down, unchanged.
+    func legacyKey(_ key: LegacyKey) throws -> SymmetricKey? {
+        switch key {
+        case .localDB:            return try self.deriveLegacyLocalDBKey()
+        case .shardCustody:       return try self.deriveLegacyShardCustodyKey()
+        case .restoreVault:       return try self.deriveLegacyRestoreVaultKey()
+        case .vault(let context): return try self.deriveLegacyVaultKey(context: context)
+        }
+    }
+
+    func createHybridLocalEncryptionKey() throws -> SymmetricKey? { try self.legacyKey(.localDB) }
+    func deriveVaultKey(context: LAContext) throws -> SymmetricKey? { try self.legacyKey(.vault(context)) }
+    func deriveShardCustodyKey() throws -> SymmetricKey? { try self.legacyKey(.shardCustody) }
+    func deriveRestoreVaultKey() throws -> SymmetricKey? { try self.legacyKey(.restoreVault) }
+
     // MARK: - Hybrid key derivation
 
-    /// Derive the hybrid local DB encryption key.
+    /// Derive the hybrid local DB encryption key. The body of `legacyKey(.localDB)`.
     ///
     /// **SE operations performed:**
     /// 1. Retrieve (or create) the local DB SE private key by tag.
@@ -435,7 +505,7 @@ extension Manager.Key: KeyManagerProtocol {
     /// 1. Retrieve (or generate and store) the 256-bit random component.
     ///
     /// - Returns: 256-bit `SymmetricKey`, or `nil` if SE or Keychain is unavailable.
-    func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
+    private func deriveLegacyLocalDBKey() throws -> SymmetricKey? {
         // Step 1: SE-derived component — ECDH(localDB_SE_privkey, G)
         guard let seComponent = try self.deriveLocalDBSEComponent() else { return nil }
 
@@ -716,7 +786,7 @@ extension Manager.Key: KeyManagerProtocol {
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
-    func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
+    private func deriveLegacyVaultKey(context: LAContext) throws -> SymmetricKey? {
         guard let vaultPriv   = try self.retrieveVaultPrivateKey(context: context) else { return nil }
         guard let fixedPubKey = self.convert(material: fixedX963)                  else { return nil }
 
@@ -816,7 +886,7 @@ extension Manager.Key: KeyManagerProtocol {
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
-    func deriveShardCustodyKey() throws -> SymmetricKey? {
+    private func deriveLegacyShardCustodyKey() throws -> SymmetricKey? {
         guard let custodyPriv  = try self.retrieveShardCustodyPrivateKey() else { return nil }
         guard let fixedPubKey  = self.convert(material: fixedX963)         else { return nil }
 
@@ -855,7 +925,7 @@ extension Manager.Key: KeyManagerProtocol {
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
-    func deriveRestoreVaultKey() throws -> SymmetricKey? {
+    private func deriveLegacyRestoreVaultKey() throws -> SymmetricKey? {
         guard let custodyPriv  = try self.retrieveShardCustodyPrivateKey() else { return nil }
         guard let fixedPubKey  = self.convert(material: fixedX963)         else { return nil }
 
@@ -964,7 +1034,8 @@ extension Manager.Key: KeyManagerProtocol {
 
     // MARK: - Cleanup
 
-    /// Deletes all SE keys enumerated in Tags and the local DB random Keychain component.
+    /// Deletes all SE keys enumerated in Tags, the local DB random Keychain component (`r_U`) and the
+    /// vault tier's secret (`r_B`). A missing item counts as deleted.
     /// Adding a new case to Tags automatically includes it here — no manual update needed.
     /// After this call every encrypted blob in Occulta is permanently unreadable.
     @discardableResult
@@ -976,7 +1047,24 @@ extension Manager.Key: KeyManagerProtocol {
             kSecAttrAccount as String: Self.localDBRandomKeychainAccount
         ]
         let keychainStatus = SecItemDelete(keychainQuery as CFDictionary)
-        return seDeleted && legacyDeleted && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
+        // Every deletion runs whatever an earlier one returned: a failure must not leave `r_B` behind.
+        let vaultSecretDeleted = self.deleteTierSecret(account: Self.vaultRandomKeychainAccount)
+        return seDeleted && legacyDeleted
+            && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
+            && vaultSecretDeleted
+    }
+
+    /// Deletes the generic-password item `account`, `r_B` for `deleteAllKeys()`. A missing item counts as deleted.
+    /// Apart from `deleteAllKeys()` so a test can run it on an item of its own: calling `deleteAllKeys()` itself
+    /// would delete the canonical keys other tests are using.
+    func deleteTierSecret(account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrAccount as String: account
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     /// The names v1.10.3's local-DB key rotation used for its transient keys (`bugs.md` Bug 139).
@@ -998,6 +1086,193 @@ extension Manager.Key: KeyManagerProtocol {
         ]
         let status = SecItemDelete(query as CFDictionary)
         return seDeleted && (status == errSecSuccess || status == errSecItemNotFound)
+    }
+}
+
+// MARK: - Enclave-bound keys and tier secrets (Bug 171)
+//
+//  Every key in the `KeyManagerProtocol` extension above is HKDF(ECDH(enclave_priv, G) …). ECDH against G is
+//  d·G = Q, so each is a function of the key's public point, and the Enclave and the biometric gate never
+//  see it (`bugs.md` Bug 171). These are the replacements:
+//
+//      t = ECDH(enclave_priv, P)         P: a point whose discrete log nobody knows (`numsX963`)
+//      r = the tier's Keychain secret    r_U (device unlock, app) or r_B (biometry or passcode)
+//      key = HKDF(ikm: t ‖ r, salt: the Enclave key's public point, info: the key's `-2026` string)
+//
+//  Same Enclave keys as the legacy derivations, so none is added or replaced; only the peer, the IKM and
+//  the info string change. Nothing in production calls `enclaveBoundKey(_:)` yet.
+extension Manager.Key {
+
+    // MARK: - Derivation
+
+    func enclaveBoundKey(_ key: EnclaveBoundKey) throws -> SymmetricKey? {
+        switch key {
+        case .localDB:
+            return try self.deriveEnclaveBound(
+                secret:     { try self.tierSecret(.deviceUnlock) },
+                privateKey: { try self.retrieveLocalDBPrivateKey() },
+                info:       SaltInfo.kLocalDBEnclaveBoundKeyInfo
+            )
+        case .shardCustody:
+            return try self.deriveEnclaveBound(
+                secret:     { try self.tierSecret(.deviceUnlock) },
+                privateKey: { try self.retrieveShardCustodyPrivateKey() },
+                info:       SaltInfo.kShardCustodyEnclaveBoundKeyInfo
+            )
+        case .restoreVault:
+            return try self.deriveEnclaveBound(
+                secret:     { try self.tierSecret(.deviceUnlock) },
+                privateKey: { try self.retrieveShardCustodyPrivateKey() },
+                info:       SaltInfo.kRestoreVaultEnclaveBoundKeyInfo
+            )
+        case .secureModeWrap:
+            return try self.deriveEnclaveBound(
+                secret:     { try self.tierSecret(.deviceUnlock) },
+                privateKey: { try self.retrieveSecureModePINPrivateKey() },
+                info:       SaltInfo.kSecureModeWrapKeyInfo
+            )
+        case .vault(let context):
+            return try self.deriveEnclaveBound(
+                secret:     { try self.tierSecret(.biometry(context)) },
+                privateKey: { try self.retrieveVaultPrivateKey(context: context) },
+                info:       SaltInfo.kVaultEnclaveBoundKeyInfo
+            )
+        }
+    }
+
+    /// Reads the secret first and stops there when it is missing: the Enclave key is neither fetched nor
+    /// created, so a missing secret writes nothing anywhere.
+    ///
+    /// Internal, with the secret and the key as closures, so a test can prove exactly that.
+    func deriveEnclaveBound(
+        secret: () throws -> Data?,
+        privateKey: () throws -> SecKey?,
+        info: Data
+    ) throws -> SymmetricKey? {
+        guard let tierSecret = try secret() else { return nil }
+        guard let enclaveKey = try privateKey() else { return nil }
+
+        return self.deriveEnclaveBound(exchangingWith: enclaveKey, secret: tierSecret, info: info)
+    }
+
+    /// The derivation itself, for any P-256 private key reference — an Enclave key in production, a software key
+    /// in a test that rebuilds it. `privateKey` is the only input that has to stay in the Enclave.
+    func deriveEnclaveBound(exchangingWith privateKey: SecKey, secret: Data, info: Data) -> SymmetricKey? {
+        guard let peer = self.convert(material: self.numsX963) else { return nil }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let exchange = SecKeyCopyKeyExchangeResult(
+                privateKey, .ecdhKeyExchangeCofactorX963SHA256, peer,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+
+        // Salt = the key's public point, as every legacy derivation but the identity-derived one.
+        guard let publicKey = self.convert(key: self.retrivePublicKey(using: privateKey)) else { return nil }
+
+        var ikm = exchange
+        ikm.append(secret)
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: publicKey,
+            info: info,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Tier secrets
+
+    private static func account(for tier: TierSecret) -> String {
+        switch tier {
+        case .deviceUnlock: return Self.localDBRandomKeychainAccount
+        case .biometry:     return Self.vaultRandomKeychainAccount
+        }
+    }
+
+    /// The tier's secret, or nil when the Keychain has no item for it, or one that isn't 32 bytes. Reads only; a
+    /// missing secret is never created here, because a new one would leave everything sealed under the old one
+    /// unreadable. Throws for any other failure, such as a locked device: that is not a missing secret.
+    func tierSecret(_ tier: TierSecret) throws -> Data? {
+        try self.readTierSecret(tier, account: Self.account(for: tier))
+    }
+
+    /// `tierSecret(_:)` for a named account, so a test can use an item of its own.
+    func readTierSecret(_ tier: TierSecret, account: String) throws -> Data? {
+        var query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String:  true
+        ]
+        switch tier {
+        case .deviceUnlock:
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        case .biometry(let context):
+            query[kSecUseAuthenticationContext as String] = context
+        }
+
+        var item: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data, data.count == 32 else { return nil }
+            return data
+        case errSecItemNotFound:
+            return nil
+        case let status:
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
+
+    @discardableResult
+    func createTierSecretIfAbsent(_ tier: TierSecret) throws -> Bool {
+        try self.createTierSecretIfAbsent(tier, account: Self.account(for: tier))
+    }
+
+    /// `createTierSecretIfAbsent(_:)` for a named account, so a test can use an item of its own.
+    ///
+    /// Adds first and reads on `errSecDuplicateItem`, so two processes racing to create it end with one secret and
+    /// both read it. Never replaces an existing item. `r_B` is created with the vault's access control
+    /// (`[.biometryCurrentSet, .or, .devicePasscode]`, `WhenUnlockedThisDeviceOnly`); adding needs no
+    /// authentication, reading it does.
+    ///
+    /// See `KeyManagerProtocol.createTierSecretIfAbsent` for when it may be called.
+    @discardableResult
+    func createTierSecretIfAbsent(_ tier: TierSecret, account: String) throws -> Bool {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw Errors.entropyUnavailable
+        }
+
+        var attributes: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecValueData as String:   Data(bytes)
+        ]
+        switch tier {
+        case .deviceUnlock:
+            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        case .biometry:
+            var error: Unmanaged<CFError>?
+            guard let access = SecAccessControlCreateWithFlags(
+                kCFAllocatorDefault,
+                kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                [.biometryCurrentSet, .or, .devicePasscode],
+                &error
+            ) else { throw error!.takeRetainedValue() as Error }
+            attributes[kSecAttrAccessControl as String] = access
+        }
+
+        switch SecItemAdd(attributes as CFDictionary, nil) {
+        case errSecSuccess:
+            return true
+        case errSecDuplicateItem:
+            guard try self.readTierSecret(tier, account: account) != nil else { throw Errors.tierSecretUnreadable }
+            return false
+        case let status:
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
     }
 }
 
