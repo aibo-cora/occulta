@@ -13,7 +13,10 @@
 //  existing Enclave key, and renaming the label would change the derived key.
 //
 //  This is the ONLY crypto code the extension links. It never touches the identity key,
-//  the local DB key, prekeys, or ML-KEM material.
+//  the local DB key or prekeys. Its one ML-KEM key is its own: the staging tier's, the third term of the
+//  Enclave-bound key on iOS 26+ (`bugs.md` Bug 171). It is made and used here and nowhere else, through CryptoKit
+//  directly, because the extension doesn't link `OccultaCore`; `StagingPostQuantum` below mirrors the persistent-key
+//  methods of `PostQuantumProvider` for that reason.
 //
 
 import Foundation
@@ -75,16 +78,36 @@ final class ShareStagingKeyManager {
     /// legacy derivation's, so the two keys are never equivalent.
     private static let hkdfInfoEnclaveBound = "Occulta-v2-share-staging-2026".data(using: .utf8)!
 
+    /// The same key when the staging tier's PQ record is hybrid (iOS 26+): ECDH(privKey, P) ‖ ss ‖ r_S, with this
+    /// string followed by SHA-256(c) as the info.
+    private static let hkdfInfoEnclaveBoundPQ = "Occulta-v2-share-staging-pq-2026".data(using: .utf8)!
+
     /// Keychain account of `r_S`, the staging tier's secret: a 32-byte generic-password item in the shared access
     /// group, `WhenUnlockedThisDeviceOnly`, read by the app and the extension alike.
     static let defaultTierSecretAccount = "share.staging.random.key.occulta"
 
-    private let tierSecretAccount: String
+    /// Keychain account of the staging tier's PQ record: one generic-password item in the shared access group,
+    /// `WhenUnlockedThisDeviceOnly`, read by the app and the extension alike.
+    static let defaultTierPQRecordAccount = "share.staging.pq.key.occulta"
 
-    /// - Parameter tierSecretAccount: The account of `r_S`. Only a test passes one, to use an item of its own and
-    ///   leave the canonical `r_S` alone.
-    init(tierSecretAccount: String = ShareStagingKeyManager.defaultTierSecretAccount) {
-        self.tierSecretAccount = tierSecretAccount
+    private let tierSecretAccount: String
+    private let tierPQRecordAccount: String
+    private let postQuantum: () -> (any StagingPostQuantum)?
+
+    /// - Parameters:
+    ///   - tierSecretAccount: The account of `r_S`. Only a test passes one, to use an item of its own and leave
+    ///     the canonical `r_S` alone.
+    ///   - tierPQRecordAccount: The account of the PQ record, likewise.
+    ///   - postQuantum: The ML-KEM provider, asked for each time it is needed. The default is the Secure Enclave's
+    ///     on iOS 26+ and nil below. A test passes an in-memory one, or `{ nil }` for a device below 26.
+    init(
+        tierSecretAccount: String = ShareStagingKeyManager.defaultTierSecretAccount,
+        tierPQRecordAccount: String = ShareStagingKeyManager.defaultTierPQRecordAccount,
+        postQuantum: @escaping () -> (any StagingPostQuantum)? = ShareStagingKeyManager.platformPostQuantum
+    ) {
+        self.tierSecretAccount   = tierSecretAccount
+        self.tierPQRecordAccount = tierPQRecordAccount
+        self.postQuantum         = postQuantum
     }
 
     // MARK: - SE Key Retrieval
@@ -155,11 +178,13 @@ final class ShareStagingKeyManager {
 
     // MARK: - SE Key Deletion
 
-    /// Delete the SE key and the tier secret `r_S`. Erase All Data calls this after the staged files sealed under them.
+    /// Delete the SE key, the tier secret `r_S` and the PQ record. Erase All Data calls this after the staged files
+    /// sealed under them.
     ///
     /// The key and its `kSecAttrCreationDate` record when the user first shared a file into
-    /// Occulta, so an erased install must not keep them, and neither may `r_S`, which is dated the same way.
-    /// The next access creates a fresh key. Matches the same items `retrievePrivateKey` and `tierSecret()` find.
+    /// Occulta, so an erased install must not keep them, and neither may `r_S` or the PQ record, which are dated the
+    /// same way.
+    /// The next access creates a fresh key. Matches the same items `retrievePrivateKey`, `tierSecret()` and `tierPQRecord()` find.
     /// A missing item counts as deleted.
     @discardableResult
     func deleteKey() -> Bool {
@@ -174,7 +199,11 @@ final class ShareStagingKeyManager {
 
         let keyDeleted = status == errSecSuccess || status == errSecItemNotFound
 
-        return self.deleteTierSecret() && keyDeleted
+        // Every deletion runs whatever an earlier one returned.
+        let secretDeleted = self.deleteTierSecret()
+        let recordDeleted = self.deleteTierPQRecord()
+
+        return keyDeleted && secretDeleted && recordDeleted
     }
 
     /// Delete `r_S` alone. A missing item counts as deleted.
@@ -235,31 +264,53 @@ final class ShareStagingKeyManager {
         )
     }
 
-    /// The Enclave-bound key: needs the Enclave key and the tier secret `r_S`, and the key's public point alone gives
-    /// neither. No caller uses it yet; Stage 5 moves `encrypt` to it.
+    /// The Enclave-bound key: needs the Enclave key, the tier secret `r_S` and, on iOS 26+, the Enclave's ML-KEM
+    /// secret, and the key's public point alone gives none of them. No caller uses it yet; Stage 5 moves `encrypt`
+    /// to it.
     ///
     /// ```
     /// t = ECDH(shareStagingSEKey, P)                32 bytes
     /// HKDF<SHA256>(
-    ///   IKM:  t ‖ r_S                               64 bytes
+    ///   IKM:  t ‖ r_S                               64 bytes, classical record
+    ///         t ‖ ss ‖ r_S                          96 bytes, hybrid record (ss = decapsulate(c, blob))
     ///   Salt: shareStagingSEKey public key x963     65 bytes, as the legacy derivation
-    ///   Info: "Occulta-v2-share-staging-2026"
+    ///   Info: "Occulta-v2-share-staging-2026"       classical
+    ///         "Occulta-v2-share-staging-pq-2026" ‖ SHA-256(c)   hybrid
     /// ) → 32 bytes → SymmetricKey (AES-256)
     /// ```
     ///
-    /// Reads `r_S` first and never creates it: a missing secret throws `tierSecretMissing` before the Enclave key
-    /// is fetched, let alone created. Creating it is `createTierSecretIfAbsent()`.
+    /// Reads `r_S` and the PQ record first and never creates either: a missing one throws before any Enclave key is
+    /// fetched, let alone created. A hybrid record whose blob won't decapsulate throws `postQuantumFailed`, and so
+    /// does one on a device with no ML-KEM; it is never read as classical.
     func deriveEnclaveBoundKey() throws -> SymmetricKey {
         guard let secret = try self.tierSecret() else { throw KeyError.tierSecretMissing }
+        guard let record = try self.tierPQRecord() else { throw KeyError.tierPQRecordMissing }
+
+        var hybridInput: (secret: Data, ciphertext: Data)?
+
+        if record.mode == .hybrid {
+            guard let provider = self.postQuantum() else { throw KeyError.postQuantumFailed }
+            guard
+                let shared = provider.decapsulate(ciphertext: record.ciphertext, keyBlob: record.keyBlob),
+                shared.count == 32
+            else { throw KeyError.postQuantumFailed }
+
+            hybridInput = (shared, record.ciphertext)
+        }
 
         let privateKey = try self.retrievePrivateKey()
 
-        return try Self.enclaveBoundKey(exchangingWith: privateKey, secret: secret)
+        return try Self.enclaveBoundKey(exchangingWith: privateKey, secret: secret, postQuantum: hybridInput)
     }
 
     /// The derivation itself, for any P-256 private key reference: the Enclave key in production, a software key
-    /// in a test that rebuilds it.
-    static func enclaveBoundKey(exchangingWith privateKey: SecKey, secret: Data) throws -> SymmetricKey {
+    /// in a test that rebuilds it. `postQuantum` is the hybrid form's ML-KEM shared secret and the ciphertext it came
+    /// from; nil derives the classical form.
+    static func enclaveBoundKey(
+        exchangingWith privateKey: SecKey,
+        secret: Data,
+        postQuantum: (secret: Data, ciphertext: Data)? = nil
+    ) throws -> SymmetricKey {
         guard let peer = Self.convertToSecKey(Self.numsX963) else { throw KeyError.ecdhFailed }
 
         var error: Unmanaged<CFError>?
@@ -276,13 +327,20 @@ final class ShareStagingKeyManager {
             let pubData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data?
         else { throw KeyError.publicKeyExportFailed }
 
-        var ikm = exchange
+        var ikm  = exchange
+        var info = Self.hkdfInfoEnclaveBound
+
+        if let postQuantum {
+            ikm.append(postQuantum.secret)
+            info = Self.hkdfInfoEnclaveBoundPQ
+            info.append(Data(SHA256.hash(data: postQuantum.ciphertext)))
+        }
         ikm.append(secret)
 
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: ikm),
             salt: pubData,
-            info: Self.hkdfInfoEnclaveBound,
+            info: info,
             outputByteCount: 32
         )
     }
@@ -344,6 +402,92 @@ final class ShareStagingKeyManager {
         }
     }
 
+    // MARK: - Tier PQ record
+
+    private func tierPQRecordQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: self.tierPQRecordAccount,
+            kSecAttrAccessGroup as String: Self.accessGroup
+        ]
+    }
+
+    /// The staging tier's PQ record, or nil when the Keychain has no item for it. Reads only. Throws for anything
+    /// else: a locked device, and an item that isn't a record (one that won't read is not a missing one).
+    func tierPQRecord() throws -> PQRecord? {
+        var query = self.tierPQRecordQuery()
+        query[kSecReturnData as String] = true
+        var item: CFTypeRef?
+
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data, let record = PQRecord(decoding: data) else {
+                throw KeyError.tierPQRecordUnreadable
+            }
+            return record
+        case errSecItemNotFound:
+            return nil
+        default:
+            throw KeyError.retrievalFailed
+        }
+    }
+
+    /// Creates the PQ record in the shared access group if there is none, and returns whether this call created it.
+    /// Reads first, so an existing record costs no Enclave key; adds, and on `errSecDuplicateItem` reads what the
+    /// other process added instead of replacing it, so the app and the extension racing end with one record.
+    ///
+    /// With an ML-KEM provider (iOS 26+) the record holds a real Enclave key and a ciphertext to it; without one it
+    /// holds mode = classical and filler of the same size. A provider that can't make the key, or whose blob won't
+    /// fit, throws and stores nothing: a classical record in its place would lower a device that could be hybrid.
+    ///
+    /// Unlike the U and B records, this one may be created if absent at any time, not only before a reseal: staging
+    /// holds nothing for longer than an hour (`ShareSession.staleAfter`), so a record lost and recreated costs only
+    /// the sessions staged under the old one, which can be shared again. Stage 5 decides who calls it.
+    @discardableResult
+    func createTierPQRecordIfAbsent() throws -> Bool {
+        if try self.tierPQRecord() != nil { return false }
+
+        let record: PQRecord
+        if let provider = self.postQuantum() {
+            guard
+                let pair         = provider.generatePersistentKeyPair(),
+                let encapsulated = provider.encapsulate(peerPublicKeyData: pair.publicKeyData),
+                let hybrid       = PQRecord.hybrid(keyBlob: pair.keyBlob, ciphertext: encapsulated.ciphertext)
+            else { throw KeyError.postQuantumUnavailable }
+            record = hybrid
+        } else {
+            record = .classical
+        }
+
+        return try self.addTierPQRecord(record)
+    }
+
+    /// Adds `record`, or on `errSecDuplicateItem` leaves what is there and reads it. Returns whether this call added it.
+    @discardableResult
+    func addTierPQRecord(_ record: PQRecord) throws -> Bool {
+        var attributes = self.tierPQRecordQuery()
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        attributes[kSecValueData as String] = try record.encoded()
+
+        switch SecItemAdd(attributes as CFDictionary, nil) {
+        case errSecSuccess:
+            return true
+        case errSecDuplicateItem:
+            guard try self.tierPQRecord() != nil else { throw KeyError.tierPQRecordUnreadable }
+            return false
+        default:
+            throw KeyError.creationFailed
+        }
+    }
+
+    /// Delete the PQ record alone. A missing item counts as deleted.
+    @discardableResult
+    func deleteTierPQRecord() -> Bool {
+        let status = SecItemDelete(self.tierPQRecordQuery() as CFDictionary)
+
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
     // MARK: - AES-GCM Encrypt / Decrypt
 
     /// AES-256-GCM encrypt. Random 96-bit nonce per call.
@@ -385,5 +529,166 @@ final class ShareStagingKeyManager {
         case encryptionFailed
         /// `deriveEnclaveBoundKey()` found no `r_S`.
         case tierSecretMissing
+        /// `deriveEnclaveBoundKey()` found no PQ record.
+        case tierPQRecordMissing
+        /// The PQ record's item isn't a `PQRecord`: wrong size, an unknown mode, or an impossible blob length.
+        case tierPQRecordUnreadable
+        /// An ML-KEM provider exists but couldn't make the key, encapsulate to it, or fit its blob. Nothing was stored.
+        case postQuantumUnavailable
+        /// A hybrid record that can't be decapsulated: a corrupt blob or ciphertext, or no ML-KEM on this device.
+        case postQuantumFailed
+    }
+}
+
+// MARK: - Tier PQ record
+
+extension ShareStagingKeyManager {
+
+    /// The staging tier's PQ record: its own copy of `TierPQRecord`'s codec, byte for byte, because the extension
+    /// links only this file. See `TierPQRecord.swift` for the layout and the sizes; `TierPQRecordTests` checks the
+    /// two copies encode the same size and decode each other's records.
+    nonisolated struct PQRecord: Equatable {
+
+        enum Mode: UInt8 {
+            case classical = 0
+            case hybrid    = 1
+        }
+
+        /// Room for the Enclave key's `dataRepresentation`: 4,788 bytes measured on the Simulator, 8,192 reserved.
+        static let blobCapacity = 8192
+        static let ciphertextSize = 1568
+        static let size = 1 + 2 + Self.blobCapacity + Self.ciphertextSize
+
+        let mode: Mode
+        let keyBlob: Data
+        let ciphertext: Data
+
+        static let classical = PQRecord(mode: .classical, keyBlob: Data(), ciphertext: Data())
+
+        private init(mode: Mode, keyBlob: Data, ciphertext: Data) {
+            self.mode       = mode
+            self.keyBlob    = keyBlob
+            self.ciphertext = ciphertext
+        }
+
+        /// nil if the blob is empty or doesn't fit, or the ciphertext isn't an ML-KEM-1024 one.
+        static func hybrid(keyBlob: Data, ciphertext: Data) -> PQRecord? {
+            guard !keyBlob.isEmpty, keyBlob.count <= Self.blobCapacity, ciphertext.count == Self.ciphertextSize else { return nil }
+
+            return PQRecord(mode: .hybrid, keyBlob: keyBlob, ciphertext: ciphertext)
+        }
+
+        func encoded() throws -> Data {
+            var out = Data(capacity: Self.size)
+            out.append(self.mode.rawValue)
+
+            switch self.mode {
+            case .classical:
+                out.append(try Self.randomBytes(Self.size - 1))
+            case .hybrid:
+                var length = UInt16(self.keyBlob.count).bigEndian
+                withUnsafeBytes(of: &length) { out.append(contentsOf: $0) }
+                out.append(self.keyBlob)
+                out.append(try Self.randomBytes(Self.blobCapacity - self.keyBlob.count))
+                out.append(self.ciphertext)
+            }
+
+            return out
+        }
+
+        init?(decoding data: Data) {
+            guard data.count == Self.size, let first = data.first, let mode = Mode(rawValue: first) else { return nil }
+
+            switch mode {
+            case .classical:
+                self.init(mode: .classical, keyBlob: Data(), ciphertext: Data())
+            case .hybrid:
+                let bytes  = [UInt8](data)
+                let length = Int(bytes[1]) << 8 | Int(bytes[2])
+                guard length > 0, length <= Self.blobCapacity else { return nil }
+
+                self.init(
+                    mode:       .hybrid,
+                    keyBlob:    Data(bytes[3..<(3 + length)]),
+                    ciphertext: Data(bytes[(Self.size - Self.ciphertextSize)...])
+                )
+            }
+        }
+
+        private static func randomBytes(_ count: Int) throws -> Data {
+            var bytes = [UInt8](repeating: 0, count: count)
+            guard SecRandomCopyBytes(kSecRandomDefault, count, &bytes) == errSecSuccess else {
+                throw KeyError.creationFailed
+            }
+            return Data(bytes)
+        }
+    }
+}
+
+// MARK: - ML-KEM for the staging tier
+
+/// The ML-KEM-1024 operations the staging tier's record needs: `PostQuantumProvider`'s persistent-key methods, restated
+/// here because the extension doesn't link `OccultaCore`. The Secure Enclave one is `platformPostQuantum`; a test
+/// passes an in-memory one.
+nonisolated protocol StagingPostQuantum {
+
+    /// A key pair whose private key can be stored as bytes and used later, in another process lifetime. The blob is
+    /// the Enclave key's `dataRepresentation`, usable only by this device's Enclave.
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)?
+
+    /// Encapsulates to `peerPublicKeyData`. No Enclave involved.
+    func encapsulate(peerPublicKeyData: Data) -> (sharedSecret: Data, ciphertext: Data)?
+
+    /// The 32-byte shared secret, or nil if the blob or ciphertext is invalid.
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data?
+}
+
+extension ShareStagingKeyManager {
+
+    /// The Secure Enclave's ML-KEM on iOS 26+, nil below.
+    nonisolated static func platformPostQuantum() -> (any StagingPostQuantum)? {
+        if #available(iOS 26, *) {
+            return SecureEnclaveStagingPostQuantum()
+        }
+        return nil
+    }
+}
+
+/// `SecureEnclave.MLKEM1024`, as `PostQuantumProvider` uses it for a key that outlives the call: `.privateKeyUsage`,
+/// `WhenUnlockedThisDeviceOnly`, held only as its `dataRepresentation`.
+@available(iOS 26, *)
+private nonisolated final class SecureEnclaveStagingPostQuantum: StagingPostQuantum {
+
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)? {
+        var error: Unmanaged<CFError>?
+        guard
+            let accessControl = SecAccessControlCreateWithFlags(
+                kCFAllocatorDefault,
+                kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                .privateKeyUsage,
+                &error
+            ),
+            let privateKey = try? SecureEnclave.MLKEM1024.PrivateKey(accessControl: accessControl)
+        else { return nil }
+
+        return (privateKey.publicKey.rawRepresentation, privateKey.dataRepresentation)
+    }
+
+    func encapsulate(peerPublicKeyData: Data) -> (sharedSecret: Data, ciphertext: Data)? {
+        guard
+            let peerPublicKey = try? MLKEM1024.PublicKey(rawRepresentation: peerPublicKeyData),
+            let result = try? peerPublicKey.encapsulate()
+        else { return nil }
+
+        return (result.sharedSecret.withUnsafeBytes { Data($0) }, result.encapsulated)
+    }
+
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data? {
+        guard
+            let privateKey = try? SecureEnclave.MLKEM1024.PrivateKey(dataRepresentation: keyBlob),
+            let sharedSecret = try? privateKey.decapsulate(ciphertext)
+        else { return nil }
+
+        return sharedSecret.withUnsafeBytes { Data($0) }
     }
 }

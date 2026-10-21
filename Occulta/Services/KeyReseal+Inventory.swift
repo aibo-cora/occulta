@@ -20,8 +20,8 @@
 //    - treatment: what the reseal does with it (`Treatment`).
 //
 //  Places checked that hold nothing sealed under these keys: `UserDefaults` and `@AppStorage` (plain settings;
-//  the one flag the vault kept there is deleted at unlock), the keychain (the tier secrets and Enclave keys are
-//  inputs to the keys, not data sealed under them), `InteropVectors.json` (wire bundles only), and the
+//  the one flag the vault kept there is deleted at unlock), the keychain (the tier secrets, the tier PQ records and
+//  Enclave keys are inputs to the keys, not data sealed under them), `InteropVectors.json` (wire bundles only), and the
 //  Enclave-key blobs kept inside `Profile.prekeyRecordEncrypted` and `Profile.introductionCardEncrypted`, which
 //  those two fields cover.
 //

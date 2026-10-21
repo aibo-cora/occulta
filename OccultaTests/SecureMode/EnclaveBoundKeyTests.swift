@@ -49,12 +49,12 @@ enum NUMSPoint {
     }
 }
 
-private func bytes(_ key: SymmetricKey) -> Data {
+func keyBytes(_ key: SymmetricKey) -> Data {
     key.withUnsafeBytes { Data($0) }
 }
 
 /// A software P-256 private key with a known scalar, standing in for an Enclave key.
-private func softwareKey(scalar: Data) throws -> SecKey {
+func softwareP256Key(scalar: Data) throws -> SecKey {
     let key = try P256.KeyAgreement.PrivateKey(rawRepresentation: scalar)
     let attributes: [String: Any] = [
         kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
@@ -66,7 +66,7 @@ private func softwareKey(scalar: Data) throws -> SecKey {
 }
 
 /// The 32-byte scalar of a software `SecKey` (its X9.63 form is `04 ‖ x ‖ y ‖ d`).
-private func scalar(of key: SecKey) throws -> Data {
+func scalarOf(_ key: SecKey) throws -> Data {
     let external = try #require(SecKeyCopyExternalRepresentation(key, nil) as Data?)
     #expect(external.count == 97)
     return external.suffix(32)
@@ -74,20 +74,20 @@ private func scalar(of key: SecKey) throws -> Data {
 
 /// The Enclave-bound derivation rebuilt with CryptoKit alone: ECDH against the recomputed P, then the X9.63 KDF
 /// that `.ecdhKeyExchangeCofactorX963SHA256` applies, then HKDF over `t ‖ r`, salted with the key's public point.
-private func rebuild(scalar: Data, secret: Data, info: Data) throws -> Data {
+func rebuildEnclaveBound(scalar: Data, secret: Data, info: Data) throws -> Data {
     let key    = try P256.KeyAgreement.PrivateKey(rawRepresentation: scalar)
     let peer   = try P256.KeyAgreement.PublicKey(x963Representation: NUMSPoint.recompute().x963)
     let shared = try key.sharedSecretFromKeyAgreement(with: peer)
-    let t      = bytes(shared.x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32))
+    let t      = keyBytes(shared.x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32))
 
-    return bytes(HKDF<SHA256>.deriveKey(
+    return keyBytes(HKDF<SHA256>.deriveKey(
         inputKeyMaterial: SymmetricKey(data: t + secret),
         salt: key.publicKey.x963Representation, info: info, outputByteCount: 32
     ))
 }
 
 /// The legacy derivation rebuilt the same way, against the generator G: `HKDF(ECDH(d, G) [‖ r], salt: Q, info)`.
-private func rebuildLegacy(scalar: Data, secret: Data?, info: Data) throws -> Data {
+func rebuildLegacy(scalar: Data, secret: Data?, info: Data) throws -> Data {
     let key    = try P256.KeyAgreement.PrivateKey(rawRepresentation: scalar)
     let g      = try P256.KeyAgreement.PublicKey(x963Representation: Data([
         0x04,
@@ -97,21 +97,21 @@ private func rebuildLegacy(scalar: Data, secret: Data?, info: Data) throws -> Da
         0x2B, 0xCE, 0x33, 0x57, 0x6B, 0x31, 0x5E, 0xCE, 0xCB, 0xB6, 0x40, 0x68, 0x37, 0xBF, 0x51, 0xF5
     ]))
     let shared = try key.sharedSecretFromKeyAgreement(with: g)
-    let t      = bytes(shared.x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32))
+    let t      = keyBytes(shared.x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32))
 
-    return bytes(HKDF<SHA256>.deriveKey(
+    return keyBytes(HKDF<SHA256>.deriveKey(
         inputKeyMaterial: SymmetricKey(data: t + (secret ?? Data())),
         salt: key.publicKey.x963Representation, info: info, outputByteCount: 32
     ))
 }
 
 /// Known-answer inputs: the scalar d = 01 02 … 20 and the tier secret r = A0 A1 … BF.
-private let katScalar = Data((1...32).map { UInt8($0) })
-private let katSecret = Data((0..<32).map { UInt8(0xA0 + $0) })
+let katScalar = Data((1...32).map { UInt8($0) })
+let katSecret = Data((0..<32).map { UInt8(0xA0 + $0) })
 
 /// `HKDF(ECDH(d, P) ‖ r, salt: Q, info)` for the known-answer inputs, computed once by an independent script and
 /// pinned, so a change to the IKM order, the salt or a string breaks a test and not only the rebuild.
-private let katVectors: [(name: String, info: Data, expected: String)] = [
+let katVectors: [(name: String, info: Data, expected: String)] = [
     ("local DB",        SaltInfo.kLocalDBEnclaveBoundKeyInfo,     "51361a983803120e2de098615cad795d595181f6127157fb9736a8dbdd6f1ad3"),
     ("vault",           SaltInfo.kVaultEnclaveBoundKeyInfo,       "7210725865426cc69d53ef45427f1d0303621ecaa252a6d5a98448ae2614d130"),
     ("shard custody",   SaltInfo.kShardCustodyEnclaveBoundKeyInfo, "82261ae2be0a7b356d93eda5ddf2b038013ae607a6f44820c7da8fad67f3133d"),
@@ -119,17 +119,18 @@ private let katVectors: [(name: String, info: Data, expected: String)] = [
     ("PIN wrap",        SaltInfo.kSecureModeWrapKeyInfo,          "03efab1157ba595f3ccd3d54cc2248d1c21caadfd56137d53e41fa3124aa9bdb")
 ]
 
-private let katStaging = (
+let katStaging = (
     info: Data("Occulta-v2-share-staging-2026".utf8),
     expected: "7980df5a8b47bd8a8cde9c1467f5ac00412367fb069bd591131e1f094ea2894f"
 )
 
-private func hex(_ string: String) -> Data {
+func dataFromHex(_ string: String) -> Data {
+    let digits = string.filter { $0.isHexDigit }
     var data = Data()
-    var index = string.startIndex
-    while index < string.endIndex {
-        let next = string.index(index, offsetBy: 2)
-        data.append(UInt8(string[index..<next], radix: 16)!)
+    var index = digits.startIndex
+    while index < digits.endIndex {
+        let next = digits.index(index, offsetBy: 2)
+        data.append(UInt8(digits[index..<next], radix: 16)!)
         index = next
     }
     return data
@@ -189,33 +190,33 @@ struct EnclaveBoundDerivationTests {
           arguments: katVectors.map { $0.name })
     func knownAnswer(name: String) throws {
         let vector = try #require(katVectors.first { $0.name == name })
-        let key    = try softwareKey(scalar: katScalar)
+        let key    = try softwareP256Key(scalar: katScalar)
 
         let derived = try #require(Manager.Key().deriveEnclaveBound(exchangingWith: key, secret: katSecret, info: vector.info))
 
-        #expect(bytes(derived) == hex(vector.expected))
-        #expect(bytes(derived) == (try rebuild(scalar: katScalar, secret: katSecret, info: vector.info)))
+        #expect(keyBytes(derived) == dataFromHex(vector.expected))
+        #expect(keyBytes(derived) == (try rebuildEnclaveBound(scalar: katScalar, secret: katSecret, info: vector.info)))
     }
 
     @Test("The share staging key equals its pinned known answer and its CryptoKit rebuild")
     func stagingKnownAnswer() throws {
-        let key = try softwareKey(scalar: katScalar)
+        let key = try softwareP256Key(scalar: katScalar)
 
         let derived = try ShareStagingKeyManager.enclaveBoundKey(exchangingWith: key, secret: katSecret)
 
-        #expect(bytes(derived) == hex(katStaging.expected))
-        #expect(bytes(derived) == (try rebuild(scalar: katScalar, secret: katSecret, info: katStaging.info)))
+        #expect(keyBytes(derived) == dataFromHex(katStaging.expected))
+        #expect(keyBytes(derived) == (try rebuildEnclaveBound(scalar: katScalar, secret: katSecret, info: katStaging.info)))
     }
 
     @Test("Keys with the same Enclave key and secret differ by their info string alone, and none is a legacy key")
     func domainSeparation() throws {
-        let key = try softwareKey(scalar: katScalar)
+        let key = try softwareP256Key(scalar: katScalar)
         let manager = Manager.Key()
 
         var outputs = try katVectors.map { vector in
-            bytes(try #require(manager.deriveEnclaveBound(exchangingWith: key, secret: katSecret, info: vector.info)))
+            keyBytes(try #require(manager.deriveEnclaveBound(exchangingWith: key, secret: katSecret, info: vector.info)))
         }
-        outputs.append(bytes(try ShareStagingKeyManager.enclaveBoundKey(exchangingWith: key, secret: katSecret)))
+        outputs.append(keyBytes(try ShareStagingKeyManager.enclaveBoundKey(exchangingWith: key, secret: katSecret)))
         #expect(Set(outputs).count == outputs.count)
 
         // The legacy forms of the same inputs: ECDH against G, no tier secret mixed in.
@@ -229,17 +230,17 @@ struct EnclaveBoundDerivationTests {
     func dependsOnEveryInput() throws {
         let manager = Manager.Key()
         let info    = SaltInfo.kLocalDBEnclaveBoundKeyInfo
-        let key     = try softwareKey(scalar: katScalar)
-        let base    = bytes(try #require(manager.deriveEnclaveBound(exchangingWith: key, secret: katSecret, info: info)))
+        let key     = try softwareP256Key(scalar: katScalar)
+        let base    = keyBytes(try #require(manager.deriveEnclaveBound(exchangingWith: key, secret: katSecret, info: info)))
 
         var otherSecret = katSecret
         otherSecret[0] ^= 0x01
-        #expect(bytes(try #require(manager.deriveEnclaveBound(exchangingWith: key, secret: otherSecret, info: info))) != base)
+        #expect(keyBytes(try #require(manager.deriveEnclaveBound(exchangingWith: key, secret: otherSecret, info: info))) != base)
 
         var otherScalar = katScalar
         otherScalar[31] ^= 0x01
-        let otherKey = try softwareKey(scalar: otherScalar)
-        #expect(bytes(try #require(manager.deriveEnclaveBound(exchangingWith: otherKey, secret: katSecret, info: info))) != base)
+        let otherKey = try softwareP256Key(scalar: otherScalar)
+        #expect(keyBytes(try #require(manager.deriveEnclaveBound(exchangingWith: otherKey, secret: katSecret, info: info))) != base)
 
         // The same inputs with G as the peer give the legacy exchange, a different key.
         #expect(base != (try rebuildLegacy(scalar: katScalar, secret: katSecret, info: info)))
@@ -249,14 +250,20 @@ struct EnclaveBoundDerivationTests {
     func missingSecretStopsBeforeTheEnclaveKey() throws {
         var fetched = false
 
+        var recordRead = false
+
         let derived = try Manager.Key().deriveEnclaveBound(
-            secret:     { nil },
-            privateKey: { fetched = true; return nil },
-            info:       SaltInfo.kLocalDBEnclaveBoundKeyInfo
+            secret:        { nil },
+            record:        { recordRead = true; return .classical },
+            provider:      nil,
+            privateKey:    { fetched = true; return nil },
+            classicalInfo: SaltInfo.kLocalDBEnclaveBoundKeyInfo,
+            hybridInfo:    SaltInfo.kLocalDBEnclaveBoundPQKeyInfo
         )
 
         #expect(derived == nil)
         #expect(!fetched)
+        #expect(!recordRead, "the secret is read first")
     }
 
     @Test("A secret that can't be read throws, and is not taken for a missing one")
@@ -266,9 +273,12 @@ struct EnclaveBoundDerivationTests {
 
         #expect(throws: Unreadable.self) {
             try Manager.Key().deriveEnclaveBound(
-                secret:     { throw Unreadable() },
-                privateKey: { fetched = true; return nil },
-                info:       SaltInfo.kLocalDBEnclaveBoundKeyInfo
+                secret:        { throw Unreadable() },
+                record:        { .classical },
+                provider:      nil,
+                privateKey:    { fetched = true; return nil },
+                classicalInfo: SaltInfo.kLocalDBEnclaveBoundKeyInfo,
+                hybridInfo:    SaltInfo.kLocalDBEnclaveBoundPQKeyInfo
             )
         }
         #expect(!fetched)
@@ -277,9 +287,12 @@ struct EnclaveBoundDerivationTests {
     @Test("A secret with no Enclave key gives nil")
     func missingEnclaveKeyGivesNil() throws {
         let derived = try Manager.Key().deriveEnclaveBound(
-            secret:     { katSecret },
-            privateKey: { nil },
-            info:       SaltInfo.kLocalDBEnclaveBoundKeyInfo
+            secret:        { katSecret },
+            record:        { .classical },
+            provider:      nil,
+            privateKey:    { nil },
+            classicalInfo: SaltInfo.kLocalDBEnclaveBoundKeyInfo,
+            hybridInfo:    SaltInfo.kLocalDBEnclaveBoundPQKeyInfo
         )
 
         #expect(derived == nil)
@@ -318,29 +331,31 @@ struct TestKeyManagerEnclaveBoundTests {
         ]
     }
 
-    @Test("Every mirrored key equals the CryptoKit rebuild from its scalar and its tier secret")
+    @Test("Every mirrored classical key equals the CryptoKit rebuild from its scalar and its tier secret")
     func equalsTheRebuild() throws {
         let manager = TestKeyManager()
+        manager.tierPQRecordU = .classical
+        manager.tierPQRecordB = .classical
 
         for entry in self.cases(manager) {
             let secret  = try #require(entry.vault ? manager.tierSecretB : manager.tierSecretU)
             let derived = try #require(try manager.enclaveBoundKey(entry.key), "\(entry.name)")
 
-            #expect(bytes(derived) == (try rebuild(scalar: try scalar(of: entry.enclaveKey), secret: secret, info: entry.info)), "\(entry.name)")
+            #expect(keyBytes(derived) == (try rebuildEnclaveBound(scalar: try scalarOf(entry.enclaveKey), secret: secret, info: entry.info)), "\(entry.name)")
         }
     }
 
     @Test("Tiers don't reach each other: r_U moves the four device-unlock keys only, r_B the vault key only")
     func tierSeparation() throws {
         let manager = TestKeyManager()
-        let before  = try self.cases(manager).map { bytes(try #require(try manager.enclaveBoundKey($0.key))) }
+        let before  = try self.cases(manager).map { keyBytes(try #require(try manager.enclaveBoundKey($0.key))) }
 
         manager.tierSecretU = Data(repeating: 0x11, count: 32)
-        let afterU = try self.cases(manager).map { bytes(try #require(try manager.enclaveBoundKey($0.key))) }
+        let afterU = try self.cases(manager).map { keyBytes(try #require(try manager.enclaveBoundKey($0.key))) }
         #expect(zip(before, afterU).map { $0 != $1 } == [true, true, true, true, false])
 
         manager.tierSecretB = Data(repeating: 0x22, count: 32)
-        let afterB = try self.cases(manager).map { bytes(try #require(try manager.enclaveBoundKey($0.key))) }
+        let afterB = try self.cases(manager).map { keyBytes(try #require(try manager.enclaveBoundKey($0.key))) }
         #expect(zip(afterU, afterB).map { $0 != $1 } == [false, false, false, false, true])
     }
 
@@ -432,10 +447,10 @@ struct TestKeyManagerEnclaveBoundTests {
         let restore = try #require(try manager.legacyKey(.restoreVault))
         let vault   = try #require(try manager.legacyKey(.vault(context)))
 
-        #expect(bytes(local)   == (try rebuildLegacy(scalar: try scalar(of: manager.localDBPrivateKey), secret: secretU, info: SaltInfo.kLocalDBHybridKeyInfo)))
-        #expect(bytes(custody) == (try rebuildLegacy(scalar: try scalar(of: manager.shardCustodyPrivateKey), secret: nil, info: SaltInfo.kShardCustodyKeyInfo)))
-        #expect(bytes(restore) == (try rebuildLegacy(scalar: try scalar(of: manager.shardCustodyPrivateKey), secret: nil, info: SaltInfo.kRestoreVaultKeyInfo)))
-        #expect(bytes(vault)   == (try rebuildLegacy(scalar: try scalar(of: manager.vaultPrivateKey), secret: nil, info: SaltInfo.kVaultKeyInfo)))
+        #expect(keyBytes(local)   == (try rebuildLegacy(scalar: try scalarOf(manager.localDBPrivateKey), secret: secretU, info: SaltInfo.kLocalDBHybridKeyInfo)))
+        #expect(keyBytes(custody) == (try rebuildLegacy(scalar: try scalarOf(manager.shardCustodyPrivateKey), secret: nil, info: SaltInfo.kShardCustodyKeyInfo)))
+        #expect(keyBytes(restore) == (try rebuildLegacy(scalar: try scalarOf(manager.shardCustodyPrivateKey), secret: nil, info: SaltInfo.kRestoreVaultKeyInfo)))
+        #expect(keyBytes(vault)   == (try rebuildLegacy(scalar: try scalarOf(manager.vaultPrivateKey), secret: nil, info: SaltInfo.kVaultKeyInfo)))
     }
 
     @Test("Each Enclave-bound key differs from the legacy key of the same Enclave key")

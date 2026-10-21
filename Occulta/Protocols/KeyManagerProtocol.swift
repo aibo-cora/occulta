@@ -7,6 +7,7 @@
 import Foundation
 import CryptoKit
 import LocalAuthentication
+import OccultaCore
 
 // MARK: - Bug 171 key forms
 
@@ -25,6 +26,9 @@ enum LegacyKey {
 /// A key as `KeyManagerProtocol.enclaveBoundKey(_:)` derives it: `HKDF(t ‖ r)` with `t = ECDH(enclave_priv, P)`,
 /// P a nothing-up-my-sleeve point whose discrete log nobody knows, and `r` the Keychain secret of the key's
 /// access tier (`TierSecret`). It needs the Enclave key and the secret, and Q alone gives neither.
+///
+/// On a tier whose `TierPQRecord` is hybrid (iOS 26+) the Enclave's ML-KEM secret `ss` goes in too:
+/// `HKDF(t ‖ ss ‖ r)`, with its own info strings.
 enum EnclaveBoundKey {
     case localDB
     case shardCustody
@@ -33,6 +37,15 @@ enum EnclaveBoundKey {
     case secureModeWrap
     /// Needs the vault's pre-evaluated `LAContext`, for the Enclave key and for the secret `r_B`.
     case vault(LAContext)
+}
+
+/// The access tier of a `TierPQRecord`. The record is a plain Keychain item, read without the vault's
+/// `LAContext`: its blob opens nothing without this device's Enclave.
+enum PostQuantumTier {
+    /// Tier U, the local DB, shard custody, restore and PIN wrap keys.
+    case deviceUnlock
+    /// Tier B, the vault key.
+    case vault
 }
 
 /// A 32-byte secret held in the Keychain for one access tier, the second input of `EnclaveBoundKey`.
@@ -164,6 +177,17 @@ protocol KeyManagerProtocol {
     /// launch bootstrap and before the pass.
     @discardableResult
     func createTierSecretIfAbsent(_ tier: TierSecret) throws -> Bool
+
+    /// Creates the tier's `TierPQRecord` if the Keychain has none, and returns whether this call created it.
+    /// With an ML-KEM provider (iOS 26+) the record holds a real Enclave key and a ciphertext to it; without one it
+    /// holds mode = classical and filler of the same size. A provider that exists but can't make the key throws:
+    /// a transient failure must not leave a classical record on a device that could have had a hybrid one.
+    ///
+    /// The same rule as `createTierSecretIfAbsent(_:)`: **only while the tier has never been resealed, or on a
+    /// fresh install.** A record recreated afterwards would be a new key, and everything sealed under the old one
+    /// would be unreadable. Stage 2 wires the creation in, next to the tier secret's.
+    @discardableResult
+    func createTierPQRecordIfAbsent(_ tier: PostQuantumTier) throws -> Bool
 }
 
 // MARK: - TestKeyManager
@@ -216,6 +240,20 @@ final class TestKeyManager: KeyManagerProtocol {
     /// Makes `enclaveBoundKey(_:)` return nil as production does when it can't read the tier secret, without
     /// touching `tierSecretU` or `tierSecretB`: nothing is written, and the secrets are still there afterwards.
     var simulatesTierSecretMissing = false
+
+    /// Simulates the tier PQ record of tier U (`TierPQRecord`). nil = the item is missing. `init` makes it as
+    /// production would on this OS: hybrid with an in-memory ML-KEM key on iOS 26+, classical below.
+    var tierPQRecordU: TierPQRecord?
+
+    /// Simulates the tier PQ record of tier B (the vault). nil = the item is missing.
+    var tierPQRecordB: TierPQRecord?
+
+    /// Simulates a device below iOS 26: no ML-KEM provider, so a created record is classical, and a hybrid record
+    /// can't be decapsulated (`enclaveBoundKey` gives nil for it, never a classical key).
+    var simulatesNoPostQuantum = false
+
+    /// The in-memory ML-KEM provider; nil below iOS 26.
+    private let postQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.createForTesting()
 
     /// Set to true to make deriveVaultKey(context:) throw — tests lock-on-failure behaviour.
     var simulateVaultKeyFailure = false
@@ -291,6 +329,10 @@ final class TestKeyManager: KeyManagerProtocol {
         // Tier secrets (simulate Keychain-stored random bytes)
         self.tierSecretU = Self.randomSecret()
         self.tierSecretB = Self.randomSecret()
+
+        // Tier PQ records (simulate the Keychain items)
+        self.tierPQRecordU = self.makeTierPQRecord()
+        self.tierPQRecordB = self.makeTierPQRecord()
     }
 
     func retrieveIdentity() throws -> Data { self.identityPublicKeyData }
@@ -384,9 +426,11 @@ final class TestKeyManager: KeyManagerProtocol {
 
     // MARK: - Enclave-bound keys (TestKeyManager)
 
-    /// ECDH against P, then HKDF over `t ‖ r` — the software mirror of `Manager.Key.enclaveBoundKey(_:)`.
-    /// nil when the tier secret is missing (`tierSecretU`/`tierSecretB` nil) or `simulatesTierSecretMissing`
-    /// is set, before anything else is derived. The vault and PIN switches apply as they do to the legacy keys.
+    /// ECDH against P, then HKDF over `t ‖ r` (classical record) or `t ‖ ss ‖ r` (hybrid record) — the software
+    /// mirror of `Manager.Key.enclaveBoundKey(_:)`.
+    /// nil when the tier secret or the tier PQ record is missing (nil) or `simulatesTierSecretMissing` is set,
+    /// before anything else is derived, and nil for a hybrid record that won't decapsulate: never a classical key
+    /// in its place. The vault and PIN switches apply as they do to the legacy keys.
     func enclaveBoundKey(_ key: EnclaveBoundKey) throws -> SymmetricKey? {
         if self.simulatesTierSecretMissing { return nil }
 
@@ -394,30 +438,35 @@ final class TestKeyManager: KeyManagerProtocol {
         case .localDB:
             return self.enclaveBound(
                 privateKey: self.localDBPrivateKey, publicKeyData: self.localDBPublicKeyData,
-                secret: self.tierSecretU, info: SaltInfo.kLocalDBEnclaveBoundKeyInfo
+                secret: self.tierSecretU, record: self.tierPQRecordU,
+                classicalInfo: SaltInfo.kLocalDBEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kLocalDBEnclaveBoundPQKeyInfo
             )
         case .shardCustody:
             return self.enclaveBound(
                 privateKey: self.shardCustodyPrivateKey, publicKeyData: self.shardCustodyPublicKeyData,
-                secret: self.tierSecretU, info: SaltInfo.kShardCustodyEnclaveBoundKeyInfo
+                secret: self.tierSecretU, record: self.tierPQRecordU,
+                classicalInfo: SaltInfo.kShardCustodyEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kShardCustodyEnclaveBoundPQKeyInfo
             )
         case .restoreVault:
             return self.enclaveBound(
                 privateKey: self.shardCustodyPrivateKey, publicKeyData: self.shardCustodyPublicKeyData,
-                secret: self.tierSecretU, info: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo
+                secret: self.tierSecretU, record: self.tierPQRecordU,
+                classicalInfo: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kRestoreVaultEnclaveBoundPQKeyInfo
             )
         case .secureModeWrap:
             if self.simulatesSecureModeKeyUnavailable { return nil }
             return self.enclaveBound(
                 privateKey: self.secureModePrivateKey, publicKeyData: self.secureModePublicKeyData,
-                secret: self.tierSecretU, info: SaltInfo.kSecureModeWrapKeyInfo
+                secret: self.tierSecretU, record: self.tierPQRecordU,
+                classicalInfo: SaltInfo.kSecureModeWrapKeyInfo, hybridInfo: SaltInfo.kSecureModeWrapPQKeyInfo
             )
         case .vault:
             if self.simulateVaultKeyFailure { throw SimulatedFailure() }
             self.vaultKeyDerivations += 1
             return self.enclaveBound(
                 privateKey: self.vaultPrivateKey, publicKeyData: self.vaultPublicKeyData,
-                secret: self.tierSecretB, info: SaltInfo.kVaultEnclaveBoundKeyInfo
+                secret: self.tierSecretB, record: self.tierPQRecordB,
+                classicalInfo: SaltInfo.kVaultEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kVaultEnclaveBoundPQKeyInfo
             )
         }
     }
@@ -432,6 +481,24 @@ final class TestKeyManager: KeyManagerProtocol {
         case .biometry:
             guard self.tierSecretB == nil else { return false }
             self.tierSecretB = Self.randomSecret()
+        }
+        return true
+    }
+
+    /// Creates the in-memory record if there is none: hybrid with an in-memory ML-KEM key, or classical when
+    /// `simulatesNoPostQuantum` is set or the OS has no ML-KEM. Throws, creating nothing, if a provider exists and
+    /// can't make the key. Returns whether it created one.
+    @discardableResult
+    func createTierPQRecordIfAbsent(_ tier: PostQuantumTier) throws -> Bool {
+        switch tier {
+        case .deviceUnlock:
+            guard self.tierPQRecordU == nil else { return false }
+            guard let record = self.makeTierPQRecord() else { throw SimulatedFailure() }
+            self.tierPQRecordU = record
+        case .vault:
+            guard self.tierPQRecordB == nil else { return false }
+            guard let record = self.makeTierPQRecord() else { throw SimulatedFailure() }
+            self.tierPQRecordB = record
         }
         return true
     }
@@ -599,14 +666,53 @@ final class TestKeyManager: KeyManagerProtocol {
         ) as? Data
     }
 
-    /// `HKDF(ECDH(privateKey, P) ‖ secret, salt: the key's public point, info)`. nil without a secret.
-    private func enclaveBound(privateKey: SecKey, publicKeyData: Data, secret: Data?, info: Data) -> SymmetricKey? {
+    /// The provider while the simulated OS has ML-KEM: nil below iOS 26 or with `simulatesNoPostQuantum`.
+    private var activePostQuantum: (any PostQuantumProvider)? {
+        self.simulatesNoPostQuantum ? nil : self.postQuantum
+    }
+
+    /// The record a device would create now: hybrid with a fresh in-memory key and a ciphertext to it, or classical
+    /// when there is no provider. nil if a provider exists and the key can't be made.
+    private func makeTierPQRecord() -> TierPQRecord? {
+        guard let provider = self.activePostQuantum else { return .classical }
+
         guard
-            let secret,
-            let exchange = self.deriveRawECDH(privateKey: privateKey, peerMaterial: self.numsX963)
+            let pair         = provider.generatePersistentKeyPair(),
+            let encapsulated = provider.encapsulate(peerPublicKeyData: pair.publicKeyData)
         else { return nil }
 
+        return try? TierPQRecord.hybrid(keyBlob: pair.keyBlob, ciphertext: encapsulated.ciphertext)
+    }
+
+    /// `HKDF(ECDH(privateKey, P) ‖ [ss ‖] secret, salt: the key's public point, info [‖ SHA-256(c)])`. nil without a
+    /// secret or a record, and nil for a hybrid record the provider can't decapsulate.
+    private func enclaveBound(
+        privateKey: SecKey, publicKeyData: Data, secret: Data?, record: TierPQRecord?,
+        classicalInfo: Data, hybridInfo: Data
+    ) -> SymmetricKey? {
+        guard let secret, let record else { return nil }
+
+        var info        = classicalInfo
+        var postQuantum = Data()
+
+        switch record.mode {
+        case .classical:
+            break
+        case .hybrid:
+            guard
+                let provider = self.activePostQuantum,
+                let shared   = provider.decapsulate(ciphertext: record.ciphertext, keyBlob: record.keyBlob),
+                shared.count == 32
+            else { return nil }
+
+            postQuantum = shared
+            info        = hybridInfo + Data(SHA256.hash(data: record.ciphertext))
+        }
+
+        guard let exchange = self.deriveRawECDH(privateKey: privateKey, peerMaterial: self.numsX963) else { return nil }
+
         var ikm = exchange
+        ikm.append(postQuantum)
         ikm.append(secret)
 
         return HKDF<SHA256>.deriveKey(

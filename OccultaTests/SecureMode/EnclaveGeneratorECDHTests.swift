@@ -25,7 +25,10 @@
 //    - the new peer is P, not G, and the exchange with P is *not* a function of Q;
 //    - every site's new key differs from what a holder of Q can rebuild, both with and without the tier
 //      secret: even knowing Q and r, the attacker is missing ECDH(d, P), which needs the Enclave;
-//    - the real `Manager.Key` and `ShareStagingKeyManager` Enclave-bound keys differ from that rebuild too.
+//    - the hybrid form (iOS 26+, an Enclave ML-KEM secret `ss` as well) differs too, even for an attacker who
+//      also holds the record's ciphertext c: he is missing ss as well, which needs the Enclave;
+//    - the real `Manager.Key` and `ShareStagingKeyManager` Enclave-bound keys differ from that rebuild too, in
+//      whichever form this device's records are.
 //
 //  Kept: a control (ECDH against a peer whose discrete log is unknown is not reproducible from Q, so the
 //  equalities above are a property of G and not of the test), and a corollary for the planned layer keys
@@ -42,11 +45,18 @@ import Testing
 import CryptoKit
 import Foundation
 import Security
+import OccultaCore
 
 @testable import Occulta
 
 private func secureEnclaveAvailable() -> Bool {
     (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+/// An Enclave ML-KEM key needs iOS 26 as well.
+private func enclaveMLKEMAvailable() -> Bool {
+    guard #available(iOS 26, *) else { return false }
+    return secureEnclaveAvailable()
 }
 
 @Suite("Bug 171 — ECDH against the P-256 generator is a function of the public key alone; against P it is not", .serialized)
@@ -74,6 +84,7 @@ struct EnclaveGeneratorECDHTests {
     /// `ShareStagingKeyManager.hkdfInfo` and `.hkdfInfoEnclaveBound` are private; the literals are repeated here.
     private static let stagingLegacyInfo = "Occulta-v1-share-index-2026".data(using: .utf8)!
     private static let stagingNewInfo    = "Occulta-v2-share-staging-2026".data(using: .utf8)!
+    private static let stagingNewPQInfo  = "Occulta-v2-share-staging-pq-2026".data(using: .utf8)!
 
     /// Every legacy site, ECDH against G: its HKDF info, and whether the salt is Q (every site but one) or
     /// G ⊕ Q (the identity-derived v1 local DB key).
@@ -87,13 +98,13 @@ struct EnclaveGeneratorECDHTests {
     ]
 
     /// Every site that has an Enclave-bound form: its new info, and the legacy info of the same key.
-    private static let enclaveBoundSites: [(name: String, info: Data, legacyInfo: Data)] = [
-        ("share staging",       stagingNewInfo,                               stagingLegacyInfo),
-        ("vault",               SaltInfo.kVaultEnclaveBoundKeyInfo,           SaltInfo.kVaultKeyInfo),
-        ("shard custody",       SaltInfo.kShardCustodyEnclaveBoundKeyInfo,    SaltInfo.kShardCustodyKeyInfo),
-        ("restore vault",       SaltInfo.kRestoreVaultEnclaveBoundKeyInfo,    SaltInfo.kRestoreVaultKeyInfo),
-        ("secure mode PIN wrap", SaltInfo.kSecureModeWrapKeyInfo,             SaltInfo.kSecureModeKeyInfo),
-        ("local DB",            SaltInfo.kLocalDBEnclaveBoundKeyInfo,         SaltInfo.kLocalDBHybridKeyInfo)
+    private static let enclaveBoundSites: [(name: String, info: Data, hybridInfo: Data, legacyInfo: Data)] = [
+        ("share staging",        stagingNewInfo,                              stagingNewPQInfo,                              stagingLegacyInfo),
+        ("vault",                SaltInfo.kVaultEnclaveBoundKeyInfo,          SaltInfo.kVaultEnclaveBoundPQKeyInfo,          SaltInfo.kVaultKeyInfo),
+        ("shard custody",        SaltInfo.kShardCustodyEnclaveBoundKeyInfo,   SaltInfo.kShardCustodyEnclaveBoundPQKeyInfo,   SaltInfo.kShardCustodyKeyInfo),
+        ("restore vault",        SaltInfo.kRestoreVaultEnclaveBoundKeyInfo,   SaltInfo.kRestoreVaultEnclaveBoundPQKeyInfo,   SaltInfo.kRestoreVaultKeyInfo),
+        ("secure mode PIN wrap", SaltInfo.kSecureModeWrapKeyInfo,             SaltInfo.kSecureModeWrapPQKeyInfo,             SaltInfo.kSecureModeKeyInfo),
+        ("local DB",             SaltInfo.kLocalDBEnclaveBoundKeyInfo,        SaltInfo.kLocalDBEnclaveBoundPQKeyInfo,        SaltInfo.kLocalDBHybridKeyInfo)
     ]
 
     private static func uniqueTag() -> String { "test.generator.ecdh.\(UUID().uuidString)" }
@@ -212,12 +223,24 @@ struct EnclaveGeneratorECDHTests {
         return (Self.hkdf(exchange, salt: q, info: info), Self.hkdf(exchange + secret, salt: q, info: info))
     }
 
-    /// The production Enclave-bound derivation of a site, over a key reference and a tier secret.
-    private static func productionEnclaveBound(siteNamed name: String, key: SecKey, secret: Data, info: Data) throws -> Data {
+    /// The production Enclave-bound derivation of a site, over a key reference and a tier secret, classical or, with
+    /// `postQuantum`, hybrid. `info` is the base string of the form in use.
+    private static func productionEnclaveBound(
+        siteNamed name: String, key: SecKey, secret: Data,
+        postQuantum: (secret: Data, ciphertext: Data)? = nil, info: Data
+    ) throws -> Data {
         if name == "share staging" {
-            return Self.bytes(try ShareStagingKeyManager.enclaveBoundKey(exchangingWith: key, secret: secret))
+            return Self.bytes(try ShareStagingKeyManager.enclaveBoundKey(exchangingWith: key, secret: secret, postQuantum: postQuantum))
         }
-        return Self.bytes(try #require(Manager.Key().deriveEnclaveBound(exchangingWith: key, secret: secret, info: info)))
+        return Self.bytes(try #require(Manager.Key().deriveEnclaveBound(
+            exchangingWith: key, secret: secret, postQuantum: postQuantum, info: info
+        )))
+    }
+
+    /// The info string of a record's mode, with SHA-256(c) appended for a hybrid one: what the attacker, who has the
+    /// record, knows the derivation used.
+    private static func info(of record: TierPQRecord, classical: Data, hybrid: Data) -> Data {
+        record.mode == .hybrid ? hybrid + Data(SHA256.hash(data: record.ciphertext)) : classical
     }
 
     // MARK: - The peer
@@ -336,6 +359,48 @@ struct EnclaveGeneratorECDHTests {
         #expect(actual != legacy)
     }
 
+    @Test("Every hybrid site differs from what Q rebuilds, even given the tier secret and the record's ciphertext",
+          .enabled(if: enclaveMLKEMAvailable()),
+          arguments: EnclaveGeneratorECDHTests.enclaveBoundSites.map { $0.name })
+    func hybridKeyDoesNotRebuildFromThePublicPoint(siteName: String) throws {
+        guard #available(iOS 26, *) else { return }
+
+        let site = try #require(Self.enclaveBoundSites.first { $0.name == siteName })
+        let tag  = Self.uniqueTag()
+        defer { Self.deleteKey(tag: tag) }
+
+        let key    = try Self.makeEnclaveKey(tag: tag, flags: [.privateKeyUsage])
+        let q      = try Self.publicPoint(of: key)
+        let secret = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+
+        // A real Enclave ML-KEM key and a ciphertext to it, as the tier's record holds.
+        let provider     = try #require(PostQuantumProviderFactory.create())
+        let pair         = try #require(provider.generatePersistentKeyPair())
+        let encapsulated = try #require(provider.encapsulate(peerPublicKeyData: pair.publicKeyData))
+        let shared       = try #require(provider.decapsulate(ciphertext: encapsulated.ciphertext, keyBlob: pair.keyBlob))
+        #expect(shared == encapsulated.sharedSecret)
+
+        let hybrid = try Self.productionEnclaveBound(
+            siteNamed: siteName, key: key, secret: secret,
+            postQuantum: (shared, encapsulated.ciphertext), info: site.hybridInfo
+        )
+
+        // The attacker holds Q, r and c, and substitutes the legacy exchange for ECDH(d, P). He has no ss: he tries
+        // none, and a zero one.
+        let hybridInfo = site.hybridInfo + Data(SHA256.hash(data: encapsulated.ciphertext))
+        let exchange   = Self.exchangeFromPublicPoint(q)
+        let guesses = [
+            Self.hkdf(exchange + secret, salt: q, info: hybridInfo),
+            Self.hkdf(exchange + Data(repeating: 0, count: 32) + secret, salt: q, info: hybridInfo),
+            Self.attackerRebuilds(q: q, secret: secret, info: site.info).withSecret
+        ]
+        for guess in guesses { #expect(hybrid != guess) }
+
+        // And the classical form of the same Enclave key and secret is another key.
+        let classical = try Self.productionEnclaveBound(siteNamed: siteName, key: key, secret: secret, info: site.info)
+        #expect(hybrid != classical)
+    }
+
     // MARK: - The production code, not a mirror of it
 
     @Test("Legacy: the real shard custody, restore vault and Secure Mode PIN keys still equal the rebuild from Q",
@@ -365,6 +430,10 @@ struct EnclaveGeneratorECDHTests {
         let manager = Manager.Key()
         let secret  = try #require(try manager.tierSecret(.deviceUnlock))
 
+        // The device's own record, in whichever form this OS makes it: hybrid on iOS 26+, classical below.
+        try manager.createTierPQRecordIfAbsent(.deviceUnlock)
+        let record = try #require(try manager.tierPQRecord(.deviceUnlock))
+
         let custodyKey = try #require(try manager.enclaveBoundKey(.shardCustody).map(Self.bytes))
         let restoreKey = try #require(try manager.enclaveBoundKey(.restoreVault).map(Self.bytes))
         let wrapKey    = try #require(try manager.enclaveBoundKey(.secureModeWrap).map(Self.bytes))
@@ -372,9 +441,9 @@ struct EnclaveGeneratorECDHTests {
         let custodyQ = try Self.publicPoint(of: try #require(Self.reference(tag: "shard.custody.occulta")))
         let pinQ     = try Self.publicPoint(of: try #require(Self.reference(tag: "app.layer.key.occulta.v1")))
 
-        let custody = Self.attackerRebuilds(q: custodyQ, secret: secret, info: SaltInfo.kShardCustodyEnclaveBoundKeyInfo)
-        let restore = Self.attackerRebuilds(q: custodyQ, secret: secret, info: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo)
-        let wrap    = Self.attackerRebuilds(q: pinQ,     secret: secret, info: SaltInfo.kSecureModeWrapKeyInfo)
+        let custody = Self.attackerRebuilds(q: custodyQ, secret: secret, info: Self.info(of: record, classical: SaltInfo.kShardCustodyEnclaveBoundKeyInfo, hybrid: SaltInfo.kShardCustodyEnclaveBoundPQKeyInfo))
+        let restore = Self.attackerRebuilds(q: custodyQ, secret: secret, info: Self.info(of: record, classical: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo, hybrid: SaltInfo.kRestoreVaultEnclaveBoundPQKeyInfo))
+        let wrap    = Self.attackerRebuilds(q: pinQ,     secret: secret, info: Self.info(of: record, classical: SaltInfo.kSecureModeWrapKeyInfo, hybrid: SaltInfo.kSecureModeWrapPQKeyInfo))
 
         #expect(custodyKey != custody.withoutSecret && custodyKey != custody.withSecret)
         #expect(restoreKey != restore.withoutSecret && restoreKey != restore.withSecret)
@@ -420,10 +489,16 @@ struct EnclaveGeneratorECDHTests {
     func realEnclaveBoundLocalDBKeyDoesNotRebuildFromThePublicPoint() throws {
         let manager = Manager.Key()
         let secret  = try #require(try manager.tierSecret(.deviceUnlock))
-        let key     = try #require(try manager.enclaveBoundKey(.localDB).map(Self.bytes))
+
+        try manager.createTierPQRecordIfAbsent(.deviceUnlock)
+        let record = try #require(try manager.tierPQRecord(.deviceUnlock))
+        let key    = try #require(try manager.enclaveBoundKey(.localDB).map(Self.bytes))
 
         let q = try Self.publicPoint(of: try #require(Self.reference(tag: "local.db.se.key.occulta")))
-        let rebuilds = Self.attackerRebuilds(q: q, secret: secret, info: SaltInfo.kLocalDBEnclaveBoundKeyInfo)
+        let rebuilds = Self.attackerRebuilds(
+            q: q, secret: secret,
+            info: Self.info(of: record, classical: SaltInfo.kLocalDBEnclaveBoundKeyInfo, hybrid: SaltInfo.kLocalDBEnclaveBoundPQKeyInfo)
+        )
 
         #expect(key != rebuilds.withoutSecret)
         #expect(key != rebuilds.withSecret)
@@ -451,18 +526,26 @@ struct EnclaveGeneratorECDHTests {
     @Test("The real ShareStagingKeyManager Enclave-bound key differs from the rebuild from Q, given r_S too",
           .enabled(if: secureEnclaveAvailable()))
     func realShareStagingEnclaveBoundKeyDoesNotRebuildFromThePublicPoint() throws {
-        // An `r_S` of the test's own, so the canonical item is left alone.
-        let manager = ShareStagingKeyManager(tierSecretAccount: "test.generator.ecdh.\(UUID().uuidString)")
-        defer { manager.deleteTierSecret() }
+        // An `r_S` and a PQ record of the test's own, so the canonical items are left alone.
+        let manager = ShareStagingKeyManager(
+            tierSecretAccount:   "test.generator.ecdh.\(UUID().uuidString)",
+            tierPQRecordAccount: "test.generator.ecdh.\(UUID().uuidString)"
+        )
+        defer { manager.deleteTierSecret(); manager.deleteTierPQRecord() }
 
         try manager.createTierSecretIfAbsent()
-        let secret = try #require(try manager.tierSecret())
+        try manager.createTierPQRecordIfAbsent()
+        let secret  = try #require(try manager.tierSecret())
+        let record  = try #require(try manager.tierPQRecord())
         let staging = try Self.bytes(manager.deriveEnclaveBoundKey())
 
         let key = try #require(Self.reference(tag: "share.index.se.key.occulta",
                                               accessGroup: "group.com.occulta.shared"))
         let q = try Self.publicPoint(of: key)
-        let rebuilds = Self.attackerRebuilds(q: q, secret: secret, info: Self.stagingNewInfo)
+        let rebuilds = Self.attackerRebuilds(
+            q: q, secret: secret,
+            info: record.mode == .hybrid ? Self.stagingNewPQInfo + Data(SHA256.hash(data: record.ciphertext)) : Self.stagingNewInfo
+        )
 
         let legacy = try Self.bytes(manager.deriveLegacySymmetricKey())
 

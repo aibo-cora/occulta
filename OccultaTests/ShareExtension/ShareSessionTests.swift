@@ -506,15 +506,19 @@ struct ShareStagingKeyManagerTests {
         #expect(ShareStagingKeyManager().deleteKey())
     }
 
-    /// `r_S`, the staging tier's Keychain secret, is dated like the key (`bugs.md` Bug 171): the wipe has to remove both.
-    @Test("Deleting the key also removes r_S")
-    func deleteKeyAlsoRemovesTheTierSecret() throws {
+    /// `r_S`, the staging tier's Keychain secret, and its PQ record are dated like the key (`bugs.md` Bug 171): the
+    /// wipe has to remove all three.
+    @Test("Deleting the key also removes r_S and the PQ record")
+    func deleteKeyAlsoRemovesTheTierSecretAndRecord() throws {
         let staging = ShareStagingKeyManager()
         try staging.createTierSecretIfAbsent()
+        try staging.createTierPQRecordIfAbsent()
         #expect(try staging.tierSecret() != nil)
+        #expect(try staging.tierPQRecord() != nil)
 
         #expect(staging.deleteKey())
         #expect(try staging.tierSecret() == nil)
+        #expect(try staging.tierPQRecord() == nil)
     }
 
     @Test("What one instance seals, another opens")

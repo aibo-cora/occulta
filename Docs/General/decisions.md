@@ -919,7 +919,7 @@ release mechanics.
 - **D4. Whether an image alone yields Q.** Run it on the Simulator, done (`bugs.md` Bug 171, "Where Q sits at rest"): no cleartext column holds Q, only SHA-1(Q). A device answer needs extraction tooling we don't have, so it stays open.
 - **D5. P as a compiled-in NUMS constant, or a stored per-install point.** The constant: it needs no storage, no integrity protection and no scalar.
 - **D6. Downgrade.** Accept it for TestFlight and sideload, as Bug 168 did, and say so in the TestFlight notes. A new store file would keep an old-key copy that any Q-holder can read for as long as it exists.
-- **D7. Sequencing.** Fix all seven keys in 2.0.0. The passphrase release isn't built, and its key-slot question isn't decided.
+- **D7. Sequencing.** Fix all seven keys in 2.0.0. The passphrase release isn't built, and its storage design (spec §2) isn't decided. Key slots were decided against on 2026-10-19.
 - **D8. Vault rewrap timing.** At the first vault unlock. The window until then, with the per-entry keys still under the legacy vault key, is open, needs a decision.
 - **D9. Removing the v1 read path.** Keep it, migration-only: App Store updates jump straight to the newest version, so removing it loses data for installs that skipped versions.
 
