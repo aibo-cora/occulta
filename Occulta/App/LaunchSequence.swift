@@ -21,9 +21,22 @@
 //  After it, the PIN verifier wrap (Bug 171, Stage 3), then the process is told whether to write wrapped verifiers
 //  (`Manager.Ambient.pinVerifiers`), by the sizes in the store, before `Manager.Security` reads or writes one.
 //
+//  A pass that committed at least one batch and ended without its epoch (Stage 2c) leaves the store a mix of both keys
+//  while the process is on the legacy ones. The sequence then reports `blocked` and stops: no verifier wrap, no
+//  migration, and `OccultaApp` shows a storage-error screen instead of the PIN prompt and builds the rest of the app
+//  over a scratch store. The next launch runs the pass again and finishes it. A pass that stopped before it wrote
+//  anything is not blocked: the store is not mixed.
+//
 
 import Foundation
 import SwiftData
+
+/// What the window shows first, decided from the launch before any PIN prompt.
+enum LaunchScreen: Equatable {
+    case app
+    /// A neutral storage error, in place of the PIN prompt (`StorageErrorView`).
+    case storageError
+}
 
 enum LaunchSequence {
 
@@ -34,6 +47,10 @@ enum LaunchSequence {
         var reseal: Result<KeyReseal.Report, any Error>
         /// The PIN verifier wrap. `.notRun` if the reseal threw, which keeps it from running.
         var verifiers: Result<KeyReseal.VerifierReport, any Error> = .success(KeyReseal.VerifierReport())
+        /// The tier U pass committed at least one batch and ended without the epoch, so the store is a mix of both keys
+        /// (or all new, with the epoch's own save failing) while the process is on the legacy ones. Nothing after the
+        /// pass ran.
+        var blocked = false
     }
 
     /// Runs the sequence on `context`, suspending autosave for all of it, as `migrate()` always did.
@@ -68,15 +85,26 @@ enum LaunchSequence {
         // Its own context: a batch that failed is rolled back there and cannot be committed by a pass below.
         let resealContext = ModelContext(context.container)
         resealContext.autosaveEnabled = false
-        let reseal = Result { try KeyReseal.run(context: resealContext, keyManager: keyManager, locations: locations, batchSize: batchSize) }
+        // The run's report is lost if it throws, so how many batches it committed is read from here.
+        let progress = KeyReseal.Progress()
+        let reseal = Result {
+            try KeyReseal.run(context: resealContext, keyManager: keyManager, locations: locations, batchSize: batchSize, progress: progress)
+        }
 
         // Decided once, from the store: the epoch is the record of what the data is under.
-        Manager.Ambient.setTierUKeys(KeyReseal.epochExists(in: ModelContext(context.container)) ? .enclaveBound : .legacy)
+        let epochExists = KeyReseal.epochExists(in: ModelContext(context.container))
+        Manager.Ambient.setTierUKeys(epochExists ? .enclaveBound : .legacy)
 
         #if DEBUG
         if case .failure(let error) = bootstrap { debugPrint("Key reseal bootstrap error: \(error)") }
         if case .failure(let error) = reseal { debugPrint("Key reseal error: \(error)") }
         #endif
+
+        // Stage 2c. Values were moved and the epoch is missing: nothing below may run, and nothing may open or write the
+        // store in this launch. Not set for a pass that stopped before writing: those leave the store as it was.
+        if !epochExists, progress.committedBatches > 0 {
+            return Report(bootstrap: bootstrap, reseal: reseal, blocked: true)
+        }
 
         // The PIN verifiers, after the tier U pass and before `Manager.Security` reads them. Skipped if that pass threw.
         var verifiers = Result<KeyReseal.VerifierReport, any Error>.success(KeyReseal.VerifierReport())
@@ -197,5 +225,22 @@ enum LaunchSequence {
         }
 
         return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers)
+    }
+}
+
+extension LaunchSequence.Report {
+
+    var screen: LaunchScreen {
+        self.blocked ? .storageError : .app
+    }
+
+    /// The store the rest of the app is built over. The real one, unless the launch is blocked: then an empty one in
+    /// memory, so that nothing the app constructs at launch (`VaultManager` tops up its filler rows when it is built,
+    /// for one) can read or write the real store, whose contents are a mix of two keys.
+    func container(real: ModelContainer) throws -> ModelContainer {
+        guard self.blocked else { return real }
+
+        let schema = OccultaApp.schema
+        return try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
     }
 }

@@ -167,6 +167,18 @@ extension KeyReseal {
         }
     }
 
+    /// How far a run got, readable after it threw. `Report` is lost with the throw, and a launch needs to know whether
+    /// the run that ended without an epoch had already committed a batch (`LaunchSequence`, Stage 2c): the store is then
+    /// a mix of both keys.
+    final class Progress {
+        /// Batches whose `save()` succeeded.
+        private(set) var committedBatches = 0
+
+        func batchCommitted() {
+            self.committedBatches += 1
+        }
+    }
+
     // MARK: - The bootstrap
 
     /// Why the bootstrap created nothing it would otherwise have created.
@@ -261,18 +273,22 @@ extension KeyReseal {
         let interruptAtWrap: WrapFaultPoint?
         let interruptAtVault: VaultFaultPoint?
         let corruptsNewCiphertext: Bool
+        /// With `corruptsNewCiphertext`: only once this many batches have been committed, so a read-back failure can
+        /// come part-way through the pass instead of at its first value.
+        let corruptsFromBatch: Int
         private(set) var reached: [FaultPoint] = []
         private(set) var reachedWrap: [WrapFaultPoint] = []
         private(set) var reachedVault: [VaultFaultPoint] = []
 
         init(
             interruptAt: FaultPoint? = nil, interruptAtWrap: WrapFaultPoint? = nil, interruptAtVault: VaultFaultPoint? = nil,
-            corruptsNewCiphertext: Bool = false
+            corruptsNewCiphertext: Bool = false, corruptsFromBatch: Int = 0
         ) {
             self.interruptAt           = interruptAt
             self.interruptAtWrap       = interruptAtWrap
             self.interruptAtVault      = interruptAtVault
             self.corruptsNewCiphertext = corruptsNewCiphertext
+            self.corruptsFromBatch     = corruptsFromBatch
         }
 
         /// Records the point and throws `InjectedVaultFault` if it is the one asked for.
@@ -295,8 +311,8 @@ extension KeyReseal {
 
         /// `ciphertext` as the sealer under test produced it: with the last byte (the GCM tag's) flipped when
         /// `corruptsNewCiphertext` is set, so the read-back check has something to catch.
-        func corrupted(_ ciphertext: Data) -> Data {
-            guard self.corruptsNewCiphertext, !ciphertext.isEmpty else { return ciphertext }
+        func corrupted(_ ciphertext: Data, committedBatches: Int = 0) -> Data {
+            guard self.corruptsNewCiphertext, committedBatches >= self.corruptsFromBatch, !ciphertext.isEmpty else { return ciphertext }
 
             var out = ciphertext
             out[out.count - 1] ^= 0x01

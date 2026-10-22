@@ -141,18 +141,22 @@ extension KeyReseal {
     ///
     /// Throws what an interruption looks like: `InjectedFault` in a test, and a SwiftData error from a `save()`.
     /// The batches already saved stay (every value in them is readable under the new key) and the next launch
-    /// finishes; the batch in flight is rolled back.
+    /// finishes; the batch in flight is rolled back. `progress` counts the batches saved, readable after a throw
+    /// (the report is not): a launch that ended without the epoch after saving one is blocked (`LaunchSequence`).
     @discardableResult
     static func run(
         context: ModelContext,
         keyManager: any KeyManagerProtocol,
         locations: Locations = .production,
-        batchSize: Int = KeyReseal.defaultBatchSize
+        batchSize: Int = KeyReseal.defaultBatchSize,
+        progress: Progress? = nil
     ) throws -> Report {
         var report = Report()
 
         do {
-            try Self.perform(context: context, keyManager: keyManager, locations: locations, batchSize: max(1, batchSize), report: &report)
+            try Self.perform(
+                context: context, keyManager: keyManager, locations: locations, batchSize: max(1, batchSize), progress: progress, report: &report
+            )
         } catch let abort as Abort {
             context.rollback()
             report.outcome = .aborted(abort.reason)
@@ -168,7 +172,7 @@ extension KeyReseal {
     }
 
     private static func perform(
-        context: ModelContext, keyManager: any KeyManagerProtocol, locations: Locations, batchSize: Int, report: inout Report
+        context: ModelContext, keyManager: any KeyManagerProtocol, locations: Locations, batchSize: Int, progress: Progress?, report: inout Report
     ) throws {
         guard let config = try context.fetch(FetchDescriptor<AppLayerConfig>()).first else { throw Abort(reason: .configMissing) }
 
@@ -202,7 +206,7 @@ extension KeyReseal {
         guard let restore = try? keyManager.enclaveBoundKey(.restoreVault) else { throw Abort(reason: .restoreKeyUnavailable) }
 
         let pass = Pass(
-            context: context, batchSize: batchSize,
+            context: context, batchSize: batchSize, progress: progress,
             new: [.local: local, .custody: custody, .restore: restore],
             legacy: { key in
                 switch key {
@@ -279,6 +283,7 @@ extension KeyReseal {
     private final class Pass {
         let context: ModelContext
         let batchSize: Int
+        private let progress: Progress?
         private let new: [Key: SymmetricKey]
         private let deriveLegacy: (Key) -> SymmetricKey?
         private var legacyKeys: [Key: SymmetricKey] = [:]
@@ -293,9 +298,10 @@ extension KeyReseal {
         /// `EncryptionScheme.v2_hybridPQ.aad`, which every value sealed by `Data.encrypt()` carries.
         static let fixedAAD = EncryptionScheme.v2_hybridPQ.aad
 
-        init(context: ModelContext, batchSize: Int, new: [Key: SymmetricKey], legacy: @escaping (Key) -> SymmetricKey?) {
+        init(context: ModelContext, batchSize: Int, progress: Progress?, new: [Key: SymmetricKey], legacy: @escaping (Key) -> SymmetricKey?) {
             self.context      = context
             self.batchSize    = batchSize
+            self.progress     = progress
             self.new          = new
             self.deriveLegacy = legacy
         }
@@ -345,7 +351,7 @@ extension KeyReseal {
         private func sealedAgain(_ plaintext: Data, using key: SymmetricKey, aad: Data?) -> Data? {
             guard var fresh = Self.seal(plaintext, using: key, aad: aad) else { return nil }
             #if DEBUG
-            fresh = KeyReseal.faults?.corrupted(fresh) ?? fresh
+            fresh = KeyReseal.faults?.corrupted(fresh, committedBatches: self.batchesSaved) ?? fresh
             #endif
             return Self.open(fresh, using: key, aad: aad) == plaintext ? fresh : nil
         }
@@ -414,6 +420,7 @@ extension KeyReseal {
             if self.context.hasChanges {
                 try self.context.save()
                 self.batchesSaved += 1
+                self.progress?.batchCommitted()
             }
             self.rowsInBatch = 0
         }

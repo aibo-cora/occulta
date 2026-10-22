@@ -434,6 +434,10 @@ final class TestKeyManager: KeyManagerProtocol {
     /// on a host that has one.
     var simulatesLocalKeyUnavailable = false
 
+    /// Makes the legacy shard custody key underivable (the new one still is), so the pass stops at the first custody
+    /// row: after the local rows it has already committed, if there are enough of them for a batch.
+    var simulatesLegacyCustodyKeyUnavailable = false
+
     /// The local key, following the epoch as `Manager.Key` does: the Enclave-bound derivation when
     /// `Manager.Ambient.tierUKeys` says the data is under it, the legacy one otherwise.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
@@ -480,6 +484,7 @@ final class TestKeyManager: KeyManagerProtocol {
             )
 
         case .shardCustody:
+            if self.simulatesLegacyCustodyKeyUnavailable { return nil }
             return try self.deriveCustodySEKey(info: SaltInfo.kShardCustodyKeyInfo)
 
         case .restoreVault:

@@ -31,6 +31,8 @@ struct OccultaApp: App {
     /// SwiftData store URL. Retained so `reapplyFileProtection()` can stamp
     /// fresh -wal/-shm files that SQLite creates after the initial attributes call.
     private let storeURL: URL
+    /// The app, or the storage error of a blocked launch (Bug 171, Stage 2c).
+    private let launchScreen: LaunchScreen
 
     /// Every persisted model. Extracted from `init()` as its own static property rather than
     /// left inline, so it can be read (not just constructed) from outside `init()` — load-bearing
@@ -65,9 +67,9 @@ struct OccultaApp: App {
         let schema = Self.schema
 
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
-        let sharedModelContainer: ModelContainer
+        let realContainer: ModelContainer
         do {
-            sharedModelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            realContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
@@ -96,13 +98,25 @@ struct OccultaApp: App {
         #else
         let hostsTests = false
         #endif
+        var launch: LaunchSequence.Report?
         if !hostsTests {
-            LaunchSequence.run(context: ModelContext(sharedModelContainer), locations: .production(store: url))
+            launch = LaunchSequence.run(context: ModelContext(realContainer), locations: .production(store: url))
+        }
+        let screen = launch?.screen ?? .app
+
+        // A blocked launch (a reseal that stopped partway, Stage 2c) builds everything below over an empty in-memory
+        // store, with Secure Mode off, so that nothing it constructs can read, write or create a key. `RootView` shows
+        // the storage error and goes no further.
+        let sharedModelContainer: ModelContainer
+        do {
+            sharedModelContainer = try launch?.container(real: realContainer) ?? realContainer
+        } catch {
+            fatalError("Could not create ModelContainer: \(error)")
         }
 
         let security = Manager.Security(modelContainer: sharedModelContainer,
                                         storeURL: url,
-                                        enabled: FeatureFlags.isEnabled(.secureMode))
+                                        enabled: FeatureFlags.isEnabled(.secureMode) && screen == .app)
 
         self.security = security
 
@@ -110,6 +124,7 @@ struct OccultaApp: App {
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
 
         self.sharedModelContainer = sharedModelContainer
+        self.launchScreen         = screen
         self.contactManager       = contactManager
         self.identityChallenge    = IdentityChallenge.Coordinator(contactManager: contactManager)
         self.vaultManager         = vaultManager
@@ -121,7 +136,7 @@ struct OccultaApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(storeURL: self.storeURL)
+            RootView(storeURL: self.storeURL, launchScreen: self.launchScreen)
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
@@ -171,6 +186,7 @@ struct OccultaApp: App {
 struct RootView: View {
 
     let storeURL: URL
+    let launchScreen: LaunchScreen
 
     @EnvironmentObject private var appScreen: AppScreen
     @Environment(Manager.Security.self) private var security
@@ -240,7 +256,19 @@ struct RootView: View {
 
     // MARK: Body
 
+    @ViewBuilder
     var body: some View {
+        switch self.launchScreen {
+        case .storageError:
+            // Before the PIN flow, and without any of what the app view below does at launch: none of its tasks,
+            // handlers or observers is attached to this.
+            StorageErrorView()
+        case .app:
+            self.appBody
+        }
+    }
+
+    private var appBody: some View {
         self.phaseContent
             // No transitions between phases — content must never flash through states.
             .animation(.none, value: self.appScreen.phase)
