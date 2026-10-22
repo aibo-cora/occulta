@@ -90,21 +90,26 @@ final class ShareStagingKeyManager {
     /// `WhenUnlockedThisDeviceOnly`, read by the app and the extension alike.
     static let defaultTierPQRecordAccount = "share.staging.pq.key.occulta"
 
+    private let keyTag: String
     private let tierSecretAccount: String
     private let tierPQRecordAccount: String
     private let postQuantum: () -> (any StagingPostQuantum)?
 
     /// - Parameters:
+    ///   - keyTag: The tag of the staging Enclave key. Only a test passes one, so that a test of Erase All Data
+    ///     deletes a key of its own and not the one other tests are using.
     ///   - tierSecretAccount: The account of `r_S`. Only a test passes one, to use an item of its own and leave
     ///     the canonical `r_S` alone.
     ///   - tierPQRecordAccount: The account of the PQ record, likewise.
     ///   - postQuantum: The ML-KEM provider, asked for each time it is needed. The default is the Secure Enclave's
     ///     on iOS 26+ and nil below. A test passes an in-memory one, or `{ nil }` for a device below 26.
     init(
+        keyTag: String = ShareStagingKeyManager.tag,
         tierSecretAccount: String = ShareStagingKeyManager.defaultTierSecretAccount,
         tierPQRecordAccount: String = ShareStagingKeyManager.defaultTierPQRecordAccount,
         postQuantum: @escaping () -> (any StagingPostQuantum)? = ShareStagingKeyManager.platformPostQuantum
     ) {
+        self.keyTag              = keyTag
         self.tierSecretAccount   = tierSecretAccount
         self.tierPQRecordAccount = tierPQRecordAccount
         self.postQuantum         = postQuantum
@@ -119,7 +124,7 @@ final class ShareStagingKeyManager {
     private func retrievePrivateKey() throws -> SecKey {
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: Self.tag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: self.keyTag.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
@@ -165,7 +170,7 @@ final class ShareStagingKeyManager {
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent: true,
-                kSecAttrApplicationTag: Self.tag.data(using: .utf8)!,
+                kSecAttrApplicationTag: self.keyTag.data(using: .utf8)!,
                 kSecAttrAccessControl: access,
                 kSecAttrAccessGroup: Self.accessGroup
             ]
@@ -190,7 +195,7 @@ final class ShareStagingKeyManager {
     func deleteKey() -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: Self.tag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: self.keyTag.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
             kSecAttrAccessGroup as String: Self.accessGroup

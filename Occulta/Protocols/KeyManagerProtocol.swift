@@ -159,7 +159,9 @@ protocol KeyManagerProtocol {
     func legacyKey(_ key: LegacyKey) throws -> SymmetricKey?
 
     /// The Enclave-bound derivation of `key`: `HKDF(ECDH(enclave_priv, P) ‖ r_tier)`, so it needs the Enclave
-    /// key and the tier's Keychain secret. No production caller uses it yet.
+    /// key and the tier's Keychain secret. The tier U accessors (`createHybridLocalEncryptionKey()`,
+    /// `deriveShardCustodyKey()`, `deriveRestoreVaultKey()`) return it once the tier's epoch exists; the key reseal
+    /// calls it by name. The PIN, vault and share staging keys do not use it yet.
     ///
     /// Reads the tier secret and never creates it: nil when it is missing, before the Enclave key is fetched.
     /// Creating it is `createTierSecretIfAbsent(_:)`, called on purpose and not as a side effect of a read.
@@ -173,8 +175,8 @@ protocol KeyManagerProtocol {
     ///
     /// **Call it only while the tier has never been resealed, or on a fresh install.** Once data is sealed under
     /// a key that includes the secret, a missing secret must mean nil and a loud failure, never a new secret:
-    /// a new one leaves every row sealed under the old one unreadable. Stage 2 wires the creation in, at the
-    /// launch bootstrap and before the pass.
+    /// a new one leaves every row sealed under the old one unreadable. `KeyReseal.bootstrap` calls it, at launch and
+    /// only while the tier has no epoch.
     @discardableResult
     func createTierSecretIfAbsent(_ tier: TierSecret) throws -> Bool
 
@@ -185,9 +187,16 @@ protocol KeyManagerProtocol {
     ///
     /// The same rule as `createTierSecretIfAbsent(_:)`: **only while the tier has never been resealed, or on a
     /// fresh install.** A record recreated afterwards would be a new key, and everything sealed under the old one
-    /// would be unreadable. Stage 2 wires the creation in, next to the tier secret's.
+    /// would be unreadable. `KeyReseal.bootstrap` calls it, next to the tier secret's.
     @discardableResult
     func createTierPQRecordIfAbsent(_ tier: PostQuantumTier) throws -> Bool
+
+    /// The tier's Keychain secret, or nil when there is none. Reads only, never creates. Throws for anything but
+    /// absence: a locked device is not a missing secret, and the key reseal reports the two differently.
+    func tierSecret(_ tier: TierSecret) throws -> Data?
+
+    /// The tier's PQ record, or nil when there is none. Reads only, never creates. Throws for anything but absence.
+    func tierPQRecord(_ tier: PostQuantumTier) throws -> TierPQRecord?
 }
 
 // MARK: - TestKeyManager
@@ -251,6 +260,20 @@ final class TestKeyManager: KeyManagerProtocol {
     /// Simulates a device below iOS 26: no ML-KEM provider, so a created record is classical, and a hybrid record
     /// can't be decapsulated (`enclaveBoundKey` gives nil for it, never a classical key).
     var simulatesNoPostQuantum = false
+
+    /// Simulates a locked device: reading a tier secret or a tier PQ record throws, and so does `enclaveBoundKey`,
+    /// as the real `Manager.Key` does when the Keychain refuses the read. Nothing is lost or changed by it, and the
+    /// legacy keys are left alone: the key reseal must stop on the throw without ever reaching them.
+    var simulatesLockedDevice = false
+
+    /// What a build from before the fix does: `createHybridLocalEncryptionKey()`, `deriveShardCustodyKey()` and
+    /// `deriveRestoreVaultKey()` derive the legacy keys whatever `Manager.Ambient.tierUKeys` says. A test uses it to
+    /// seal data the way the previous release did, or the way a downgraded build still does.
+    var derivesLegacyKeysOnly = false
+
+    /// How many times `legacyKey(_:)` ran, including through the four protocol methods that delegate to it. A fresh
+    /// install must derive none: there is no legacy data to open.
+    private(set) var legacyKeyCalls = 0
 
     /// The in-memory ML-KEM provider; nil below iOS 26.
     private let postQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.createForTesting()
@@ -335,6 +358,48 @@ final class TestKeyManager: KeyManagerProtocol {
         self.tierPQRecordB = self.makeTierPQRecord()
     }
 
+    /// A key manager whose Enclave keys, tier secrets and tier PQ records are given, so a test can pin the bytes of
+    /// every key it derives and notice when a derivation changes. `scalars` are, in order, the identity, local DB,
+    /// vault, shard custody and Secure Mode PIN keys: five 32-byte P-256 private scalars.
+    init(scalars: [Data], tierSecretU: Data?, tierSecretB: Data?, tierPQRecordU: TierPQRecord?, tierPQRecordB: TierPQRecord?) {
+        precondition(scalars.count == 5)
+
+        let identity     = Self.keyPair(scalar: scalars[0])
+        let localDB      = Self.keyPair(scalar: scalars[1])
+        let vault        = Self.keyPair(scalar: scalars[2])
+        let shardCustody = Self.keyPair(scalar: scalars[3])
+        let secureMode   = Self.keyPair(scalar: scalars[4])
+
+        self.identityPrivateKey       = identity.privateKey
+        self.identityPublicKeyData    = identity.publicKeyData
+        self.localDBPrivateKey        = localDB.privateKey
+        self.localDBPublicKeyData     = localDB.publicKeyData
+        self.vaultPrivateKey          = vault.privateKey
+        self.vaultPublicKeyData       = vault.publicKeyData
+        self.shardCustodyPrivateKey   = shardCustody.privateKey
+        self.shardCustodyPublicKeyData = shardCustody.publicKeyData
+        self.secureModePrivateKey     = secureMode.privateKey
+        self.secureModePublicKeyData  = secureMode.publicKeyData
+
+        self.tierSecretU   = tierSecretU
+        self.tierSecretB   = tierSecretB
+        self.tierPQRecordU = tierPQRecordU
+        self.tierPQRecordB = tierPQRecordB
+    }
+
+    private static func keyPair(scalar: Data) -> (privateKey: SecKey, publicKeyData: Data) {
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String:      kSecAttrKeyClassPrivate,
+            kSecAttrKeySizeInBits as String: 256
+        ]
+        var err: Unmanaged<CFError>?
+        let key = try! P256.KeyAgreement.PrivateKey(rawRepresentation: scalar)
+        let priv = SecKeyCreateWithData(key.x963Representation as CFData, attrs as CFDictionary, &err)!
+        let pub  = SecKeyCopyPublicKey(priv)!
+        return (priv, SecKeyCopyExternalRepresentation(pub, nil)! as Data)
+    }
+
     func retrieveIdentity() throws -> Data { self.identityPublicKeyData }
 
     /// v1 — identity-derived local key. Used only for migration tests.
@@ -360,15 +425,28 @@ final class TestKeyManager: KeyManagerProtocol {
     /// on a host that has one.
     var simulatesLocalKeyUnavailable = false
 
-    /// v2 — hybrid PQ-reinforced local key. The legacy form, `legacyKey(.localDB)`.
+    /// The local key, following the epoch as `Manager.Key` does: the Enclave-bound derivation when
+    /// `Manager.Ambient.tierUKeys` says the data is under it, the legacy one otherwise.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
-        try self.legacyKey(.localDB)
+        try self.tierUKey(.localDB, legacy: .localDB)
+    }
+
+    /// Tier U's current key: legacy unless the epoch says otherwise, and always legacy under `derivesLegacyKeysOnly`.
+    private func tierUKey(_ key: EnclaveBoundKey, legacy: LegacyKey) throws -> SymmetricKey? {
+        if self.derivesLegacyKeysOnly { return try self.legacyKey(legacy) }
+
+        switch Manager.Ambient.tierUKeys {
+        case .legacy:       return try self.legacyKey(legacy)
+        case .enclaveBound: return try self.enclaveBoundKey(key)
+        }
     }
 
     // MARK: - Legacy keys (TestKeyManager)
 
     /// ECDH against G, as `Manager.Key.legacyKey(_:)`. The four protocol methods of the same names delegate here.
     func legacyKey(_ key: LegacyKey) throws -> SymmetricKey? {
+        self.legacyKeyCalls += 1
+
         switch key {
         case .localDB:
             if self.simulatesLocalKeyUnavailable { return nil }
@@ -432,10 +510,12 @@ final class TestKeyManager: KeyManagerProtocol {
     /// before anything else is derived, and nil for a hybrid record that won't decapsulate: never a classical key
     /// in its place. The vault and PIN switches apply as they do to the legacy keys.
     func enclaveBoundKey(_ key: EnclaveBoundKey) throws -> SymmetricKey? {
+        if self.simulatesLockedDevice { throw SimulatedFailure() }
         if self.simulatesTierSecretMissing { return nil }
 
         switch key {
         case .localDB:
+            if self.simulatesLocalKeyUnavailable { return nil }
             return self.enclaveBound(
                 privateKey: self.localDBPrivateKey, publicKeyData: self.localDBPublicKeyData,
                 secret: self.tierSecretU, record: self.tierPQRecordU,
@@ -468,6 +548,26 @@ final class TestKeyManager: KeyManagerProtocol {
                 secret: self.tierSecretB, record: self.tierPQRecordB,
                 classicalInfo: SaltInfo.kVaultEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kVaultEnclaveBoundPQKeyInfo
             )
+        }
+    }
+
+    /// The in-memory secret, or nil when there is none. Throws on a simulated locked device.
+    func tierSecret(_ tier: TierSecret) throws -> Data? {
+        if self.simulatesLockedDevice { throw SimulatedFailure() }
+
+        switch tier {
+        case .deviceUnlock: return self.tierSecretU
+        case .biometry:     return self.tierSecretB
+        }
+    }
+
+    /// The in-memory record, or nil when there is none. Throws on a simulated locked device.
+    func tierPQRecord(_ tier: PostQuantumTier) throws -> TierPQRecord? {
+        if self.simulatesLockedDevice { throw SimulatedFailure() }
+
+        switch tier {
+        case .deviceUnlock: return self.tierPQRecordU
+        case .vault:        return self.tierPQRecordB
         }
     }
 
@@ -557,14 +657,14 @@ final class TestKeyManager: KeyManagerProtocol {
     ///
     /// The context-free signature mirrors the real key (no biometric needed).
     func deriveShardCustodyKey() throws -> SymmetricKey? {
-        try self.legacyKey(.shardCustody)
+        try self.tierUKey(.shardCustody, legacy: .shardCustody)
     }
 
     /// ECDH(shardCustodyPrivateKey, G) → HKDF with restore-vault info.
     /// Mirrors Manager.Key.deriveRestoreVaultKey() — same SE key, distinct HKDF
     /// info, distinct symmetric key.
     func deriveRestoreVaultKey() throws -> SymmetricKey? {
-        try self.legacyKey(.restoreVault)
+        try self.tierUKey(.restoreVault, legacy: .restoreVault)
     }
 
     func deriveSecureModeKey() throws -> SymmetricKey? {

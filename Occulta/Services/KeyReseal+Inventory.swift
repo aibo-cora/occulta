@@ -291,6 +291,8 @@ nonisolated extension KeyReseal {
         Field("AppLayerConfig", "coercerBaseDepth", .data),
         Field("AppLayerConfig", "lockoutCountEncrypted", .data, "nil means zero attempts."),
         Field("AppLayerConfig", "lockoutAnchorUptimeEncrypted", .data, "nil means not locked out."),
+        Field("AppLayerConfig", "keyEpoch", .data, "Written by the pass itself, under the new key, as its last write: born new, so the pass never moves it."),
+        Field("AppLayerConfig", "vaultKeyEpoch", .data, "Seeded under the new local key by the bootstrap. Stage 4 moves the vault tier by it."),
     ]
 
     /// Attributes of a type the guard looks at that hold nothing sealed.

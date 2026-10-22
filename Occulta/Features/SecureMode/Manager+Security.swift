@@ -199,14 +199,7 @@ extension Manager {
             if let existing = try? context.fetch(FetchDescriptor<AppLayerConfig>()).first {
                 config = existing
             } else {
-                let seed = AppLayerConfig()
-                try? seed.writePersistedDepth(0)
-                // pinEnabledPerDepth initialised to all-true in AppLayerConfig.init().
-                // coercerBaseDepth seeded to 0 at row creation so its presence is
-                // forensically constant — a field that first appears after a coercion
-                // event would itself be a tell. Value 0 means "real user's depth is
-                // home", which is always correct for a fresh install.
-                try? seed.writeCoercerBaseDepth(0)
+                let seed = AppLayerConfig.seeded()
                 context.insert(seed)
                 try? context.save()
                 config = seed

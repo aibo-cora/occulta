@@ -904,7 +904,7 @@ release mechanics.
 
 ## Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+
 
-**Status:** Plan adopted 2026-10-21. One decision is the user's (D1). Everything else here is recommended; open, needs a decision. Stage 1 is built; nothing in production uses the new derivations yet.
+**Status:** Plan adopted 2026-10-21. D1, D6 and the `identifier` question are the user's. Everything else here is recommended; open, needs a decision. Stages 1, 1b and 2 are built; after Stage 2 an upgraded install's local DB, shard custody and restore buffer data are under the Enclave-bound keys.
 
 **Context:** Seven symmetric keys are `HKDF(ECDH(enclave_priv, G) …)`. ECDH against the generator G is d·G = Q, the key's own public point, so each is a function of Q and the Enclave never takes part (`bugs.md` Bug 171, `EnclaveGeneratorECDHTests`). The fix gives each key an input that needs the Enclave and a post-quantum-safe secret of its own access tier, and moves existing data over with no loss, no new forensic tell, and nothing a coercer can use. Ciphertext already copied with Q stays readable; no option changes that.
 
@@ -918,10 +918,14 @@ release mechanics.
 - **D3. One root per tier.** Keep today's Enclave keys, with one Keychain secret per tier (tier U reuses the existing `local.db.random.key.occulta`). Consolidating Enclave keys buys nothing measurable and adds keychain churn.
 - **D4. Whether an image alone yields Q.** Run it on the Simulator, done (`bugs.md` Bug 171, "Where Q sits at rest"): no cleartext column holds Q, only SHA-1(Q). A device answer needs extraction tooling we don't have, so it stays open.
 - **D5. P as a compiled-in NUMS constant, or a stored per-install point.** The constant: it needs no storage, no integrity protection and no scalar.
-- **D6. Downgrade.** Accept it for TestFlight and sideload, as Bug 168 did, and say so in the TestFlight notes. A new store file would keep an old-key copy that any Q-holder can read for as long as it exists.
+- **D6. Downgrade.** Decided by the user, 2026-10-21: accept it for TestFlight and sideload, as Bug 168 did, and say so in the TestFlight notes. A new store file would keep an old-key copy that any Q-holder can read for as long as it exists.
 - **D7. Sequencing.** Fix all seven keys in 2.0.0. The passphrase release isn't built, and its storage design (spec §2) isn't decided. Key slots were decided against on 2026-10-19.
 - **D8. Vault rewrap timing.** At the first vault unlock. The window until then, with the per-entry keys still under the legacy vault key, is open, needs a decision.
 - **D9. Removing the v1 read path.** Keep it, migration-only: App Store updates jump straight to the newest version, so removing it loses data for installs that skipped versions.
+
+**Also decided by the user, 2026-10-21:** `Contact.Profile.identifier` stays byte-identical on every row, along with every record that stores it as a value. For contacts imported from the address book its plaintext is the iOS Contacts entry ID, so a holder of Q can still link each imported contact to its address-book entry until the passphrase migration reseals each contact as one record. Open, needs a decision.
+
+**Stage 2 rule (the plan, at the Stage 2a review; recommended; open, needs a decision): the keys follow the epoch.** The three tier U accessors return the Enclave-bound derivation only once `AppLayerConfig.keyEpoch` exists, and the legacy one before, decided once per process by the launch sequence after the reseal. The alternative, switching the keys as soon as the code ships, writes over data it can't read whenever the pass aborts (a background launch with the device locked, a missing secret, a failed read-back): prekey records, restore slots and `ReconstructShard` rows are the known cases. The cost is that an aborted pass leaves the session on the legacy keys until the next launch.
 
 **Why:** The tier secrets are symmetric, so a quantum computer gets only Grover's speed-up against them, and ECDH against P is the same Enclave call as today with a different peer, so no Enclave key is added or replaced. ML-KEM on 26+ closes the keychain-dump case there with an Enclave blob a dump can't use.
 

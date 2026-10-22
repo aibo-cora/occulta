@@ -1,0 +1,179 @@
+//
+//  LaunchSequence.swift
+//  Occulta
+//
+//  What runs at launch, in order, before any UI reads the store: the key reseal's bootstrap (Bug 171, Stage 2), the
+//  key reseal itself, then the migration passes that used to live in `OccultaApp.migrate()`, in their old order.
+//
+//  A function of its own, taking a `ModelContext` and a key manager, so that a test can run the whole sequence on an
+//  in-memory store, and so that the order is written down in one place. (Not a `static` member of `OccultaApp`: one
+//  inside the `@main` struct is invisible to `@testable import`, `decisions.md`.)
+//
+//  Called from `OccultaApp.init()` before `Manager.Security(...)`: its init reads `persistedDepth` and
+//  `pinEnabledPerDepth`, and has to read them under the key they are sealed under.
+//
+//  Once the reseal has run, the sequence decides which keys tier U's three accessors return for the rest of the
+//  process (`Manager.Ambient.tierUKeys`): the Enclave-bound ones if the epoch exists, the legacy ones if it doesn't.
+//  A pass that aborted or didn't finish therefore leaves the whole process on the legacy keys, consistent with a
+//  store that is still sealed under them, and the next launch retries. The passes below then run on data they can
+//  read.
+//
+
+import Foundation
+import SwiftData
+
+enum LaunchSequence {
+
+    /// What the first two steps did. Nothing reads it in production: the passes after them each log and carry on, as
+    /// they always have. A test reads it to see an interruption or an abort.
+    struct Report {
+        var bootstrap: Result<KeyReseal.BootstrapReport, any Error>
+        var reseal: Result<KeyReseal.Report, any Error>
+    }
+
+    /// Runs the sequence on `context`, suspending autosave for all of it, as `migrate()` always did.
+    @discardableResult
+    static func run(
+        context: ModelContext,
+        keyManager: any KeyManagerProtocol = Manager.Ambient.keyManager,
+        locations: KeyReseal.Locations = .production,
+        batchSize: Int = KeyReseal.defaultBatchSize
+    ) -> Report {
+        // Every migration below relies on its own explicit save() being the only write it
+        // makes — `migrateDepthFieldsToFixedWidth` accumulates into `didChange` and saves
+        // once at the end precisely so a failure part-way leaves the original bytes for the
+        // next launch. A RunLoop- or backgrounding-triggered autosave breaks that: it can
+        // commit a partially-applied pass before the function decides whether to.
+        //
+        // Same idiom and same reason as `activateSecureMode`, `deactivateSecureMode` and
+        // `Message.Draft`'s purge, all of which suspend autosave for a multi-step sequence
+        // and restore it after. Doing it once here covers every migration rather than asking
+        // each to defend itself.
+        context.autosaveEnabled = false
+        defer { context.autosaveEnabled = true }
+
+        // Legacy until the pass says otherwise; nothing derives before this returns.
+        Manager.Ambient.setTierUKeys(.legacy)
+
+        let bootstrap = Result { try KeyReseal.bootstrap(context: context, keyManager: keyManager) }
+
+        // Its own context: a batch that failed is rolled back there and cannot be committed by a pass below.
+        let resealContext = ModelContext(context.container)
+        resealContext.autosaveEnabled = false
+        let reseal = Result { try KeyReseal.run(context: resealContext, keyManager: keyManager, locations: locations, batchSize: batchSize) }
+
+        // Decided once, from the store: the epoch is the record of what the data is under.
+        Manager.Ambient.setTierUKeys(KeyReseal.epochExists(in: ModelContext(context.container)) ? .enclaveBound : .legacy)
+
+        #if DEBUG
+        if case .failure(let error) = bootstrap { debugPrint("Key reseal bootstrap error: \(error)") }
+        if case .failure(let error) = reseal { debugPrint("Key reseal error: \(error)") }
+        #endif
+
+        // A pass that threw (a failed save) may have committed some batches: the store is then a mix of both keys
+        // while the process is on the legacy ones. The passes below open what they can and rewrite what they can't
+        // (an unreadable prekey record starts over, a soft-deleted row's stamps are randomised), so they wait for the
+        // next launch, which finishes the pass first. A kill never gets here.
+        if case .failure = reseal { return Report(bootstrap: bootstrap, reseal: reseal) }
+
+        let legacyCrypto = LegacyCryptoManager()
+        let newCrypto = Manager.Crypto()
+
+        do {
+            try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+        } catch {
+            // Migration failure is not recoverable — the DB is in a known state
+            // because migration saves per-record. Log and continue; un-migrated
+            // records will be retried on next launch.
+            #if DEBUG
+            debugPrint("Migration error: \(error)")
+            #endif
+        }
+
+        // Independent of the v1→v2 migration above — runs regardless of Secure Mode
+        // configuration status, since legacy nil rows can exist either way.
+        do {
+            try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("visibleThroughDepth backfill error: \(error)")
+            #endif
+        }
+
+        do {
+            try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("Global Trustees retirement error: \(error)")
+            #endif
+        }
+
+        do {
+            try DatabaseMigration.migrateOriginDepthBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("originDepth backfill error: \(error)")
+            #endif
+        }
+
+        // Must run after the three backfills above: they own the nil case, and this pass
+        // deliberately leaves nil alone rather than manufacturing a value of its own.
+        do {
+            try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("depth field fixed-width normalisation error: \(error)")
+            #endif
+        }
+
+        // After the fixed-width pass, not before: that pass converts what it can read, and
+        // this one scrubs what is left on rows whose content is already erased (Bug 89).
+        do {
+            try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("soft-deleted depth stamp scrub error: \(error)")
+            #endif
+        }
+
+
+        // Before the reseal of contacts per depth, whenever that ships (`migratePrekeyRecords`), and after
+        // `migrateToV2`, whose rows it skips until they're converted.
+        do {
+            try DatabaseMigration.migratePrekeyRecords(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("prekey record migration error: \(error)")
+            #endif
+        }
+
+        // Introduction cards, stage A: the card field is never nil either.
+        do {
+            try DatabaseMigration.migrateCardFields(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("card field migration error: \(error)")
+            #endif
+        }
+
+        // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
+        // this runs (Bug 133). Independent of every pass above.
+        do {
+            try DatabaseMigration.migrateVaultEntryDeletionTokens(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("VaultEntry deletionToken backfill error: \(error)")
+            #endif
+        }
+
+        do {
+            try DatabaseMigration.migrateDeleteGlobalShardConfig(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("GlobalShardConfig deletion error: \(error)")
+            #endif
+        }
+
+        return Report(bootstrap: bootstrap, reseal: reseal)
+    }
+}

@@ -10,7 +10,7 @@
 //  Q alone and the Enclave input was not a secret: those keys were only as strong as whatever else went into
 //  them. The fix keeps the same Enclave keys and derives `HKDF(ECDH(enclave_priv, P) ‖ r_tier)` instead
 //  (`enclaveBoundKey(_:)`), with P a nothing-up-my-sleeve point whose discrete log nobody knows and r_tier the
-//  access tier's Keychain secret. Nothing in production calls it yet (Stage 1).
+//  access tier's Keychain secret. Tier U's accessors call it once the epoch exists (Stage 2).
 //
 //  Asserted about the legacy derivations, which stay for migration and for a downgraded build, and which
 //  document what anyone holding Q can still compute for data sealed under them:

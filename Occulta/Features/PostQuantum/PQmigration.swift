@@ -80,7 +80,7 @@ struct DatabaseMigration {
                 // live object; without this the next contact's `save()` would commit them and
                 // create exactly the half-converted row this fix exists to repair.
                 //
-                // Safe because `migrate()` suspends autosave for the whole sequence and this
+                // Safe because `LaunchSequence.run` suspends autosave for the whole sequence and this
                 // migration runs first, so nothing else has pending changes on this context —
                 // correct by ordering, which is why it is written down here.
                 modelContext.rollback()

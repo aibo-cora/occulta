@@ -43,13 +43,13 @@ private func enclaveMLKEMAvailable() -> Bool {
 }
 
 /// The in-memory ML-KEM key's seed: 00 01 … 3F. Its blob, for the in-memory provider, is this seed.
-private let katPQSeed = Data((0..<64).map { UInt8($0) })
+let katPQSeed = Data((0..<64).map { UInt8($0) })
 
 /// The shared secret that `katPQSeed`'s key decapsulates `katPQCiphertext` to.
-private let katPQSharedSecret = dataFromHex("c4117b1207f799511d3c4b4fb43a745c766cb2b2605a66475852607ccf2774b0")
+let katPQSharedSecret = dataFromHex("c4117b1207f799511d3c4b4fb43a745c766cb2b2605a66475852607ccf2774b0")
 
 /// A ML-KEM-1024 ciphertext made once to `katPQSeed`'s public key (1,568 bytes).
-private let katPQCiphertext = dataFromHex("""
+let katPQCiphertext = dataFromHex("""
         e512314e8409cf4c3c6bb820dc384d2805b5eb5fd4d460f3ba938ea238172ca16100425152997be94dff0d26122f01b5
         a604cf9a7c024e72afcf0144e164b011b84e22e3b2d7994cd9ace10e8bba8f2465cc23384bba7dc6a76823c44f9e147e
         76e864d47853d9aa560a63aaa189babbcae614abab96b3c2b5999b82440ab8bab6cf0c8c513164def15c7d605eab3b85

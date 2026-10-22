@@ -114,8 +114,13 @@ extension Manager {
     class Key {
         let tag: String
 
+        /// The Enclave keys and Keychain items this key manager creates, reads and removes. The production items,
+        /// unless a test gives it its own with `init(items:)`.
+        private let items: Items
+
         init() {
             self.tag = Tags.identity.rawValue
+            self.items = .canonical
             #if DEBUG
             Manager.Ambient.override?.recordRealKeyConstruction()
             #endif
@@ -123,10 +128,23 @@ extension Manager {
 
         init(testingTag tag: String) {
             self.tag = tag
+            self.items = .canonical
             #if DEBUG
             Manager.Ambient.override?.recordRealKeyConstruction()
             #endif
         }
+
+        #if DEBUG
+        /// A key manager on the Keychain items `items` names, so a test can run the tier secrets, the tier PQ records
+        /// and Erase All Data without touching the Simulator's canonical ones, which other tests are using. The Enclave
+        /// keys are the canonical ones (`items.enclaveTags` is only what `deleteAllKeys()` removes). Everything else is
+        /// `init()`'s, except that it doesn't count as a real key under `Manager.Ambient.override`: a test binds it
+        /// there itself.
+        init(items: Items) {
+            self.tag = Tags.identity.rawValue
+            self.items = items
+        }
+        #endif
 
         private enum Tags: String, CaseIterable {
             case identity      = "master.key.privacy.turtles.are.cute"
@@ -134,6 +152,25 @@ extension Manager {
             case vault         = "vault.key.occulta.v1"
             case shardCustody  = "shard.custody.occulta"
             case secureModePin = "app.layer.key.occulta.v1"
+        }
+
+        /// The Secure Enclave keys and Keychain items a key manager works on: the Enclave keys by tag (what
+        /// `deleteAllKeys()` removes), the tier secrets `r_U` and `r_B`, and the two tier PQ records.
+        struct Items {
+            var enclaveTags: [String]
+            var tierSecretU: String
+            var tierSecretB: String
+            var recordU: String
+            var recordB: String
+
+            /// Every item the app keeps, which is what Erase All Data removes.
+            static let canonical = Items(
+                enclaveTags: Tags.allCases.map(\.rawValue),
+                tierSecretU: Manager.Key.localDBRandomKeychainAccount,
+                tierSecretB: Manager.Key.vaultRandomKeychainAccount,
+                recordU:     Manager.Key.localDBPQKeychainAccount,
+                recordB:     Manager.Key.vaultPQKeychainAccount
+            )
         }
 
         // MARK: - SE key creation
@@ -510,10 +547,20 @@ extension Manager.Key: KeyManagerProtocol {
         }
     }
 
-    func createHybridLocalEncryptionKey() throws -> SymmetricKey? { try self.legacyKey(.localDB) }
+    /// Tier U's three keys follow the epoch: the Enclave-bound derivation once `AppLayerConfig.keyEpoch` exists, the
+    /// legacy one before (`Manager.Ambient.tierUKeys`, decided once per process at launch). The vault key is
+    /// Stage 4's and stays legacy.
+    func createHybridLocalEncryptionKey() throws -> SymmetricKey? { try self.tierUKey(.localDB, legacy: .localDB) }
     func deriveVaultKey(context: LAContext) throws -> SymmetricKey? { try self.legacyKey(.vault(context)) }
-    func deriveShardCustodyKey() throws -> SymmetricKey? { try self.legacyKey(.shardCustody) }
-    func deriveRestoreVaultKey() throws -> SymmetricKey? { try self.legacyKey(.restoreVault) }
+    func deriveShardCustodyKey() throws -> SymmetricKey? { try self.tierUKey(.shardCustody, legacy: .shardCustody) }
+    func deriveRestoreVaultKey() throws -> SymmetricKey? { try self.tierUKey(.restoreVault, legacy: .restoreVault) }
+
+    private func tierUKey(_ key: EnclaveBoundKey, legacy: LegacyKey) throws -> SymmetricKey? {
+        switch Manager.Ambient.tierUKeys {
+        case .legacy:       return try self.legacyKey(legacy)
+        case .enclaveBound: return try self.enclaveBoundKey(key)
+        }
+    }
 
     // MARK: - Hybrid key derivation
 
@@ -1064,16 +1111,16 @@ extension Manager.Key: KeyManagerProtocol {
     /// After this call every encrypted blob in Occulta is permanently unreadable.
     @discardableResult
     func deleteAllKeys() -> Bool {
-        let seDeleted = Tags.allCases.allSatisfy { delete(using: $0.rawValue) }
+        let seDeleted = self.items.enclaveTags.allSatisfy { self.delete(using: $0) }
         let legacyDeleted = self.deleteLegacyRotationArtefacts()
         let keychainQuery: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
-            kSecAttrAccount as String: Self.localDBRandomKeychainAccount
+            kSecAttrAccount as String: self.items.tierSecretU
         ]
         let keychainStatus = SecItemDelete(keychainQuery as CFDictionary)
         // Every deletion runs whatever an earlier one returned: a failure must not leave `r_B` or a record behind.
-        let vaultSecretDeleted = self.deleteTierSecret(account: Self.vaultRandomKeychainAccount)
-        let recordsDeleted = [Self.localDBPQKeychainAccount, Self.vaultPQKeychainAccount]
+        let vaultSecretDeleted = self.deleteTierSecret(account: self.items.tierSecretB)
+        let recordsDeleted = [self.items.recordU, self.items.recordB]
             .map { self.deleteTierSecret(account: $0) }
         return seDeleted && legacyDeleted
             && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
@@ -1133,7 +1180,8 @@ extension Manager.Key: KeyManagerProtocol {
 //      key = HKDF(ikm: t ‖ ss ‖ r, salt: as above, info: the key's `-pq-2026` string ‖ SHA-256(c))
 //
 //  Same Enclave keys as the legacy derivations, so none is added or replaced; only the peer, the IKM and
-//  the info string change. Nothing in production calls `enclaveBoundKey(_:)` yet.
+//  the info string change. Since Stage 2 the three tier U accessors call `enclaveBoundKey(_:)` once the tier's epoch
+//  exists (`tierUKey(_:legacy:)`); the PIN, vault and share staging keys do not yet.
 extension Manager.Key {
 
     // MARK: - Derivation
@@ -1279,10 +1327,10 @@ extension Manager.Key {
 
     // MARK: - Tier secrets
 
-    private static func account(for tier: TierSecret) -> String {
+    private func account(for tier: TierSecret) -> String {
         switch tier {
-        case .deviceUnlock: return Self.localDBRandomKeychainAccount
-        case .biometry:     return Self.vaultRandomKeychainAccount
+        case .deviceUnlock: return self.items.tierSecretU
+        case .biometry:     return self.items.tierSecretB
         }
     }
 
@@ -1290,7 +1338,7 @@ extension Manager.Key {
     /// missing secret is never created here, because a new one would leave everything sealed under the old one
     /// unreadable. Throws for any other failure, such as a locked device: that is not a missing secret.
     func tierSecret(_ tier: TierSecret) throws -> Data? {
-        try self.readTierSecret(tier, account: Self.account(for: tier))
+        try self.readTierSecret(tier, account: self.account(for: tier))
     }
 
     /// `tierSecret(_:)` for a named account, so a test can use an item of its own.
@@ -1321,7 +1369,7 @@ extension Manager.Key {
 
     @discardableResult
     func createTierSecretIfAbsent(_ tier: TierSecret) throws -> Bool {
-        try self.createTierSecretIfAbsent(tier, account: Self.account(for: tier))
+        try self.createTierSecretIfAbsent(tier, account: self.account(for: tier))
     }
 
     /// `createTierSecretIfAbsent(_:)` for a named account, so a test can use an item of its own.
@@ -1371,10 +1419,10 @@ extension Manager.Key {
 
     // MARK: - Tier PQ records
 
-    private static func pqAccount(for tier: PostQuantumTier) -> String {
+    private func pqAccount(for tier: PostQuantumTier) -> String {
         switch tier {
-        case .deviceUnlock: return Self.localDBPQKeychainAccount
-        case .vault:        return Self.vaultPQKeychainAccount
+        case .deviceUnlock: return self.items.recordU
+        case .vault:        return self.items.recordB
         }
     }
 
@@ -1383,7 +1431,7 @@ extension Manager.Key {
     /// Throws for anything else: a locked device, and an item that isn't a `TierPQRecord` (a record that won't read
     /// is not a missing one).
     func tierPQRecord(_ tier: PostQuantumTier) throws -> TierPQRecord? {
-        try self.readTierPQRecord(account: Self.pqAccount(for: tier))
+        try self.readTierPQRecord(account: self.pqAccount(for: tier))
     }
 
     /// `tierPQRecord(_:)` for a named account, so a test can use an item of its own.
@@ -1410,7 +1458,7 @@ extension Manager.Key {
 
     @discardableResult
     func createTierPQRecordIfAbsent(_ tier: PostQuantumTier) throws -> Bool {
-        try self.createTierPQRecordIfAbsent(account: Self.pqAccount(for: tier), provider: PostQuantumProviderFactory.create())
+        try self.createTierPQRecordIfAbsent(account: self.pqAccount(for: tier), provider: PostQuantumProviderFactory.create())
     }
 
     /// `createTierPQRecordIfAbsent(_:)` for a named account and a given provider, so a test can use an item of its
