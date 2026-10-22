@@ -62,6 +62,11 @@ private func bound<R>(_ keys: Manager.Key, _ body: () throws -> R) throws -> R {
     }
 }
 
+private func verifierReportOrNil(_ report: LaunchSequence.Report) -> KeyReseal.VerifierReport? {
+    if case .success(let value) = report.verifiers { return value }
+    return nil
+}
+
 @Suite("Key reseal — real Enclave", .serialized)
 @MainActor
 struct KeyResealEnclaveTests {
@@ -187,6 +192,52 @@ struct KeyResealEnclaveTests {
             #expect(config.readPersistedDepth() == 2)
             _ = Manager.Security(modelContainer: container, keyManager: keys)
             #expect(try #require(try ModelContext(container).fetch(FetchDescriptor<AppLayerConfig>()).first).readPersistedDepth() == 2)
+        }
+    }
+
+    @Test("Stage 3: PIN verifiers made with the real PIN key are wrapped under the real wrap key, and the PINs verify afterwards",
+          .enabled(if: secureEnclaveAvailable()), arguments: availableForms)
+    func verifiersWrapWithRealKeys(form: KeyForm) throws {
+        let (keys, items) = try makeRealKeys(form: form)
+        defer { removeRealItems(keys, items) }
+
+        let container = try makeStore()
+        try bound(keys) {
+            // The previous release's verifiers: 53 bytes, under the real inner key.
+            let inner = try #require(try keys.deriveSecureModeKey())
+            let master = FrozenPIN.plain("111111", label: FrozenPIN.normalLabel, inner: inner)
+            let duress = FrozenPIN.plain("999999", label: FrozenPIN.duressLabel, inner: inner)
+            let alias  = FrozenPIN.plain("999999", label: FrozenPIN.normalLabel, inner: inner)
+
+            let context = ModelContext(container)
+            let config  = AppLayerConfig()
+            var normals = AppLayerConfig.verifierFillerArray()
+            var duresses = AppLayerConfig.verifierFillerArray()
+            normals[0] = master; normals[1] = alias; duresses[0] = duress
+            config.sealedNormalVerifiers = normals
+            config.sealedDuressVerifiers = duresses
+            config.sealedNormalVerifier  = master
+            config.sealedDuressVerifier  = duress
+            context.insert(config)
+            try context.save()
+
+            let report = LaunchSequence.run(context: ModelContext(container), keyManager: keys, batchSize: 3)
+
+            #expect(verifierReportOrNil(report)?.outcome == .wrapped)
+            #expect(Manager.Ambient.pinVerifiers == .wrapped)
+
+            let stored = try #require(try ModelContext(container).fetch(FetchDescriptor<AppLayerConfig>()).first)
+            #expect(Set((stored.sealedNormalVerifiers + stored.sealedDuressVerifiers).map(\.count)) == [81])
+
+            // The wrap is under the real wrap key, around exactly the verifier that was there.
+            let wrapKey = try #require(try keys.enclaveBoundKey(.secureModeWrap))
+            #expect(Sealing.open(stored.sealedNormalVerifiers[0], key: wrapKey, aad: nil) == master)
+            #expect(Sealing.open(stored.sealedNormalVerifiers[0], key: inner, aad: nil) == nil, "the inner key alone doesn't open it")
+
+            let security = Manager.Security(modelContainer: container, keyManager: keys)
+            #expect(try security.verify("111111") == .normal(depth: 0))
+            #expect(try security.verify("999999") == .normal(depth: 1))
+            #expect(try security.verify("000000") == .wrong)
         }
     }
 

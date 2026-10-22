@@ -31,6 +31,9 @@ extension Manager {
             /// This test's `tierUKeys`, in place of the process-wide one.
             var tierUKeys = TierUKeys.legacy
 
+            /// This test's `pinVerifiers`, in place of the process-wide one.
+            var pinVerifiers = PINVerifiers.plain
+
             init(_ keyManager: any KeyManagerProtocol) {
                 self.keyManager = keyManager
             }
@@ -90,6 +93,50 @@ extension Manager {
             }
             #endif
             Self.process = keys
+        }
+
+        // MARK: - Which form PIN verifiers are written in (Bug 171, Stage 3)
+
+        /// The form a PIN verifier is written in.
+        enum PINVerifiers {
+            /// 53 bytes: the sentinel sealed under the PIN key (`PINManager`).
+            case plain
+            /// 81 bytes: that, sealed again under the wrap key, which needs `r_U` and the tier U record.
+            case wrapped
+        }
+
+        private static var processVerifiers = PINVerifiers.plain
+
+        /// How `PINManager` builds verifiers, and so how big a filler slot is. Decided once per process, by
+        /// `LaunchSequence`, after the verifier wrap pass, and by size alone: `.wrapped` when every verifier in the store
+        /// is 81 bytes, `.plain` otherwise. Checking accepts both sizes whatever this says. Writing follows it so that an
+        /// array is never mixed: a pass that aborted leaves the store at 53 and the process writing 53, and a store
+        /// at 81 has the process writing 81. The default is `.plain`, which is what a process that never runs the launch
+        /// sequence did before.
+        static var pinVerifiers: PINVerifiers {
+            #if DEBUG
+            if let override = Self.override { return override.pinVerifiers }
+            #endif
+            return Self.processVerifiers
+        }
+
+        /// Only `LaunchSequence` (and `KeyReseal.bootstrap`, for the config row it creates) calls this.
+        static func setPINVerifiers(_ verifiers: PINVerifiers) {
+            #if DEBUG
+            if let override = Self.override {
+                override.pinVerifiers = verifiers
+                return
+            }
+            #endif
+            Self.processVerifiers = verifiers
+        }
+
+        /// Runs `body` with `pinVerifiers` set to `verifiers`, and restores what it was.
+        static func withPINVerifiers<R>(_ verifiers: PINVerifiers, _ body: () throws -> R) rethrows -> R {
+            let previous = Self.pinVerifiers
+            Self.setPINVerifiers(verifiers)
+            defer { Self.setPINVerifiers(previous) }
+            return try body()
         }
 
         /// Runs `body` with `tierUKeys` set to `keys`, and restores what it was.

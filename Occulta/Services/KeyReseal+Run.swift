@@ -70,7 +70,10 @@ extension KeyReseal {
         if let existing {
             config = existing
         } else {
-            let seed = Manager.Ambient.withTierUKeys(.enclaveBound) { AppLayerConfig.seeded() }
+            // Born under the new local key, and with wrapped-size verifier filler: a fresh install ends uniform.
+            let seed = Manager.Ambient.withTierUKeys(.enclaveBound) {
+                Manager.Ambient.withPINVerifiers(.wrapped) { AppLayerConfig.seeded() }
+            }
             context.insert(seed)
             config = seed
             report.createdConfig = true

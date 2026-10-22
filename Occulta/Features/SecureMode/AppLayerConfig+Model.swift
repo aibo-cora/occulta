@@ -121,7 +121,7 @@ final class AppLayerConfig {
     // MARK: - Verifier arrays (multi-layer)
     //
     // Both arrays are always padded to maxDepthCount entries. Filler entries are
-    // random bytes of exactly verifierFillerSize (= PINManager.verifierSize = 53 bytes),
+    // random bytes of exactly verifierFillerSize (= PINManager.verifierSize: 53 bytes, 81 once wrapped),
     // indistinguishable in size from real verifiers. `verify()` simply ignores entries
     // that fail to open — filler always fails. A forensic examiner always sees exactly
     // maxDepthCount sealed entries per array regardless of how many real layers are
@@ -195,8 +195,9 @@ final class AppLayerConfig {
     /// Fixed capacity `pinEnabledPerDepth` is padded to — must equal `maxDepthCount`
     /// so all three per-depth arrays stay the same forensically-constant length.
     private static let paddedArrayCount = 32
-    /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize (53).
-    static let verifierFillerSize = 53
+    /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize: 53 until the process writes
+    /// wrapped verifiers (Bug 171, Stage 3), 81 after.
+    static var verifierFillerSize: Int { Manager.PINManager.verifierSize }
 
     private func ensurePadded() {
         while self.pinEnabledPerDepth.count < Self.paddedArrayCount {

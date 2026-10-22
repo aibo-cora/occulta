@@ -161,7 +161,8 @@ protocol KeyManagerProtocol {
     /// The Enclave-bound derivation of `key`: `HKDF(ECDH(enclave_priv, P) ‖ r_tier)`, so it needs the Enclave
     /// key and the tier's Keychain secret. The tier U accessors (`createHybridLocalEncryptionKey()`,
     /// `deriveShardCustodyKey()`, `deriveRestoreVaultKey()`) return it once the tier's epoch exists; the key reseal
-    /// calls it by name. The PIN, vault and share staging keys do not use it yet.
+    /// calls it by name, and so do the PIN verifiers, wrapped under `.secureModeWrap` (Stage 3). The vault and share
+    /// staging keys do not use it yet.
     ///
     /// Reads the tier secret and never creates it: nil when it is missing, before the Enclave key is fetched.
     /// Creating it is `createTierSecretIfAbsent(_:)`, called on purpose and not as a side effect of a read.
@@ -249,6 +250,10 @@ final class TestKeyManager: KeyManagerProtocol {
     /// Makes `enclaveBoundKey(_:)` return nil as production does when it can't read the tier secret, without
     /// touching `tierSecretU` or `tierSecretB`: nothing is written, and the secrets are still there afterwards.
     var simulatesTierSecretMissing = false
+
+    /// Makes `enclaveBoundKey(.secureModeWrap)` return nil and nothing else, so the PIN verifiers can be checked, which
+    /// needs the inner key, while the wrap key (`r_U`, the tier U record) is out of reach.
+    var simulatesWrapKeyUnavailable = false
 
     /// Simulates the tier PQ record of tier U (`TierPQRecord`). nil = the item is missing. `init` makes it as
     /// production would on this OS: hybrid with an in-memory ML-KEM key on iOS 26+, classical below.
@@ -534,7 +539,7 @@ final class TestKeyManager: KeyManagerProtocol {
                 classicalInfo: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kRestoreVaultEnclaveBoundPQKeyInfo
             )
         case .secureModeWrap:
-            if self.simulatesSecureModeKeyUnavailable { return nil }
+            if self.simulatesSecureModeKeyUnavailable || self.simulatesWrapKeyUnavailable { return nil }
             return self.enclaveBound(
                 privateKey: self.secureModePrivateKey, publicKeyData: self.secureModePublicKeyData,
                 secret: self.tierSecretU, record: self.tierPQRecordU,

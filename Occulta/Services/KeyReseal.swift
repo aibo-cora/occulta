@@ -213,6 +213,21 @@ extension KeyReseal {
         let point: FaultPoint
     }
 
+    /// The same, for the verifier wrap pass (`wrapVerifiers`), which has its own points: it is one transaction on one
+    /// row, and a test that stops the tier U pass at `afterFirstRow` must not stop this one.
+    nonisolated enum WrapFaultPoint: String, CaseIterable {
+        /// After the first value is sealed in memory.
+        case afterFirstValue
+        /// After about half of them are, before any is assigned.
+        case midWrap
+        /// After every new value is assigned to the row, before the one `save()`.
+        case beforeSave
+    }
+
+    nonisolated struct InjectedWrapFault: Error, Equatable {
+        let point: WrapFaultPoint
+    }
+
     /// What a test binds around a run, as `Manager.Ambient.override` is bound: task-local, so tests that run in
     /// parallel don't see each other's. Release has no hook at all.
     ///
@@ -221,12 +236,21 @@ extension KeyReseal {
     /// which is how a test knows the point exists.
     final class Faults {
         let interruptAt: FaultPoint?
+        let interruptAtWrap: WrapFaultPoint?
         let corruptsNewCiphertext: Bool
         private(set) var reached: [FaultPoint] = []
+        private(set) var reachedWrap: [WrapFaultPoint] = []
 
-        init(interruptAt: FaultPoint? = nil, corruptsNewCiphertext: Bool = false) {
+        init(interruptAt: FaultPoint? = nil, interruptAtWrap: WrapFaultPoint? = nil, corruptsNewCiphertext: Bool = false) {
             self.interruptAt           = interruptAt
+            self.interruptAtWrap       = interruptAtWrap
             self.corruptsNewCiphertext = corruptsNewCiphertext
+        }
+
+        /// Records the point and throws `InjectedWrapFault` if it is the one asked for.
+        func reachWrap(_ point: WrapFaultPoint) throws {
+            self.reachedWrap.append(point)
+            if self.interruptAtWrap == point { throw InjectedWrapFault(point: point) }
         }
 
         /// Records the point and throws `InjectedFault` if it is the one asked for.

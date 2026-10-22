@@ -18,6 +18,9 @@
 //  store that is still sealed under them, and the next launch retries. The passes below then run on data they can
 //  read.
 //
+//  After it, the PIN verifier wrap (Bug 171, Stage 3), then the process is told whether to write wrapped verifiers
+//  (`Manager.Ambient.pinVerifiers`), by the sizes in the store, before `Manager.Security` reads or writes one.
+//
 
 import Foundation
 import SwiftData
@@ -29,6 +32,8 @@ enum LaunchSequence {
     struct Report {
         var bootstrap: Result<KeyReseal.BootstrapReport, any Error>
         var reseal: Result<KeyReseal.Report, any Error>
+        /// The PIN verifier wrap. `.notRun` if the reseal threw, which keeps it from running.
+        var verifiers: Result<KeyReseal.VerifierReport, any Error> = .success(KeyReseal.VerifierReport())
     }
 
     /// Runs the sequence on `context`, suspending autosave for all of it, as `migrate()` always did.
@@ -52,8 +57,9 @@ enum LaunchSequence {
         context.autosaveEnabled = false
         defer { context.autosaveEnabled = true }
 
-        // Legacy until the pass says otherwise; nothing derives before this returns.
+        // Legacy and plain until the passes say otherwise; nothing derives before this returns.
         Manager.Ambient.setTierUKeys(.legacy)
+        Manager.Ambient.setPINVerifiers(.plain)
 
         let bootstrap = Result { try KeyReseal.bootstrap(context: context, keyManager: keyManager) }
 
@@ -70,11 +76,25 @@ enum LaunchSequence {
         if case .failure(let error) = reseal { debugPrint("Key reseal error: \(error)") }
         #endif
 
+        // The PIN verifiers, after the tier U pass and before `Manager.Security` reads them. Skipped if that pass threw.
+        var verifiers = Result<KeyReseal.VerifierReport, any Error>.success(KeyReseal.VerifierReport())
+        if case .success = reseal {
+            let wrapContext = ModelContext(context.container)
+            wrapContext.autosaveEnabled = false
+            verifiers = Result { try KeyReseal.wrapVerifiers(context: wrapContext, keyManager: keyManager, locations: locations) }
+            #if DEBUG
+            if case .failure(let error) = verifiers { debugPrint("PIN verifier wrap error: \(error)") }
+            #endif
+        }
+
+        // Decided once, from the store: wrapped only if every verifier is.
+        Manager.Ambient.setPINVerifiers(KeyReseal.verifiersAreWrapped(in: ModelContext(context.container)) ? .wrapped : .plain)
+
         // A pass that threw (a failed save) may have committed some batches: the store is then a mix of both keys
         // while the process is on the legacy ones. The passes below open what they can and rewrite what they can't
         // (an unreadable prekey record starts over, a soft-deleted row's stamps are randomised), so they wait for the
         // next launch, which finishes the pass first. A kill never gets here.
-        if case .failure = reseal { return Report(bootstrap: bootstrap, reseal: reseal) }
+        if case .failure = reseal { return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers) }
 
         let legacyCrypto = LegacyCryptoManager()
         let newCrypto = Manager.Crypto()
@@ -174,6 +194,6 @@ enum LaunchSequence {
             #endif
         }
 
-        return Report(bootstrap: bootstrap, reseal: reseal)
+        return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers)
     }
 }
