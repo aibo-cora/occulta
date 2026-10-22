@@ -6,6 +6,17 @@
 //  files and manifest the extension stages in the App Group for the main app to pick up.
 //  Linked by both the main app and the share extension.
 //
+//  Sealing (Bug 171, Stage 5): `encrypt` seals under the Enclave-bound key, in the form the staging tier's PQ record
+//  says: ECDH(key, P) ‖ ss ‖ r_S on iOS 26+ (hybrid), ECDH(key, P) ‖ r_S below (classical). `decrypt` tries the current
+//  form, then the classical one if the record is hybrid, then the legacy ECDH-against-G key, so a session staged by the
+//  previous build, or before the device reached iOS 26, still opens within its hour. **The classical and legacy
+//  fallbacks go one release after 2.0.0**, when no session sealed that way can still be alive: delete
+//  `deriveClassicalEnclaveBoundKey()`, `deriveLegacySymmetricKey()` and the two steps in `decrypt` that use them.
+//
+//  `r_S` and the PQ record are created by whichever process first needs them: the app's launch (`LaunchSequence`) or
+//  the extension's first `encrypt`. Both add and, on `errSecDuplicateItem`, read what the other added. Unlike the
+//  other tiers this one may be created at any time, because staging holds nothing for longer than an hour.
+//
 //  Formerly `ShareIndexKeyManager`. It first encrypted the share index, a mirror of the
 //  contact list the extension used to draw its own recipient picker; that index was
 //  deleted on 2026-08-16 and the key kept only this job. The key tag and HKDF label below
@@ -94,6 +105,12 @@ final class ShareStagingKeyManager {
     private let tierSecretAccount: String
     private let tierPQRecordAccount: String
     private let postQuantum: () -> (any StagingPostQuantum)?
+    private let enclaveKey: (() throws -> SecKey)?
+
+    #if DEBUG
+    /// How many times the legacy derivation has run on this instance, so a test can show that sealing never uses it.
+    private(set) var legacyDerivationCount = 0
+    #endif
 
     /// - Parameters:
     ///   - keyTag: The tag of the staging Enclave key. Only a test passes one, so that a test of Erase All Data
@@ -103,16 +120,21 @@ final class ShareStagingKeyManager {
     ///   - tierPQRecordAccount: The account of the PQ record, likewise.
     ///   - postQuantum: The ML-KEM provider, asked for each time it is needed. The default is the Secure Enclave's
     ///     on iOS 26+ and nil below. A test passes an in-memory one, or `{ nil }` for a device below 26.
+    ///   - enclaveKey: The P-256 private key the derivations exchange with. The default is the staging Enclave key,
+    ///     found by `keyTag` and created if missing. A test passes a software key, so that the app and the extension
+    ///     can be two instances sharing one key without a Secure Enclave.
     init(
         keyTag: String = ShareStagingKeyManager.tag,
         tierSecretAccount: String = ShareStagingKeyManager.defaultTierSecretAccount,
         tierPQRecordAccount: String = ShareStagingKeyManager.defaultTierPQRecordAccount,
-        postQuantum: @escaping () -> (any StagingPostQuantum)? = ShareStagingKeyManager.platformPostQuantum
+        postQuantum: @escaping () -> (any StagingPostQuantum)? = ShareStagingKeyManager.platformPostQuantum,
+        enclaveKey: (() throws -> SecKey)? = nil
     ) {
         self.keyTag              = keyTag
         self.tierSecretAccount   = tierSecretAccount
         self.tierPQRecordAccount = tierPQRecordAccount
         self.postQuantum         = postQuantum
+        self.enclaveKey          = enclaveKey
     }
 
     // MARK: - SE Key Retrieval
@@ -122,6 +144,8 @@ final class ShareStagingKeyManager {
     /// The access group in the query ensures we only find keys
     /// that belong to the shared group — never the identity key.
     private func retrievePrivateKey() throws -> SecKey {
+        if let enclaveKey = self.enclaveKey { return try enclaveKey() }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: self.keyTag.data(using: .utf8)!,
@@ -224,7 +248,8 @@ final class ShareStagingKeyManager {
     /// Derive the symmetric key for encrypting a share session's staged files and manifest.
     ///
     /// The legacy derivation (`bugs.md` Bug 171): ECDH against G is a function of the key's public point alone.
-    /// What `encrypt` and `decrypt` use until Stage 5 moves them to `deriveEnclaveBoundKey()`.
+    /// Since Stage 5 only `decrypt` uses it, as its last resort, for a session the previous build staged. It goes one
+    /// release after 2.0.0.
     ///
     /// Both the main app and the extension call this and get the same key because
     /// they share access to the same SE private key via the access group.
@@ -241,6 +266,9 @@ final class ShareStagingKeyManager {
     /// Salt is the public key (not XOR) — differs from Key+Manager's local DB pattern
     /// because this key has no peer; the public key alone provides per-key uniqueness.
     func deriveLegacySymmetricKey() throws -> SymmetricKey {
+        #if DEBUG
+        self.legacyDerivationCount += 1
+        #endif
         let privateKey = try self.retrievePrivateKey()
 
         guard let fixedPubKey = Self.convertToSecKey(Self.generatorG) else {
@@ -270,8 +298,8 @@ final class ShareStagingKeyManager {
     }
 
     /// The Enclave-bound key: needs the Enclave key, the tier secret `r_S` and, on iOS 26+, the Enclave's ML-KEM
-    /// secret, and the key's public point alone gives none of them. No caller uses it yet; Stage 5 moves `encrypt`
-    /// to it.
+    /// secret, and the key's public point alone gives none of them. What `encrypt` seals under, in the form the
+    /// record says, and the first thing `decrypt` tries.
     ///
     /// ```
     /// t = ECDH(shareStagingSEKey, P)                32 bytes
@@ -288,6 +316,11 @@ final class ShareStagingKeyManager {
     /// fetched, let alone created. A hybrid record whose blob won't decapsulate throws `postQuantumFailed`, and so
     /// does one on a device with no ML-KEM; it is never read as classical.
     func deriveEnclaveBoundKey() throws -> SymmetricKey {
+        try self.currentKey().key
+    }
+
+    /// The key in the form the record says, and whether that form is hybrid.
+    private func currentKey() throws -> (key: SymmetricKey, hybrid: Bool) {
         guard let secret = try self.tierSecret() else { throw KeyError.tierSecretMissing }
         guard let record = try self.tierPQRecord() else { throw KeyError.tierPQRecordMissing }
 
@@ -305,7 +338,18 @@ final class ShareStagingKeyManager {
 
         let privateKey = try self.retrievePrivateKey()
 
-        return try Self.enclaveBoundKey(exchangingWith: privateKey, secret: secret, postQuantum: hybridInput)
+        return (try Self.enclaveBoundKey(exchangingWith: privateKey, secret: secret, postQuantum: hybridInput), hybridInput != nil)
+    }
+
+    /// The classical form of the Enclave-bound key, whatever the record says: `t ‖ r_S`. `decrypt` tries it when the
+    /// record is hybrid, for a session staged while the device was classical (below iOS 26, or before Stage 6 rewrote
+    /// the record). Nothing seals under it on a hybrid device. Goes one release after 2.0.0.
+    ///
+    /// Reads `r_S` and never creates it.
+    func deriveClassicalEnclaveBoundKey() throws -> SymmetricKey {
+        guard let secret = try self.tierSecret() else { throw KeyError.tierSecretMissing }
+
+        return try Self.enclaveBoundKey(exchangingWith: try self.retrievePrivateKey(), secret: secret)
     }
 
     /// The derivation itself, for any P-256 private key reference: the Enclave key in production, a software key
@@ -382,9 +426,9 @@ final class ShareStagingKeyManager {
     /// first and reads on `errSecDuplicateItem`, so the app and the extension racing to create it end with one
     /// secret. Never replaces an existing item.
     ///
-    /// **Call it only while the tier has never been resealed, or on a fresh install**, with one exception the
-    /// plan allows: staging holds nothing for longer than an hour, so a lost `r_S` costs only the sessions
-    /// staged under it. Stage 5 decides who calls it.
+    /// Unlike the other tiers' secrets this one may be created at any time, not only before a reseal: staging holds
+    /// nothing for longer than an hour, so a lost `r_S` costs only the sessions staged under it, which can be shared
+    /// again. Called by `createTierItemsIfAbsent()`.
     @discardableResult
     func createTierSecretIfAbsent() throws -> Bool {
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -405,6 +449,20 @@ final class ShareStagingKeyManager {
         default:
             throw KeyError.creationFailed
         }
+    }
+
+    // MARK: - Both items
+
+    /// `r_S` and the PQ record, each created if absent. The app's launch calls it, and so does `encrypt`, which is the
+    /// extension's first use: whichever process gets there first makes them, and the other finds them or, if the two
+    /// race, reads what the first added.
+    ///
+    /// Reads before it creates, so a phone that has both pays two Keychain reads and no random bytes, no Enclave key
+    /// and no write. Neither item is replaced, and a provider that can't make the ML-KEM key throws with the record
+    /// absent (see `createTierPQRecordIfAbsent()`), so a hybrid device is never given a classical record.
+    func createTierItemsIfAbsent() throws {
+        if try self.tierSecret() == nil { try self.createTierSecretIfAbsent() }
+        try self.createTierPQRecordIfAbsent()
     }
 
     // MARK: - Tier PQ record
@@ -447,7 +505,7 @@ final class ShareStagingKeyManager {
     ///
     /// Unlike the U and B records, this one may be created if absent at any time, not only before a reseal: staging
     /// holds nothing for longer than an hour (`ShareSession.staleAfter`), so a record lost and recreated costs only
-    /// the sessions staged under the old one, which can be shared again. Stage 5 decides who calls it.
+    /// the sessions staged under the old one, which can be shared again. Called by `createTierItemsIfAbsent()`.
     @discardableResult
     func createTierPQRecordIfAbsent() throws -> Bool {
         if try self.tierPQRecord() != nil { return false }
@@ -497,18 +555,52 @@ final class ShareStagingKeyManager {
 
     /// AES-256-GCM encrypt. Random 96-bit nonce per call.
     /// Output format: nonce ∥ ciphertext ∥ tag (CryptoKit `.combined`).
+    ///
+    /// Under the Enclave-bound key in the current form (`deriveEnclaveBoundKey()`), never the legacy one. This is the
+    /// extension's first use of the staging tier, so it makes `r_S` and the PQ record if the app hasn't yet. A hybrid
+    /// record that can't be decapsulated fails here instead of sealing in a lower form.
     func encrypt(data: Data) throws -> Data {
-        let key = try self.deriveLegacySymmetricKey()
+        try self.createTierItemsIfAbsent()
+
+        let key = try self.deriveEnclaveBoundKey()
         let sealed = try AES.GCM.seal(data, using: key, nonce: AES.GCM.Nonce())
         guard let combined = sealed.combined else { throw KeyError.encryptionFailed }
         return combined
     }
 
     /// AES-256-GCM decrypt. Authenticates tag before returning plaintext.
+    ///
+    /// Tries the current form of the Enclave-bound key, then the classical form if the record is hybrid, then the
+    /// legacy key, and returns the first that authenticates, so a session staged by the previous build, or while the
+    /// device was classical, still opens. A key that can't be derived (no `r_S` or record yet, say) is skipped, and
+    /// nothing is created: only sealing makes the items. If none opens it, the last failure is thrown. The classical
+    /// and legacy steps go one release after 2.0.0.
     func decrypt(data: Data) throws -> Data {
-        let key = try self.deriveLegacySymmetricKey()
         let box = try AES.GCM.SealedBox(combined: data)
-        return try AES.GCM.open(box, using: key)
+
+        var failure: (any Error)?
+        var triedClassical = false
+
+        func attempt(_ derive: () throws -> SymmetricKey) -> Data? {
+            do {
+                return try AES.GCM.open(box, using: try derive())
+            } catch {
+                failure = error
+                return nil
+            }
+        }
+
+        let current = attempt {
+            let current = try self.currentKey()
+            triedClassical = !current.hybrid
+            return current.key
+        }
+        if let current { return current }
+
+        if !triedClassical, let classical = attempt({ try self.deriveClassicalEnclaveBoundKey() }) { return classical }
+        if let legacy = attempt({ try self.deriveLegacySymmetricKey() }) { return legacy }
+
+        throw failure ?? KeyError.decryptionFailed
     }
 
     // MARK: - Helpers
@@ -532,6 +624,7 @@ final class ShareStagingKeyManager {
         case ecdhFailed
         case publicKeyExportFailed
         case encryptionFailed
+        case decryptionFailed
         /// `deriveEnclaveBoundKey()` found no `r_S`.
         case tierSecretMissing
         /// `deriveEnclaveBoundKey()` found no PQ record.

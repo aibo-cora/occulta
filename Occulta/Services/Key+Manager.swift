@@ -1191,8 +1191,8 @@ extension Manager.Key: KeyManagerProtocol {
 //
 //  Same Enclave keys as the legacy derivations, so none is added or replaced; only the peer, the IKM and
 //  the info string change. Since Stage 2 the three tier U accessors call `enclaveBoundKey(_:)` once the tier's epoch
-//  exists (`tierUKey(_:legacy:)`), and the PIN verifiers are wrapped under `.secureModeWrap`; the vault and share staging
-//  keys do not use it yet.
+//  exists (`tierUKey(_:legacy:)`), and the PIN verifiers are wrapped under `.secureModeWrap`, and the vault key follows the vault
+//  epoch (Stage 4). Share staging's key is `ShareStagingKeyManager`'s own copy of the derivation (Stage 5).
 extension Manager.Key {
 
     // MARK: - Derivation

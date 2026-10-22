@@ -386,7 +386,14 @@ What remains in the App Group: `pending/<session-uuid>/`, holding files the user
 chosen to share, sealed under the share-staging SE key (`ShareStagingKeyManager`, formerly
 `ShareIndexKeyManager`) with `.completeFileProtection`, named positionally, swept after an hour.
 That key keeps its `share.index` tag and HKDF info string — it still seals staged files and
-manifests, and changing either would strand it. Also `inbound/<session-uuid>.occ`, an incoming
+manifests, and changing either would strand it. Since `bugs.md` Bug 171 (Stage 5) what seals them is
+not a function of that key's public point alone: it also needs `r_S`, a 32-byte Keychain secret, and
+a PQ record (9,763 bytes; a real ML-KEM key and ciphertext on iOS 26+, filler below), both
+generic-password items in the shared group, `WhenUnlockedThisDeviceOnly`. The app's first launch of
+2.0.0 creates them on every install, or the extension's first share if that comes first, at the same
+sizes everywhere, and the mode byte is the only difference between an iOS 26 device and an older one.
+They are dated like the key and deleted with it. A session staged by the previous build opens for its
+remaining hour through a legacy fallback in `decrypt`, which goes one release after 2.0.0. Also `inbound/<session-uuid>.occ`, an incoming
 `.occ` the extension hands to the app, already sealed by its sender and deleted once the app reads
 it. A handoff that never reaches the app is swept after the same hour (`ShareSession.sweepInbound`),
 judged by the file's modification date since it has no manifest to read. Until 2026-10-19 nothing

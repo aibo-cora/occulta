@@ -46,8 +46,9 @@ extension KeyReseal {
         /// A PIN verifier: a key derived from `deriveSecureModeKey()` and the PIN, not the secure mode key itself.
         /// Stage 3 wraps it.
         case pin
-        /// A key this fix doesn't change: the per-entry key of a vault entry, a per-contact file key, the share
-        /// staging key (Stage 5), or the backup key.
+        /// A key this fix doesn't reseal: the per-entry key of a vault entry, a per-contact file key, the share
+        /// staging key (Stage 5 moved what it seals under; a session is never resealed, it is swept after an hour), or
+        /// the backup key.
         case other
     }
 
@@ -321,7 +322,7 @@ nonisolated extension KeyReseal {
         SealedFile(
             name: "manifest.enc and <n>.tmp", location: "App Group container/pending/<session id>/",
             key: .other, aad: "none", treatment: .notAffected,
-            note: "A staged share session, sealed under the share staging key (`ShareStagingKeyManager`). Stage 5 moves it; sessions older than an hour are swept."
+            note: "A staged share session, sealed under the share staging key (`ShareStagingKeyManager`), in the Enclave-bound form since Stage 5. One the previous build staged opens through the legacy fallback in `decrypt`. Never resealed: sessions older than an hour are swept."
         ),
         SealedFile(
             name: "backup-import-cache.occbak, pending-restore.occbak", location: "Application Support",

@@ -21,6 +21,10 @@
 //  After it, the PIN verifier wrap (Bug 171, Stage 3), then the process is told whether to write wrapped verifiers
 //  (`Manager.Ambient.pinVerifiers`), by the sizes in the store, before `Manager.Security` reads or writes one.
 //
+//  Share staging's secret and PQ record (Bug 171, Stage 5) are created here too, if a `staging` manager is passed and
+//  the extension hasn't made them already: after the blocked check, because a blocked launch writes nothing, and
+//  independent of the store.
+//
 //  A pass that committed at least one batch and ended without its epoch (Stage 2c) leaves the store a mix of both keys
 //  while the process is on the legacy ones. The sequence then reports `blocked` and stops: no verifier wrap, no
 //  migration, and `OccultaApp` shows a storage-error screen instead of the PIN prompt and builds the rest of the app
@@ -51,6 +55,9 @@ enum LaunchSequence {
         /// (or all new, with the epoch's own save failing) while the process is on the legacy ones. Nothing after the
         /// pass ran.
         var blocked = false
+        /// Whether the share-staging tier's `r_S` and PQ record exist after this launch (Stage 5). nil if no staging
+        /// manager was passed, or the launch was blocked.
+        var staging: Result<Void, any Error>?
     }
 
     /// Runs the sequence on `context`, suspending autosave for all of it, as `migrate()` always did.
@@ -59,7 +66,8 @@ enum LaunchSequence {
         context: ModelContext,
         keyManager: any KeyManagerProtocol = Manager.Ambient.keyManager,
         locations: KeyReseal.Locations = .production,
-        batchSize: Int = KeyReseal.defaultBatchSize
+        batchSize: Int = KeyReseal.defaultBatchSize,
+        staging: ShareStagingKeyManager? = nil
     ) -> Report {
         // Every migration below relies on its own explicit save() being the only write it
         // makes — `migrateDepthFieldsToFixedWidth` accumulates into `didChange` and saves
@@ -106,6 +114,14 @@ enum LaunchSequence {
             return Report(bootstrap: bootstrap, reseal: reseal, blocked: true)
         }
 
+        // Share staging's secret and record (Stage 5): created here if the extension hasn't made them, or by the extension on
+        // its first share if the app gets there first. Independent of the store, so it doesn't wait on the pass. A
+        // failure (a locked device) costs nothing: the extension creates them on first use.
+        let stagingResult = staging.map { manager in Result { try manager.createTierItemsIfAbsent() } }
+        #if DEBUG
+        if case .failure(let error)? = stagingResult { debugPrint("Share staging items error: \(error)") }
+        #endif
+
         // The PIN verifiers, after the tier U pass and before `Manager.Security` reads them. Skipped if that pass threw.
         var verifiers = Result<KeyReseal.VerifierReport, any Error>.success(KeyReseal.VerifierReport())
         if case .success = reseal {
@@ -124,7 +140,7 @@ enum LaunchSequence {
         // while the process is on the legacy ones. The passes below open what they can and rewrite what they can't
         // (an unreadable prekey record starts over, a soft-deleted row's stamps are randomised), so they wait for the
         // next launch, which finishes the pass first. A kill never gets here.
-        if case .failure = reseal { return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers) }
+        if case .failure = reseal { return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers, staging: stagingResult) }
 
         let legacyCrypto = LegacyCryptoManager()
         let newCrypto = Manager.Crypto()
@@ -224,7 +240,7 @@ enum LaunchSequence {
             #endif
         }
 
-        return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers)
+        return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers, staging: stagingResult)
     }
 }
 

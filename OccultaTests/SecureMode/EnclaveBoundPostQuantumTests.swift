@@ -151,7 +151,7 @@ nonisolated private struct FakePostQuantum: PostQuantumProvider {
 
 /// `PostQuantumProvider`'s persistent-key methods, as share staging's `StagingPostQuantum` asks for them, over the
 /// in-memory ML-KEM key. Nil below iOS 26.
-nonisolated private struct InMemoryStagingPostQuantum: StagingPostQuantum {
+nonisolated struct InMemoryStagingPostQuantum: StagingPostQuantum {
     private let provider: any PostQuantumProvider
 
     init?() {
@@ -173,7 +173,7 @@ nonisolated private struct InMemoryStagingPostQuantum: StagingPostQuantum {
 }
 
 /// A staging provider that can't make a key.
-nonisolated private struct RefusingStagingPostQuantum: StagingPostQuantum {
+nonisolated struct RefusingStagingPostQuantum: StagingPostQuantum {
     func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)? { nil }
     func encapsulate(peerPublicKeyData: Data) -> (sharedSecret: Data, ciphertext: Data)? { nil }
     func decapsulate(ciphertext: Data, keyBlob: Data) -> Data? { nil }

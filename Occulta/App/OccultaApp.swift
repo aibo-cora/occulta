@@ -100,7 +100,7 @@ struct OccultaApp: App {
         #endif
         var launch: LaunchSequence.Report?
         if !hostsTests {
-            launch = LaunchSequence.run(context: ModelContext(realContainer), locations: .production(store: url))
+            launch = LaunchSequence.run(context: ModelContext(realContainer), locations: .production(store: url), staging: ShareStagingKeyManager())
         }
         let screen = launch?.screen ?? .app
 

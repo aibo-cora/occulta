@@ -161,8 +161,9 @@ protocol KeyManagerProtocol {
     /// The Enclave-bound derivation of `key`: `HKDF(ECDH(enclave_priv, P) ‖ r_tier)`, so it needs the Enclave
     /// key and the tier's Keychain secret. The tier U accessors (`createHybridLocalEncryptionKey()`,
     /// `deriveShardCustodyKey()`, `deriveRestoreVaultKey()`) return it once the tier's epoch exists; the key reseal
-    /// calls it by name, and so do the PIN verifiers, wrapped under `.secureModeWrap` (Stage 3). The vault and share
-    /// staging keys do not use it yet.
+    /// calls it by name, and so do the PIN verifiers, wrapped under `.secureModeWrap` (Stage 3). The vault key follows the
+    /// vault epoch the same way (Stage 4, `deriveVaultKey(context:)`). Share staging's key is not derived here:
+    /// `ShareStagingKeyManager` carries its own copy of the derivation (Stage 5), because the extension links only that file.
     ///
     /// Reads the tier secret and never creates it: nil when it is missing, before the Enclave key is fetched.
     /// Creating it is `createTierSecretIfAbsent(_:)`, called on purpose and not as a side effect of a read.
