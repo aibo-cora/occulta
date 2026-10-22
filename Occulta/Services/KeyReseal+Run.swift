@@ -38,6 +38,17 @@ extension KeyReseal {
         var report = BootstrapReport()
         let existing = try context.fetch(FetchDescriptor<AppLayerConfig>()).first
 
+        if let config = try Self.bootstrapTierU(context: context, keyManager: keyManager, existing: existing, report: &report) {
+            Self.bootstrapVaultRecord(config: config, keyManager: keyManager, report: &report)
+        }
+        return report
+    }
+
+    /// Tier U's part of the bootstrap. Returns the config row (found, or made) when the rest may go on, nil when this
+    /// stopped early because something could not be read.
+    private static func bootstrapTierU(
+        context: ModelContext, keyManager: any KeyManagerProtocol, existing: AppLayerConfig?, report: inout BootstrapReport
+    ) throws -> AppLayerConfig? {
         if existing?.keyEpoch != nil {
             do {
                 if try keyManager.tierSecret(.deviceUnlock) == nil { report.refusals.append(.tierSecretMissingAfterEpoch) }
@@ -45,7 +56,7 @@ extension KeyReseal {
             } catch {
                 report.refusals.append(.unreadable)
             }
-            return report
+            return existing
         }
 
         let secret: Data?
@@ -55,7 +66,7 @@ extension KeyReseal {
             record = try keyManager.tierPQRecord(.deviceUnlock)
         } catch {
             report.refusals.append(.unreadable)
-            return report
+            return nil
         }
 
         if secret == nil { report.createdTierSecret = try keyManager.createTierSecretIfAbsent(.deviceUnlock) }
@@ -64,7 +75,7 @@ extension KeyReseal {
         // The row and the vault epoch are sealed under the new local key, so they need it. Without it (the record
         // is hybrid and won't decapsulate, say) the pass will report why, and `Manager.Security` makes the row
         // under the legacy key as it always did.
-        guard let localKey = try? Manager.Ambient.keyManager.enclaveBoundKey(.localDB) else { return report }
+        guard let localKey = try? Manager.Ambient.keyManager.enclaveBoundKey(.localDB) else { return nil }
 
         let config: AppLayerConfig
         if let existing {
@@ -86,7 +97,32 @@ extension KeyReseal {
         }
 
         if context.hasChanges { try context.save() }
-        return report
+        return config
+    }
+
+    /// The tier B (vault) PQ record, which every install gets at launch so that its creation date doesn't mark the first
+    /// time the vault was opened. Created only while the vault's epoch is 1 (or about to be seeded at 1): once it is 2
+    /// the vault is sealed under a key that includes this record, and a new one would make it unreadable. `r_B` is not
+    /// made here: it needs the vault's evaluated context, so the first unlock makes it, and so does a new vault key.
+    private static func bootstrapVaultRecord(config: AppLayerConfig, keyManager: any KeyManagerProtocol, report: inout BootstrapReport) {
+        guard let localKey = try? Manager.Ambient.keyManager.enclaveBoundKey(.localDB) else { return }
+
+        // A nil column was just seeded at 1, or can't be (no key): either way it is not 2.
+        let epoch: UInt8? = config.vaultKeyEpoch == nil ? 1 : Epoch.opening(config.vaultKeyEpoch, using: localKey)?.number
+        guard let epoch else { return }
+
+        do {
+            let record = try keyManager.tierPQRecord(.vault)
+            if record != nil { return }
+
+            if epoch <= 1 {
+                report.createdVaultRecord = try keyManager.createTierPQRecordIfAbsent(.vault)
+            } else {
+                report.refusals.append(.vaultRecordMissingAfterEpoch)
+            }
+        } catch {
+            report.refusals.append(.unreadable)
+        }
     }
 
     // MARK: - The pass

@@ -255,6 +255,10 @@ final class TestKeyManager: KeyManagerProtocol {
     /// needs the inner key, while the wrap key (`r_U`, the tier U record) is out of reach.
     var simulatesWrapKeyUnavailable = false
 
+    /// Makes reading `r_B` (`tierSecret(.biometry)`) throw, as a failed or invalidated evaluation does, and nothing else:
+    /// the tier U keys and the legacy vault key still derive.
+    var simulatesVaultSecretUnreadable = false
+
     /// Simulates the tier PQ record of tier U (`TierPQRecord`). nil = the item is missing. `init` makes it as
     /// production would on this OS: hybrid with an in-memory ML-KEM key on iOS 26+, classical below.
     var tierPQRecordU: TierPQRecord?
@@ -562,7 +566,9 @@ final class TestKeyManager: KeyManagerProtocol {
 
         switch tier {
         case .deviceUnlock: return self.tierSecretU
-        case .biometry:     return self.tierSecretB
+        case .biometry:
+            if self.simulatesVaultSecretUnreadable { throw SimulatedFailure() }
+            return self.tierSecretB
         }
     }
 
@@ -653,7 +659,12 @@ final class TestKeyManager: KeyManagerProtocol {
     /// The `context` parameter is ignored in tests — no SE, no biometric evaluation.
     /// `simulateVaultKeyFailure = true` makes this throw to test lock-on-failure.
     func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
-        try self.legacyKey(.vault(context))
+        if self.derivesLegacyKeysOnly { return try self.legacyKey(.vault(context)) }
+
+        switch Manager.Ambient.vaultKeys {
+        case .legacy:       return try self.legacyKey(.vault(context))
+        case .enclaveBound: return try self.enclaveBoundKey(.vault(context))
+        }
     }
 
     // MARK: - Shard custody (TestKeyManager)

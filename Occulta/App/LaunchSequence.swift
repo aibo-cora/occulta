@@ -60,6 +60,8 @@ enum LaunchSequence {
         // Legacy and plain until the passes say otherwise; nothing derives before this returns.
         Manager.Ambient.setTierUKeys(.legacy)
         Manager.Ambient.setPINVerifiers(.plain)
+        // The vault's key is decided by its own unlock (`VaultManager.unlock`), which reads the vault epoch; until then legacy.
+        Manager.Ambient.setVaultKeys(.legacy)
 
         let bootstrap = Result { try KeyReseal.bootstrap(context: context, keyManager: keyManager) }
 

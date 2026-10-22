@@ -838,6 +838,8 @@ extension VaultManager {
     /// Removes the export metadata file. Only the wipe calls this (`bugs.md` Bug 128).
     func deleteBackupExportMetadata() {
         try? FileManager.default.removeItem(at: Self.backupExportMetaURL)
+        // A vault rewrap (Bug 171, Stage 4) that was killed between the file and its commit leaves its temp file.
+        try? FileManager.default.removeItem(at: KeyReseal.exportMetadataTemporaryURL(in: Self.backupExportMetaURL.deletingLastPathComponent()))
     }
 
     /// Recompute `backupStaleness` for `currentDepth` by comparing that depth's sealed

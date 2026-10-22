@@ -175,6 +175,8 @@ extension KeyReseal {
         /// unreadable. Left missing, for every derivation to fail loudly.
         case tierSecretMissingAfterEpoch
         case tierPQRecordMissingAfterEpoch
+        /// The vault's epoch is 2, so the vault is sealed under a key that includes the tier B record, and it is gone.
+        case vaultRecordMissingAfterEpoch
         /// A Keychain read failed (a locked device): nothing is created on a guess.
         case unreadable
     }
@@ -182,6 +184,9 @@ extension KeyReseal {
     nonisolated struct BootstrapReport: Equatable {
         var createdTierSecret = false
         var createdTierPQRecord = false
+        /// The tier B (vault) PQ record. `r_B` is not made here: adding it needs no evaluation, but the first unlock
+        /// makes it with the vault's context, and a new vault key makes it at its own creation.
+        var createdVaultRecord = false
         /// The `AppLayerConfig` row didn't exist (a fresh install) and the bootstrap made it, as `Manager.Security`
         /// would have, so there is somewhere to write the epochs before `Manager.Security` runs.
         var createdConfig = false
@@ -228,6 +233,23 @@ extension KeyReseal {
         let point: WrapFaultPoint
     }
 
+    /// The same, for the vault rewrap (`rewrapVault`): one transaction, with a file written before it.
+    nonisolated enum VaultFaultPoint: String, CaseIterable {
+        /// After the first value is worked out in memory.
+        case afterFirstValue
+        /// After about half of them are, before any file or row is written.
+        case midRewrap
+        /// After `backup-export-meta.dat` has been renamed into place, before any row is assigned or committed. A kill
+        /// here leaves the file under the new key and every row under the old one, and the next unlock finishes.
+        case afterFileBeforeCommit
+        /// After every row and the epoch are assigned in memory, before the one `save()`.
+        case beforeCommit
+    }
+
+    nonisolated struct InjectedVaultFault: Error, Equatable {
+        let point: VaultFaultPoint
+    }
+
     /// What a test binds around a run, as `Manager.Ambient.override` is bound: task-local, so tests that run in
     /// parallel don't see each other's. Release has no hook at all.
     ///
@@ -237,14 +259,26 @@ extension KeyReseal {
     final class Faults {
         let interruptAt: FaultPoint?
         let interruptAtWrap: WrapFaultPoint?
+        let interruptAtVault: VaultFaultPoint?
         let corruptsNewCiphertext: Bool
         private(set) var reached: [FaultPoint] = []
         private(set) var reachedWrap: [WrapFaultPoint] = []
+        private(set) var reachedVault: [VaultFaultPoint] = []
 
-        init(interruptAt: FaultPoint? = nil, interruptAtWrap: WrapFaultPoint? = nil, corruptsNewCiphertext: Bool = false) {
+        init(
+            interruptAt: FaultPoint? = nil, interruptAtWrap: WrapFaultPoint? = nil, interruptAtVault: VaultFaultPoint? = nil,
+            corruptsNewCiphertext: Bool = false
+        ) {
             self.interruptAt           = interruptAt
             self.interruptAtWrap       = interruptAtWrap
+            self.interruptAtVault      = interruptAtVault
             self.corruptsNewCiphertext = corruptsNewCiphertext
+        }
+
+        /// Records the point and throws `InjectedVaultFault` if it is the one asked for.
+        func reachVault(_ point: VaultFaultPoint) throws {
+            self.reachedVault.append(point)
+            if self.interruptAtVault == point { throw InjectedVaultFault(point: point) }
         }
 
         /// Records the point and throws `InjectedWrapFault` if it is the one asked for.

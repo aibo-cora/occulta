@@ -904,7 +904,7 @@ release mechanics.
 
 ## Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+
 
-**Status:** Plan adopted 2026-10-21. D1, D6 and the `identifier` question are the user's. Everything else here is recommended; open, needs a decision. Stages 1, 1b, 2 and 3 are built; after Stage 2 an upgraded install's local DB, shard custody and restore buffer data are under the Enclave-bound keys, and after Stage 3 its PIN verifiers are wrapped under a key that needs `r_U`.
+**Status:** Plan adopted 2026-10-21. D1, D6 and the `identifier` question are the user's. Everything else here is recommended; open, needs a decision. Stages 1, 1b, 2, 3 and 4 are built; after Stage 2 an upgraded install's local DB, shard custody and restore buffer data are under the Enclave-bound keys,, after Stage 3 its PIN verifiers are wrapped under a key that needs `r_U`, and after the first vault unlock following Stage 4 the vault's per-entry keys and backup keys are under a key that needs `r_B`.
 
 **Context:** Seven symmetric keys are `HKDF(ECDH(enclave_priv, G) …)`. ECDH against the generator G is d·G = Q, the key's own public point, so each is a function of Q and the Enclave never takes part (`bugs.md` Bug 171, `EnclaveGeneratorECDHTests`). The fix gives each key an input that needs the Enclave and a post-quantum-safe secret of its own access tier, and moves existing data over with no loss, no new forensic tell, and nothing a coercer can use. Ciphertext already copied with Q stays readable; no option changes that.
 

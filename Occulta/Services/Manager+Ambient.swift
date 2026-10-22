@@ -34,6 +34,9 @@ extension Manager {
             /// This test's `pinVerifiers`, in place of the process-wide one.
             var pinVerifiers = PINVerifiers.plain
 
+            /// This test's `vaultKeys`, in place of the process-wide one.
+            var vaultKeys = VaultKeys.legacy
+
             init(_ keyManager: any KeyManagerProtocol) {
                 self.keyManager = keyManager
             }
@@ -137,6 +140,41 @@ extension Manager {
             Self.setPINVerifiers(verifiers)
             defer { Self.setPINVerifiers(previous) }
             return try body()
+        }
+
+        // MARK: - Which key the vault derives (Bug 171, Stage 4)
+
+        /// Which derivation `deriveVaultKey(context:)` returns.
+        enum VaultKeys {
+            /// The legacy derivation (`legacyKey(.vault)`).
+            case legacy
+            /// The Enclave-bound one (`enclaveBoundKey(.vault)`): `r_B` and the tier B record go in.
+            case enclaveBound
+        }
+
+        private static var processVaultKeys = VaultKeys.legacy
+
+        /// The key `deriveVaultKey(context:)` returns: the one the vault's epoch (`AppLayerConfig.vaultKeyEpoch`) says
+        /// the vault's data is under. `.legacy` until `VaultManager.unlock(context:)` has moved the vault (epoch 1 to 2)
+        /// or found it moved, and `.legacy` again if that failed: a rewrap that rolled back leaves the vault where it
+        /// was, readable, and the next unlock tries again. It is set inside `unlock`, before any other vault operation,
+        /// and vault code derives the key per operation and keeps none across it.
+        static var vaultKeys: VaultKeys {
+            #if DEBUG
+            if let override = Self.override { return override.vaultKeys }
+            #endif
+            return Self.processVaultKeys
+        }
+
+        /// Only `VaultManager.unlock(context:)` and `LaunchSequence` (which resets it) call this.
+        static func setVaultKeys(_ keys: VaultKeys) {
+            #if DEBUG
+            if let override = Self.override {
+                override.vaultKeys = keys
+                return
+            }
+            #endif
+            Self.processVaultKeys = keys
         }
 
         /// Runs `body` with `tierUKeys` set to `keys`, and restores what it was.

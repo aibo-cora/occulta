@@ -548,12 +548,19 @@ extension Manager.Key: KeyManagerProtocol {
     }
 
     /// Tier U's three keys follow the epoch: the Enclave-bound derivation once `AppLayerConfig.keyEpoch` exists, the
-    /// legacy one before (`Manager.Ambient.tierUKeys`, decided once per process at launch). The vault key is
-    /// Stage 4's and stays legacy.
+    /// legacy one before (`Manager.Ambient.tierUKeys`, decided once per process at launch).
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? { try self.tierUKey(.localDB, legacy: .localDB) }
-    func deriveVaultKey(context: LAContext) throws -> SymmetricKey? { try self.legacyKey(.vault(context)) }
     func deriveShardCustodyKey() throws -> SymmetricKey? { try self.tierUKey(.shardCustody, legacy: .shardCustody) }
     func deriveRestoreVaultKey() throws -> SymmetricKey? { try self.tierUKey(.restoreVault, legacy: .restoreVault) }
+
+    /// The vault key follows the vault's epoch: the Enclave-bound derivation once `VaultManager.unlock(context:)` has
+    /// moved the vault onto it (`Manager.Ambient.vaultKeys`), the legacy one before.
+    func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
+        switch Manager.Ambient.vaultKeys {
+        case .legacy:       return try self.legacyKey(.vault(context))
+        case .enclaveBound: return try self.enclaveBoundKey(.vault(context))
+        }
+    }
 
     private func tierUKey(_ key: EnclaveBoundKey, legacy: LegacyKey) throws -> SymmetricKey? {
         switch Manager.Ambient.tierUKeys {
@@ -838,6 +845,9 @@ extension Manager.Key: KeyManagerProtocol {
             return (item as! SecKey)
         case errSecItemNotFound:
             try self.createVaultSEKey()
+            // `r_B` is made at the same moment as the key it goes with, so its creation date adds nothing (Bug 171,
+            // Stage 4). A failure here is not this call's to report: the first unlock after it creates `r_B`.
+            _ = try? self.createTierSecretIfAbsent(.biometry(context))
             guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
                 return nil
             }
