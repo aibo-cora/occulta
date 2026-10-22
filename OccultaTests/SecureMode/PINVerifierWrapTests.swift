@@ -726,6 +726,27 @@ struct PINVerifierLaunchTests {
         #expect(try security.verify(VerifierStore.pins[2]) == .normal(depth: 2), "and the layers it left alone")
     }
 
+    @Test("A mixed store (some slots 53 bytes, some 81) in a plain process verifies the correct PIN of an 81-byte slot, and records no wrong attempt",
+          arguments: KeyForm.allCases)
+    func mixedStoreInAPlainProcess(form: KeyForm) throws {
+        let (keys, store) = try prepareVerifiers(form)
+        try KeyReseal.wrapVerifiers(context: store.newContext(), keyManager: keys)
+        try store.writePlainMasterPIN("999999")
+        #expect(store.sizes() == [53, 81], "precondition: a downgrade wrote one 53-byte verifier into a wrapped store")
+        #expect(Manager.Ambient.pinVerifiers == .plain, "precondition: the pass has not run since, so the process is plain")
+
+        let security = store.security()
+
+        #expect(try security.verify(VerifierStore.pins[2]) == .normal(depth: 2), "an 81-byte slot")
+        #expect(try security.verify("999999") == .normal(depth: 0), "and the 53-byte one")
+        #expect(security.checkNormalPIN("999999") && !security.checkNormalPIN(VerifierStore.pins[0]))
+        #expect(store.config()?.readLockoutCount() == 0, "no wrong attempt was recorded")
+
+        #expect(try security.verify("000000") == .wrong)
+        #expect(store.config()?.readLockoutCount() == 1, "while a wrong PIN still counts")
+        #expect(store.sizes() == [53, 81], "and checking wrote nothing")
+    }
+
     @Test("A launch whose tier U pass threw wraps nothing and still reads the store's sizes")
     func thrownTierUPassSkipsTheWrap() throws {
         let (_, store) = try prepareVerifiers(.hybrid)

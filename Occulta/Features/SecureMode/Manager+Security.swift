@@ -287,17 +287,17 @@ extension Manager {
             let wrapKey: SymmetricKey?
         }
 
-        /// Derives both. The wrap key is derived only in a process whose verifiers are wrapped
-        /// (`Manager.Ambient.pinVerifiers`), and is nil if it can't be derived: a verifier that needs it then fails
-        /// to build, and a wrapped slot fails to check, instead of falling back to the plain form.
+        /// Derives both. The wrap key is derived whenever it can be, whatever the process writes
+        /// (`Manager.Ambient.pinVerifiers`): checking opens an 81-byte slot in a plain process too, as a store can hold
+        /// both sizes (a downgrade wrote a 53-byte verifier into a wrapped one, and the pass has not run since), and a
+        /// correct PIN must not read as a wrong attempt. It is nil if it can't be derived: a verifier the process writes
+        /// wrapped then fails to build, and a wrapped slot fails to check, instead of falling back to the plain form.
+        /// What gets built is still the process's own form (`PINManager.buildVerifier`).
         private func pinKeys() throws -> PINKeys {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            var wrapKey: SymmetricKey?
-            if Manager.Ambient.pinVerifiers == .wrapped {
-                wrapKey = try? self.keyManager.enclaveBoundKey(.secureModeWrap)
-            }
+            let wrapKey = try? self.keyManager.enclaveBoundKey(.secureModeWrap)
             return PINKeys(seKey: seKey, wrapKey: wrapKey)
         }
 
