@@ -124,7 +124,7 @@ struct GroupDetailV3: View {
                 modelContext:      self.contactManager.modelContext
             ) {
                 self.composeVM.draftText = loaded.text
-                self.composeVM.messages  = loaded.messages
+                await self.composeVM.adopt(draftMessages: loaded.messages)
                 self.useThreadCompose    = loaded.wasThreadMode
             }
         }
