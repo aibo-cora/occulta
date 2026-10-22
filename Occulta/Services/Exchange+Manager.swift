@@ -26,6 +26,7 @@ import NearbyInteraction
 import MultipeerConnectivity
 import os
 import OccultaCore
+import OccultaFormats
 
 @Observable
 class ExchangeManager: NSObject {
@@ -75,6 +76,16 @@ class ExchangeManager: NSObject {
     private var peerIdentity: Data?
     /// Our ML-KEM encapsulation key, included in the identity message.
     var encapsulationKeyData: Data?
+
+    // MARK: - Card meeting check (SPEC §7)
+
+    /// What the contact's card field lets us sign and check; set by the caller when the exchange starts from a
+    /// contact (`start(cardMeeting:)`). `.none` for an exchange with no card conversation.
+    var cardMeeting: CardMeetingContext = .none
+    /// The identity key we sent, which the proof is bound to.
+    private var ourSentIdentity: Data?
+    /// The peer's proof message, kept for `cardMeetingVerdict(for:)`.
+    private(set) var peerCardProof: Data?
 
     // MARK: - Exchange status state machine
 
@@ -156,8 +167,9 @@ class ExchangeManager: NSObject {
         self.browser?.delegate = self
     }
 
-    func start() {
+    func start(cardMeeting: CardMeetingContext = .none) {
         self.finish()
+        self.cardMeeting = cardMeeting
         self.nearbySession = NISession()
         self.nearbySession?.delegate = self
 
@@ -190,6 +202,8 @@ class ExchangeManager: NSObject {
 
     func finish() {
         self.teardownSessions()
+        // The card's signing blob and the peer's key go with the exchange, not with the view holding the manager.
+        self.cardMeeting = .none
         self.phase = .resting
     }
 
@@ -230,6 +244,8 @@ class ExchangeManager: NSObject {
         self.ourNonce = nil
         self.peerNonce = nil
         self.peerIdentity = nil
+        self.ourSentIdentity = nil
+        self.peerCardProof = nil
         self.encapsulationKeyData = nil
         self.distance = nil
         self.direction = nil
@@ -270,6 +286,7 @@ class ExchangeManager: NSObject {
             let keyingMaterial = try keyManager.retrieveIdentity()
             #endif
             let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+            self.ourSentIdentity = keyingMaterial
             let exchange = Exchange(
                 id: UUID().uuidString,
                 token: archivedToken,
@@ -312,6 +329,38 @@ class ExchangeManager: NSObject {
         }
     }
 
+    /// The meeting-check proof (SPEC §7), sent once the ML-KEM step completes: a signature by the card signing key
+    /// over the transcript whenever the field holds one, else 64 random bytes. Always `CardMeeting.proofByteCount`
+    /// long, in an `Exchange` with an empty token, so nothing shows which it is.
+    private func sendCardProof(for result: HybridExchangeResult) {
+        guard let session = self.multipeerSession, let peerID = self.connectedPeerID, let ourIdentity = self.ourSentIdentity else { return }
+        let transcript = CardMeeting.transcript(
+            identityKeys: (ourIdentity, result.peerP256PublicKey),
+            nonces: (result.ourNonce, result.peerNonce),
+            mlkemCiphertexts: (result.ourCiphertext, result.peerCiphertext)
+        )
+        let signed = try? self.cardMeeting.sign?(CardMeeting.proofPayload(transcript: transcript, signerIdentityKey: ourIdentity))
+        let proof = signed.flatMap { $0.count == CardMeeting.proofByteCount ? $0 : nil } ?? CardMeeting.filler()
+        do {
+            let exchange = Exchange(id: UUID().uuidString, token: Data(), version: .v1, cardProof: proof)
+            try session.send(try JSONEncoder().encode(exchange), toPeers: [peerID], with: .reliable)
+        } catch {
+            #if DEBUG
+            debugPrint("[KE] Card proof send failed: \(error)")
+            #endif
+        }
+    }
+
+    /// The meeting-check verdict for a completed exchange (`payload` is the one `.confirming` carries). Final once
+    /// the peer's proof message has arrived, which is long before the confirmation screen is. Call it after the
+    /// ceremony's own confirmation succeeds and before `finish()`, which discards the proof. `.none` for a
+    /// classical-only exchange, which has no transcript, and wherever SPEC §7 shows nothing.
+    func cardMeetingVerdict(for payload: ExchangePhase.Payload) -> CardMeetingVerdict {
+        CardMeetingContext.verdict(
+            context: self.cardMeeting, result: payload.hybridResult, ourIdentity: self.ourSentIdentity, peerProof: self.peerCardProof
+        )
+    }
+
     // MARK: - Final assembly
 
     private func assembleHybridResult(ours: QuantumPayload, theirs: QuantumPayload) {
@@ -326,6 +375,8 @@ class ExchangeManager: NSObject {
             ourCiphertext: ours.ciphertext,
             peerCiphertext: theirs.ciphertext
         )
+
+        self.sendCardProof(for: result)
 
         #if DEBUG
         debugPrint("[KE] Hybrid exchange complete")
@@ -396,6 +447,16 @@ class ExchangeManager: NSObject {
     private func handleReceivedData(_ data: Data, from peerID: MCPeerID) {
         do {
             let decoded = try JSONDecoder().decode(Exchange.self, from: data)
+
+            // MARK: Meeting-check proof (before discovery: it has no identity and no ciphertext either)
+
+            if decoded.isCardProof {
+                guard peerID == self.connectedPeerID else { return }
+                if self.peerCardProof == nil, let proof = decoded.cardProof, proof.count == CardMeeting.proofByteCount {
+                    self.peerCardProof = proof
+                }
+                return
+            }
 
             // MARK: Phase 1 — Discovery (token + optional nonce)
 

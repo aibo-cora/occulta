@@ -36,10 +36,15 @@ struct KeyExchange: View {
         self.contacts.first?.identifier ?? ""
     }
 
+    private var fullName: String {
+        [self.contacts.first?.givenName.decrypt(), self.contacts.first?.familyName.decrypt()]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
     var body: some View {
         SwiftUI.Group {
             if let payload = self.confirmingPayload {
-                ConfirmationView(payload: payload, identifier: self.identifier, manager: self.exchangeManager)
+                ConfirmationView(payload: payload, identifier: self.identifier, fullName: self.fullName, manager: self.exchangeManager)
             } else if self.exchangeManager.phase != .resting {
                 KeyExchangeLiveView(manager: self.exchangeManager)
             } else {
@@ -83,7 +88,9 @@ struct KeyExchange: View {
                         HStack(spacing: 16) {
                             Button {
                                 self.showTimeoutBanner = false
-                                self.exchangeManager.start()
+                                // The meeting check (SPEC §7) runs against this contact's card field, if it holds one.
+                                let cardMeeting = self.contacts.first.flatMap { self.contactManager?.cardMeetingContext(for: $0) } ?? .none
+                                self.exchangeManager.start(cardMeeting: cardMeeting)
                             } label: {
                                 Label("Exchange Keys", systemImage: "key.horizontal")
                                     .frame(maxWidth: .infinity)
@@ -130,6 +137,7 @@ struct KeyExchange: View {
     private struct ConfirmationView: View {
         let payload: ExchangeManager.ExchangePhase.Payload
         let identifier: String
+        let fullName: String
         let manager: ExchangeManager
 
         private let keyManager = Manager.Key()
@@ -141,6 +149,9 @@ struct KeyExchange: View {
         private enum SaveState { case confirming, saving, saved, failed }
         private enum SaveError: Error { case invalidKeyMaterial }
         @State private var saveState: SaveState = .confirming
+        /// What the in-person check found about an earlier card conversation. Held only while its screen is up;
+        /// nothing about it is stored.
+        @State private var cardVerdict: CardMeetingVerdict = .none
 
         var identity: Data {
             let identity = try? Manager.Key().retrieveIdentity()
@@ -233,6 +244,13 @@ struct KeyExchange: View {
                 .padding()
             }
             .navigationBarBackButtonHidden(true)
+            // A cover, not a pushed screen: W-11 can't be swiped away or dismissed from outside, only acknowledged.
+            .fullScreenCover(isPresented: Binding(get: { self.cardVerdict != .none }, set: { _ in })) {
+                CardMeetingVerdictView(verdict: self.cardVerdict, identifier: self.identifier, fullName: self.fullName) {
+                    self.cardVerdict = .none
+                    Task { @MainActor in self.dismiss() }
+                }
+            }
         }
 
         private var words: [String] {
@@ -294,11 +312,20 @@ struct KeyExchange: View {
 
                 try self.contactManager?.update(key: key, for: self.identifier)
 
+                // After the key is saved and before `finish()`, which discards the peer's proof (SPEC §7).
+                let verdict = self.manager.cardMeetingVerdict(for: self.payload)
+
                 self.saveState = .saved
                 self.manager.finish()
-                Task {
-                    try? await Task.sleep(for: .seconds(1))
-                    self.dismiss()
+
+                if verdict == .none {
+                    Task {
+                        try? await Task.sleep(for: .seconds(1))
+                        self.dismiss()
+                    }
+                } else {
+                    // The exchange closes from the verdict screen: after "I understand", or when W-12 is closed.
+                    self.cardVerdict = verdict
                 }
             } catch {
                 self.saveState = .failed

@@ -290,6 +290,26 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       is present — no double-display
       — `OccultaApp.swift:673–681`.
 
+- [ ] Introduction cards (`Docs/Features/Introduction Cards/SPEC.md`), added in v2.0.0. Each line below is
+      covered by a test in `OccultaTests/IntroductionCards/`, but none has been verified on a device yet.
+      - A card contact is **Not verified** everywhere and hard-blocked (SPEC §8) from groups, vault
+        trustees, shard content and identity challenges, at send and at receive
+        (`CardState.isCardContact`; `Contact+Manager+Groups.swift`, `encryptCardBundle`).
+      - A card contact never gets a bundle under the identity key. A missing piece throws rather than
+        falling back (`CardError.keyMaterialMissing`, `CardError.hardBlocked`).
+      - Card keys are Enclave blobs inside the contact's sealed, fixed-size card field
+        (`CardStateCodec.capacity`): no keychain items, no files left behind (the share temp file is
+        deleted, and has a random name with no extension), and the same sealed length in every state.
+      - Redemption checks the introduction's signature against the card, the slot's signature, the
+        fingerprint, the body digest and `senderProof` before anything is stored. A failure leaves the
+        card `issued` and consumes nothing.
+      - The meeting proof is 64 bytes whether it holds a signature or a filler. An older build drops it as
+        a discovery message with an empty token.
+      - An in-person exchange writes the card field `.empty` and drops the card-era batches in the same
+        save as the new key, then checkpoints the store.
+      - **Device-only, not done:** the card field size on a device, a hostile ML-KEM blob passed to the
+        Enclave reload, and the end-to-end flow on two phones holding no real data.
+
 ## 4. Data at Rest
 
 - [x] All contact fields are encrypted before SwiftData storage — no plaintext PII written to disk
@@ -627,9 +647,13 @@ That split is why the gate has to be run by a human on real hardware before a re
       eight days before the change that broke it, went unnoticed for months, and has never
       executed in CI
 - [x] Identity challenge tests cover all three phases and the replay/timestamp rejection cases
-- [x] Secure Mode key-rotation guards pass (`GroupKeyRotationTests`, `AppLayerConfigRotationTests`,
-      `EncryptedFieldCoverageTests`) — the tripwires fail on any new encrypted model property that
-      has not been added to a re-encryption path
+- [x] Secure Mode key-rotation leftovers are guarded (`LegacyRotationArtefactTests`,
+      `EncryptedFieldCoverageTests`) — **reworded 2026-10-18.** Key rotation was removed (Removal
+      Stage 3, `Features/SecureMode/plan.md`), and with it `GroupKeyRotationTests`,
+      `AppLayerConfigRotationTests` and the tripwires for unrotated fields, so a new encrypted field
+      no longer needs a re-encryption path. What remains: "Erase all data" deletes the keys an
+      interrupted v1.10.3 rotation could leave (Bug 139), and a bundle version stranded by an old
+      rotation reads as unreadable, not as never seen (Bug 80).
 
 ### Why this is a manual gate rather than automation
 

@@ -29,6 +29,9 @@ extension Group {
         /// Covers both the readable-but-old case and the stranded-marker case. Those are
         /// different states internally and must not be different here — see `computeEligibility`.
         @State private var ineligibleNeedsUpdate = Set<String>()
+        /// Contacts the card hard blocks refuse (W-10), apart from `ineligible` so that section's header, which is
+        /// about versions, stays true. Computed once alongside the partition, under the same key.
+        @State private var blocked: [Contact.Profile] = []
         @State private var showSaveError  = false
         @State private var saveErrorText  = ""
 
@@ -126,6 +129,14 @@ extension Group {
                         }
                     }
 
+                    if !self.blocked.isEmpty {
+                        Section(IntroCardCopy.notVerifiedChip) {
+                            ForEach(self.blocked) { contact in
+                                self.ineligibleRow(contact, isBlocked: true)
+                            }
+                        }
+                    }
+
                     if self.isEditing {
                         Section {
                             Button(role: .destructive, action: self.deleteGroup) {
@@ -206,13 +217,15 @@ extension Group {
         }
 
         @ViewBuilder
-        private func ineligibleRow(_ contact: Contact.Profile) -> some View {
+        private func ineligibleRow(_ contact: Contact.Profile, isBlocked: Bool = false) -> some View {
             let givenName  = contact.givenName.decrypt()
             let familyName = contact.familyName.decrypt()
             let fullName   = [givenName, familyName].filter { !$0.isEmpty }.joined(separator: " ")
-            let subLabel   = self.ineligibleNeedsUpdate.contains(contact.identifier)
-                ? "Needs to update Occulta"
-                : "No bundle received yet"
+            let subLabel   = isBlocked
+                ? IntroCardCopy.blockedFeature(feature: "Group membership", name: IntroCardCopy.firstName(of: fullName))
+                : self.ineligibleNeedsUpdate.contains(contact.identifier)
+                    ? "Needs to update Occulta"
+                    : "No bundle received yet"
 
             HStack(spacing: 12) {
                 ZStack {
@@ -268,6 +281,7 @@ extension Group {
                 self.eligible = []
                 self.ineligible = []
                 self.ineligibleNeedsUpdate = []
+                self.blocked = []
                 return
             }
 
@@ -275,8 +289,16 @@ extension Group {
             var eligible:    [Contact.Profile] = []
             var ineligible:  [Contact.Profile] = []
             var needsUpdate: Set<String>       = []
+            var blocked:     [Contact.Profile] = []
 
             for contact in self.contacts where contact.isVisible(atDepth: depth, usingKey: key) {
+                // The card hard block (W-10) is checked before the version: a card contact can reach a
+                // group-capable `maxBundleVersion` from messages it has received, so it would otherwise qualify.
+                if contact.cardState(using: key).isCardContact {
+                    blocked.append(contact)
+                    continue
+                }
+
                 switch ContactManager.bundleVersionState(for: contact, using: key) {
                 case .readable(let version) where version.supportsGroups:
                     eligible.append(contact)
@@ -317,6 +339,7 @@ extension Group {
             self.eligible              = eligible
             self.ineligible            = ineligible
             self.ineligibleNeedsUpdate = needsUpdate
+            self.blocked               = blocked
         }
 
         private func saveGroup() {

@@ -186,6 +186,18 @@ Invariants carried over from Sweep 4:
 | D3 | **New:** does "Verified (casual)" get its own badge, or collapse into "Verified" with metadata? Security difference is comparison rigor only; both defeat MITM with high probability | Open — product call; the Sweep 4 badge invariant argues for distinct rendering |
 | D4 | **New:** which SAS format for the casual rung — matching bloom, emoji triad, or Diceware Lite? | Open — candidate for hallway testing (P3); bloom and emoji are the front-runners on delight × security |
 
+> **Addendum (2026-10-14):** D1 and D2 have a worked proposal in
+> [Introduction Cards](../Docs/Features/Introduction%20Cards/FINDINGS.md). Keys
+> that arrive by card are Not verified, whether carried or shared directly. The
+> carrier is never named. The Introduced and Unverified rungs in §6 collapse
+> into one "Not verified" badge with no route text (its Q-07, decided
+> 2026-10-15). D1 is decided there (its Q-01, 2026-10-15): carried cards
+> are allowed, because the carrier asserts nothing and no trust is granted.
+> Verified introductions, as `Master Feature & Expansion Analysis.md` and the
+> 2026-07-10 ideation pass rule, stay off-limits. D2 is decided there too (its
+> Q-02, 2026-10-15): send-capable, since a remote code check proves nothing
+> between people who have never met.
+
 ---
 
 ## 8. Roadmap and positioning implications

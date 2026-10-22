@@ -47,6 +47,30 @@ public protocol PostQuantumProvider {
     ///   - privateKeyHandle: Opaque handle from `generateKeyPair`.
     /// - Returns: 32-byte shared secret, or nil on failure.
     func decapsulate(ciphertext: Data, privateKeyHandle: Any) -> Data?
+
+    /// Generate an ML-KEM-1024 key pair whose private key can be stored and used later, in another
+    /// process lifetime. Unlike `generateKeyPair`, the private key comes back as bytes.
+    ///
+    /// Production: the Secure Enclave key, `WhenUnlockedThisDeviceOnly` with `.privateKeyUsage`.
+    /// The blob is the key's `dataRepresentation`, usable only by the Enclave of this device.
+    /// Tests: the in-memory key's seed. The blob **is** the private key.
+    ///
+    /// The caller owns the blob: the key exists nowhere else, and deleting the blob deletes the key.
+    ///
+    /// - Returns: The public key bytes and the blob to store, or nil if the key can't be created.
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)?
+
+    /// Decapsulate a ciphertext using a blob from `generatePersistentKeyPair`.
+    ///
+    /// - Returns: 32-byte shared secret, or nil if the blob or ciphertext is invalid.
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data?
+
+    /// The public key of a blob from `generatePersistentKeyPair`, for a caller that kept only the blob (an
+    /// introduction card's recipient signs her ML-KEM public key into her first messages, long after the pair
+    /// was made).
+    ///
+    /// - Returns: The public key bytes, or nil if the blob is invalid.
+    func publicKey(forKeyBlob keyBlob: Data) -> Data?
 }
 
 // MARK: - Factory
@@ -128,6 +152,34 @@ private final class SecureEnclavePostQuantumProvider: PostQuantumProvider {
 
         return sharedSecret.withUnsafeBytes { Data($0) }
     }
+
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)? {
+        var error: Unmanaged<CFError>?
+        guard
+            let accessControl = SecAccessControlCreateWithFlags(
+                kCFAllocatorDefault,
+                kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                .privateKeyUsage,
+                &error
+            ),
+            let privateKey = try? SecureEnclave.MLKEM1024.PrivateKey(accessControl: accessControl)
+        else { return nil }
+
+        return (privateKey.publicKey.rawRepresentation, privateKey.dataRepresentation)
+    }
+
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data? {
+        guard
+            let privateKey = try? SecureEnclave.MLKEM1024.PrivateKey(dataRepresentation: keyBlob),
+            let sharedSecret = try? privateKey.decapsulate(ciphertext)
+        else { return nil }
+
+        return sharedSecret.withUnsafeBytes { Data($0) }
+    }
+
+    func publicKey(forKeyBlob keyBlob: Data) -> Data? {
+        (try? SecureEnclave.MLKEM1024.PrivateKey(dataRepresentation: keyBlob))?.publicKey.rawRepresentation
+    }
 }
 
 // MARK: - Testing: In-memory ML-KEM-1024
@@ -170,6 +222,34 @@ private final class InMemoryPostQuantumProvider: PostQuantumProvider {
         else { return nil }
 
         return sharedSecret.withUnsafeBytes { Data($0) }
+    }
+
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)? {
+        guard
+            let privateKey = try? MLKEM1024.PrivateKey()
+        else { return nil }
+
+        return (privateKey.publicKey.rawRepresentation, privateKey.seedRepresentation)
+    }
+
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data? {
+        // The seed initialiser traps on a wrong-size seed, so the size is checked first.
+        guard
+            keyBlob.count == 64,
+            let privateKey = try? MLKEM1024.PrivateKey(seedRepresentation: keyBlob, publicKey: nil),
+            let sharedSecret = try? privateKey.decapsulate(ciphertext)
+        else { return nil }
+
+        return sharedSecret.withUnsafeBytes { Data($0) }
+    }
+
+    func publicKey(forKeyBlob keyBlob: Data) -> Data? {
+        guard
+            keyBlob.count == 64,
+            let privateKey = try? MLKEM1024.PrivateKey(seedRepresentation: keyBlob, publicKey: nil)
+        else { return nil }
+
+        return privateKey.publicKey.rawRepresentation
     }
 }
 #endif

@@ -13,6 +13,8 @@ import OccultaFormats
 extension Contact {
     struct DetailsV2: View {
         let identifier: String
+        /// Puts the cursor in the compose field once the screen appears, as after "Import and write to {Name}".
+        let focusCompose: Bool
 
         @Query private var contacts: [Contact.Profile]
         @Environment(ContactManager.self) private var contactManager
@@ -21,13 +23,18 @@ extension Contact {
 
         @State private var editing = false
         @State private var keyDetailsExpanded = false
-        @State private var displayingVerificationInfo = false
+        /// The status and the card state, read when what they depend on changes. Nil until the first read, which
+        /// falls back to a direct one. They decrypt the key owner and the card field, so they aren't recomputed on
+        /// every keystroke in compose.
+        @State private var cachedStatus: VerificationStatus?
+        @State private var cachedCard:   CardState?
         @State private var useThreadCompose = false
         @State private var composeVM: ComposeViewModel
         @State private var draftStore = DraftStore()
 
-        init(identifier: String) {
+        init(identifier: String, focusCompose: Bool = false) {
             self.identifier = identifier
+            self.focusCompose = focusCompose
             self._contacts = Query(filter: #Predicate { $0.identifier == identifier })
             self._composeVM = State(initialValue: ComposeViewModel(recipient: .contact(identifier)))
         }
@@ -46,7 +53,33 @@ extension Contact {
             return (keys?.isEmpty ?? true) || keys?.last?.expiredOn != nil
         }
 
-        private var status: VerificationStatus { self.profile?.verificationStatus ?? .pending }
+        private var status: VerificationStatus { self.cachedStatus ?? self.profile?.verificationStatus ?? .pending }
+
+        /// The card field. A verified contact has none that matters: in-person keys win the tier.
+        private var cardState: CardState {
+            guard self.status != .verified else { return .empty }
+            return self.cachedCard ?? self.profile?.cardState ?? .empty
+        }
+
+        private var firstName: String { IntroCardCopy.firstName(of: self.fullName) }
+
+        /// What `verificationStatus` reads, in a form `onChange` can compare.
+        private struct StatusInputs: Equatable {
+            let card:           Data?
+            let keyCount:       Int
+            let lastKeyOwner:   Data?
+            let lastKeyExpired: Bool
+        }
+
+        private var statusInputs: StatusInputs {
+            let last = self.profile?.contactPublicKeys?.last
+            return StatusInputs(
+                card:           self.profile?.introductionCardEncrypted,
+                keyCount:       self.profile?.contactPublicKeys?.count ?? 0,
+                lastKeyOwner:   last?.owner,
+                lastKeyExpired: last?.expiredOn != nil
+            )
+        }
 
         var body: some View {
             ScrollView {
@@ -59,57 +92,37 @@ extension Contact {
                         thumbnail: self.profile?.imageData?.decrypt() ?? self.profile?.thumbnailImageData?.decrypt()
                     )
 
-                    if self.needsExchange {
+                    if self.cardState.isCardContact, let p = self.profile {
+                        // Not verified through a card: the card section comes right under the name, then compose,
+                        // and the way to verify goes last (FINDINGS §3).
+                        ContactCardSection(profile: p, state: self.cardState, name: self.firstName)
+
+                        self.composeBlock
+
+                        if self.needsExchange {
+                            ExchangeHeroV2(
+                                identifier: self.identifier,
+                                title:      IntroCardCopy.meetToVerifyTitle(name: self.firstName),
+                                subtitle:   IntroCardCopy.meetToVerifySubtitle
+                            )
+                        }
+                    } else if self.needsExchange {
                         ExchangeHeroV2(identifier: self.identifier)
-                    } else {
-                        ComposeStyleToggle(useThread: Binding(
-                            get: { self.useThreadCompose },
-                            set: { newValue in
-                                self.useThreadCompose = newValue
-                                self.composeVM.clearAfterEncrypt()
-                            }
-                        ))
 
-                        if self.useThreadCompose {
-                            NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
-                                HStack {
-                                    Text("Open thread")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(.white)
-                                    if !self.composeVM.messages.isEmpty {
-                                        Text("\(self.composeVM.messages.count)")
-                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Capsule().fill(.white.opacity(0.3)))
-                                    }
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                                .background(Color.occultaAccent)
-                                .clipShape(RoundedRectangle(cornerRadius: 14))
-                            }
-                        } else {
-                            ComposeHeroV2(vm: self.composeVM, identifier: self.identifier)
-                        }
-
-                        Text(self.profile?.encryptionSchemeLabel ?? "")
-                            .font(.system(size: 10, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .foregroundColor(.occultaAccent)
-
+                        // A pending contact: the card is the alternative to meeting (E3).
                         if let p = self.profile {
-                            KeyDetailsDisclosureV2(profile: p, expanded: self.$keyDetailsExpanded)
+                            ContactCardSection(profile: p, state: self.cardState, name: self.firstName)
                         }
+                    } else {
+                        // W-06 for keys that came from another identity (Q-14): always visible, above compose.
+                        if self.status == .unverified {
+                            CardNotice(tone: .warn, IntroCardCopy.trustLine)
+                        }
+
+                        self.composeBlock
                     }
 
                     ContactInfoSectionV2(profile: self.profile)
-
-                    if self.status == .unverified {
-                        UnverifiedNoticeV2(expanded: self.$displayingVerificationInfo)
-                    }
 
                     if let p = self.profile {
                         Contact.TrustCheckV2(profile: p)
@@ -138,6 +151,12 @@ extension Contact {
                     await self.composeVM.adopt(draftMessages: loaded.messages)
                     self.useThreadCompose    = loaded.wasThreadMode
                 }
+            }
+            .onChange(of: self.statusInputs, initial: true) { _, _ in
+                let read = self.profile?.statusAndCard
+                self.cachedStatus = read?.status
+                // The card is read for every contact here, unlike in the list: this is one contact.
+                self.cachedCard   = read?.card ?? self.profile?.cardState
             }
             .onChange(of: self.composeVM.draftText) { _, _ in self.scheduleDraftSave() }
             .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
@@ -168,6 +187,58 @@ extension Contact {
                 Button("OK") { }
             } message: {
                 Text(self.composeVM.errorMessage)
+            }
+        }
+
+        /// Compose, and the key details under it once there are keys.
+        @ViewBuilder
+        private var composeBlock: some View {
+            ComposeStyleToggle(useThread: Binding(
+                get: { self.useThreadCompose },
+                set: { newValue in
+                    self.useThreadCompose = newValue
+                    self.composeVM.clearAfterEncrypt()
+                }
+            ))
+
+            if self.useThreadCompose {
+                NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
+                    HStack {
+                        Text("Open thread")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                        if !self.composeVM.messages.isEmpty {
+                            Text("\(self.composeVM.messages.count)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(.white.opacity(0.3)))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.occultaAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+            } else {
+                ComposeHeroV2(
+                    vm: self.composeVM, identifier: self.identifier, focusOnAppear: self.focusCompose,
+                    isNotVerified: self.status == .unverified, card: self.cardState
+                )
+            }
+
+            // Not for a card contact: it has no key to describe, and the secrecy line under compose says how it is sealed.
+            if !self.cardState.isCardContact {
+                Text(self.profile?.encryptionSchemeLabel ?? "")
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .foregroundColor(.occultaAccent)
+            }
+
+            if let p = self.profile, !self.needsExchange {
+                KeyDetailsDisclosureV2(profile: p, expanded: self.$keyDetailsExpanded)
             }
         }
 
@@ -340,26 +411,45 @@ private struct StatusChipV2: View {
 private struct ComposeHeroV2: View {
     @Bindable var vm: ComposeViewModel
     let identifier: String
+    var focusOnAppear = false
+    /// Q-09: a Not verified contact's compose shows nothing green.
+    var isNotVerified = false
+    /// The contact's card field, from the details screen's cache. A card contact's compose differs: Standard
+    /// Encryption while its slots go to the card key, and no sending past Carol's deadline.
+    var card: CardState = .empty
 
     @Environment(ContactManager.self) private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
 
     @Query private var contacts: [Contact.Profile]
 
+    @FocusState private var textFocused: Bool
     @State private var showMediaPicker = false
     @State private var showFilePicker  = false
     @State private var secrecy: NextSendSecrecy?
+    @State private var cardIsStandard = false
+    @State private var cardCanSend    = true
 
-    init(vm: ComposeViewModel, identifier: String) {
+    init(vm: ComposeViewModel, identifier: String, focusOnAppear: Bool = false, isNotVerified: Bool = false, card: CardState = .empty) {
         self.vm = vm
         self.identifier = identifier
+        self.focusOnAppear = focusOnAppear
+        self.isNotVerified = isNotVerified
+        self.card = card
         let id = identifier
         self._contacts = Query(filter: #Predicate { $0.identifier == id })
     }
 
     private var firstName: String { self.contacts.first?.givenName.decrypt() ?? "" }
 
-    private var isV4: Bool { self.contacts.first?.maxBundleVersion != nil }
+    /// A card contact has no recorded bundle version yet, but its messages are the group format.
+    private var isV4: Bool { self.contacts.first?.maxBundleVersion != nil || self.card.isCardContact }
+
+    /// Carol's first message has to reach Bob by this time (W-05); nil once she has sent it, or for anyone else.
+    private var firstMessageDeadline: Date? {
+        if case .imported(_, _, _, _, _, _, let expiresAt, false) = self.card { return expiresAt }
+        return nil
+    }
 
     private var estimatedBundleSize: Int {
         let textBytes = self.vm.draftText.utf8.count
@@ -378,8 +468,9 @@ private struct ComposeHeroV2: View {
     }
 
     private var canEncrypt: Bool {
-        !self.vm.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !self.vm.messages.isEmpty
+        self.cardCanSend
+            && (!self.vm.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !self.vm.messages.isEmpty)
     }
 
     var body: some View {
@@ -398,6 +489,8 @@ private struct ComposeHeroV2: View {
                 .frame(minHeight: self.vm.messages.isEmpty ? 100 : 60, alignment: .topLeading)
                 .tint(.occultaAccent)
                 .autocorrectionDisabled()
+                .focused(self.$textFocused)
+                .task { if self.focusOnAppear { self.textFocused = true } }
 
             let fileItems = self.vm.messages
                 .filter { if case .file = $0.format { return true }; return false }
@@ -443,7 +536,7 @@ private struct ComposeHeroV2: View {
                     .tint(.occultaAccent)
 
                     HStack(spacing: 6) {
-                        Circle().fill(Color.occultaVerified).frame(width: 6, height: 6)
+                        Circle().fill(self.isNotVerified ? Color.secondary : Color.occultaVerified).frame(width: 6, height: 6)
                         Text("~\(self.estimatedBundleSizeLabel)")
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -476,7 +569,13 @@ private struct ComposeHeroV2: View {
 
             // Its own line, below the size and the Encrypt button, with its description (D2).
             if let secrecy = self.secrecy {
-                SecrecyIndicator(secrecy: secrecy)
+                SecrecyIndicator(secrecy: secrecy, name: self.firstName, standard: self.cardIsStandard, isNotVerified: self.isNotVerified)
+                    .padding(.top, 10)
+            }
+
+            // Past her deadline Carol can't send a first message that would open (W-05): said where she'd tap.
+            if !self.cardCanSend, case .imported(_, _, _, _, _, _, let expiresAt, _) = self.card {
+                CardNotice(tone: .danger, IntroCardCopy.recipientDeadline(name: self.firstName, deadline: expiresAt))
                     .padding(.top, 10)
             }
         }
@@ -496,9 +595,32 @@ private struct ComposeHeroV2: View {
             self.vm.handleFile(result)
         }
         // Decrypts the 16 KB prekey record, so only when what it reads changes, not on every keystroke.
-        .onChange(of: [self.contacts.first?.prekeyRecordEncrypted, self.contacts.first?.maxBundleVersion], initial: true) {
-            self.secrecy = self.contacts.first.map(self.contactManager.nextSendSecrecy)
+        .onChange(of: [self.contacts.first?.prekeyRecordEncrypted, self.contacts.first?.maxBundleVersion, self.contacts.first?.introductionCardEncrypted], initial: true) {
+            self.refreshSecrecy()
         }
+        // Carol's deadline passes while the screen is open: refresh then, so Encrypt turns off with the notice.
+        .task(id: self.firstMessageDeadline) {
+            guard let deadline = self.firstMessageDeadline, deadline > .now else { return }
+            try? await Task.sleep(for: .seconds(deadline.timeIntervalSinceNow))
+            guard !Task.isCancelled else { return }
+            self.refreshSecrecy()
+        }
+    }
+
+    /// The secrecy line and whether Carol may send. A card contact with nothing better than the card key to seal to
+    /// reads Standard Encryption: its long-term state would claim keys it doesn't have.
+    private func refreshSecrecy() {
+        guard let contact = self.contacts.first else { return }
+        let secrecy = self.contactManager.nextSendSecrecy(for: contact)
+        self.secrecy = secrecy
+
+        guard self.card.isCardContact else {
+            self.cardIsStandard = false
+            self.cardCanSend    = true
+            return
+        }
+        self.cardIsStandard = self.contactManager.cardSecrecyIsStandard(for: contact) || secrecy == .longTerm
+        self.cardCanSend    = self.contactManager.canSendToCardContact(contact)
     }
 
     private func encryptAction() {
@@ -612,6 +734,8 @@ private struct AttachmentChipV2: View {
 
 private struct ExchangeHeroV2: View {
     let identifier: String
+    var title    = "No key yet"
+    var subtitle = "exchange to encrypt messages"
 
     var body: some View {
         VStack(spacing: 16) {
@@ -622,10 +746,10 @@ private struct ExchangeHeroV2: View {
                     .overlay(Image(systemName: "key.horizontal.fill").foregroundStyle(.white.opacity(0.9)))
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("No key yet")
+                    Text(self.title)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text("exchange to encrypt messages")
+                    Text(self.subtitle)
                         .font(.system(size: 11, weight: .regular, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.7))
                 }
@@ -815,36 +939,6 @@ private struct ContactInfoRowV2: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-    }
-}
-
-// MARK: - Unverified Notice
-
-private struct UnverifiedNoticeV2: View {
-    @Binding var expanded: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Button {
-                    withAnimation { self.expanded.toggle() }
-                } label: {
-                    Image(systemName: "info.bubble").foregroundStyle(Color.occultaWarn)
-                }
-                Text("This contact's key is not verified.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.occultaWarn)
-            }
-
-            if self.expanded {
-                Text("Not being verified means that this contact was shared with you or transferred from another device. You can encrypt data for the contact, but since we did not do the key exchange on this device, we cannot guarantee who the owner of the key is. In the future, when this contact is in vicinity, revoke this key in the **Edit** mode and do another key exchange to verify identity.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .background(Color.occultaWarn.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 

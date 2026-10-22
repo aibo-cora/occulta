@@ -55,6 +55,9 @@ enum GroupDecryptError: Error, Equatable {
     /// challenge, or under a body claiming an app version at that tier. No sender puts any of those in a group
     /// bundle without one, so the body could be another recipient's (`bugs.md` Bug 165).
     case missingBodyDigest
+    /// A card conversation's bootstrap message carries no introduction, or one other than the introduction redeemed
+    /// (`Docs/Features/Introduction Cards/SPEC.md` §6.6).
+    case cardIntroductionMismatch
 }
 
 // MARK: - Group-decrypt crypto helpers
