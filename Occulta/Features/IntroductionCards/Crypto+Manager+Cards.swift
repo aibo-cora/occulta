@@ -282,6 +282,9 @@ extension Manager.Crypto {
             guard let bodyDigest = opened.payload.bodyDigest else { throw GroupDecryptError.missingBodyDigest }
             guard bodyDigest == Data(SHA256.hash(data: bundle.ciphertext)) else { throw GroupDecryptError.bodyDigestMismatch }
 
+            // As in `openRecipientSlot`: the outer header is authenticated only by this open (Bug 181).
+            _ = try self.openGroupCiphertext(bundle, using: SymmetricKey(data: opened.payload.sessionKey))
+
             usedPrekey = source.used.consumable
 
             if entry.secrecyContext.mode == .forwardSecret {

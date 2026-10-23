@@ -168,6 +168,11 @@ extension Manager.Crypto {
                 throw GroupDecryptError.bodyDigestMismatch
             }
 
+            // The outer ciphertext opens under this slot's key, or the bundle isn't the one the sender sealed. Its
+            // header is authenticated only here, and nothing else reads it: a copy with an altered header opens
+            // the slot all the same, and would use up the key the genuine bundle needs (Bug 181).
+            _ = try self.openGroupCiphertext(bundle, using: SymmetricKey(data: payload.sessionKey))
+
             // The prekey has now done its work. Recorded before the signature
             // check below so that a rejection destroys it too.
             usedPrekey = used.consumable
