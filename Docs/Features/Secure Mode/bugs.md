@@ -13822,3 +13822,51 @@ The rest of the file was checked for the same pattern and needs no change:
 ### Guard
 
 `ContactsEmptyStateDepthTests`: two contacts hidden at depth 1, Secure Mode active and entered at depth 1 through the duress PIN, asserts the stored list is non-empty and the screen is still in its empty state. Failed against the unfiltered logic, passes with the fix. A SwiftUI body can't be tested directly, so this covers the decision, not that the view calls it; the two call sites are the only readers.
+
+---
+
+## Bug 183 — Opening a bundle with a large attachment kills the app
+
+**Status:** Open. Reported 2026-10-23: a contact opened a bundle carrying an ~800 MB video and the app crashed before the message appeared. Partly mitigated by PR #132 (`v2.0.0/stream-attachment-write`). The fix is `Docs/Features/Bundle/STREAMING_SPEC.md`.
+
+**Target:** `v2.0.0`. Present since the bundle format (one AES-GCM seal over the whole body).
+
+### Severity: High (messages with large attachments can't be opened)
+
+### What happens
+
+The group body is one AES-GCM seal over metadata, text and every attachment, so nothing can be shown until all of it is decrypted into one buffer. On receive, the inbound file is mapped and read through, and the body is opened twice in full: once in `openRecipientSlot` for the Bug 181 check, then in `openGroup`. Then `Encryptor.write` built each sealed attachment in another full-size buffer before writing it. For an 800 MB attachment that is roughly 2.4–3.2 GB resident, above the foreground Jetsam limit on many iPhones. No crash log was collected; the cause is from code reading.
+
+The send side holds about four copies at once: the decrypted staged attachment, the encoded basket, the ciphertext, and the encoded bundle. It survived here, probably on a phone with more memory.
+
+### Fix
+
+PR #132 writes each sealed chunk straight to disk in `Encryptor.write`, removing the last buffer. The full fix streams the body in fixed chunks on both sides (`STREAMING_SPEC.md`), with a memory guard for the inline layout that older contacts still need.
+
+### Guard
+
+`AttachmentWriteTests` (PR #132). `STREAMING_SPEC.md` §11 specifies the memory regression test for the full fix.
+
+---
+
+## Bug 184 — A received attachment from a sender we hold no key for is written to `tmp/` in plaintext
+
+**Status:** Open, found 2026-10-23 by code reading while investigating Bug 183. Not yet confirmed by a test. The fix is `STREAMING_SPEC.md` §6, stage 1.
+
+**Target:** `v2.0.0`.
+
+### Severity: High (plaintext attachment on disk), conditional on a sender with no stored public key
+
+### What happens
+
+`OccultaApp.buildOwnedBasket` seals each received `.file` attachment under `try? fileEncryptionKey(for: ownerID)`. When that is nil, it writes the content with `writeProtected`: file protection, but plaintext in `tmp/`. `fileEncryptionKey` throws `contactHasNoKeys` for a contact with no `contactPublicKeys`, which includes an introduction-card contact not yet met in person. The message sheet builds its reader from the same call, so it reads those files unsealed.
+
+The send side had the same fallback and was fixed on 2026-10-22 (`Message Persistence/FINDINGS.md`), using the compose staging key. The receive side was not changed.
+
+### Fix
+
+Planned in `STREAMING_SPEC.md` §6: one resolver for both the writer and the sheet's reader. It uses the contact's file key, or failing that the compose staging key. With neither, the attachment is dropped with an error and never written in plaintext.
+
+### Guard
+
+Planned: a key-less sender's received attachment is sealed on disk, no plaintext marker is found in `tmp/`, and the attachment opens in the sheet.
