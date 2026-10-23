@@ -399,7 +399,7 @@ private enum Decryptor {
 
 // MARK: - StreamingEncryptor
 
-final class StreamingEncryptor: @unchecked Sendable {
+nonisolated final class StreamingEncryptor: @unchecked Sendable {
     private let handle:    FileHandle
     private let fileKey:   SymmetricKey
     private let baseNonce: AES.GCM.Nonce
