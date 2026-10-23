@@ -13,6 +13,10 @@
 //  fallbacks go one release after 2.0.0**, when no session sealed that way can still be alive: delete
 //  `deriveClassicalEnclaveBoundKey()`, `deriveLegacySymmetricKey()` and the two steps in `decrypt` that use them.
 //
+//  A device that reaches iOS 26 after its record was made classical has the record replaced by a hybrid one, in place,
+//  at the app's next launch (`upgradeTierPQRecordIfClassical()`, Bug 171 Stage 6). No data moves: a session sealed in the
+//  classical form opens through the fallback in `decrypt`, which derives that key from `r_S` and never reads the record.
+//
 //  `r_S` and the PQ record are created by whichever process first needs them: the app's launch (`LaunchSequence`) or
 //  the extension's first `encrypt`. Both add and, on `errSecDuplicateItem`, read what the other added. Unlike the
 //  other tiers this one may be created at any time, because staging holds nothing for longer than an hour.
@@ -463,6 +467,29 @@ final class ShareStagingKeyManager {
     func createTierItemsIfAbsent() throws {
         if try self.tierSecret() == nil { try self.createTierSecretIfAbsent() }
         try self.createTierPQRecordIfAbsent()
+    }
+
+    /// Moves the staging tier's record from classical to hybrid, in place, when this device has ML-KEM and the record is
+    /// classical (Stage 6: a device that reached iOS 26). Returns whether it did. The upgrade needs no pending record:
+    /// staging holds no lasting data, and a session sealed in the classical form opens through `decrypt`'s fallback, which
+    /// derives the classical key from `r_S` without reading the record at all.
+    ///
+    /// One atomic update of the item, which keeps its creation date. Never replaces a hybrid record, and does nothing
+    /// without a provider or without a record (this never creates one: `createTierItemsIfAbsent()` does). A provider that
+    /// can't make the key throws and leaves the classical record, so the next launch tries again.
+    @discardableResult
+    func upgradeTierPQRecordIfClassical() throws -> Bool {
+        guard let provider = self.postQuantum(), let record = try self.tierPQRecord(), record.mode == .classical else { return false }
+
+        guard
+            let pair         = provider.generatePersistentKeyPair(),
+            let encapsulated = provider.encapsulate(peerPublicKeyData: pair.publicKeyData),
+            let hybrid       = PQRecord.hybrid(keyBlob: pair.keyBlob, ciphertext: encapsulated.ciphertext)
+        else { throw KeyError.postQuantumUnavailable }
+
+        let status = SecItemUpdate(self.tierPQRecordQuery() as CFDictionary, [kSecValueData as String: try hybrid.encoded()] as CFDictionary)
+        guard status == errSecSuccess else { throw KeyError.creationFailed }
+        return true
     }
 
     // MARK: - Tier PQ record

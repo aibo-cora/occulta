@@ -11,7 +11,9 @@
 //  the vault Enclave key and `r_B` need the evaluated `LAContext`. The epoch that says whether it has run is
 //  `AppLayerConfig.vaultKeyEpoch`, sealed under the tier U key: 1 until the rewrap, then 2.
 //
-//  `OccultaTests/SecureMode/VaultRewrapTests.swift` was written against a stub of this first (Stage 4a).
+//  `OccultaTests/SecureMode/VaultRewrapTests.swift` was written against a stub of this first (Stage 4a). Stage 6 runs it
+//  once more, with the classical form of the key as the "legacy" one, for a vault whose device reached iOS 26 after it
+//  had been rewrapped onto the classical form (`HybridUpgradeVaultTests`).
 //
 
 import Foundation
@@ -84,9 +86,11 @@ extension KeyReseal {
 
     /// Moves the vault's data onto the Enclave-bound vault key, in one transaction.
     ///
-    /// - The epoch must be 1 (`.alreadyDone` at 2, with nothing read or written beyond the epoch). Only then are `r_B`
-    ///   and the tier B record created if absent: once it is 2 the vault is sealed under keys that include them, and a
-    ///   new one would make it unreadable.
+    /// - The epoch must be 1 (`.alreadyDone` at 2, with nothing read or written beyond the epoch and the tier B record).
+    ///   Only then are `r_B` and the tier B record created if absent: once it is 2 the vault is sealed under keys that
+    ///   include them, and a new one would make it unreadable. The one exception to "at 2 nothing runs" is Stage 6: epoch
+    ///   (2, classical) with a hybrid tier B record, a device that reached iOS 26 after its first unlock. The data then moves
+    ///   from the classical key to the hybrid one, in the same way, and the epoch becomes (2, hybrid).
     /// - Every `VaultEntry.encryptedEntryKey` (AAD `aad(for: .entryKey)`), every `BackupEncryptionKey.encryptedPayload`
     ///   (AAD `aad()`) and `backup-export-meta.dat` (the constant AAD): opens under the new key, skip; under the legacy
     ///   key, reseal; under neither, leave. All depths, orphaned rows and filler rows are covered. The backup-key
@@ -136,39 +140,58 @@ extension KeyReseal {
             let epoch = Epoch.opening(config.vaultKeyEpoch, using: localKey)
         else { throw VaultAborted(reason: .epochUnreadable) }
 
-        if epoch.number >= 2 {
-            report.outcome = .alreadyDone
-            return
-        }
-
-        // Creation follows the rule: only here, while the epoch is 1.
-        do {
-            if try keyManager.tierSecret(.biometry(authContext)) == nil {
-                try keyManager.createTierSecretIfAbsent(.biometry(authContext))
-            }
-        } catch {
-            throw VaultAborted(reason: .tierSecretUnreadable)
-        }
-
+        // The key the data is under now, and the record the new key is in the form of.
         let record: TierPQRecord
-        do {
-            if let found = try keyManager.tierPQRecord(.vault) {
-                record = found
-            } else {
-                try keyManager.createTierPQRecordIfAbsent(.vault)
-                guard let made = try keyManager.tierPQRecord(.vault) else { throw VaultAborted(reason: .tierPQRecordUnreadable) }
-                record = made
+        let legacy: SymmetricKey
+
+        if epoch.number >= 2 {
+            // Stage 6: a vault rewrapped onto the classical form on a device below iOS 26, whose tier B record has since
+            // become hybrid. Only then is there anything to do; the classical key is derived from `.classical`, not from
+            // the stored record, which no longer says classical. Nothing is created: the secret and the record exist.
+            guard epoch.form == .classical, let found = try? keyManager.tierPQRecord(.vault), found.mode == .hybrid else {
+                report.outcome = .alreadyDone
+                return
             }
-        } catch let aborted as VaultAborted {
-            throw aborted
-        } catch {
-            throw VaultAborted(reason: .tierPQRecordUnreadable)
+            record = found
+
+            do {
+                guard try keyManager.tierSecret(.biometry(authContext)) != nil else { throw VaultAborted(reason: .tierSecretUnreadable) }
+            } catch {
+                throw VaultAborted(reason: .tierSecretUnreadable)
+            }
+            guard let classical = try? keyManager.enclaveBoundKey(.vault(authContext), record: .classical) else {
+                throw VaultAborted(reason: .vaultKeyUnavailable)
+            }
+            legacy = classical
+        } else {
+            // Creation follows the rule: only here, while the epoch is 1.
+            do {
+                if try keyManager.tierSecret(.biometry(authContext)) == nil {
+                    try keyManager.createTierSecretIfAbsent(.biometry(authContext))
+                }
+            } catch {
+                throw VaultAborted(reason: .tierSecretUnreadable)
+            }
+
+            do {
+                if let found = try keyManager.tierPQRecord(.vault) {
+                    record = found
+                } else {
+                    try keyManager.createTierPQRecordIfAbsent(.vault)
+                    guard let made = try keyManager.tierPQRecord(.vault) else { throw VaultAborted(reason: .tierPQRecordUnreadable) }
+                    record = made
+                }
+            } catch let aborted as VaultAborted {
+                throw aborted
+            } catch {
+                throw VaultAborted(reason: .tierPQRecordUnreadable)
+            }
+
+            guard let derived = try? keyManager.legacyKey(.vault(authContext)) else { throw VaultAborted(reason: .vaultKeyUnavailable) }
+            legacy = derived
         }
 
-        guard
-            let legacy = try? keyManager.legacyKey(.vault(authContext)),
-            let new = try? keyManager.enclaveBoundKey(.vault(authContext))
-        else { throw VaultAborted(reason: .vaultKeyUnavailable) }
+        guard let new = try? keyManager.enclaveBoundKey(.vault(authContext)) else { throw VaultAborted(reason: .vaultKeyUnavailable) }
 
         func open(_ sealed: Data, key: SymmetricKey, aad: Data) -> Data? {
             guard let box = try? AES.GCM.SealedBox(combined: sealed) else { return nil }

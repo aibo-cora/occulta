@@ -148,8 +148,12 @@ extension Manager {
         enum VaultKeys {
             /// The legacy derivation (`legacyKey(.vault)`).
             case legacy
-            /// The Enclave-bound one (`enclaveBoundKey(.vault)`): `r_B` and the tier B record go in.
+            /// The Enclave-bound one (`enclaveBoundKey(.vault)`): `r_B` and the tier B record go in, in the form the
+            /// record says.
             case enclaveBound
+            /// The Enclave-bound one in the classical form, whatever the tier B record says (Stage 6): the vault's data is
+            /// still under it when the record has become hybrid and the rewrap has not yet moved the data.
+            case enclaveBoundClassical
         }
 
         private static var processVaultKeys = VaultKeys.legacy

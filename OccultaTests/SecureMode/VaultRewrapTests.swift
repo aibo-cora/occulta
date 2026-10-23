@@ -83,6 +83,8 @@ final class VaultStore {
     let keys: TestKeyManager
     let directory: URL
     let form: KeyForm
+    /// The form of the tier U local key the vault epoch is sealed under: hybrid, except for a device below iOS 26 (Stage 6).
+    let localForm: KeyForm
 
     struct Entry {
         let id: PersistentIdentifier
@@ -118,11 +120,15 @@ final class VaultStore {
     ///   - backupDepths: Depths that hold a real backup key. The rest of the table is filler, 32 rows in all.
     ///   - file: Whether `backup-export-meta.dat` exists.
     ///   - epoch: The vault epoch to seal, or nil to leave the column empty.
-    init(keys: TestKeyManager, form: KeyForm, entries: Int = 12, backupDepths: [Int] = [0, 2, 5], file: Bool = true, epoch: UInt8? = 1) throws {
+    init(
+        keys: TestKeyManager, form: KeyForm, entries: Int = 12, backupDepths: [Int] = [0, 2, 5], file: Bool = true, epoch: UInt8? = 1,
+        localForm: KeyForm = .hybrid
+    ) throws {
         let schema = OccultaApp.schema
         self.container = try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
         self.keys      = keys
         self.form      = form
+        self.localForm = localForm
         self.directory = FileManager.default.temporaryDirectory.appendingPathComponent("vault-rewrap-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
 
@@ -132,7 +138,9 @@ final class VaultStore {
         let config  = AppLayerConfig()
         context.insert(config)
         if let epoch {
-            config.vaultKeyEpoch = try KeyReseal.Epoch(number: epoch, form: .classical).sealed(using: Frozen.newKey(.local, form: .hybrid))
+            // The form a vault at epoch 2 is in is the tier B record's at its rewrap; at epoch 1 it is what the bootstrap seeds.
+            let epochForm: TierPQRecord.Mode = epoch >= 2 && form == .hybrid ? .hybrid : .classical
+            config.vaultKeyEpoch = try KeyReseal.Epoch(number: epoch, form: epochForm).sealed(using: Frozen.newKey(.local, form: localForm))
         }
 
         try self.seedEntries(count: entries, into: context)
@@ -227,7 +235,7 @@ final class VaultStore {
 
     /// The vault epoch as stored: 1 or 2, or nil.
     func epoch() -> UInt8? {
-        KeyReseal.Epoch.opening(self.config()?.vaultKeyEpoch, using: Frozen.newKey(.local, form: .hybrid))?.number
+        KeyReseal.Epoch.opening(self.config()?.vaultKeyEpoch, using: Frozen.newKey(.local, form: self.localForm))?.number
     }
 
     func state(of sealed: Data?, aad: Data) -> VaultState {
@@ -773,7 +781,8 @@ struct VaultRewrapUnlockTests {
 
         vault.unlock(context: LAContext())
 
-        #expect(Manager.Ambient.vaultKeys == .enclaveBound)
+        // The key follows the epoch's form (Stage 6): a vault rewrapped onto the classical form derives the classical key.
+        #expect(Manager.Ambient.vaultKeys == (form == .hybrid ? .enclaveBound : .enclaveBoundClassical))
         let item = try #require(store.entries.first)
         let entry = try #require(try vault.fetchEntry(by: item.uuid))
         #expect(try vault.decryptLabel(for: entry) == item.label)
@@ -857,8 +866,15 @@ struct VaultRewrapUnlockTests {
         vault.unlock(context: LAContext())
 
         #expect(keys.tierPQRecordB == nil, "a new record is a new key")
-        #expect(!vault.isUnlocked, "every derivation fails loudly, and the vault locks")
-        #expect(Manager.Ambient.vaultKeys == .enclaveBound, "the data is under the new keys; the legacy ones would read nothing")
+        switch form {
+        case .hybrid:
+            #expect(!vault.isUnlocked, "every derivation fails loudly, and the vault locks")
+            #expect(Manager.Ambient.vaultKeys == .enclaveBound, "the data is under the new keys; the legacy ones would read nothing")
+        case .classical:
+            // The classical key is `HKDF(t ‖ r_B)` and reads nothing from the record (Stage 6): the vault opens without it.
+            #expect(vault.isUnlocked, "a classical-form vault does not depend on the record")
+            #expect(Manager.Ambient.vaultKeys == .enclaveBoundClassical)
+        }
     }
 
     @Test("The legacy backup-key array is migrated under the legacy vault key first: nothing it holds is stranded by the rewrap",

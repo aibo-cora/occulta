@@ -167,7 +167,7 @@ extension KeyReseal {
         return report
     }
 
-    private struct Abort: Error {
+    struct Abort: Error {
         let reason: AbortReason
     }
 
@@ -262,7 +262,7 @@ extension KeyReseal {
     // MARK: - One value
 
     /// What the pass decided for one sealed value.
-    private enum Verdict {
+    enum Verdict {
         /// Already under the new key.
         case skipped
         /// Opened under the legacy key; here is the same plaintext under the new one, read back.
@@ -280,7 +280,7 @@ extension KeyReseal {
 
     /// Everything the pass holds while it runs.
     @MainActor
-    private final class Pass {
+    final class Pass {
         let context: ModelContext
         let batchSize: Int
         private let progress: Progress?
@@ -663,7 +663,7 @@ extension KeyReseal {
     /// The fields of one row. Each call decides one value and, if it changes, writes it back to the model in memory;
     /// the batch's `save()` is what commits it.
     /// What a value's authenticated data is bound to.
-    private enum Bound {
+    enum Bound {
         /// The scheme's one byte, `EncryptionScheme.v2_hybridPQ.aad`: every value sealed by `Data.encrypt()`.
         case scheme
         /// The row's own `aad()`, which carries its id.
@@ -679,7 +679,7 @@ extension KeyReseal {
     }
 
     @MainActor
-    private final class Row<M: PersistentModel> {
+    final class Row<M: PersistentModel> {
         unowned let pass: Pass
         let model: M
         var changed = false

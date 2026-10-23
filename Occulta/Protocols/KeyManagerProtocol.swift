@@ -199,6 +199,38 @@ protocol KeyManagerProtocol {
 
     /// The tier's PQ record, or nil when there is none. Reads only, never creates. Throws for anything but absence.
     func tierPQRecord(_ tier: PostQuantumTier) throws -> TierPQRecord?
+
+    // MARK: - The upgrade of a classical device that reaches iOS 26 (Stage 6)
+
+    /// Whether an ML-KEM provider exists on this device: iOS 26+. The upgrade never runs while it doesn't, and the
+    /// mode of a record never goes back.
+    var postQuantumAvailable: Bool { get }
+
+    /// `enclaveBoundKey(_:)` in the form `record` says, instead of the form the tier's stored record says. The upgrade
+    /// derives the classical key with `.classical` (a classical key needs nothing from the record but its mode) and the
+    /// hybrid key from a record that is stored but not yet the tier's own. Everything else is as `enclaveBoundKey(_:)`.
+    func enclaveBoundKey(_ key: EnclaveBoundKey, record: TierPQRecord) throws -> SymmetricKey?
+
+    /// A new hybrid record (a fresh Enclave ML-KEM key and a ciphertext to it), not stored anywhere. nil when there is no
+    /// provider. Throws when a provider exists and can't make the key: a transient failure must not become a classical
+    /// record on a device that could have a hybrid one.
+    func makeHybridPQRecord() throws -> TierPQRecord?
+
+    /// The tier's pending record: the hybrid record an upgrade has written but not yet made the tier's own. nil when
+    /// there is none. Reads only. Exists only during one upgrade.
+    func pendingTierPQRecord(_ tier: PostQuantumTier) throws -> TierPQRecord?
+
+    /// Stores `record` as the tier's pending record, or on `errSecDuplicateItem` leaves what is there. Returns whether
+    /// this call stored it. The upgrade writes it before anything is sealed under it, so the key is never held in memory only.
+    @discardableResult
+    func addPendingTierPQRecord(_ record: TierPQRecord, tier: PostQuantumTier) throws -> Bool
+
+    /// Makes `record` the tier's own record, in place (one atomic update of the item). Throws if the tier has none.
+    func replaceTierPQRecord(_ tier: PostQuantumTier, with record: TierPQRecord) throws
+
+    /// Deletes the tier's pending record. A missing one counts as deleted.
+    @discardableResult
+    func deletePendingTierPQRecord(_ tier: PostQuantumTier) -> Bool
 }
 
 // MARK: - TestKeyManager
@@ -266,6 +298,20 @@ final class TestKeyManager: KeyManagerProtocol {
 
     /// Simulates the tier PQ record of tier B (the vault). nil = the item is missing.
     var tierPQRecordB: TierPQRecord?
+
+    /// Simulates the pending PQ record of tier U or B (Stage 6): nil = none.
+    var pendingPQRecordU: TierPQRecord?
+    var pendingPQRecordB: TierPQRecord?
+
+    /// What `makeHybridPQRecord()` returns, so a test knows the hybrid key the upgrade ends up with. nil makes a fresh
+    /// in-memory ML-KEM key each time.
+    var hybridRecordToMake: TierPQRecord?
+
+    /// Makes `makeHybridPQRecord()` throw, as a provider that can't make the key does.
+    var simulatesHybridRecordFailure = false
+
+    /// Makes `replaceTierPQRecord(_:with:)` throw and change nothing, as a Keychain update that fails does.
+    var simulatesRecordReplacementFailure = false
 
     /// Simulates a device below iOS 26: no ML-KEM provider, so a created record is classical, and a hybrid record
     /// can't be decapsulated (`enclaveBoundKey` gives nil for it, never a classical key).
@@ -525,6 +571,15 @@ final class TestKeyManager: KeyManagerProtocol {
     /// before anything else is derived, and nil for a hybrid record that won't decapsulate: never a classical key
     /// in its place. The vault and PIN switches apply as they do to the legacy keys.
     func enclaveBoundKey(_ key: EnclaveBoundKey) throws -> SymmetricKey? {
+        try self.enclaveBoundKey(key, overriding: nil)
+    }
+
+    /// The form of `record` instead of the tier's stored one.
+    func enclaveBoundKey(_ key: EnclaveBoundKey, record: TierPQRecord) throws -> SymmetricKey? {
+        try self.enclaveBoundKey(key, overriding: record)
+    }
+
+    private func enclaveBoundKey(_ key: EnclaveBoundKey, overriding record: TierPQRecord?) throws -> SymmetricKey? {
         if self.simulatesLockedDevice { throw SimulatedFailure() }
         if self.simulatesTierSecretMissing { return nil }
 
@@ -533,26 +588,26 @@ final class TestKeyManager: KeyManagerProtocol {
             if self.simulatesLocalKeyUnavailable { return nil }
             return self.enclaveBound(
                 privateKey: self.localDBPrivateKey, publicKeyData: self.localDBPublicKeyData,
-                secret: self.tierSecretU, record: self.tierPQRecordU,
+                secret: self.tierSecretU, record: record ?? self.tierPQRecordU,
                 classicalInfo: SaltInfo.kLocalDBEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kLocalDBEnclaveBoundPQKeyInfo
             )
         case .shardCustody:
             return self.enclaveBound(
                 privateKey: self.shardCustodyPrivateKey, publicKeyData: self.shardCustodyPublicKeyData,
-                secret: self.tierSecretU, record: self.tierPQRecordU,
+                secret: self.tierSecretU, record: record ?? self.tierPQRecordU,
                 classicalInfo: SaltInfo.kShardCustodyEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kShardCustodyEnclaveBoundPQKeyInfo
             )
         case .restoreVault:
             return self.enclaveBound(
                 privateKey: self.shardCustodyPrivateKey, publicKeyData: self.shardCustodyPublicKeyData,
-                secret: self.tierSecretU, record: self.tierPQRecordU,
+                secret: self.tierSecretU, record: record ?? self.tierPQRecordU,
                 classicalInfo: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kRestoreVaultEnclaveBoundPQKeyInfo
             )
         case .secureModeWrap:
             if self.simulatesSecureModeKeyUnavailable || self.simulatesWrapKeyUnavailable { return nil }
             return self.enclaveBound(
                 privateKey: self.secureModePrivateKey, publicKeyData: self.secureModePublicKeyData,
-                secret: self.tierSecretU, record: self.tierPQRecordU,
+                secret: self.tierSecretU, record: record ?? self.tierPQRecordU,
                 classicalInfo: SaltInfo.kSecureModeWrapKeyInfo, hybridInfo: SaltInfo.kSecureModeWrapPQKeyInfo
             )
         case .vault:
@@ -560,7 +615,7 @@ final class TestKeyManager: KeyManagerProtocol {
             self.vaultKeyDerivations += 1
             return self.enclaveBound(
                 privateKey: self.vaultPrivateKey, publicKeyData: self.vaultPublicKeyData,
-                secret: self.tierSecretB, record: self.tierPQRecordB,
+                secret: self.tierSecretB, record: record ?? self.tierPQRecordB,
                 classicalInfo: SaltInfo.kVaultEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kVaultEnclaveBoundPQKeyInfo
             )
         }
@@ -620,6 +675,65 @@ final class TestKeyManager: KeyManagerProtocol {
         return true
     }
 
+    // MARK: - The upgrade to hybrid (TestKeyManager)
+
+    var postQuantumAvailable: Bool { self.activePostQuantum != nil }
+
+    func makeHybridPQRecord() throws -> TierPQRecord? {
+        guard self.activePostQuantum != nil else { return nil }
+        if self.simulatesHybridRecordFailure { throw SimulatedFailure() }
+        if let fixed = self.hybridRecordToMake { return fixed }
+
+        guard let made = self.makeTierPQRecord(), made.mode == .hybrid else { throw SimulatedFailure() }
+        return made
+    }
+
+    func pendingTierPQRecord(_ tier: PostQuantumTier) throws -> TierPQRecord? {
+        if self.simulatesLockedDevice { throw SimulatedFailure() }
+
+        switch tier {
+        case .deviceUnlock: return self.pendingPQRecordU
+        case .vault:        return self.pendingPQRecordB
+        }
+    }
+
+    @discardableResult
+    func addPendingTierPQRecord(_ record: TierPQRecord, tier: PostQuantumTier) throws -> Bool {
+        if self.simulatesLockedDevice { throw SimulatedFailure() }
+
+        switch tier {
+        case .deviceUnlock:
+            guard self.pendingPQRecordU == nil else { return false }
+            self.pendingPQRecordU = record
+        case .vault:
+            guard self.pendingPQRecordB == nil else { return false }
+            self.pendingPQRecordB = record
+        }
+        return true
+    }
+
+    func replaceTierPQRecord(_ tier: PostQuantumTier, with record: TierPQRecord) throws {
+        if self.simulatesLockedDevice || self.simulatesRecordReplacementFailure { throw SimulatedFailure() }
+
+        switch tier {
+        case .deviceUnlock:
+            guard self.tierPQRecordU != nil else { throw SimulatedFailure() }
+            self.tierPQRecordU = record
+        case .vault:
+            guard self.tierPQRecordB != nil else { throw SimulatedFailure() }
+            self.tierPQRecordB = record
+        }
+    }
+
+    @discardableResult
+    func deletePendingTierPQRecord(_ tier: PostQuantumTier) -> Bool {
+        switch tier {
+        case .deviceUnlock: self.pendingPQRecordU = nil
+        case .vault:        self.pendingPQRecordB = nil
+        }
+        return true
+    }
+
     func createSharedSecret(using material: Data?) -> SymmetricKey? {
         guard let material else { return nil }
         return self.deriveKey(
@@ -668,8 +782,9 @@ final class TestKeyManager: KeyManagerProtocol {
         if self.derivesLegacyKeysOnly { return try self.legacyKey(.vault(context)) }
 
         switch Manager.Ambient.vaultKeys {
-        case .legacy:       return try self.legacyKey(.vault(context))
-        case .enclaveBound: return try self.enclaveBoundKey(.vault(context))
+        case .legacy:                return try self.legacyKey(.vault(context))
+        case .enclaveBound:          return try self.enclaveBoundKey(.vault(context))
+        case .enclaveBoundClassical: return try self.enclaveBoundKey(.vault(context), record: .classical)
         }
     }
 

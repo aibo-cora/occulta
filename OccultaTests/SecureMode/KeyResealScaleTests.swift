@@ -49,6 +49,67 @@ private func milliseconds(_ duration: Duration) -> Double {
 
 // MARK: - Volume
 
+/// `count` contacts with every field and a full prekey record, sealed under `legacy`, and an `AppLayerConfig` row, in one
+/// context and one save: the volume of matrix row 10.
+@MainActor
+func seedVolumeContacts(_ count: Int, into store: LegacyStore, sealedUnder legacy: SymmetricKey) throws {
+    let context = store.newContext()
+    let config  = AppLayerConfig()
+    context.insert(config)
+
+    func seal(_ plaintext: Data) -> Data { Sealing.seal(plaintext, key: legacy, aad: Sealing.fixedAAD) }
+    func sealed(_ text: String) -> String { seal(Data(text.utf8)).base64EncodedString() }
+
+    let thumbnail = Sealing.random(2_000)
+    let image     = Sealing.random(9_000)
+    let prekeys   = Sealing.random(PrekeyRecordCodec.capacity)
+    let card      = Sealing.random(CardStateCodec.capacity)
+
+    for index in 0..<count {
+        let profile = Contact.Profile(
+            identifier: sealed("id \(index)"), givenName: sealed("Given \(index)"), familyName: sealed("Family \(index)"),
+            middleName: sealed("Middle"), nickname: sealed("Nick"), organizationName: sealed("Organization"),
+            departmentName: sealed("Department"), jobTitle: sealed("Title"),
+            encryptionScheme: EncryptionScheme.v2_hybridPQ.rawValue
+        )
+        context.insert(profile)
+
+        profile.namePrefix = sealed("Dr");  profile.nameSuffix = sealed("PhD")
+        profile.phoneticGivenName = sealed("a"); profile.phoneticMiddleName = sealed("b"); profile.phoneticFamilyName = sealed("c")
+        profile.birthday = sealed("1/1/90"); profile.note = sealed("A note about contact \(index)")
+        profile.thumbnailImageData = seal(thumbnail); profile.imageData = seal(image)
+        profile.prekeyRecordEncrypted = seal(prekeys); profile.introductionCardEncrypted = seal(card)
+        profile.signedAttributes = seal(Data("attributes".utf8))
+        profile.globalTrusteeDepth = seal(DepthCodec.encode(-1)); profile.maxBundleVersion = seal(Data([3]))
+        profile.visibleThroughDepth = seal(DepthCodec.encode(Int.max)); profile.originDepth = seal(DepthCodec.encode(0))
+
+        let phone = Contact.Profile.PhoneNumber(label: sealed("mobile"), value: sealed("+1 555 \(index)"))
+        phone.profile = profile
+        context.insert(phone)
+
+        let email = Contact.Profile.EmailAddress(label: sealed("work"), value: sealed("c\(index)@example.com"))
+        email.profile = profile
+        context.insert(email)
+
+        let postal = Contact.Profile.PostalAddress(
+            label: sealed("home"), street: sealed("1 Street"), city: sealed("City"), state: sealed("State"),
+            postalCode: sealed("12345"), country: sealed("Country"), isoCountryCode: sealed("XX")
+        )
+        postal.profile = profile
+        context.insert(postal)
+
+        let url = Contact.Profile.URLAddress(label: sealed("site"), value: sealed("https://example.com/\(index)"))
+        url.profile = profile
+        context.insert(url)
+
+        let key = Contact.Profile.Key(material: seal(Sealing.random(65)), owner: seal(Data("owner".utf8)), date: seal(Data("date".utf8)))
+        key.profile = profile
+        context.insert(key)
+    }
+    try context.save()
+}
+
+
 @Suite("Key reseal — volume", .ambientFrozenTestKeyManager)
 @MainActor
 struct KeyResealVolumeTests {
@@ -61,62 +122,8 @@ struct KeyResealVolumeTests {
         let store = try LegacyStore(keys: keys)
 
         // The seeding, once, in one context and one save.
-        let context = store.newContext()
-        let config  = AppLayerConfig()
-        context.insert(config)
-
-        let legacy = Frozen.legacyKey(.local)
-        func seal(_ plaintext: Data) -> Data { Sealing.seal(plaintext, key: legacy, aad: Sealing.fixedAAD) }
-        func sealed(_ text: String) -> String { seal(Data(text.utf8)).base64EncodedString() }
-
-        let thumbnail = Sealing.random(2_000)
-        let image     = Sealing.random(9_000)
-        let prekeys   = Sealing.random(PrekeyRecordCodec.capacity)
-        let card      = Sealing.random(CardStateCodec.capacity)
-
         let seedingStarted = ContinuousClock.now
-        for index in 0..<Self.contacts {
-            let profile = Contact.Profile(
-                identifier: sealed("id \(index)"), givenName: sealed("Given \(index)"), familyName: sealed("Family \(index)"),
-                middleName: sealed("Middle"), nickname: sealed("Nick"), organizationName: sealed("Organization"),
-                departmentName: sealed("Department"), jobTitle: sealed("Title"),
-                encryptionScheme: EncryptionScheme.v2_hybridPQ.rawValue
-            )
-            context.insert(profile)
-
-            profile.namePrefix = sealed("Dr");  profile.nameSuffix = sealed("PhD")
-            profile.phoneticGivenName = sealed("a"); profile.phoneticMiddleName = sealed("b"); profile.phoneticFamilyName = sealed("c")
-            profile.birthday = sealed("1/1/90"); profile.note = sealed("A note about contact \(index)")
-            profile.thumbnailImageData = seal(thumbnail); profile.imageData = seal(image)
-            profile.prekeyRecordEncrypted = seal(prekeys); profile.introductionCardEncrypted = seal(card)
-            profile.signedAttributes = seal(Data("attributes".utf8))
-            profile.globalTrusteeDepth = seal(DepthCodec.encode(-1)); profile.maxBundleVersion = seal(Data([3]))
-            profile.visibleThroughDepth = seal(DepthCodec.encode(Int.max)); profile.originDepth = seal(DepthCodec.encode(0))
-
-            let phone = Contact.Profile.PhoneNumber(label: sealed("mobile"), value: sealed("+1 555 \(index)"))
-            phone.profile = profile
-            context.insert(phone)
-
-            let email = Contact.Profile.EmailAddress(label: sealed("work"), value: sealed("c\(index)@example.com"))
-            email.profile = profile
-            context.insert(email)
-
-            let postal = Contact.Profile.PostalAddress(
-                label: sealed("home"), street: sealed("1 Street"), city: sealed("City"), state: sealed("State"),
-                postalCode: sealed("12345"), country: sealed("Country"), isoCountryCode: sealed("XX")
-            )
-            postal.profile = profile
-            context.insert(postal)
-
-            let url = Contact.Profile.URLAddress(label: sealed("site"), value: sealed("https://example.com/\(index)"))
-            url.profile = profile
-            context.insert(url)
-
-            let key = Contact.Profile.Key(material: seal(Sealing.random(65)), owner: seal(Data("owner".utf8)), date: seal(Data("date".utf8)))
-            key.profile = profile
-            context.insert(key)
-        }
-        try context.save()
+        try seedVolumeContacts(Self.contacts, into: store, sealedUnder: Frozen.legacyKey(.local))
         let seedingTime = ContinuousClock.now - seedingStarted
 
         // The pass, with the production batch size.

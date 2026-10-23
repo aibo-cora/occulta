@@ -392,7 +392,7 @@ a PQ record (9,763 bytes; a real ML-KEM key and ciphertext on iOS 26+, filler be
 generic-password items in the shared group, `WhenUnlockedThisDeviceOnly`. The app's first launch of
 2.0.0 creates them on every install, or the extension's first share if that comes first, at the same
 sizes everywhere, and the mode byte is the only difference between an iOS 26 device and an older one.
-They are dated like the key and deleted with it. A session staged by the previous build opens for its
+They are dated like the key and deleted with it. On a device that was below iOS 26 the record is classical, and the app's first launch on iOS 26 replaces it with a hybrid one in place (the item keeps its date; only the mode byte and the contents change). A device upgrading its other records (`bugs.md` Bug 171, Stage 6) also holds, for the one upgrade, a *pending* copy of tier U's new record, the same size as every record, which is deleted when the upgrade finishes. A session staged by the previous build opens for its
 remaining hour through a legacy fallback in `decrypt`, which goes one release after 2.0.0. Also `inbound/<session-uuid>.occ`, an incoming
 `.occ` the extension hands to the app, already sealed by its sender and deleted once the app reads
 it. A handoff that never reaches the app is swept after the same hour (`ShareSession.sweepInbound`),

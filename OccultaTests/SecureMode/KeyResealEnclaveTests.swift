@@ -186,9 +186,12 @@ struct KeyResealEnclaveTests {
             #expect(keyBytes(try #require(try keys.deriveRestoreVaultKey())) == keyBytes(newRestore))
             #expect(keyBytes(newLocal) != keyBytes(local) && keyBytes(newCustody) != keyBytes(custody) && keyBytes(newRestore) != keyBytes(restore))
 
-            // The epoch says which form, and Manager.Security, now after the pass, reads the persisted depth it was given.
+            // The epoch says which form, and Manager.Security, now after the pass, reads the persisted depth it was given. A
+            // classical record on a runtime that has ML-KEM is upgraded by the same launch (Stage 6), so the end form is hybrid
+            // wherever a provider exists.
             let config = try #require(try ModelContext(container).fetch(FetchDescriptor<AppLayerConfig>()).first)
-            #expect(KeyReseal.Epoch.opening(config.keyEpoch, using: newLocal) == KeyReseal.Epoch(number: 1, form: form == .hybrid ? .hybrid : .classical))
+            let endForm: TierPQRecord.Mode = (form == .hybrid || PostQuantumProviderFactory.create() != nil) ? .hybrid : .classical
+            #expect(KeyReseal.Epoch.opening(config.keyEpoch, using: newLocal) == KeyReseal.Epoch(number: 1, form: endForm))
             #expect(config.readPersistedDepth() == 2)
             _ = Manager.Security(modelContainer: container, keyManager: keys)
             #expect(try #require(try ModelContext(container).fetch(FetchDescriptor<AppLayerConfig>()).first).readPersistedDepth() == 2)

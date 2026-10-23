@@ -76,8 +76,11 @@ final class VaultManager {
         ) else { return }
 
         switch report.outcome {
-        case .rewrapped, .alreadyDone: Manager.Ambient.setVaultKeys(.enclaveBound)
-        default:                       break
+        case .rewrapped: Manager.Ambient.setVaultKeys(.enclaveBound)
+        case .alreadyDone:
+            // At epoch 1 this is the only way the process gets onto the new key; at epoch 2 the state set by `unlock` stands.
+            if Manager.Ambient.vaultKeys == .legacy { Manager.Ambient.setVaultKeys(.enclaveBound) }
+        default: break
         }
     }
 
@@ -245,11 +248,17 @@ final class VaultManager {
         // Which vault key this process derives follows the vault's epoch (Bug 171, Stage 4): the Enclave-bound one once the
         // data has been moved onto it, the legacy one before. Decided here, before anything below derives a key, and not
         // changed again except by the rewrap's own switch. An epoch that can't be read leaves the state as it was.
-        let epoch = KeyReseal.vaultEpoch(in: self.modelContext)?.number
-        if epoch == 2 {
-            Manager.Ambient.setVaultKeys(.enclaveBound)
-        } else if epoch == 1 {
+        //
+        // From epoch 2 the key follows the epoch's *form*, not the tier B record: a vault rewrapped onto the classical form is
+        // still under it after the record has become hybrid (Stage 6), until the rewrap below has moved it.
+        let epoch = KeyReseal.vaultEpoch(in: self.modelContext)
+        switch epoch?.number {
+        case 2?:
+            Manager.Ambient.setVaultKeys(epoch?.form == .classical ? .enclaveBoundClassical : .enclaveBound)
+        case 1?:
             Manager.Ambient.setVaultKeys(.legacy)
+        default:
+            break
         }
 
         // Migrate real content out of the old 32-slot array and/or the original
@@ -271,8 +280,10 @@ final class VaultManager {
             }
         }
 
-        // Then the rewrap, at the first unlock after the upgrade. It leaves the vault where it was if it fails.
-        if epoch == 1, migrated {
+        // Then the rewrap, at the first unlock after the upgrade (epoch 1), or at the first after a device below iOS 26 reached it
+        // (epoch 2 in the classical form; the pass itself checks that the tier B record has become hybrid). It leaves the vault
+        // where it was if it fails.
+        if migrated, let epoch, epoch.number == 1 || epoch.form == .classical {
             self.rewrapVault(authContext: context)
         }
         // Migrate any leftover ReconstructShard rows into PendingShamirSecretRestore,

@@ -21,6 +21,9 @@
 //  After it, the PIN verifier wrap (Bug 171, Stage 3), then the process is told whether to write wrapped verifiers
 //  (`Manager.Ambient.pinVerifiers`), by the sizes in the store, before `Manager.Security` reads or writes one.
 //
+//  Between the reseal and the verifier wrap, a device that was classical when the reseal ran and has since reached iOS 26 is
+//  upgraded to the hybrid form (Stage 6, `KeyReseal+Upgrade.swift`); one whose upgrade is left stranded blocks the launch.
+//
 //  Share staging's secret and PQ record (Bug 171, Stage 5) are created here too, if a `staging` manager is passed and
 //  the extension hasn't made them already: after the blocked check, because a blocked launch writes nothing, and
 //  independent of the store.
@@ -58,6 +61,11 @@ enum LaunchSequence {
         /// Whether the share-staging tier's `r_S` and PQ record exist after this launch (Stage 5). nil if no staging
         /// manager was passed, or the launch was blocked.
         var staging: Result<Void, any Error>?
+        /// The upgrade of tier U from the classical form to the hybrid one, on a device that reached iOS 26 (Stage 6). nil if
+        /// the reseal had no epoch yet, or the launch was blocked by the reseal. A thrown upgrade is a failure here.
+        var upgrade: Result<KeyReseal.UpgradeReport, any Error>?
+        /// What moving tier B's and tier S's records to hybrid did. nil if the launch was blocked.
+        var records: KeyReseal.RecordUpgradeReport?
     }
 
     /// Runs the sequence on `context`, suspending autosave for all of it, as `migrate()` always did.
@@ -114,6 +122,31 @@ enum LaunchSequence {
             return Report(bootstrap: bootstrap, reseal: reseal, blocked: true)
         }
 
+        // Stage 6. A device that was classical when the reseal ran and has reached iOS 26 is upgraded to the hybrid form before
+        // anything else reads the store: its tier U values, its epoch, its vault epoch and its PIN verifiers move together.
+        // Before the verifier wrap below, which wraps under whatever form the record then says. One that is stranded (values
+        // moved to the hybrid form while the stored record, which the process derives from, is classical) blocks the launch,
+        // as a reseal that stopped partway does; one that stopped before it moved anything, or aborted, leaves the store as it
+        // was and the launch goes on with the classical keys.
+        var upgrade: Result<KeyReseal.UpgradeReport, any Error>?
+        if epochExists {
+            let upgradeContext = ModelContext(context.container)
+            upgradeContext.autosaveEnabled = false
+            let upgradeProgress = KeyReseal.Progress()
+            upgrade = Result {
+                try KeyReseal.upgradeTierU(
+                    context: upgradeContext, keyManager: keyManager, locations: locations, batchSize: batchSize, progress: upgradeProgress
+                )
+            }
+            #if DEBUG
+            if case .failure(let error)? = upgrade { debugPrint("Hybrid upgrade error: \(error)") }
+            #endif
+
+            if KeyReseal.upgradeIsStranded(context: ModelContext(context.container), keyManager: keyManager, progress: upgradeProgress) {
+                return Report(bootstrap: bootstrap, reseal: reseal, blocked: true, upgrade: upgrade)
+            }
+        }
+
         // Share staging's secret and record (Stage 5): created here if the extension hasn't made them, or by the extension on
         // its first share if the app gets there first. Independent of the store, so it doesn't wait on the pass. A
         // failure (a locked device) costs nothing: the extension creates them on first use.
@@ -121,6 +154,10 @@ enum LaunchSequence {
         #if DEBUG
         if case .failure(let error)? = stagingResult { debugPrint("Share staging items error: \(error)") }
         #endif
+
+        // Tier B's and tier S's records move to hybrid in place when the device has ML-KEM (Stage 6): they hold no data at
+        // launch. After the staging items above, which may have just made S's record hybrid.
+        let records = KeyReseal.upgradeRecords(keyManager: keyManager, staging: staging)
 
         // The PIN verifiers, after the tier U pass and before `Manager.Security` reads them. Skipped if that pass threw.
         var verifiers = Result<KeyReseal.VerifierReport, any Error>.success(KeyReseal.VerifierReport())
@@ -140,7 +177,7 @@ enum LaunchSequence {
         // while the process is on the legacy ones. The passes below open what they can and rewrite what they can't
         // (an unreadable prekey record starts over, a soft-deleted row's stamps are randomised), so they wait for the
         // next launch, which finishes the pass first. A kill never gets here.
-        if case .failure = reseal { return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers, staging: stagingResult) }
+        if case .failure = reseal { return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers, staging: stagingResult, upgrade: upgrade, records: records) }
 
         let legacyCrypto = LegacyCryptoManager()
         let newCrypto = Manager.Crypto()
@@ -240,7 +277,7 @@ enum LaunchSequence {
             #endif
         }
 
-        return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers, staging: stagingResult)
+        return Report(bootstrap: bootstrap, reseal: reseal, verifiers: verifiers, staging: stagingResult, upgrade: upgrade, records: records)
     }
 }
 

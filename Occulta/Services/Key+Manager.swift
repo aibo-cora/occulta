@@ -557,8 +557,9 @@ extension Manager.Key: KeyManagerProtocol {
     /// moved the vault onto it (`Manager.Ambient.vaultKeys`), the legacy one before.
     func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
         switch Manager.Ambient.vaultKeys {
-        case .legacy:       return try self.legacyKey(.vault(context))
-        case .enclaveBound: return try self.enclaveBoundKey(.vault(context))
+        case .legacy:                return try self.legacyKey(.vault(context))
+        case .enclaveBound:          return try self.enclaveBoundKey(.vault(context))
+        case .enclaveBoundClassical: return try self.enclaveBoundKey(.vault(context), record: .classical)
         }
     }
 
@@ -1130,7 +1131,8 @@ extension Manager.Key: KeyManagerProtocol {
         let keychainStatus = SecItemDelete(keychainQuery as CFDictionary)
         // Every deletion runs whatever an earlier one returned: a failure must not leave `r_B` or a record behind.
         let vaultSecretDeleted = self.deleteTierSecret(account: self.items.tierSecretB)
-        let recordsDeleted = [self.items.recordU, self.items.recordB]
+        // The pending records exist only during an upgrade that was interrupted, and a wipe must not leave one behind.
+        let recordsDeleted = [self.items.recordU, self.items.recordB, self.items.recordU + Self.pendingSuffix, self.items.recordB + Self.pendingSuffix]
             .map { self.deleteTierSecret(account: $0) }
         return seDeleted && legacyDeleted
             && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
@@ -1201,14 +1203,23 @@ extension Manager.Key {
         try self.enclaveBoundKey(key, provider: PostQuantumProviderFactory.create())
     }
 
+    /// `enclaveBoundKey(_:)` in the form `record` says (Stage 6), whatever the tier's stored record is. The record is not
+    /// read from the Keychain at all, so a classical key derives from `.classical` even after the stored record has
+    /// become hybrid, and the hybrid key of a pending record derives before that record is the tier's own.
+    func enclaveBoundKey(_ key: EnclaveBoundKey, record: TierPQRecord) throws -> SymmetricKey? {
+        try self.enclaveBoundKey(key, provider: PostQuantumProviderFactory.create(), overriding: record)
+    }
+
     /// `enclaveBoundKey(_:)` with the ML-KEM provider passed in, so a test can use the in-memory one. Production
     /// passes `PostQuantumProviderFactory.create()`, which is nil below iOS 26.
-    func enclaveBoundKey(_ key: EnclaveBoundKey, provider: (any PostQuantumProvider)?) throws -> SymmetricKey? {
+    ///
+    /// `overriding` is the record to derive in the form of, instead of the one the tier has stored.
+    func enclaveBoundKey(_ key: EnclaveBoundKey, provider: (any PostQuantumProvider)?, overriding: TierPQRecord? = nil) throws -> SymmetricKey? {
         switch key {
         case .localDB:
             return try self.deriveEnclaveBound(
                 secret:        { try self.tierSecret(.deviceUnlock) },
-                record:        { try self.tierPQRecord(.deviceUnlock) },
+                record:        { try overriding ?? self.tierPQRecord(.deviceUnlock) },
                 provider:      provider,
                 privateKey:    { try self.retrieveLocalDBPrivateKey() },
                 classicalInfo: SaltInfo.kLocalDBEnclaveBoundKeyInfo,
@@ -1217,7 +1228,7 @@ extension Manager.Key {
         case .shardCustody:
             return try self.deriveEnclaveBound(
                 secret:        { try self.tierSecret(.deviceUnlock) },
-                record:        { try self.tierPQRecord(.deviceUnlock) },
+                record:        { try overriding ?? self.tierPQRecord(.deviceUnlock) },
                 provider:      provider,
                 privateKey:    { try self.retrieveShardCustodyPrivateKey() },
                 classicalInfo: SaltInfo.kShardCustodyEnclaveBoundKeyInfo,
@@ -1226,7 +1237,7 @@ extension Manager.Key {
         case .restoreVault:
             return try self.deriveEnclaveBound(
                 secret:        { try self.tierSecret(.deviceUnlock) },
-                record:        { try self.tierPQRecord(.deviceUnlock) },
+                record:        { try overriding ?? self.tierPQRecord(.deviceUnlock) },
                 provider:      provider,
                 privateKey:    { try self.retrieveShardCustodyPrivateKey() },
                 classicalInfo: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo,
@@ -1235,7 +1246,7 @@ extension Manager.Key {
         case .secureModeWrap:
             return try self.deriveEnclaveBound(
                 secret:        { try self.tierSecret(.deviceUnlock) },
-                record:        { try self.tierPQRecord(.deviceUnlock) },
+                record:        { try overriding ?? self.tierPQRecord(.deviceUnlock) },
                 provider:      provider,
                 privateKey:    { try self.retrieveSecureModePINPrivateKey() },
                 classicalInfo: SaltInfo.kSecureModeWrapKeyInfo,
@@ -1244,7 +1255,7 @@ extension Manager.Key {
         case .vault(let context):
             return try self.deriveEnclaveBound(
                 secret:        { try self.tierSecret(.biometry(context)) },
-                record:        { try self.tierPQRecord(.vault) },
+                record:        { try overriding ?? self.tierPQRecord(.vault) },
                 provider:      provider,
                 privateKey:    { try self.retrieveVaultPrivateKey(context: context) },
                 classicalInfo: SaltInfo.kVaultEnclaveBoundKeyInfo,
@@ -1486,17 +1497,69 @@ extension Manager.Key {
 
         let record: TierPQRecord
         if let provider {
-            guard
-                let pair         = provider.generatePersistentKeyPair(),
-                let encapsulated = provider.encapsulate(peerPublicKeyData: pair.publicKeyData),
-                let hybrid       = try? TierPQRecord.hybrid(keyBlob: pair.keyBlob, ciphertext: encapsulated.ciphertext)
-            else { throw Errors.postQuantumKeyUnavailable }
+            guard let hybrid = try? self.makeHybridPQRecord(provider: provider) else { throw Errors.postQuantumKeyUnavailable }
             record = hybrid
         } else {
             record = .classical
         }
 
         return try self.addTierPQRecord(record, account: account)
+    }
+
+    // MARK: - The upgrade to hybrid (Stage 6)
+
+    var postQuantumAvailable: Bool { PostQuantumProviderFactory.create() != nil }
+
+    func makeHybridPQRecord() throws -> TierPQRecord? {
+        try self.makeHybridPQRecord(provider: PostQuantumProviderFactory.create())
+    }
+
+    /// `makeHybridPQRecord()` with the provider passed in, so a test can use the in-memory one. nil without a provider.
+    /// Throws, with nothing stored, if a provider exists and can't make the key or its blob doesn't fit the record.
+    func makeHybridPQRecord(provider: (any PostQuantumProvider)?) throws -> TierPQRecord? {
+        guard let provider else { return nil }
+        guard
+            let pair         = provider.generatePersistentKeyPair(),
+            let encapsulated = provider.encapsulate(peerPublicKeyData: pair.publicKeyData)
+        else { throw Errors.postQuantumKeyUnavailable }
+
+        return try TierPQRecord.hybrid(keyBlob: pair.keyBlob, ciphertext: encapsulated.ciphertext)
+    }
+
+    /// The account of a tier's pending record: the tier's own, with a suffix. The item exists only during one upgrade.
+    private func pendingAccount(for tier: PostQuantumTier) -> String {
+        self.pqAccount(for: tier) + Self.pendingSuffix
+    }
+
+    static let pendingSuffix = ".pending"
+
+    func pendingTierPQRecord(_ tier: PostQuantumTier) throws -> TierPQRecord? {
+        try self.readTierPQRecord(account: self.pendingAccount(for: tier))
+    }
+
+    @discardableResult
+    func addPendingTierPQRecord(_ record: TierPQRecord, tier: PostQuantumTier) throws -> Bool {
+        try self.addTierPQRecord(record, account: self.pendingAccount(for: tier))
+    }
+
+    func replaceTierPQRecord(_ tier: PostQuantumTier, with record: TierPQRecord) throws {
+        try self.replaceTierPQRecord(account: self.pqAccount(for: tier), with: record)
+    }
+
+    /// Replaces the data of the item `account` in one atomic update. The item keeps its creation date and its protection.
+    /// Throws if there is no such item: this never creates a record.
+    func replaceTierPQRecord(account: String, with record: TierPQRecord) throws {
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrAccount as String: account
+        ]
+        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: try record.encoded()] as CFDictionary)
+        guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+    }
+
+    @discardableResult
+    func deletePendingTierPQRecord(_ tier: PostQuantumTier) -> Bool {
+        self.deleteTierSecret(account: self.pendingAccount(for: tier))
     }
 
     /// Adds `record` under `account`, or on `errSecDuplicateItem` leaves what is there and reads it: two processes or

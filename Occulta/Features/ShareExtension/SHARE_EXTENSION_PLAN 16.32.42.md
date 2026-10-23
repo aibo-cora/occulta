@@ -97,6 +97,7 @@ below 26 (classical):     HKDF(IKM: t ‖ r_S,      salt: Q, info: "Occulta-v2-s
 
 - **Creation.** `r_S` and the record are made by whichever process first needs them: the app at launch, or the extension on its first `encrypt`. Each reads first, adds what is missing, and on `errSecDuplicateItem` reads what the other added. Unlike the other tiers' they may be created at any time, since a session lives an hour.
 - **Opening.** `decrypt` tries the current form, then the classical form if the record is hybrid, then the legacy key, so a session staged by the previous build or before the device reached iOS 26 still opens. **The classical and legacy fallbacks go one release after 2.0.0.**
+- **A device that reaches iOS 26** after its record was made classical has the record replaced by a hybrid one, in place, at the app's next launch (Stage 6). No session is resealed: one sealed in the classical form opens through the fallback, which derives that key from `r_S` and does not read the record.
 - **Erase All Data** deletes the key, `r_S` and the record together.
 - **Downgrade.** An older app can't open a session this build staged; it deletes it, and the share has to be repeated.
 

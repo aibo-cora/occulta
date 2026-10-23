@@ -262,6 +262,24 @@ extension KeyReseal {
         let point: VaultFaultPoint
     }
 
+    /// The same, for the upgrade of a classical device that reaches iOS 26 (`upgradeTierU`). The batches use `FaultPoint`;
+    /// these are the steps around them.
+    nonisolated enum UpgradeFaultPoint: String, CaseIterable {
+        /// After the pending hybrid record is stored, before any key is derived from it or anything is sealed.
+        case afterPendingWritten
+        /// After the epoch, the vault epoch and the verifiers are worked out and assigned in memory, before the one `save()`.
+        case beforeCommit
+        /// After that `save()`, before the tier's record is replaced by the pending one. The data and the epoch are
+        /// hybrid and the stored record is still classical: the next launch finishes the swap from the pending record.
+        case afterCommitBeforeSwap
+        /// After the stored record is the hybrid one, before the pending item is deleted.
+        case afterSwapBeforePendingDeleted
+    }
+
+    nonisolated struct InjectedUpgradeFault: Error, Equatable {
+        let point: UpgradeFaultPoint
+    }
+
     /// What a test binds around a run, as `Manager.Ambient.override` is bound: task-local, so tests that run in
     /// parallel don't see each other's. Release has no hook at all.
     ///
@@ -272,6 +290,7 @@ extension KeyReseal {
         let interruptAt: FaultPoint?
         let interruptAtWrap: WrapFaultPoint?
         let interruptAtVault: VaultFaultPoint?
+        let interruptAtUpgrade: UpgradeFaultPoint?
         let corruptsNewCiphertext: Bool
         /// With `corruptsNewCiphertext`: only once this many batches have been committed, so a read-back failure can
         /// come part-way through the pass instead of at its first value.
@@ -279,16 +298,25 @@ extension KeyReseal {
         private(set) var reached: [FaultPoint] = []
         private(set) var reachedWrap: [WrapFaultPoint] = []
         private(set) var reachedVault: [VaultFaultPoint] = []
+        private(set) var reachedUpgrade: [UpgradeFaultPoint] = []
 
         init(
             interruptAt: FaultPoint? = nil, interruptAtWrap: WrapFaultPoint? = nil, interruptAtVault: VaultFaultPoint? = nil,
+            interruptAtUpgrade: UpgradeFaultPoint? = nil,
             corruptsNewCiphertext: Bool = false, corruptsFromBatch: Int = 0
         ) {
             self.interruptAt           = interruptAt
             self.interruptAtWrap       = interruptAtWrap
             self.interruptAtVault      = interruptAtVault
+            self.interruptAtUpgrade    = interruptAtUpgrade
             self.corruptsNewCiphertext = corruptsNewCiphertext
             self.corruptsFromBatch     = corruptsFromBatch
+        }
+
+        /// Records the point and throws `InjectedUpgradeFault` if it is the one asked for.
+        func reachUpgrade(_ point: UpgradeFaultPoint) throws {
+            self.reachedUpgrade.append(point)
+            if self.interruptAtUpgrade == point { throw InjectedUpgradeFault(point: point) }
         }
 
         /// Records the point and throws `InjectedVaultFault` if it is the one asked for.
