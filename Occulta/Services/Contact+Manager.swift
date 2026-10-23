@@ -1336,7 +1336,7 @@ extension ContactManager {
 
             var realOps: [OccultaBundle.ShardOperation] = []
             if canReceiveShardContent, let shardCustodyManager {
-                realOps = try shardCustodyManager.buildShardOperations(for: contact.identifier, currentContactPublicKey: recipientMaterial)
+                realOps = try shardCustodyManager.buildShardOperations(for: contact.identifier, currentContactPublicKey: recipientMaterial, isCardContact: false)
             }
             // No custody manifest in group bundles: it travels only under
             // `shardMetadataAttempted`, which a v1.10.3 member reads as "an

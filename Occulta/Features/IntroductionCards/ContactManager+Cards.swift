@@ -100,6 +100,12 @@ extension ContactManager {
         return state
     }
 
+    /// Whether `identifier` is a card contact (`imported` or `conversation`): the one-to-one senders ask before they
+    /// build shard content, which a card send refuses (§8). An unknown identifier is not one.
+    func isCardContact(identifier: String) throws -> Bool {
+        try self.fetchContact(by: identifier)?.cardState.isCardContact ?? false
+    }
+
     // MARK: - Create and cancel (§6.1, §6.2)
 
     /// Bob: a card for `contact`, valid for 24 hours from `now`, whole seconds.

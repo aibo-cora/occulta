@@ -57,7 +57,7 @@ private struct Owner {
 
     /// The queued operations the next message to `trustee` would carry.
     func queued(for trustee: String) throws -> [OccultaBundle.ShardOperation] {
-        try self.custody.buildShardOperations(for: trustee, currentContactPublicKey: nil)
+        try self.custody.buildShardOperations(for: trustee, currentContactPublicKey: nil, isCardContact: false)
     }
 
     /// Watch rows (`PotentiallyLostShard`): piece ID → isAbsent.

@@ -335,7 +335,12 @@ final class ShardCustodyManager {
     ///
     /// Owner side: `.distribute` / `.replace` from PendingShardDistribute rows.
     /// Trustee side: `.handback` for mismatch-fingerprint shards (signals key rotation).
-    func buildShardOperations(for contactIdentifier: String, currentContactPublicKey: Data?) throws -> [OccultaBundle.ShardOperation] {
+    ///
+    /// Nothing for a card contact (`bugs.md` Bug 182): shard content never reaches one (Introduction Cards SPEC §8),
+    /// and a row left from before the card would make every send to it throw. The rows are left as they are.
+    func buildShardOperations(for contactIdentifier: String, currentContactPublicKey: Data?, isCardContact: Bool) throws -> [OccultaBundle.ShardOperation] {
+        guard !isCardContact else { return [] }
+
         // Derived once and passed to both halves below — pendingDistributeOps and
         // mismatchHandbackOps each independently derived this same shard custody key, so a
         // single call here (invoked once per group member when encrypting a group bundle) was
@@ -383,8 +388,10 @@ final class ShardCustodyManager {
     // MARK: - Outbound: build manifest fields
 
     /// IDs of all shards currently held for `ownerIdentifier`. Sent in every outbound 1:1
-    /// bundle; group bundles carry none (`RecipientPayload.shardMetadataAttempted`).
-    func buildCustodyManifest(for ownerIdentifier: String) throws -> [UUID] {
+    /// bundle; group bundles carry none (`RecipientPayload.shardMetadataAttempted`). Empty for a card contact,
+    /// like `buildShardOperations`.
+    func buildCustodyManifest(for ownerIdentifier: String, isCardContact: Bool) throws -> [UUID] {
+        guard !isCardContact else { return [] }
         return try self.decryptAllCustodyShards()
             .filter { $0.payload.ownerContactIdentifier == ownerIdentifier }
             .map    { $0.payload.signedAttribute.id }
