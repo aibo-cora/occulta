@@ -357,6 +357,18 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       — `OccultaApp.init()` (`:92`). Note it dispatches through `Task.detached`, so it is
       *initiated* before any UI and not necessarily *complete* before it; the item's "verify it
       runs before any UI is shown" is therefore satisfied only in the weaker sense.
+- [x] Compose attachments are sealed on disk for every recipient kind — no plaintext in `tmp/` or `Drafts/`
+      — **was FAIL, fixed this pass.** `ComposeViewModel.setup` built an `AttachmentManager` only for
+      a contact with a stored public key. For a group (always) and a contact with none, the manager
+      was nil: videos were refused ("Secure storage not ready.") while images and files fell back to
+      `writeProtected` — plaintext, protected only by the file class — and `DraftStore` copied them
+      into `Application Support/Drafts/<id>/`, where group drafts always persist. Now both cases seal
+      under `ShareStagingKeyManager.deriveComposeStagingKey()` (same Enclave key as the share
+      session, HKDF info `Occulta-v1-group-compose-staging-2026`, so no new Keychain item and the two
+      derived keys cannot open each other's files). With no key derivable the manager stays nil and
+      every import and `encrypt` fails closed; there is no plaintext path left. Covered by
+      `ComposeStagingTests`. Plaintext drafts from earlier builds are sealed in place on load
+      (`ComposeViewModel.adopt`) — see `Docs/Features/Message Persistence/FINDINGS.md`.
 - [x] Compose staging files are removed on view disappear, encrypt-and-share completion, and
       individual message delete
       — three `removeItem` paths in `ComposeViewModel.swift:397, 403, 411`.
