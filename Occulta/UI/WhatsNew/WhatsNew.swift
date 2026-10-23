@@ -60,11 +60,54 @@ enum WhatsNew {
     ///         fixes: ["…"]
     ///     )
     static let releases: [Release] = {
-        let entries: [Release] = []
+        let entries: [Release] = [
+            Release(
+                version: "2.0.0",
+                features: [
+                    Feature(
+                        symbol: "person.crop.rectangle.badge.plus",
+                        title: "Introduction Cards",
+                        detail: "Can't meet someone yet? Send them an introduction card over any channel so they can write to you first. They're marked Not verified until you meet in person, and the exchange then checks that they're who you were writing to. Needs iOS 26 on both phones."
+                    ),
+                    Feature(
+                        symbol: "lock.shield",
+                        title: "See how your message will be protected",
+                        detail: "Before you send, Occulta tells you whether the message will be Single View with forward secrecy, use a temporary key, or use a long-term key, and what each one means."
+                    ),
+                    Feature(
+                        symbol: "arrow.triangle.2.circlepath",
+                        title: "Forward secrecy lasts longer",
+                        detail: "Occulta now refills your contacts' one-time keys before they run out, so conversations stay protected through long exchanges."
+                    ),
+                    Feature(
+                        symbol: "cpu",
+                        title: "Stronger protection on your phone",
+                        detail: "Data stored on this device is now sealed under keys more tightly bound to the Secure Enclave. Phones that update to iOS 26 are upgraded to post-quantum protection automatically. This happens at launch, with nothing to do."
+                    ),
+                    Feature(
+                        symbol: "video.fill",
+                        title: "Share videos from Photos",
+                        detail: "Occulta now appears in the share sheet for videos, up to 100 MB."
+                    )
+                ],
+                fixes: [
+                    "Opening an old or unrelated response file no longer shows a false \"Verification failed\" warning.",
+                    "Group messages are now checked more strictly when opened.",
+                    "Group messages can now carry attachments, including videos, which were refused before.",
+                    "Occulta's folder no longer appears in the Files app.",
+                    "Files you received but never opened are now cleaned up instead of lingering.",
+                    "Erase All Data now also clears temporary sharing data.",
+                    "The key exchange now stops searching when you leave its screen."
+                ]
+            )
+        ]
 
         // Debug builds only, so the page and the Settings row can be seen without a real entry.
-        // Compiled out of Release, where an empty catalog shows nothing.
+        // Skipped once the running version has one, which would otherwise be two entries for it.
+        // Compiled out of Release, where a version without an entry shows nothing.
         #if DEBUG
+        guard !entries.contains(where: { $0.version == Bundle.main.appVersion }) else { return entries }
+
         return entries + [
             Release(
                 version: Bundle.main.appVersion,
