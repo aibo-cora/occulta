@@ -145,12 +145,15 @@ private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `PrekeyGenerationMeasurementTests`, `IdentityChallengeGroupForwardSecretTests` (a challenge on a forward-secret
 slot needs a prekey this device holds), `PrekeyConversationTests` (two phones generating real prekeys), `IntroCardEnclaveKeyPersistenceTests` and the Enclave test in `PostQuantumPersistenceTests` (an introduction card's ML-KEM key kept as an Enclave blob), the introduction-card suites whose phones import or redeem a card, which generates prekeys (`CardConversationTests`, `CardRedemptionRejectionTests`, `CardHardBlockTests`, `CardNonCardRegressionTests`, `CardMeetingTableTests`, `CardMeetingConversationSaveTests`, and the import and crossing-card tests in `CardImportTests` and `CardScreenBehaviourTests`), the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
+the Bug 171 suites that use the real `Manager.Key` and its Enclave keys (`EnclaveGeneratorECDHTests`,
+`KeyResealEnclaveTests`, `HybridUpgradeEnclaveTests`, and the real-Enclave ML-KEM tests in
+`TierPQRecordKeychainTests` and `StagingPostQuantumTests`, which also need iOS 26's ML-KEM),
 and four tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
 (`decryptSealed` calls `installFreshBatch` when a fallback message arrives with no
 pending batch). A test that reaches that receive path needs the gate, not the trait.
 The share-staging key (`ShareStagingKeyManager`) has its own, simpler seam: `ShareSession` takes
 `any ShareSessionDecrypting`, so `ShareSessionTests` passes an in-memory key and runs anywhere.
-Only `ShareStagingKeyManagerTests`, which tests the real Enclave key, stays gated. Each call site
+Only `ShareStagingKeyManagerTests`, which tests the real Enclave key (and, on iOS 26, its ML-KEM key), stays gated. Each call site
 passes its own key, so no `Manager.Ambient`-style override is needed there.
 
 **With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)

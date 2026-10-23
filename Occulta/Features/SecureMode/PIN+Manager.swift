@@ -6,8 +6,9 @@
 //  No SwiftData dependency, no state. Used internally by Manager.Security.
 //
 //  Verifier = AES-GCM(HKDF(seKey, info: label ∥ pin), sentinel)
-//  The SE key provides device binding; the PIN is bound via HKDF info.
-//  Wrong PIN → wrong derived key → AES-GCM tag fails.
+//  `seKey` is `deriveSecureModeKey()`, a function of the PIN Enclave key's public point: by itself it provides no device
+//  binding (Bug 171). The PIN is bound via HKDF info. Wrong PIN → wrong derived key → AES-GCM tag fails. What binds a
+//  verifier to this device is the wrap below.
 //
 //  Wrapped (Bug 171, Stage 3): that, sealed again under the wrap key, `enclaveBoundKey(.secureModeWrap)`. `seKey` is a
 //  function of the PIN Enclave key's public point, so a holder of the config row and that point could test PIN guesses

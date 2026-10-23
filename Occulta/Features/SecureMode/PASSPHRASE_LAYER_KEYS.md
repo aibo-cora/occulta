@@ -92,7 +92,7 @@ extract from the device, full stop). Losing either half is enough to prevent der
 needs *both* the physical device (or its SE, which cannot leave it) *and* the phrase.
 
 **Found 2026-10-21 (`Docs/Features/Secure Mode/bugs.md` Bug 171): the SE half above is not device-binding.
-Open, needs a decision.** `ECDH(SE_priv, G)` is `d·G`, which is the Enclave key's public point Q, so
+Fixed for the keys that exist today in 2.0.0 (Stages 1 to 7). For the layer keys here it is open, needs a decision (D2).** `ECDH(SE_priv, G)` is `d·G`, which is the Enclave key's public point Q, so
 the half is the X9.63 KDF of x(Q). Anyone with Q computes it off the device, with no Enclave call and no
 biometric. Tested on the Simulator for the keys the app derives this way today, and on an iPhone 15 Pro
 for a key with the vault's biometric-or-passcode access control: Q came back with no authentication,
@@ -131,11 +131,26 @@ unless the SEP itself is broken. At 90 bits this is margin rather than the thing
 is exactly the margin that matters if the SEP does fall, and it costs one SE call per unlock. (`s_D` outside
 the P-256 scalar range fails `rawRepresentation:`; probability ~2⁻³², handle by re-deriving with a counter.)
 
-**This fix does not do what it says. Open, needs a decision (Bug 171, 2026-10-21).** With `Q_D = s_D·G`,
+**This fix does not do what it says. Open, needs a decision (Bug 171, 2026-10-21; D2 below).** With `Q_D = s_D·G`,
 `ECDH(SE_priv, Q_D) = s_D·d·G = s_D·Q`. An attacker holding the guess `s_D` and the public Q computes that
 in software, so the Enclave takes no part in a guess. Tested on the Simulator: Enclave `ECDH(d, s·G)` equals
 software `ECDH(s, Q)`. The requirement stands; this construction doesn't meet it. A peer point whose
 discrete log the guess doesn't reveal would (Bug 171, "Fix").
+
+**What Bug 171's fix changes for this design, and what it recommends. Recommended; open, needs a decision (D2, not decided).**
+- The ECDH term that exists today is now `ECDH(SE_priv, P)` with P a compiled-in point nobody knows the discrete log of
+  (`Manager.Key.enclaveBoundKey(_:)`), so the "device-binding" half is real: the key needs this phone's Enclave, once per
+  derivation, plus a Keychain secret per access tier and, on iOS 26+, an Enclave ML-KEM secret. The layer keys can take that
+  term as it is.
+- It is **one Enclave call per unlock, not one per guess.** P is a constant, so an attacker who has called the Enclave once
+  with a phrase-independent peer holds the constant and can guess phrases offline against it. The per-guess requirement
+  needs a peer that depends on the phrase and whose discrete log the guess doesn't reveal, which is a hash-to-curve or
+  similar construction the app would have to design and nobody independent has reviewed (Bug 171, option 4).
+- **Recommendation: drop the per-guess requirement and keep the `ECDH(d, P)` device-binding term.** The spec already sizes 7
+  words with PBKDF2 to hold with the Secure Enclave broken (§4), so the ~90 bits and the KDF are the line, and the Enclave
+  term is margin on top of them, as step 2 of `HARDENING_STEPS.md` already says. The alternative is a bespoke construction
+  with no review. If the recommendation is taken, the requirement comes out of this section and out of step 2; until the user
+  decides, both stay as written with this note beside them.
 
 **Proposed 2026-10-15: one salt and one Enclave key per install, not one of each per depth.** Not decided.
 At unlock the app doesn't know which depth a phrase belongs to, and must not learn how many depths exist.
@@ -152,7 +167,7 @@ layerKey_D = HKDF-SHA256(IKM: s ‖ ECDH(SE_priv, Q), …) — one Enclave key p
 ```
 
 Each attempt is one PBKDF2 run and one Enclave call, then a trial open of the 32 header slots (§2,
-2026-10-15), which is cheap. *The Enclave call buys nothing as written: open, needs a decision (Bug 171).* The cost: each guess is tested against every depth at once, about 5 bits off
+2026-10-15), which is cheap. *The Enclave call buys nothing per guess as written: open, needs a decision (Bug 171, D2); with the fix it is one real call per unlock.* The cost: each guess is tested against every depth at once, about 5 bits off
 90 at 32 slots. The salt only has to be unique per install, which is what defeats precomputation.
 
 ---

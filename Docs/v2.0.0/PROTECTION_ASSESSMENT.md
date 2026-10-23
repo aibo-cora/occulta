@@ -23,7 +23,7 @@ of who exchanged files with whom, and the fact that the user has Occulta at all.
 |---|---|---|
 | **Phone seized while powered off (before first unlock)** | Safe if the device passcode is strong. A 6-digit numeric passcode takes about a day once a tool gets past the Enclave's retry limits. | Same, plus the phrase. |
 | **Seized after first unlock, screen locked, no passcode** | Needs an iOS exploit. The store is `FileProtectionType.complete` (`OccultaApp.swift:74`, `:1213`) and every key is `WhenUnlockedThisDeviceOnly`, so everything still depends on the passcode. | Same. |
-| **Passcode obtained, plus forensic extraction** | **Everything:** every depth, the vault, and how many depths exist. | Only what the surrendered phrase opens. Other depths sit behind ~90 bits. The design says every guess costs a Secure Enclave call on that phone; as designed it doesn't, so only the ~90 bits and the KDF hold the line. Open, needs a decision (`bugs.md` Bug 171, 2026-10-21). |
+| **Passcode obtained, plus forensic extraction** | **Everything:** every depth, the vault, and how many depths exist. | Only what the surrendered phrase opens. Other depths sit behind ~90 bits. The design says every guess costs a Secure Enclave call on that phone; as designed it doesn't, and the Bug 171 fix (2.0.0) makes the Enclave term of the keys that exist today real but one call per unlock, not per guess, so only the ~90 bits and the KDF hold the line. Recommended: drop the per-guess requirement and keep the `ECDH(d, P)` term (D2); open, needs a decision (`bugs.md` Bug 171). |
 | **Secure Enclave broken (hardware exploit)** | Everything, with or without the passcode. | The phrases hold: about 27,000 years to crack even with the Bitcoin network's entire SHA-256 throughput (7 words, PBKDF2). |
 | **User compelled to unlock Occulta in person** | The duress depth looks plausible, but a later forensic examination contradicts it. | The examination of one image matches what the user showed. What remains is register §I, below. An earlier image contradicts it (next row). |
 | **Device imaged repeatedly over time** | Moot, since everything is readable. | Without a phrase, comparing images shows that Occulta is used, not which depth. With a surrendered duress phrase, rows it can't open that changed between images show that another depth exists and is in use (step 4; open, needs a decision, 2026-10-15). |
@@ -69,14 +69,22 @@ inside the app to extract.
 - **Register §I, accepted 2026-09-07.** A coercer who already knows what should be there, or who makes
   the user open several depths and compares them, can still see that a duress depth is thin.
 - **A compelled developer.** Account hardening stops theft, not compulsion.
-- **The Enclave half of every key built as `ECDH(Enclave key, G)`, found 2026-10-21.** The output is a
-  function of the key's public point, so it adds no secret. That covers the local DB key, the vault key,
-  the shard custody and restore keys, the Secure Mode PIN key and the share staging key today, and the
-  planned layer keys' "device-binding" half. What the Enclave and biometric gate still protect is use of
-  the private key. The public point needs no authentication, shown for the device-unlock keys on the
-  Simulator and for the vault's biometric-or-passcode key on an iPhone 15 Pro; using the key does need it.
-  Who can reach the keychain item that holds the point is not shown. Open, needs a decision (`bugs.md`
-  Bug 171).
+- **The Enclave half of every key built as `ECDH(Enclave key, G)`, found 2026-10-21; fixed in 2.0.0 for the keys that exist,
+  with what stays open.** The output was a function of the key's public point, so it added no secret. That covered the local
+  DB key, the vault key, the shard custody and restore keys, the Secure Mode PIN key and the share staging key, and covers the
+  planned layer keys' "device-binding" half. Each is now `HKDF(ECDH(Enclave key, P) ‖ [ML-KEM secret ‖] r_tier)` with P a
+  point nobody knows the discrete log of, so it needs the Enclave key and a Keychain secret of its access tier, and on iOS 26+
+  an Enclave ML-KEM key. What is still open, each needs a decision (`bugs.md` Bug 171):
+  - ciphertext copied before the reseal moved it stays readable to a holder of Q, and so do images taken while a device was
+    classical (below iOS 26, no ML-KEM term): no reseal protects what is already copied;
+  - below iOS 26 a keychain dump that holds Q and the tier secret, analysed later with a quantum computer;
+  - whether an image alone yields Q: no cleartext column does on the Simulator; a device answer needs extraction tooling;
+  - `Contact.Profile.identifier` is left byte-identical, so for contacts imported from the address book a holder of Q can
+    link each one to its entry until the passphrase migration;
+  - the vault's per-entry keys stay under the legacy key until the first unlock after the upgrade (D8);
+  - the planted-session residual of share staging while its legacy fallback exists, and a reseal that stopped partway over a
+    later launch that aborts before writing;
+  - the per-guess requirement of the layer keys (D2), recommended to be dropped.
 
 ## Where a capable adversary goes next
 
@@ -95,9 +103,11 @@ The "after" column is a target, not a guarantee, until all of these change:
   decided.
 - No independent person has reviewed the code (register D4).
 - The file decoders have never been fuzzed (register D6).
-- Any claim here that a key needs the Enclave, a biometric, or "this device" because it is
-  `ECDH(Enclave key, G)` rests on the construction Bug 171 found to be a function of a public value. Open,
-  needs a decision.
+- Any claim here that a key needs the Enclave, a biometric, or "this device" holds for the forms after Bug 171
+  (`ECDH(Enclave key, P)` with a Keychain secret per tier) and not for the legacy `ECDH(Enclave key, G)`, which
+  Bug 171 found to be a function of a public value. The fix is built and tested on the Simulator; its real vault access
+  control, the cross-process share-staging check on a phone, and device timings are not yet done (open, needs a device).
+  The per-guess Enclave claim for the unreleased layer keys is not met by it: recommended to be dropped, open, needs a decision (D2).
 
 Against an adversary who has the device passcode today, Occulta adds no protection beyond the passcode
 itself.

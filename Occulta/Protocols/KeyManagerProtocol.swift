@@ -61,9 +61,12 @@ enum TierSecret {
 
 protocol KeyManagerProtocol {
     func retrieveIdentity() throws -> Data
-    /// v1 path — ECDH(identity_key, G) → HKDF. Retained for migration decrypt only.
-    func createLocalEncryptionKey() throws -> SymmetricKey?
-    /// v2 path — HKDF(ECDH(localDB_SE_key, G) || random_keychain). PQ-reinforced.
+    // The v1 local key, ECDH(identity_key, G) → HKDF, is not here on purpose (Bug 171, Stage 7). It is a function of the
+    // identity key's public point, which every contact holds, so nothing that takes a key manager may reach it. The
+    // concrete managers still derive it, for `LegacyCryptoManager` alone (`LegacyLocalKeyProviding`), to open what
+    // `DatabaseMigration.migrateToV2` is still moving.
+    /// v2 path — the local DB key: `HKDF(ECDH(localDB_SE_key, P) ‖ [ss ‖] r_U)` once the tier's epoch exists, the legacy
+    /// `HKDF(ECDH(localDB_SE_key, G) ‖ r)` before it (`Manager.Ambient.tierUKeys`).
     func createHybridLocalEncryptionKey() throws -> SymmetricKey?
     /// Transport path — uses `kTransportKeyInfo`.
     func createSharedSecret(using material: Data?) -> SymmetricKey?
@@ -94,14 +97,17 @@ protocol KeyManagerProtocol {
 
     // MARK: - Vault
 
-    /// Derive the vault session key: ECDH(vault_SE_priv, G) → HKDF-SHA256.
+    /// Derive the vault session key. It follows the vault's epoch (`Manager.Ambient.vaultKeys`): the legacy
+    /// `HKDF(ECDH(vault_SE_priv, G))`, a function of the key's public point, until `VaultManager.unlock` has rewrapped the
+    /// vault, and then `HKDF(ECDH(vault_SE_priv, P) ‖ [ss ‖] r_B)` (`enclaveBoundKey(.vault)`), which needs the Enclave
+    /// key, `r_B` and, on iOS 26+, the Enclave's ML-KEM secret (`bugs.md` Bug 171).
     ///
     /// The `context` must be a pre-evaluated LAContext. The SE uses it to satisfy
-    /// the biometric access control on the vault key without prompting the user.
+    /// the access control on the vault key, and Keychain to read `r_B`, without prompting the user.
     ///
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///
-    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE or `r_B` is unavailable.
     func deriveVaultKey(context: LAContext) throws -> SymmetricKey?
 
     /// ECDSA-sign `data` with the SE identity key (used for vault shard signing).
@@ -127,22 +133,29 @@ protocol KeyManagerProtocol {
     /// - Returns: DER-encoded ECDSA signature.
     func signData(_ data: Data) throws -> Data
 
-    /// Derive the shard custody key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256.
+    /// Derive the shard custody key. It follows tier U's epoch (`Manager.Ambient.tierUKeys`): the legacy
+    /// `HKDF(ECDH(shardCustody_SE_priv, G))`, a function of the key's public point, before the reseal, and
+    /// `enclaveBoundKey(.shardCustody)`, which also needs `r_U` and the tier's PQ record, after it (`bugs.md` Bug 171).
     ///
     /// No LAContext needed — the shard custody SE key has device-unlock-level access
     /// (no biometric flag). Enables fully automatic shard operations on bundle receipt.
     ///
-    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE or `r_U` is unavailable.
     func deriveShardCustodyKey() throws -> SymmetricKey?
 
     /// Derive the restore vault key: same SE key as `deriveShardCustodyKey`,
     /// distinct HKDF info — produces a dedicated symmetric key for sealing
-    /// PendingShamirSecretRestore rows.
+    /// PendingShamirSecretRestore rows. Follows tier U's epoch exactly as `deriveShardCustodyKey` does.
     ///
-    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE or `r_U` is unavailable.
     func deriveRestoreVaultKey() throws -> SymmetricKey?
 
     /// Derive the Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF-SHA256.
+    ///
+    /// This is the *inner* verifier key and it stays as it is: a function of the PIN Enclave key's public point, so by
+    /// itself it binds nothing to this device. Every verifier is sealed again under `enclaveBoundKey(.secureModeWrap)`,
+    /// which needs `r_U` and the tier U record (`bugs.md` Bug 171, Stage 3), and that outer layer is what keeps PIN guesses
+    /// on this device.
     ///
     /// No LAContext needed — device-unlock level, no biometric.
     /// Used by PINManager to wrap/unwrap PIN sentinels in AppLayerConfig.
@@ -249,7 +262,7 @@ protocol KeyManagerProtocol {
 /// which is how it is already run. The two SwiftUI previews that construct this are gated the
 /// same way.
 @MainActor
-final class TestKeyManager: KeyManagerProtocol {
+final class TestKeyManager: KeyManagerProtocol, LegacyLocalKeyProviding {
     private let identityPrivateKey: SecKey
     private let identityPublicKeyData: Data
 

@@ -15,7 +15,8 @@ import OccultaCore
 struct SaltInfo {
     static let kTransportKeyInfo = "Occulta-v1-transport-2025".data(using: .utf8)!
     static let kLocalDBKeyInfo   = "Occulta-v1-encryption-key-2025".data(using: .utf8)!
-    /// Domain separator for the hybrid local DB key. Distinct from kLocalDBKeyInfo
+    /// Domain separator for the hybrid local DB key, **legacy form** (ECDH against G, a function of the key's public point;
+    /// the current form is `kLocalDBEnclaveBoundKeyInfo`). Distinct from kLocalDBKeyInfo
     /// to ensure the old (identity-derived) and new (hybrid) keys are never equivalent,
     /// even if the same SE key is used during migration.
     static let kLocalDBHybridKeyInfo = "Occulta-v2-local-db-pq-2026".data(using: .utf8)!
@@ -29,21 +30,26 @@ struct SaltInfo {
     /// appended to the info field for per-session uniqueness.
     /// The nonces are appended at call time — this is the static prefix only.
     static let kDicewareKeyInfo = "Occulta-v2-diceware-2026".data(using: .utf8)!
-    /// Vault key: ECDH(vault_SE_priv, G) → HKDF. The vault SE key is a dedicated
-    /// SE key protected by .biometryCurrentSet — separate from the identity key.
+    /// Vault key, **legacy form**: ECDH(vault_SE_priv, G) → HKDF. A function of the vault Enclave key's public point
+    /// (`bugs.md` Bug 171), so nothing in it needs the biometric gate. Kept to open what the vault rewrap has not moved
+    /// yet and what a downgraded build writes; the current form is `kVaultEnclaveBoundKeyInfo`, below. The vault SE key is
+    /// a dedicated SE key protected by .biometryCurrentSet — separate from the identity key.
     /// The derived SymmetricKey lives only as a local per-operation value; never stored.
     /// Domain-separated from all transport and local-DB paths.
     static let kVaultKeyInfo = "Occulta-v1-vault-2026".data(using: .utf8)!
-    /// Shard custody key: ECDH(shard_custody_SE_priv, G) → HKDF. Dedicated SE key
+    /// Shard custody key, **legacy form**: ECDH(shard_custody_SE_priv, G) → HKDF, a function of the key's public point
+    /// (Bug 171); the current form is `kShardCustodyEnclaveBoundKeyInfo`. Dedicated SE key
     /// with device-unlock-level access (no biometric). Used to seal CustodyShard
     /// records locally — fully automatic, no user friction.
     static let kShardCustodyKeyInfo = "Occulta-v1-shard-custody-2026".data(using: .utf8)!
-    /// Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF. Dedicated SE key
+    /// Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF. This stays the *inner* verifier key and is a function of
+    /// the PIN Enclave key's public point (Bug 171); every verifier is sealed again under the wrap key
+    /// (`kSecureModeWrapKeyInfo`), which is what needs this device. Dedicated SE key
     /// with device-unlock-level access (no biometric). Used to wrap PIN sentinels in
     /// AppLayerConfig. Domain-separated from all other key paths.
     static let kSecureModeKeyInfo = "Occulta-v1-secure-mode-pin-2026".data(using: .utf8)!
-    /// Restore vault key: same SE key as shard custody, distinct HKDF info →
-    /// dedicated symmetric key. Used to encrypt PendingShamirSecretRestore.shards —
+    /// Restore vault key, **legacy form**: same SE key as shard custody, distinct HKDF info →
+    /// dedicated symmetric key (the current form is `kRestoreVaultEnclaveBoundKeyInfo`). Used to encrypt PendingShamirSecretRestore.shards —
     /// the transient set of returned shards Alice's device collects during
     /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
     /// blob and a reconstruct blob are never decryptable with the same key.
@@ -95,16 +101,29 @@ struct SaltInfo {
 //  Tag                                      │ Biometric gate │ Purpose
 //  ─────────────────────────────────────────┼────────────────┼──────────────────────────────────────
 //  "master.key.privacy.turtles.are.cute"    │ No             │ Identity — ECDSA signing, ECDH transport
-//  "local.db.se.key.occulta"                │ No             │ Local DB hybrid key ECDH component
-//  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault PEK derivation
+//  "local.db.se.key.occulta"                │ No             │ Local DB key: the Enclave term (ECDH against P)
+//  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault key (and so every per-entry key it wraps)
 //  "shard.custody.occulta"                  │ No             │ Shard custody records + restore vault key
-//  "app.layer.key.occulta.v1"               │ No             │ Secure Mode PIN sentinel encryption
+//  "app.layer.key.occulta.v1"               │ No             │ Secure Mode PIN verifiers: the inner key, and the wrap key
 //
-// All four keys carry `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — never backed up,
+// All five carry `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — never backed up,
 // never synced to iCloud Keychain.
 //
-// The vault SE key requires a pre-evaluated `LAContext`; the other three operate
+// The vault SE key requires a pre-evaluated `LAContext`; the other four operate
 // automatically while the device is unlocked.
+//
+// What the gate guards is *use of the private scalar*, not the symmetric keys built from its public point. Before Bug 171
+// every key below was `HKDF(ECDH(enclave_priv, G))`: ECDH against the generator is d·G = Q, the key's own public point, so
+// each was a function of Q and the gate was never reached (`bugs.md` Bug 171). Now each is
+// `HKDF(ECDH(enclave_priv, P) ‖ [ss ‖] r_tier)`: it needs the Enclave key, the tier's Keychain secret and, on iOS 26+, the
+// Enclave's ML-KEM secret. The legacy form stays derivable (`legacyKey(_:)`) for what the reseal has not moved and what
+// a downgraded build writes.
+//
+// Beside the Enclave keys, all generic-password Keychain items, `WhenUnlockedThisDeviceOnly`:
+//   - `r_U`  "local.db.random.key.occulta"        32 bytes, tier U (device unlock): local DB, custody, restore, PIN wrap
+//   - `r_B`  "vault.random.key.occulta"           32 bytes, tier B, with the vault's access control
+//   - the tier PQ records U and B                  9,763 bytes each (`TierPQRecord`); a pending record exists only during an upgrade
+//   - in the shared group, `r_S` and the S record  share staging (`ShareStagingKeyManager`)
 //
 // The shard custody key is reused as the base for the restore vault key — the two
 // derived symmetric keys are domain-separated by `kShardCustodyKeyInfo` vs
@@ -504,18 +523,24 @@ extension Manager.Key {
     }
 }
 
-//  Phase 1: Hybrid PQ-reinforced local database encryption key.
+/// The v1 local DB key is `Manager.Key.createLocalEncryptionKey()`, reachable through this and nothing else.
+extension Manager.Key: LegacyLocalKeyProviding {}
+
+//  Hybrid local database encryption key, **legacy form** (`legacyKey(.localDB)`), as the release before Bug 171 derived it:
 //
 //  Derivation: HKDF(ikm: ECDH(SE_priv, G) || randomKey,
 //                    salt: SE_pub_x963,
 //                    info: "Occulta-v1-local-db-pq-2025")
 //
-//  The SE component provides hardware binding — the key cannot be derived
-//  without access to this specific Secure Enclave.
-//  The random component provides PQ resistance — a quantum adversary who
-//  recovers the SE private key via Shor's algorithm still faces ~2^128
-//  (Grover's) on the 256-bit random half.
-//  An attacker needs BOTH components to derive the hybrid key.
+//  What each half buys, as measured by `EnclaveGeneratorECDHTests`: ECDH against G is d·G = Q, the key's own public
+//  point, so the "SE component" is a function of Q and adds no secrecy; anyone who holds Q has it, with no Enclave. The
+//  key was in effect its random Keychain half alone, and a quantum adversary's Shor step on the Enclave key is moot,
+//  since Q already gave away what the exchange computes. An attacker needed the random half and Q, not the chip.
+//
+//  The current form, `enclaveBoundKey(.localDB)`, exchanges with a point P nobody knows the discrete log of, so the
+//  Enclave term is real, and mixes in `r_U` (this same random half, the symmetric term a quantum computer meets with
+//  Grover's square-root speed-up only) and, on iOS 26+, the Enclave's ML-KEM secret. The legacy form is derived now to
+//  open what the reseal has not moved and what a downgraded build writes.
 extension Manager.Key: KeyManagerProtocol {
 
     // MARK: - Tags and identifiers
@@ -768,12 +793,17 @@ extension Manager.Key: KeyManagerProtocol {
     // 1. Key ownership map
     //    - Vault SE key: dedicated P-256 key in SE (tag: Tags.vault). Single owner.
     //    - Private half: hardware-bound, never extractable.
-    //    - Public half: never stored, never exported — no harvest surface for QC.
-    //    - Static peer: P-256 generator G — a universal constant, not a secret.
+    //    - Public half Q: the app never stores or exports it, but it is not secret and not gated. `SecKeyCopyPublicKey`
+    //      returns it from a key reference fetched by tag with no evaluated `LAContext` (measured on a device, Bug 171),
+    //      and the keychain row records SHA-1(Q). Nothing here rests on Q staying private.
+    //    - Static peer: since Bug 171 the nothing-up-my-sleeve point P, whose discrete log nobody knows. The generator G
+    //      was the peer before it: ECDH against G is d·G = Q, so the legacy key (`legacyKey(.vault)`) is a function of Q.
+    //    - Second input: `r_B`, a 32-byte Keychain secret under the same access control, read through the same context.
     //    - Shared between contacts: No. Vault key is derived entirely locally.
     //
     // 2. Consumption events
-    //    - No one-time consumption. Re-derivable on demand via ECDH(vault_SE_priv, G).
+    //    - No one-time consumption. Re-derivable on demand via ECDH(vault_SE_priv, P) and r_B (ECDH against G before the
+    //      vault is rewrapped).
     //    - Key lives only as a local SymmetricKey for the duration of each vault op.
     //    - No zeroing needed — scope-bounded by the calling function's stack frame.
     //
@@ -782,10 +812,17 @@ extension Manager.Key: KeyManagerProtocol {
     //    - SSS shards split the vault entry key (separate per-entry concern).
     //
     // 4. Security property verification
-    //    - Harvest-now-decrypt-later: vault public key never stored → no harvest surface.
-    //    - QC: no classical public key on disk to recover the private key from.
-    //    - Biometric gate: .biometryCurrentSet — key unusable if biometrics change.
-    //    - Device binding: kSecAttrAccessibleWhenUnlockedThisDeviceOnly.
+    //    - Harvest-now-decrypt-later: the app's own storage keeps no copy of Q, but a keychain row and the public-key
+    //      accessor do, so "no harvest surface" is not claimed. What a holder of Q gets is no key: the vault key needs
+    //      the Enclave key (d), `r_B` (symmetric, so Grover only) and, on iOS 26+, the Enclave's ML-KEM secret from the
+    //      tier B record, none of which Q yields. Below iOS 26 a keychain dump that holds Q and `r_B`, analysed later with
+    //      a quantum computer, is open, needs a decision (Bug 171, D1).
+    //    - Biometric gate: .biometryCurrentSet OR .devicePasscode gates *use* of the Enclave key and the read of `r_B`.
+    //      It did not gate the symmetric key before Bug 171, which could be rebuilt from Q with no chip. What a change of
+    //      the enrolled biometrics does to the key and to `r_B`, and with no biometrics enrolled, is not checked (a
+    //      device-only check, Bug 171 0b): open, needs a decision.
+    //    - Device binding: kSecAttrAccessibleWhenUnlockedThisDeviceOnly on the key and on `r_B`. The legacy key was not
+    //      device-bound, being a function of Q; the Enclave-bound one is.
     //    - LAContext: pre-evaluated once per session; passed to SE to avoid per-op prompts.
     //    - Not achieved: forward secrecy (same key re-derived on each unlock).
     //    - No prekey public keys involved. Checklist item 4.6: N/A.
