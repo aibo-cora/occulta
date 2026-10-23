@@ -1780,6 +1780,15 @@ extension ContactManager {
         )
     }
 
+    /// The custody manifest `payload` carries for this recipient, or `nil` for "skip verification" (see the comment
+    /// where `openGroup` calls this). `custodyManifestCount` is the sender's number, decoded as an `Int` with no range
+    /// check, and `prefix(_:)` traps on a negative one (`bugs.md` Bug 175). A negative count is treated as not
+    /// attempted, not as an empty list: an empty one is the "sender holds none of yours" signal.
+    static func receivedManifest(_ payload: OccultaBundle.RecipientPayload, isFallback: Bool) -> [UUID]? {
+        guard !isFallback, payload.shardMetadataAttempted, payload.custodyManifestCount >= 0 else { return nil }
+        return Array(payload.custodyManifest.prefix(payload.custodyManifestCount))
+    }
+
     private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
         guard
             let keyRecord = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
@@ -2102,10 +2111,7 @@ extension ContactManager {
         // above. Returning `nil` means "skip verification"; a real, possibly-empty
         // array means "process it" — silently converting a real empty array to `nil`
         // here would drop that signal exactly the way this fix closes.
-        let metadataAttempted = !isFallback && recipientPayload.shardMetadataAttempted
-        let recipManifest: [UUID]? = metadataAttempted
-            ? Array(recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount))
-            : nil
+        let recipManifest = Self.receivedManifest(recipientPayload, isFallback: isFallback)
 
         // The shared payload too: a one-to-one bundle carries its piece operations and manifest there, not per
         // recipient, and the caller falls back to them. Stripping only the per-recipient fields left those applied
