@@ -5,6 +5,12 @@
 assumption in [`PASSPHRASE_LAYER_KEYS.md`](../../Occulta/Features/SecureMode/PASSPHRASE_LAYER_KEYS.md)
 §5.
 
+**Passphrase rollout, 2026-10-19 — [PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md). Proposed, not
+decided.** It covers how stages 2–4 would ship the phrase on top of the 2026-10-15 storage proposal: entry,
+migration from the PIN and the local DB key, Rule 4's way back, depths, and effort. It proposed a narrower
+Rule 1 through key slots, not adopted on 2026-10-19, so Rule 1 stands. This plan stands until its other
+proposals are decided.
+
 **Summary.** Steps 6–16 and 17a don't depend on each other and can ship one at a time, in any order.
 Steps 1–5 can be split by data (vault first, then contacts), but not step by step. 17b ships with the
 contacts slice. (Since 2026-10-06, 17b for prekeys means moving their Enclave blobs into the contact record,
@@ -18,18 +24,32 @@ however the stages are cut.
    but it also costs a second full reseal. That is the riskiest operation in the app, and this
    codebase's data-loss bugs have clustered there (Bugs 75–78, 138). Each slice of data gets all five
    steps at once.
+   *Proposed narrowing, 2026-10-19, not adopted the same day; Rule 1 stands as written
+   ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §1.1):*
+   - With key slots, adding or changing step 2 later rewraps a slot instead of resealing. Older images keep
+     the slot as it was.
+   - Steps 3 and 5 still need the reseal.
+   - So does a key leaving device-only protection.
 2. **All depths on a device switch together.** If each depth switched on its next unlock, the everyday
    depth would switch first and the duress depths would stay on PIN verifiers for weeks. That
    difference points straight at the real depth. The user sets up every depth's phrase in one sitting.
+   *Exception, decided 2026-10-19 ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §3.1, 8a):* a setup started
+   in a decoy, which a coercer can demand, is real for that decoy. The real user finishes the other depths later
+   from the real depth. One image doesn't show which went first; images compared over time do (Bug 120, open).
 3. **The phrase replaces the PIN for everyone who uses an app lock.** Today the PIN is an optional
    lock that any user can turn on (`AppScreen`: `.covered → .unlocked` when there is no PIN). If only
    users with duress depths got a phrase screen, the screen itself would announce hidden depths. An
    opt-in period is acceptable only if every lock user is offered it. Keep it short, because whoever
    opts in early marks themselves as security-conscious.
+   *Decided 2026-10-19 ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §3.2, decision 10):* no opt-in period.
+   Setup is required at the first unlock after the update.
 4. **Keep the old keys until the user proves they remember.** Keep the old device keys until every
    phrase has been entered correctly a few times over about a week. Then delete the old keys for all
    depths at once. Until the deletion nothing is safer, but a forgotten phrase can't cause data loss.
    The deletion is also what makes any leftover old ciphertext on disk unreadable.
+   *Decided 2026-10-19 by the owner ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §1.2):* the reseal writes
+   a new store file. The way back is the old store, with its keys and the PIN, as it was at setup. A phrase
+   forgotten during the week loses that week's changes. Graduation deletes the old store and its keys together.
 
 ## Release mechanics
 
@@ -63,6 +83,8 @@ however the stages are cut.
   2.0.0. The 2.0.0 numbering that Bug 165's tier needs is unaffected. Which release carries the passphrase work
   is not decided. The owner leans towards shipping all its data slices together in one release (2026-10-15),
   also not decided.
+  *2026-10-19:* **decided by the owner:** the passphrase work ships in the release after 2.0.0, not in 2.0.0.
+  Whether its data slices ship together is still open ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §7.1).
 
 ## Stages
 
@@ -181,3 +203,6 @@ Each needs tests and a no-data-loss migration plan before it counts as done. The
     and upgrading again brings everything back.
   - **The new file's name says nothing** about what it holds.
   - **Still to decide:** what a newer build does with a store an older build created in the meantime.
+  - *Decided 2026-10-19 for the passphrase migration:* a new store file, kept with the old store until
+    graduation (Rule 4 above). During that week an older build finds the old store as it was at setup, not an
+    empty one. The item above is still open.
