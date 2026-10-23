@@ -385,6 +385,7 @@ with the first.
 What remains in the App Group: `pending/<session-uuid>/`, holding files the user has explicitly
 chosen to share, sealed under the share-staging SE key (`ShareStagingKeyManager`, formerly
 `ShareIndexKeyManager`) with `.completeFileProtection`, named positionally, swept after an hour.
+The same Enclave key also seals compose attachments staged for a group or a contact with no key, under a second HKDF info (`Occulta-v1-group-compose-staging-2026`), so staging them adds no Keychain item and no new creation-date tell.
 That key keeps its `share.index` tag and HKDF info string — it still seals staged files and
 manifests, and changing either would strand it. Since `bugs.md` Bug 171 (Stage 5) what seals them is
 not a function of that key's public point alone: it also needs `r_S`, a 32-byte Keychain secret, and
