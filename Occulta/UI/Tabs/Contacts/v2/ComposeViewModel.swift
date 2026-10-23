@@ -315,8 +315,9 @@ final class ComposeViewModel {
             let basket     = Basket(files: processed)
             let contactPub = try? contactManager.currentPublicKey(forIdentifier: identifier)
 
-            let shardOps   = try shardCustodyManager?.buildShardOperations(for: identifier, currentContactPublicKey: contactPub) ?? []
-            let manifest   = try? shardCustodyManager?.buildCustodyManifest(for: identifier)
+            let isCard     = try contactManager.isCardContact(identifier: identifier)
+            let shardOps   = try shardCustodyManager?.buildShardOperations(for: identifier, currentContactPublicKey: contactPub, isCardContact: isCard) ?? []
+            let manifest   = try? shardCustodyManager?.buildCustodyManifest(for: identifier, isCardContact: isCard)
 
             let encrypted: Data
 
