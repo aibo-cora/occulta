@@ -159,10 +159,13 @@ extension Message {
         /// "Attachment storage" — attachment bytes are never re-sealed under the
         /// canonical DB key that protects this row).
         static func attachmentsFolder(for id: UUID) -> URL {
+            self.attachmentsRoot.appendingPathComponent(id.uuidString, isDirectory: true)
+        }
+
+        /// `Application Support/Drafts/` — parent of every draft's folder.
+        static var attachmentsRoot: URL {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            return appSupport
-                .appendingPathComponent("Drafts", isDirectory: true)
-                .appendingPathComponent(id.uuidString, isDirectory: true)
+            return appSupport.appendingPathComponent("Drafts", isDirectory: true)
         }
 
         /// On-disk filename for a given attachment within its draft's folder —
