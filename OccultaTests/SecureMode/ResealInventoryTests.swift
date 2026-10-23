@@ -153,18 +153,22 @@ struct ResealInventoryTests {
         }
     }
 
-    @Test("The sealed files: backup-export-meta.dat is under the vault key and resealed; draft attachments are not affected")
+    @Test("The sealed files: backup-export-meta.dat is under the vault key and resealed; draft attachments under the compose key are tier U's and moved by the upgrade; those under a per-contact key are not affected")
     func files() throws {
         let meta = try #require(KeyReseal.files.first { $0.name == "backup-export-meta.dat" })
         #expect(meta.key == .vault)
         #expect(meta.treatment == .reseal)
         #expect(meta.aad.contains("occulta.backup-export-meta-v1"))
 
-        let attachments = try #require(KeyReseal.files.first { $0.location.contains("Drafts") })
-        #expect(attachments.treatment == .notAffected)
+        let drafts = KeyReseal.files.filter { $0.location.contains("Drafts") }
+        #expect(drafts.count == 2)
+        let compose = try #require(drafts.first { $0.key == .compose })
+        #expect(compose.treatment == .reseal, "tier U's, moved from the classical compose key to the hybrid one by the Stage 6 upgrade")
+        let perContact = try #require(drafts.first { $0.key == .other })
+        #expect(perContact.treatment == .notAffected)
 
-        // Only that one file is moved by the reseal.
-        #expect(KeyReseal.files.filter { $0.treatment == .reseal }.map(\.name) == ["backup-export-meta.dat"])
+        // The files the reseal and the upgrade move.
+        #expect(Set(KeyReseal.files.filter { $0.treatment == .reseal }.map(\.key)) == [.vault, .compose])
     }
 
     @Test("The tiers: which fields each of the four keys the reseal moves seals")

@@ -35,6 +35,9 @@ enum EnclaveBoundKey {
     case restoreVault
     /// The wrap around the Secure Mode PIN verifiers. The inner verifier key stays `deriveSecureModeKey()`.
     case secureModeWrap
+    /// The key that seals attachments staged for a recipient with no per-contact key (Stage 8). The local DB Enclave key
+    /// and `r_U`, with its own info string.
+    case composeStaging
     /// Needs the vault's pre-evaluated `LAContext`, for the Enclave key and for the secret `r_B`.
     case vault(LAContext)
 }
@@ -68,6 +71,12 @@ protocol KeyManagerProtocol {
     /// v2 path — the local DB key: `HKDF(ECDH(localDB_SE_key, P) ‖ [ss ‖] r_U)` once the tier's epoch exists, the legacy
     /// `HKDF(ECDH(localDB_SE_key, G) ‖ r)` before it (`Manager.Ambient.tierUKeys`).
     func createHybridLocalEncryptionKey() throws -> SymmetricKey?
+    /// The key that seals attachments staged for a recipient with no per-contact key, a group or a contact we hold no public
+    /// key for: tier U's `enclaveBoundKey(.composeStaging)` once tier U's keys are Enclave-bound
+    /// (`Manager.Ambient.tierUKeys`), and nil before it. There is no legacy form and no fallback (`bugs.md` Bug 171, Stage 8):
+    /// a process the reseal left on the legacy keys has no compose key, so imports are refused and nothing is written in
+    /// plaintext. nil too when `r_U`, the tier U record or the Enclave key can't be read.
+    func deriveComposeStagingKey() throws -> SymmetricKey?
     /// Transport path — uses `kTransportKeyInfo`.
     func createSharedSecret(using material: Data?) -> SymmetricKey?
     /// Transport path (ephemeral/prekey) — uses `kTransportKeyInfo`.
@@ -616,6 +625,13 @@ final class TestKeyManager: KeyManagerProtocol, LegacyLocalKeyProviding {
                 secret: self.tierSecretU, record: record ?? self.tierPQRecordU,
                 classicalInfo: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kRestoreVaultEnclaveBoundPQKeyInfo
             )
+        case .composeStaging:
+            if self.simulatesLocalKeyUnavailable { return nil }
+            return self.enclaveBound(
+                privateKey: self.localDBPrivateKey, publicKeyData: self.localDBPublicKeyData,
+                secret: self.tierSecretU, record: record ?? self.tierPQRecordU,
+                classicalInfo: SaltInfo.kComposeStagingEnclaveBoundKeyInfo, hybridInfo: SaltInfo.kComposeStagingEnclaveBoundPQKeyInfo
+            )
         case .secureModeWrap:
             if self.simulatesSecureModeKeyUnavailable || self.simulatesWrapKeyUnavailable { return nil }
             return self.enclaveBound(
@@ -808,6 +824,17 @@ final class TestKeyManager: KeyManagerProtocol, LegacyLocalKeyProviding {
     /// The context-free signature mirrors the real key (no biometric needed).
     func deriveShardCustodyKey() throws -> SymmetricKey? {
         try self.tierUKey(.shardCustody, legacy: .shardCustody)
+    }
+
+    /// Tier U's compose key while the process's tier U keys are Enclave-bound, nil otherwise, and nil for a build from before
+    /// the fix (`derivesLegacyKeysOnly`), which had none.
+    func deriveComposeStagingKey() throws -> SymmetricKey? {
+        if self.derivesLegacyKeysOnly { return nil }
+
+        switch Manager.Ambient.tierUKeys {
+        case .legacy:       return nil
+        case .enclaveBound: return try self.enclaveBoundKey(.composeStaging)
+        }
     }
 
     /// ECDH(shardCustodyPrivateKey, G) → HKDF with restore-vault info.

@@ -80,6 +80,10 @@ struct SaltInfo {
     static let kRestoreVaultEnclaveBoundKeyInfo = "Occulta-v2-restore-buffer-2026".data(using: .utf8)!
     /// Wrap around the PIN verifiers: t_pin ‖ r_U. `kSecureModeKeyInfo` stays the inner verifier key's.
     static let kSecureModeWrapKeyInfo = "Occulta-v2-secure-mode-pin-wrap-2026".data(using: .utf8)!
+    /// Compose staging key: t_localDB ‖ r_U. The key that seals attachments staged for a recipient with no per-contact
+    /// key (a group, or a contact we hold no public key for). Same Enclave key and tier secret as the local DB key, so no
+    /// new Keychain item; the info string alone separates the two keys.
+    static let kComposeStagingEnclaveBoundKeyInfo = "Occulta-v2-compose-staging-2026".data(using: .utf8)!
 
     // MARK: Hybrid form (Bug 171, term 3)
     //
@@ -92,6 +96,7 @@ struct SaltInfo {
     static let kShardCustodyEnclaveBoundPQKeyInfo = "Occulta-v2-shard-custody-pq-2026".data(using: .utf8)!
     static let kRestoreVaultEnclaveBoundPQKeyInfo = "Occulta-v2-restore-buffer-pq-2026".data(using: .utf8)!
     static let kSecureModeWrapPQKeyInfo           = "Occulta-v2-secure-mode-pin-wrap-pq-2026".data(using: .utf8)!
+    static let kComposeStagingEnclaveBoundPQKeyInfo = "Occulta-v2-compose-staging-pq-2026".data(using: .utf8)!
 }
 
 // MARK: - SE Key Inventory
@@ -101,7 +106,7 @@ struct SaltInfo {
 //  Tag                                      │ Biometric gate │ Purpose
 //  ─────────────────────────────────────────┼────────────────┼──────────────────────────────────────
 //  "master.key.privacy.turtles.are.cute"    │ No             │ Identity — ECDSA signing, ECDH transport
-//  "local.db.se.key.occulta"                │ No             │ Local DB key: the Enclave term (ECDH against P)
+//  "local.db.se.key.occulta"                │ No             │ Local DB key and compose staging key: the Enclave term (ECDH against P)
 //  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault key (and so every per-entry key it wraps)
 //  "shard.custody.occulta"                  │ No             │ Shard custody records + restore vault key
 //  "app.layer.key.occulta.v1"               │ No             │ Secure Mode PIN verifiers: the inner key, and the wrap key
@@ -575,6 +580,16 @@ extension Manager.Key: KeyManagerProtocol {
     /// Tier U's three keys follow the epoch: the Enclave-bound derivation once `AppLayerConfig.keyEpoch` exists, the
     /// legacy one before (`Manager.Ambient.tierUKeys`, decided once per process at launch).
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? { try self.tierUKey(.localDB, legacy: .localDB) }
+
+    /// The compose staging key follows tier U's process state like the other tier U keys, but has no legacy form: in a
+    /// process the reseal left on the legacy keys there is none (nil), so every import is refused and nothing is staged
+    /// in plaintext (Stage 8). It was only ever in dev builds, which is why there is nothing to fall back to.
+    func deriveComposeStagingKey() throws -> SymmetricKey? {
+        switch Manager.Ambient.tierUKeys {
+        case .legacy:       return nil
+        case .enclaveBound: return try self.enclaveBoundKey(.composeStaging)
+        }
+    }
     func deriveShardCustodyKey() throws -> SymmetricKey? { try self.tierUKey(.shardCustody, legacy: .shardCustody) }
     func deriveRestoreVaultKey() throws -> SymmetricKey? { try self.tierUKey(.restoreVault, legacy: .restoreVault) }
 
@@ -1279,6 +1294,15 @@ extension Manager.Key {
                 privateKey:    { try self.retrieveShardCustodyPrivateKey() },
                 classicalInfo: SaltInfo.kRestoreVaultEnclaveBoundKeyInfo,
                 hybridInfo:    SaltInfo.kRestoreVaultEnclaveBoundPQKeyInfo
+            )
+        case .composeStaging:
+            return try self.deriveEnclaveBound(
+                secret:        { try self.tierSecret(.deviceUnlock) },
+                record:        { try overriding ?? self.tierPQRecord(.deviceUnlock) },
+                provider:      provider,
+                privateKey:    { try self.retrieveLocalDBPrivateKey() },
+                classicalInfo: SaltInfo.kComposeStagingEnclaveBoundKeyInfo,
+                hybridInfo:    SaltInfo.kComposeStagingEnclaveBoundPQKeyInfo
             )
         case .secureModeWrap:
             return try self.deriveEnclaveBound(

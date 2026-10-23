@@ -12,8 +12,9 @@
 //    1. A hybrid record is made and written to a second Keychain item, the *pending* record, **before any key is derived
 //       from it to seal with**. The new ML-KEM key is never only in memory: a kill after the data commit must not lose it.
 //       A pending record that is already there (a kill earlier) is reused, because rows already moved are under its key.
-//    2. Every tier U value (the inventory of Stage 2) is resealed from the classical key to the hybrid one, in batches,
-//       each batch one `save()`, each new ciphertext opened and compared before it replaces the old.
+//    2. Every draft attachment sealed under the classical compose staging key is resealed under the hybrid one, file by
+//       file (Stage 8), and then every tier U value (the inventory of Stage 2) from the classical key to the hybrid
+//       one, in batches, each batch one `save()`, each new ciphertext opened and compared before it replaces the old.
 //    3. One commit, one `save()` on the config row: the epoch (form hybrid), the vault epoch (resealed under the new local
 //       key, same number and form), and every PIN verifier (unwrapped with the classical wrap key and wrapped with the
 //       hybrid one). The stored record is classical until step 4, and the data and the verifiers are hybrid from here.
@@ -78,6 +79,9 @@ extension KeyReseal {
         /// The PIN verifiers: unwrapped and wrapped again (`resealed`), sealed again with a fresh nonce because they were
         /// under the hybrid wrap key already (`skipped`), random filler replaced (`refreshed`), another size (`left`).
         var verifiers = Counts()
+        /// Draft attachment files sealed under the compose staging key (Stage 8): `resealed` moved to the hybrid key,
+        /// `skipped` already under it, `left` under neither key (a per-contact key, or plaintext), `failed` that didn't read back.
+        var draftFiles = Counts()
         var vaultEpochMoved = false
         /// The pending record was there from an earlier launch and was used.
         var pendingReused = false
@@ -170,10 +174,10 @@ extension KeyReseal {
         guard let config = (try? context.fetch(FetchDescriptor<AppLayerConfig>()).first) ?? nil else { return false }
 
         switch try? Self.upgradeState(config: config, keyManager: keyManager) {
-        case .needsUpgrade?:                      return progress.committedBatches > 0
+        case .needsUpgrade?:                      return progress.movedAnything
         case .finishSwap?:                        return true
         case .current?, .waiting?, .epochMissing?: return false
-        case nil:                                 return progress.committedBatches > 0
+        case nil:                                 return progress.movedAnything
         }
     }
 
@@ -263,7 +267,9 @@ extension KeyReseal {
             let classicalCustody = try? keyManager.enclaveBoundKey(.shardCustody, record: .classical),
             let hybridCustody    = try? keyManager.enclaveBoundKey(.shardCustody, record: pending),
             let classicalRestore = try? keyManager.enclaveBoundKey(.restoreVault, record: .classical),
-            let hybridRestore    = try? keyManager.enclaveBoundKey(.restoreVault, record: pending)
+            let hybridRestore    = try? keyManager.enclaveBoundKey(.restoreVault, record: pending),
+            let classicalCompose = try? keyManager.enclaveBoundKey(.composeStaging, record: .classical),
+            let hybridCompose    = try? keyManager.enclaveBoundKey(.composeStaging, record: pending)
         else { throw UpgradeAborted(reason: .keyUnavailable) }
 
         // The vault epoch is sealed under the local key and has to come across with it, or the vault is unreadable.
@@ -299,6 +305,14 @@ extension KeyReseal {
         try Self.faults?.reachUpgrade(.afterPendingWritten)
         #endif
 
+        // The files first, then the rows: a draft attachment sealed under the compose key moves to the hybrid compose key before
+        // anything in the store does, so the epoch is only ever committed over files that are already there.
+        var fileCounts = Counts()
+        let filesMoved = try Self.resealDraftFiles(
+            in: locations.applicationSupport, from: classicalCompose, to: hybridCompose, progress: progress, counts: &fileCounts
+        )
+        report.draftFiles = fileCounts
+
         let pass = Pass(
             context: context, batchSize: batchSize, progress: progress,
             new: [.local: hybridLocal, .custody: hybridCustody, .restore: hybridRestore],
@@ -315,6 +329,11 @@ extension KeyReseal {
         #if DEBUG
         try Self.faults?.reach(.afterFilesBeforeBatches)
         #endif
+
+        guard filesMoved else {
+            report.outcome = .incomplete
+            return
+        }
 
         do {
             try pass.run()
@@ -395,6 +414,73 @@ extension KeyReseal {
         #endif
 
         keyManager.deletePendingTierPQRecord(.deviceUnlock)
+    }
+
+    // MARK: - Draft attachments
+
+    /// Moves every draft attachment sealed under the classical compose staging key to the hybrid one (Bug 171, Stage 8).
+    ///
+    /// The files are `Application Support/Drafts/<draft id>/<file>`, each in the attachment format (`Attachment+Manager`),
+    /// and found by trial: one whose header authenticates under the classical compose key is a group or key-less draft's and
+    /// is moved (`AttachmentManager.reseal`: streamed, written to a temporary, read back, renamed); one that already opens
+    /// under the hybrid key was moved by an earlier run; one that opens under neither is sealed under a per-contact file key,
+    /// or is plaintext from an earlier build, and is left alone. A temporary a killed run left is removed.
+    ///
+    /// A file that won't reseal stops the pass: it returns false with the file as it was, because committing the epoch over a
+    /// draft file that still needs the classical key would leave it unreadable. Files moved so far stay moved and are counted
+    /// in `progress`, as the process is then on the classical key over files under the hybrid one.
+    ///
+    /// A device with no `Drafts` folder has nothing to do.
+    @MainActor
+    private static func resealDraftFiles(
+        in applicationSupport: URL, from classical: SymmetricKey, to hybrid: SymmetricKey, progress: Progress?, counts: inout Counts
+    ) throws -> Bool {
+        let manager = FileManager.default
+        let drafts = applicationSupport.appendingPathComponent("Drafts", isDirectory: true)
+        guard let folders = try? manager.contentsOfDirectory(at: drafts, includingPropertiesForKeys: [.isDirectoryKey]) else { return true }
+
+        let old = AttachmentManager(contactKey: classical)
+        let new = AttachmentManager(contactKey: hybrid)
+        var moved = 0
+
+        for folder in folders.sorted(by: { $0.path < $1.path }) {
+            guard (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            let files = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey])) ?? []
+
+            for file in files.sorted(by: { $0.path < $1.path }) {
+                if file.pathExtension == AttachmentManager.resealingSuffix {
+                    try? manager.removeItem(at: file)
+                    continue
+                }
+                guard (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+
+                if old.opens(at: file) {
+                    do {
+                        #if DEBUG
+                        let corrupt: ((URL) -> Void)? = Self.faults.map { faults in { url in faults.corruptedFile(at: url) } }
+                        try old.reseal(at: file, to: new, beforeReadBack: corrupt)
+                        #else
+                        try old.reseal(at: file, to: new)
+                        #endif
+                    } catch {
+                        counts.failed += 1
+                        return false
+                    }
+                    counts.resealed += 1
+                    progress?.fileMoved()
+                    moved += 1
+
+                    #if DEBUG
+                    if moved == 1 { try Self.faults?.reachUpgrade(.afterFirstFile) }
+                    #endif
+                } else if new.opens(at: file) {
+                    counts.skipped += 1
+                } else {
+                    counts.left += 1
+                }
+            }
+        }
+        return true
     }
 
     // MARK: - The PIN verifiers

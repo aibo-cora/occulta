@@ -4,8 +4,11 @@
 //
 //  Attachments staged for a recipient with no per-contact key (a group, or a contact we hold no
 //  public key for) used to be written to tmp/ and copied into Drafts/ as plaintext, and videos
-//  were refused outright ("Secure storage not ready."). They are now sealed under the device
+//  were refused outright ("Secure storage not ready."). They are now sealed under the compose
 //  staging key. The key is injected, so none of this needs a Secure Enclave.
+//
+//  Since Bug 171, Stage 8 that key is tier U's (`EnclaveBoundKey.composeStaging`, the local DB Enclave key and `r_U`),
+//  reached through `TierUComposeStagingKey`, and it exists only in a process whose tier U keys are Enclave-bound.
 //
 
 import Testing
@@ -46,10 +49,6 @@ private func containsMarker(in directory: URL, _ marker: Data) -> Bool {
         guard let raw = try? Data(contentsOf: url) else { return false }
         return raw.range(of: marker) != nil
     }
-}
-
-private func shareStagingKeyAvailable() -> Bool {
-    (try? ShareStagingKeyManager().deriveLegacySymmetricKey()) != nil
 }
 
 @MainActor
@@ -277,20 +276,140 @@ private func stage(_ plaintext: Data, using vm: ComposeViewModel, in directory: 
     }
 }
 
-// MARK: - Real key derivation
+// MARK: - Tier U's key
 
-@Suite("ShareStagingKeyManager — compose staging key")
+@Suite("ComposeViewModel — the tier U staging key", .ambientFrozenTestKeyManager)
+@MainActor struct ComposeStagingViewModelTierUTests {
+
+    @Test("with the default provider a group seals under tier U's key and a sealed file round-trips, in each form",
+          arguments: KeyForm.allCases)
+    func defaultProviderRoundTrips(form: KeyForm) async throws {
+        let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
+        keys.become(form)
+        Manager.Ambient.setTierUKeys(.enclaveBound)
+        let dir = try scratchDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let (plain, marker) = makePlaintext()
+
+        let vm = ComposeViewModel(recipient: .group(UUID()))
+        vm.setup(contactManager: try makeContactManager())
+        let file = try await stage(plain, using: vm, in: dir)
+        let url  = try #require(file.url)
+
+        #expect(AttachmentManager.isSealed(at: url))
+        #expect(!containsMarker(in: dir, marker))
+        #expect(try await vm.attachmentManager?.data(at: url) == plain)
+
+        // It is under the pinned key of this form, and not under the other form's.
+        #expect(try await AttachmentManager(contactKey: Frozen.composeKey(form)).data(at: url) == plain)
+        let other: KeyForm = form == .hybrid ? .classical : .hybrid
+        await #expect(throws: (any Error).self) { _ = try await AttachmentManager(contactKey: Frozen.composeKey(other)).data(at: url) }
+    }
+
+    @Test("a contact we hold no key for seals under it too", arguments: KeyForm.allCases)
+    func keylessContact(form: KeyForm) async throws {
+        let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
+        keys.become(form)
+        Manager.Ambient.setTierUKeys(.enclaveBound)
+        let dir = try scratchDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let (plain, marker) = makePlaintext()
+
+        let vm = ComposeViewModel(recipient: .contact("never-met"))
+        vm.setup(contactManager: try makeContactManager())
+        let file = try await stage(plain, using: vm, in: dir)
+
+        #expect(!containsMarker(in: dir, marker))
+        #expect(try await vm.attachmentManager?.data(at: try #require(file.url)) == plain)
+    }
+
+    @Test("in a process the reseal left on the legacy keys there is no manager, no import is possible and encrypting a staged file fails closed",
+          arguments: [true, false])
+    func legacyStateFailsClosed(group: Bool) async throws {
+        Manager.Ambient.setTierUKeys(.legacy)
+        let dir = try scratchDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
+
+        let vm = ComposeViewModel(recipient: group ? .group(UUID()) : .contact("never-met"))
+        let cm = try makeContactManager()
+        vm.setup(contactManager: cm)
+        #expect(vm.attachmentManager == nil, "no key, so no manager: every import path refuses (\"Secure storage not ready.\")")
+
+        let stray = dir.appendingPathComponent("stray.bin")
+        try Data("anything".utf8).write(to: stray)
+        vm.messages = [OccultaFormats.File(url: stray, format: .file(.init(name: "stray", extension: "bin")), date: Date())]
+        await vm.encrypt(contactManager: cm)
+
+        #expect(vm.encryptedURL == nil)
+        #expect(vm.isShowingError)
+        #expect(FileManager.default.fileExists(atPath: stray.path), "and nothing was deleted")
+    }
+
+    @Test("adopting a draft without a manager keeps its file references and deletes nothing: sealed, and plaintext from an earlier build alike")
+    func adoptWithoutAManagerKeepsEverything() async throws {
+        Manager.Ambient.setTierUKeys(.legacy)
+        let dir = try scratchDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let (plain, marker) = makePlaintext()
+
+        let sealed = dir.appendingPathComponent("sealed.mp4")
+        try AttachmentManager(contactKey: Frozen.composeKey(.hybrid)).encrypt(plain, to: sealed)
+        let plaintext = dir.appendingPathComponent("plaintext.mp4")
+        try plain.write(to: plaintext)
+        let before = [sealed, plaintext].map { try? Data(contentsOf: $0) }
+        let files = [sealed, plaintext].map {
+            OccultaFormats.File(url: $0, format: .file(.init(name: "clip", extension: "mp4")), date: Date())
+        }
+
+        let vm = ComposeViewModel(recipient: .group(UUID()))
+        vm.setup(contactManager: try makeContactManager())
+        #expect(vm.attachmentManager == nil)
+        await vm.adopt(draftMessages: files)
+
+        #expect(vm.messages.map(\.url) == files.map(\.url), "the references are the draft's own")
+        #expect([sealed, plaintext].map { try? Data(contentsOf: $0) } == before, "no file was touched or deleted")
+        #expect(containsMarker(in: dir, marker), "the plaintext file is still there for a later launch to seal")
+        #expect(!FileManager.default.fileExists(atPath: plaintext.appendingPathExtension("sealing").path))
+    }
+}
+
+// MARK: - Key derivation
+
+@Suite("Compose staging key — not the share session key", .ambientFrozenTestKeyManager)
+@MainActor
 struct ComposeStagingKeyDerivationTests {
 
-    @Test("is stable, 32 bytes, and distinct from the share session key",
-          .enabled(if: shareStagingKeyAvailable()))
-    func domainSeparated() throws {
-        let manager = ShareStagingKeyManager()
-        let compose = try manager.deriveComposeStagingKey()
-        let session = try manager.deriveLegacySymmetricKey()
+    /// A share-staging key manager on a software Enclave key and items of its own, so it needs no Secure Enclave.
+    private func stagingManager(hybrid: Bool) throws -> (manager: ShareStagingKeyManager, clean: () -> Void) {
+        let suffix = UUID().uuidString
+        let key = try softwareP256Key(scalar: katScalar)
+        let manager = ShareStagingKeyManager(
+            keyTag: "test.compose.\(suffix)", tierSecretAccount: "test.compose.rs.\(suffix)", tierPQRecordAccount: "test.compose.pqs.\(suffix)",
+            postQuantum: { hybrid ? InMemoryStagingPostQuantum() : nil }, enclaveKey: { key }
+        )
+        try manager.createTierItemsIfAbsent()
+        return (manager, { manager.deleteTierSecret(); manager.deleteTierPQRecord() })
+    }
 
-        #expect(compose.withUnsafeBytes { Data($0) } == (try manager.deriveComposeStagingKey()).withUnsafeBytes { Data($0) })
+    @Test("it is stable, 32 bytes, and distinct from the local DB key, the custody key and the share session keys (legacy and Enclave-bound)",
+          arguments: KeyForm.allCases)
+    func domainSeparated(form: KeyForm) throws {
+        let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
+        keys.become(form)
+        Manager.Ambient.setTierUKeys(.enclaveBound)
+        let (staging, clean) = try self.stagingManager(hybrid: form == .hybrid)
+        defer { clean() }
+
+        let compose = try #require(try keys.deriveComposeStagingKey())
+        #expect(keyBytes(compose) == keyBytes(try #require(try keys.deriveComposeStagingKey())), "stable")
         #expect(compose.bitCount == 256)
-        #expect(compose.withUnsafeBytes { Data($0) } != session.withUnsafeBytes { Data($0) })
+
+        let others: [String: SymmetricKey] = [
+            "local DB":              try #require(try keys.createHybridLocalEncryptionKey()),
+            "custody":               try #require(try keys.deriveShardCustodyKey()),
+            "restore":               try #require(try keys.deriveRestoreVaultKey()),
+            "session, legacy":       try staging.deriveLegacySymmetricKey(),
+            "session, Enclave-bound": try staging.deriveEnclaveBoundKey(),
+            "release's compose key": SymmetricKey(data: try rebuildLegacy(scalar: katScalar, secret: nil, info: Data("Occulta-v1-group-compose-staging-2026".utf8))),
+        ]
+        for (name, key) in others {
+            #expect(keyBytes(key) != keyBytes(compose), "the compose key equals the \(name) key")
+        }
     }
 }

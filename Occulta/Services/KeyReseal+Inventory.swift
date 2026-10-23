@@ -46,6 +46,10 @@ extension KeyReseal {
         /// A PIN verifier: a key derived from `deriveSecureModeKey()` and the PIN, not the secure mode key itself.
         /// Stage 3 wraps it.
         case pin
+        /// The compose staging key: `deriveComposeStagingKey()`, tier U's, which seals the draft attachments of a group or of a
+        /// contact we hold no key for. A file, not a field; it has no legacy form (Stage 8), so the Stage 2 reseal has nothing
+        /// of it to move, and the Stage 6 upgrade moves it from the classical form to the hybrid one.
+        case compose
         /// A key this fix doesn't reseal: the per-entry key of a vault entry, a per-contact file key, the share
         /// staging key (Stage 5 moved what it seals under; a session is never resealed, it is swept after an hour), or
         /// the backup key.
@@ -316,8 +320,13 @@ nonisolated extension KeyReseal {
         ),
         SealedFile(
             name: "<file id>[.<extension>]", location: "Application Support/Drafts/<draft id>/",
+            key: .compose, aad: "none (chunked, per-file header)", treatment: .reseal,
+            note: "A `Message.Draft` attachment of a group, or of a contact we hold no key for, sealed under the compose staging key (`Attachment+Manager`; tier U's). It never existed under a legacy key (dev builds only, not carried over), so the Stage 2 reseal has nothing to move; the Stage 6 upgrade moves each from the classical compose key to the hybrid one, file by file, found by trial, before the epoch is committed (`KeyReseal.upgradeTierU`)."
+        ),
+        SealedFile(
+            name: "<file id>[.<extension>]", location: "Application Support/Drafts/<draft id>/",
             key: .other, aad: "none (chunked, per-file header)", treatment: .notAffected,
-            note: "A `Message.Draft` attachment, sealed under the per-contact file key (`Attachment+Manager`), never under a key in this table."
+            note: "A `Message.Draft` attachment of a contact we hold a key for, sealed under the per-contact file key (`Attachment+Manager`), never under a key in this table. Same folder as the files above; the upgrade tells them apart by trial and leaves these alone."
         ),
         SealedFile(
             name: "manifest.enc and <n>.tmp", location: "App Group container/pending/<session id>/",

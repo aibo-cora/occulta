@@ -385,7 +385,7 @@ with the first.
 What remains in the App Group: `pending/<session-uuid>/`, holding files the user has explicitly
 chosen to share, sealed under the share-staging SE key (`ShareStagingKeyManager`, formerly
 `ShareIndexKeyManager`) with `.completeFileProtection`, named positionally, swept after an hour.
-The same Enclave key also seals compose attachments staged for a group or a contact with no key, under a second HKDF info (`Occulta-v1-group-compose-staging-2026`), so staging them adds no Keychain item and no new creation-date tell.
+Compose attachments staged for a group or a contact with no key are not sealed by this key (`bugs.md` Bug 171, Stage 8). They are sealed under tier U's compose key, the local DB Enclave key and `r_U` with their own HKDF info (`Occulta-v2-compose-staging-2026`, hybrid on iOS 26+), in the app's own container, so staging them adds no Keychain item and no new creation-date tell, and the extension never sees them. A device upgrading to the hybrid form also holds, for the one upgrade, `<file>.resealing` temporaries beside the draft files it is moving.
 That key keeps its `share.index` tag and HKDF info string — it still seals staged files and
 manifests, and changing either would strand it. Since `bugs.md` Bug 171 (Stage 5) what seals them is
 not a function of that key's public point alone: it also needs `r_S`, a 32-byte Keychain secret, and

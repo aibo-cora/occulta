@@ -183,9 +183,42 @@ struct HybridUpgradeEnclaveTests {
         #expect(keyBytes(try #require(try keys.enclaveBoundKey(.localDB, record: .classical))) == keyBytes(classical))
     }
 
+    @Test("The compose staging key on the real key manager: tier U's key, distinct from the others, and none in a legacy state",
+          .enabled(if: secureEnclaveAvailable() && hybridAvailable()))
+    func composeKey() throws {
+        let (keys, items) = makeItems()
+        defer { remove(keys, items) }
+        try keys.createTierSecretIfAbsent(.deviceUnlock)
+        try keys.createTierPQRecordIfAbsent(account: items.recordU, provider: nil)
+
+        try Self.bound(keys) {
+            let classical = try #require(try keys.enclaveBoundKey(.composeStaging))
+            let local     = try #require(try keys.enclaveBoundKey(.localDB))
+            let custody   = try #require(try keys.enclaveBoundKey(.shardCustody))
+            #expect(classical.bitCount == 256)
+            #expect(keyBytes(classical) != keyBytes(local) && keyBytes(classical) != keyBytes(custody))
+            #expect(keyBytes(try #require(try keys.enclaveBoundKey(.composeStaging))) == keyBytes(classical), "stable")
+
+            // The accessor follows tier U's process state.
+            Manager.Ambient.setTierUKeys(.legacy)
+            #expect(try keys.deriveComposeStagingKey() == nil)
+            Manager.Ambient.setTierUKeys(.enclaveBound)
+            #expect(keyBytes(try #require(try keys.deriveComposeStagingKey())) == keyBytes(classical))
+
+            // The hybrid form, from a record that is not yet the tier's own, differs from the classical one.
+            let hybridRecord = try #require(try keys.makeHybridPQRecord())
+            let hybrid = try #require(try keys.enclaveBoundKey(.composeStaging, record: hybridRecord))
+            #expect(keyBytes(hybrid) != keyBytes(classical))
+            #expect(keyBytes(try #require(try keys.enclaveBoundKey(.composeStaging, record: .classical))) == keyBytes(classical))
+
+            try keys.replaceTierPQRecord(.deviceUnlock, with: hybridRecord)
+            #expect(keyBytes(try #require(try keys.deriveComposeStagingKey())) == keyBytes(hybrid))
+        }
+    }
+
     @Test("A whole upgrade of real Enclave-bound keys from classical to hybrid: every value moves and opens, the epoch is hybrid, the record is the real ML-KEM one, and nothing is left pending",
           .enabled(if: secureEnclaveAvailable() && hybridAvailable()))
-    func realUpgrade() throws {
+    func realUpgrade() async throws {
         let (keys, items) = makeItems()
         defer { remove(keys, items) }
         try keys.createTierSecretIfAbsent(.deviceUnlock)
@@ -226,9 +259,26 @@ struct HybridUpgradeEnclaveTests {
         config.vaultKeyEpoch = try KeyReseal.Epoch(number: 1, form: .classical).sealed(using: classicalLocal)
         try context.save()
 
-        let report = try Self.bound(keys) { try KeyReseal.upgradeTierU(context: ModelContext(container), keyManager: keys, batchSize: 2) }
+        // A group draft's attachment, sealed under the real classical compose key.
+        let appSupport = FileManager.default.temporaryDirectory.appendingPathComponent("real-upgrade-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: appSupport) }
+        let folder = appSupport.appendingPathComponent("Drafts").appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let attachment = Sealing.random(300_000)
+        let attachmentURL = folder.appendingPathComponent("\(UUID().uuidString).mp4")
+        try AttachmentManager(contactKey: try #require(try keys.enclaveBoundKey(.composeStaging))).encrypt(attachment, to: attachmentURL)
+
+        let report = try Self.bound(keys) {
+            try KeyReseal.upgradeTierU(
+                context: ModelContext(container), keyManager: keys,
+                locations: KeyReseal.Locations(applicationSupport: appSupport, store: nil), batchSize: 2
+            )
+        }
 
         #expect(report.outcome == .upgraded)
+        #expect(report.draftFiles.resealed == 1)
+        let hybridCompose = try #require(try keys.enclaveBoundKey(.composeStaging))
+        #expect(try await AttachmentManager(contactKey: hybridCompose).data(at: attachmentURL) == attachment, "the draft opens under the real hybrid compose key")
         let record = try #require(try keys.tierPQRecord(.deviceUnlock))
         #expect(record.mode == .hybrid, "the real Enclave ML-KEM record")
         #expect(try keys.pendingTierPQRecord(.deviceUnlock) == nil)

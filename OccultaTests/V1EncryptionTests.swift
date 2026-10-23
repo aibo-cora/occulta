@@ -442,7 +442,6 @@ struct EncryptionSchemeTests {
 
 /// Crypto wrapper that only exposes the legacy decrypt path.
 /// Prevents accidental use of v2 encrypt during migration test setup.
-@MainActor
 private final class LegacyOnlyCrypto: LegacyCryptoProtocol {
     private let inner: Manager.Crypto
     private let legacy: LegacyCryptoManager

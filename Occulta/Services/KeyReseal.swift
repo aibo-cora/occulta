@@ -173,9 +173,21 @@ extension KeyReseal {
     final class Progress {
         /// Batches whose `save()` succeeded.
         private(set) var committedBatches = 0
+        /// Draft attachment files resealed under the hybrid compose key (the upgrade, Stage 8). Each is on disk the moment it
+        /// is moved, before any batch or the epoch, so it counts as the store having been touched.
+        private(set) var movedFiles = 0
 
         func batchCommitted() {
             self.committedBatches += 1
+        }
+
+        func fileMoved() {
+            self.movedFiles += 1
+        }
+
+        /// Whether any value was moved to the new form.
+        var movedAnything: Bool {
+            self.committedBatches > 0 || self.movedFiles > 0
         }
     }
 
@@ -267,6 +279,9 @@ extension KeyReseal {
     nonisolated enum UpgradeFaultPoint: String, CaseIterable {
         /// After the pending hybrid record is stored, before any key is derived from it or anything is sealed.
         case afterPendingWritten
+        /// After the first compose-sealed draft file has been resealed under the hybrid compose key (Stage 8), before the
+        /// next. Reached only when a draft file was moved.
+        case afterFirstFile
         /// After the epoch, the vault epoch and the verifiers are worked out and assigned in memory, before the one `save()`.
         case beforeCommit
         /// After that `save()`, before the tier's record is replaced by the pending one. The data and the epoch are
@@ -335,6 +350,22 @@ extension KeyReseal {
         func reach(_ point: FaultPoint) throws {
             self.reached.append(point)
             if self.interruptAt == point { throw InjectedFault(point: point) }
+        }
+
+        /// Flips a byte of the file at `url` when `corruptsNewCiphertext` is set, so the read-back of a resealed draft
+        /// attachment has something to catch: the last byte (a chunk's tag), or for a file with no plaintext, whose only
+        /// chunk is never opened, the last byte of the header's MAC.
+        func corruptedFile(at url: URL) {
+            guard self.corruptsNewCiphertext, let handle = try? FileHandle(forUpdating: url) else { return }
+            defer { try? handle.close() }
+
+            let headerSize: UInt64 = 101
+            guard let size = try? handle.seekToEnd(), size > 0 else { return }
+            let offset = size > headerSize + 16 ? size - 1 : headerSize - 1
+            try? handle.seek(toOffset: offset)
+            guard let current = try? handle.read(upToCount: 1), let byte = current.first else { return }
+            try? handle.seek(toOffset: offset)
+            try? handle.write(contentsOf: Data([byte ^ 0x01]))
         }
 
         /// `ciphertext` as the sealer under test produced it: with the last byte (the GCM tag's) flipped when

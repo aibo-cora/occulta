@@ -95,11 +95,13 @@ private func reachesIOS26(_ keys: TestKeyManager) {
 }
 
 @MainActor
+@discardableResult
 private func launch(
-    _ keys: TestKeyManager, _ store: LegacyStore, faults: KeyReseal.Faults? = nil, staging: ShareStagingKeyManager? = nil
+    _ keys: TestKeyManager, _ store: LegacyStore, faults: KeyReseal.Faults? = nil, staging: ShareStagingKeyManager? = nil,
+    locations: KeyReseal.Locations = .production
 ) -> LaunchSequence.Report {
     KeyReseal.$faults.withValue(faults) {
-        LaunchSequence.run(context: store.newContext(), keyManager: keys, batchSize: 7, staging: staging)
+        LaunchSequence.run(context: store.newContext(), keyManager: keys, locations: locations, batchSize: 7, staging: staging)
     }
 }
 
@@ -611,6 +613,7 @@ struct HybridUpgradeFailureTests {
 struct HybridUpgradeOtherTiersTests {
 
     /// A share-staging key manager on a phone's items, with a software Enclave key: the app or the extension.
+    @MainActor
     private struct Phone {
         let key: SecKey
         let tag = "test.s6.key.\(UUID().uuidString)"
@@ -970,4 +973,401 @@ struct HybridUpgradeVolumeTests {
         }
         #expect(elapsed < .seconds(600), "the upgrade took \(elapsed)")
     }
+}
+
+
+// MARK: - Draft attachments sealed under the compose key (Stage 8)
+
+/// A temporary Application Support whose `Drafts/` folder holds what the upgrade has to tell apart: files sealed under the
+/// compose staging key of the group and key-less drafts (a streamed one of several chunks, one of an exact chunk multiple,
+/// a small one, an empty one), a file sealed under a per-contact key, and a plaintext file an earlier build left.
+@MainActor
+private final class DraftFiles {
+
+    enum Kind { case compose, contactKey, plaintext }
+
+    struct Item {
+        let url: URL
+        let plaintext: Data
+        let kind: Kind
+        let before: Data
+    }
+
+    let root: URL
+    private(set) var items: [Item] = []
+
+    /// A per-contact file key, which no compose key is.
+    static let contactKey = SymmetricKey(data: Data(repeating: 0x77, count: 32))
+
+    var locations: KeyReseal.Locations {
+        KeyReseal.Locations(applicationSupport: self.root, store: nil)
+    }
+
+    var composeItems: [Item] { self.items.filter { $0.kind == .compose } }
+    var otherItems: [Item] { self.items.filter { $0.kind != .compose } }
+
+    init(composeKey: SymmetricKey) throws {
+        self.root = FileManager.default.temporaryDirectory.appendingPathComponent("draft-files-\(UUID().uuidString)")
+        let first  = self.root.appendingPathComponent("Drafts").appendingPathComponent(UUID().uuidString)
+        let second = self.root.appendingPathComponent("Drafts").appendingPathComponent(UUID().uuidString)
+        for folder in [first, second] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+
+        let compose = AttachmentManager(contactKey: composeKey)
+        let chunk = 262_144
+
+        // A video, staged in chunks as the import does.
+        let video = Sealing.random(2 * chunk + 12_345)
+        let videoURL = first.appendingPathComponent("\(UUID().uuidString).mp4")
+        let encryptor = try compose.streamingEncryptor(to: videoURL)
+        var offset = 0
+        while offset < video.count {
+            let next = min(offset + 100_000, video.count)
+            try encryptor.append(Data(video[offset..<next]))
+            offset = next
+        }
+        try encryptor.finalize()
+        try self.record(videoURL, video, .compose)
+
+        // An exact multiple of the chunk size, through the streaming path: no short last chunk.
+        let exact = Sealing.random(2 * chunk)
+        let exactURL = first.appendingPathComponent("\(UUID().uuidString).mov")
+        let exactEncryptor = try compose.streamingEncryptor(to: exactURL)
+        try exactEncryptor.append(exact)
+        try exactEncryptor.finalize()
+        try self.record(exactURL, exact, .compose)
+
+        // An image through the in-memory path, and an empty file.
+        let image = Sealing.random(40_000)
+        let imageURL = second.appendingPathComponent("\(UUID().uuidString).jpg")
+        try compose.encrypt(image, to: imageURL)
+        try self.record(imageURL, image, .compose)
+
+        let empty = Data()
+        let emptyURL = second.appendingPathComponent(UUID().uuidString)
+        try compose.encrypt(empty, to: emptyURL)
+        try self.record(emptyURL, empty, .compose)
+
+        // A contact's draft: sealed under that contact's file key, which the upgrade must not touch.
+        let contactData = Sealing.random(300_000)
+        let contactURL = second.appendingPathComponent("\(UUID().uuidString).mp4")
+        try AttachmentManager(contactKey: Self.contactKey).encrypt(contactData, to: contactURL)
+        try self.record(contactURL, contactData, .contactKey)
+
+        // What an earlier build staged as plaintext: not an attachment at all.
+        let plain = Data("a plaintext draft file".utf8)
+        let plainURL = first.appendingPathComponent("\(UUID().uuidString).txt")
+        try plain.write(to: plainURL)
+        try self.record(plainURL, plain, .plaintext)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: self.root)
+    }
+
+    private func record(_ url: URL, _ plaintext: Data, _ kind: Kind) throws {
+        self.items.append(Item(url: url, plaintext: plaintext, kind: kind, before: try Data(contentsOf: url)))
+    }
+
+    /// Whether `item` opens, to its plaintext, under the compose key of `form`.
+    func opens(_ item: Item, under form: KeyForm) async -> Bool {
+        let opened = try? await AttachmentManager(contactKey: Frozen.composeKey(form)).data(at: item.url)
+        return opened == item.plaintext
+    }
+
+    func form(of item: Item) async -> UpgradeForm {
+        if await self.opens(item, under: .hybrid) { return .hybrid }
+        if await self.opens(item, under: .classical) { return .classical }
+        return .neither
+    }
+
+    /// Everything under `Drafts/` that is a temporary of the upgrade.
+    func temporaries() -> [URL] {
+        let enumerator = FileManager.default.enumerator(at: self.root, includingPropertiesForKeys: nil)
+        return (enumerator?.allObjects as? [URL] ?? []).filter { $0.lastPathComponent.hasSuffix(".resealing") }
+    }
+
+    /// The bytes of every file that is not sealed under a compose key, as they are now.
+    func othersAreUntouched() -> Bool {
+        self.otherItems.allSatisfy { (try? Data(contentsOf: $0.url)) == $0.before }
+    }
+}
+
+/// Where the launch that upgrades a device holding group drafts is stopped: the points of `UpgradeCrash`, and the two the
+/// draft files add (after the first file, and after all of them, before any row).
+enum ComposeCrash: CaseIterable, CustomStringConvertible {
+    case afterPendingWritten
+    case afterFirstFile
+    case afterFilesBeforeBatches
+    case afterFirstRow
+    case midBatch
+    case afterLastBatchBeforeEpoch
+    case beforeCommit
+    case afterCommitBeforeSwap
+    case afterSwapBeforePendingDeleted
+
+    var description: String {
+        switch self {
+        case .afterPendingWritten:           return "after the pending record"
+        case .afterFirstFile:                return "after the first draft file"
+        case .afterFilesBeforeBatches:       return "after the draft files, before the first row"
+        case .afterFirstRow:                 return "after the first row"
+        case .midBatch:                      return "mid-batch"
+        case .afterLastBatchBeforeEpoch:     return "after the last batch"
+        case .beforeCommit:                  return "before the commit"
+        case .afterCommitBeforeSwap:         return "after the commit, before the swap"
+        case .afterSwapBeforePendingDeleted: return "after the swap"
+        }
+    }
+
+    var faults: KeyReseal.Faults {
+        switch self {
+        case .afterPendingWritten:           return KeyReseal.Faults(interruptAtUpgrade: .afterPendingWritten)
+        case .afterFirstFile:                return KeyReseal.Faults(interruptAtUpgrade: .afterFirstFile)
+        case .afterFilesBeforeBatches:       return KeyReseal.Faults(interruptAt: .afterFilesBeforeBatches)
+        case .afterFirstRow:                 return KeyReseal.Faults(interruptAt: .afterFirstRow)
+        case .midBatch:                      return KeyReseal.Faults(interruptAt: .midBatch)
+        case .afterLastBatchBeforeEpoch:     return KeyReseal.Faults(interruptAt: .afterLastBatchBeforeEpoch)
+        case .beforeCommit:                  return KeyReseal.Faults(interruptAtUpgrade: .beforeCommit)
+        case .afterCommitBeforeSwap:         return KeyReseal.Faults(interruptAtUpgrade: .afterCommitBeforeSwap)
+        case .afterSwapBeforePendingDeleted: return KeyReseal.Faults(interruptAtUpgrade: .afterSwapBeforePendingDeleted)
+        }
+    }
+
+    /// Blocked once a file was moved (or anything else) while the stored record is still classical.
+    var blocked: Bool {
+        switch self {
+        case .afterPendingWritten, .afterSwapBeforePendingDeleted: return false
+        default:                                                   return true
+        }
+    }
+
+    var committed: Bool {
+        self == .afterCommitBeforeSwap || self == .afterSwapBeforePendingDeleted
+    }
+
+    var relaunchOutcome: KeyReseal.UpgradeOutcome {
+        switch self {
+        case .afterCommitBeforeSwap:         return .swapFinished
+        case .afterSwapBeforePendingDeleted: return .alreadyDone
+        default:                             return .upgraded
+        }
+    }
+}
+
+@Suite("Hybrid upgrade — draft attachments", .ambientFrozenTestKeyManager)
+@MainActor
+struct HybridUpgradeDraftFileTests {
+
+    private func device() throws -> (keys: TestKeyManager, store: LegacyStore, drafts: DraftFiles) {
+        let (keys, store) = try classicalDevice()
+        let drafts = try DraftFiles(composeKey: Frozen.composeKey(.classical))
+        return (keys, store, drafts)
+    }
+
+    @Test("The fixture: every compose file opens under the classical compose key and not the hybrid one, and the others open under neither (passes today)")
+    func fixture() async throws {
+        let (_, _, drafts) = try self.device()
+
+        #expect(drafts.composeItems.count == 4 && drafts.otherItems.count == 2)
+        for item in drafts.composeItems {
+            #expect(await drafts.opens(item, under: .classical))
+            #expect(!(await drafts.opens(item, under: .hybrid)))
+        }
+        for item in drafts.otherItems {
+            #expect(await drafts.form(of: item) == .neither)
+        }
+    }
+
+    @Test("Every draft file sealed under the compose key moves from the classical key to the hybrid one, whatever its size, and the others are left byte for byte")
+    func filesMove() async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+
+        let report = try KeyReseal.upgradeTierU(context: store.newContext(), keyManager: keys, locations: drafts.locations, batchSize: 7)
+
+        #expect(report.outcome == .upgraded)
+        for item in drafts.composeItems {
+            #expect(await drafts.opens(item, under: .hybrid), "\(item.url.lastPathComponent) under the hybrid compose key")
+            #expect(!(await drafts.opens(item, under: .classical)), "\(item.url.lastPathComponent) no longer under the classical one")
+            #expect((try? Data(contentsOf: item.url)) != item.before, "the bytes changed")
+        }
+        #expect(drafts.othersAreUntouched(), "a per-contact-key file and a plaintext file stay as they are")
+        #expect(report.draftFiles.resealed == 4 && report.draftFiles.left == 2 && report.draftFiles.failed == 0)
+        #expect(drafts.temporaries().isEmpty)
+        #expect(report.epochWritten && keys.tierPQRecordU == Frozen.recordU)
+    }
+
+    @Test("Through the launch: the default provider then derives the hybrid compose key and a view model opens the draft")
+    func throughTheLaunch() async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+
+        let report = launch(keys, store, locations: drafts.locations)
+
+        #expect(upgradeReport(report)?.outcome == .upgraded && !report.blocked)
+        #expect(keyBytes(try TierUComposeStagingKey().deriveComposeStagingKey()) == keyBytes(Frozen.composeKey(.hybrid)))
+
+        let vm = ComposeViewModel(recipient: .group(UUID()))
+        vm.setup(contactManager: try composeContactManager())
+        let item = try #require(drafts.composeItems.first)
+        await vm.adopt(draftMessages: [OccultaFormats.File(url: item.url, format: .file(.init(name: "clip", extension: "mp4")), date: Date())])
+        #expect(vm.messages.count == 1)
+        #expect(try await vm.attachmentManager?.data(at: item.url) == item.plaintext)
+    }
+
+    @Test("Stopped at each point, every draft file opens under the classical or the hybrid key then, and under the hybrid key after the next launch, with the same pending key",
+          arguments: ComposeCrash.allCases)
+    func crashPoint(crash: ComposeCrash) async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+
+        let stopped = launch(keys, store, faults: crash.faults, locations: drafts.locations)
+
+        guard case .failure? = stopped.upgrade else {
+            Issue.record("the upgrade was to be stopped \(crash)")
+            return
+        }
+        #expect(stopped.blocked == crash.blocked, "\(crash)")
+
+        var forms: [UpgradeForm] = []
+        for item in drafts.composeItems { forms.append(await drafts.form(of: item)) }
+        #expect(!forms.contains(.neither), "a draft file opens under neither key \(crash): \(forms)")
+        switch crash {
+        case .afterPendingWritten: #expect(Set(forms) == [.classical], "nothing was moved yet")
+        case .afterFirstFile:      #expect(forms.filter { $0 == .hybrid }.count == 1, "exactly the first file")
+        default:                   #expect(Set(forms) == [.hybrid], "every file was moved before the first row")
+        }
+        #expect(drafts.othersAreUntouched())
+        #expect(drafts.temporaries().isEmpty)
+
+        // The next launch finishes the job. A fresh key would strand the files already moved, so it reuses the pending one.
+        keys.hybridRecordToMake = nil
+        let relaunch = launch(keys, store, locations: drafts.locations)
+
+        #expect(upgradeReport(relaunch)?.outcome == crash.relaunchOutcome, "\(crash)")
+        #expect(!relaunch.blocked)
+        for item in drafts.composeItems {
+            #expect(await drafts.opens(item, under: .hybrid), "\(item.url.lastPathComponent) after the relaunch")
+        }
+        #expect(drafts.othersAreUntouched())
+        #expect(keys.tierPQRecordU == Frozen.recordU && keys.pendingPQRecordU == nil)
+        #expect(keyBytes(try TierUComposeStagingKey().deriveComposeStagingKey()) == keyBytes(Frozen.composeKey(.hybrid)))
+    }
+
+    @Test("Each new file is read back before it replaces the old: a bad write leaves every file as it was, the upgrade uncommitted, and nothing blocked")
+    func readBack() async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+
+        let report = launch(keys, store, faults: KeyReseal.Faults(corruptsNewCiphertext: true), locations: drafts.locations)
+
+        #expect(upgradeReport(report)?.outcome == .incomplete)
+        #expect(!report.blocked)
+        for item in drafts.composeItems {
+            #expect((try? Data(contentsOf: item.url)) == item.before, "\(item.url.lastPathComponent) is as it was")
+        }
+        #expect(drafts.othersAreUntouched() && drafts.temporaries().isEmpty)
+        #expect(epochForm(store) == .classical && keys.tierPQRecordU == .classical)
+
+        let next = launch(keys, store, locations: drafts.locations)
+        #expect(upgradeReport(next)?.outcome == .upgraded)
+        for item in drafts.composeItems { #expect(await drafts.opens(item, under: .hybrid)) }
+    }
+
+    @Test("An upgrade that aborts before it writes anything leaves the draft files alone")
+    func abortLeavesFiles() async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+        keys.simulatesHybridRecordFailure = true
+
+        let report = try KeyReseal.upgradeTierU(context: store.newContext(), keyManager: keys, locations: drafts.locations, batchSize: 7)
+
+        #expect(report.outcome == .aborted(.postQuantumUnavailable))
+        for item in drafts.composeItems { #expect((try? Data(contentsOf: item.url)) == item.before) }
+        #expect(drafts.othersAreUntouched() && report.draftFiles == KeyReseal.Counts())
+    }
+
+    @Test("A temporary file a killed run left is removed, and its file is moved all the same")
+    func staleTemporary() async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+        let item = try #require(drafts.composeItems.first)
+        let stale = item.url.appendingPathExtension("resealing")
+        try Data("half a file".utf8).write(to: stale)
+
+        try KeyReseal.upgradeTierU(context: store.newContext(), keyManager: keys, locations: drafts.locations, batchSize: 7)
+
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(await drafts.opens(item, under: .hybrid))
+    }
+
+    @Test("A second run finds the files under the hybrid key and writes nothing")
+    func idempotent() async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+        try KeyReseal.upgradeTierU(context: store.newContext(), keyManager: keys, locations: drafts.locations, batchSize: 7)
+        let done = drafts.composeItems.map { try? Data(contentsOf: $0.url) }
+
+        let again = try KeyReseal.upgradeTierU(context: store.newContext(), keyManager: keys, locations: drafts.locations, batchSize: 7)
+
+        #expect(again.outcome == .alreadyDone)
+        #expect(drafts.composeItems.map { try? Data(contentsOf: $0.url) } == done)
+    }
+
+    @Test("A device with no Drafts folder upgrades without a file to move")
+    func noDraftsFolder() async throws {
+        let (keys, store) = try classicalDevice()
+        reachesIOS26(keys)
+        let empty = FileManager.default.temporaryDirectory.appendingPathComponent("no-drafts-\(UUID().uuidString)")
+
+        let report = try KeyReseal.upgradeTierU(
+            context: store.newContext(), keyManager: keys, locations: KeyReseal.Locations(applicationSupport: empty, store: nil), batchSize: 7
+        )
+
+        #expect(report.outcome == .upgraded && report.draftFiles == KeyReseal.Counts())
+    }
+
+    @Test("A device that was hybrid from the start has its draft files left alone")
+    func hybridFromTheStart() async throws {
+        let (keys, store) = try prepare(.hybrid)
+        let drafts = try DraftFiles(composeKey: Frozen.composeKey(.hybrid))
+        launch(keys, store, locations: drafts.locations)
+
+        let again = launch(keys, store, locations: drafts.locations)
+
+        #expect(upgradeReport(again)?.outcome == .alreadyDone)
+        for item in drafts.composeItems { #expect((try? Data(contentsOf: item.url)) == item.before) }
+        #expect(drafts.othersAreUntouched())
+    }
+
+    @Test("Draft files of several chunks: the upgrade completes; time is attached")
+    func volume() async throws {
+        let (keys, store, drafts) = try self.device()
+        reachesIOS26(keys)
+
+        let started = ContinuousClock.now
+        let report = try KeyReseal.upgradeTierU(context: store.newContext(), keyManager: keys, locations: drafts.locations, batchSize: 7)
+        let elapsed = ContinuousClock.now - started
+        let milliseconds = Double(elapsed.components.seconds) * 1_000 + Double(elapsed.components.attoseconds) / 1e15
+        let bytes = drafts.composeItems.reduce(0) { $0 + $1.plaintext.count }
+
+        Attachment.record(
+            "\(drafts.composeItems.count) compose-sealed draft files of several chunks, \(bytes) plaintext bytes, with the tier U store of the fixture\n"
+            + "upgrade: \(String(format: "%.0f", milliseconds)) ms; files \(report.draftFiles)\n"
+            + "Software keys on the Simulator; the files are the cost that grows with the size of the drafts.",
+            named: "hybrid-upgrade-draft-files.txt"
+        )
+        #expect(report.outcome == .upgraded && report.draftFiles.resealed == 4)
+    }
+}
+
+
+@MainActor
+private func composeContactManager() throws -> ContactManager {
+    let schema = Schema([
+        Group.self, Contact.Profile.self, Contact.Profile.PhoneNumber.self, Contact.Profile.EmailAddress.self,
+        Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self, Contact.Profile.Key.self,
+    ])
+    let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    return ContactManager(modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
 }
