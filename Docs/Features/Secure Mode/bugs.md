@@ -13789,3 +13789,36 @@ The key is removed from the app target. Opening `.occ` and `.occbak` files doesn
 ### Guard
 
 None automated: the folder is decided by iOS from `Info.plist`. Checked in the Simulator: no Occulta folder in Files, and a `.occ` opened from Files still reaches the app.
+
+---
+
+## Bug 177 — The Contacts screen shows an empty list differently when contacts are hidden
+
+**Status:** Fixed 2026-10-21 on `claude/contacts-empty-state-depth-849a87`. Found by an audit of the `v2.0.0/introduction-cards` diff.
+
+**Target:** `v2.0.0`. Present since the v2 Contacts screen.
+
+### Severity: High (a coercer can tell hidden contacts exist), conditional on a duress depth where every contact is hidden
+
+### What happens
+
+`ContactsV2` holds every contact at every depth in `contacts` (`@Query`) and filters it to `visibleContacts` for display. Two decisions read the unfiltered list instead:
+
+- the trust summary card showed when `!self.contacts.isEmpty`;
+- the "Tap **+** to create a new contact" hint showed when `self.contacts.isEmpty`.
+
+At a duress depth that hides every contact, the screen showed a 0/0/0 trust summary, no create-contact hint and "0 contacts · encrypted at rest". A genuinely empty install shows the hint and no summary. Whoever holds the unlocked phone can tell the two apart, and so learn that contacts exist that this depth hides.
+
+### Fix
+
+`ContactListFilter.isEmptyList(_:atDepth:)` answers from the contacts visible at the depth, and both conditions read it through `ContactsV2.isListEmpty`.
+
+The rest of the file was checked for the same pattern and needs no change:
+
+- `self.groups`: groups are not depth-filtered. A group is listed at every depth and only its membership differs (`Group+Model.swift`, `encryptedName`), so the groups list and its "N groups" footer show the same thing at every depth.
+- `self.drafts`: only decides the "Draft" tag on a row that is already visible.
+- `open(_:)` and `fetchContacts`: already use `visibleContacts` and `currentDepth`.
+
+### Guard
+
+`ContactsEmptyStateDepthTests`: two contacts hidden at depth 1, Secure Mode active and entered at depth 1 through the duress PIN, asserts the stored list is non-empty and the screen is still in its empty state. Failed against the unfiltered logic, passes with the fix. A SwiftUI body can't be tested directly, so this covers the decision, not that the view calls it; the two call sites are the only readers.
