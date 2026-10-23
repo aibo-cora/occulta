@@ -1269,6 +1269,7 @@ the share staging key.
 **Consequences:**
 - Deleting the app still leaves per-install keys and their creation dates, which show the app was set up and when.
 - Still open in Bug 170: the legacy keychain prekeys, whose tags name contacts, and the shard custody key (stage 5).
-- The erase fix can ship in 2.0.0.
+- The erase fix can ship in 2.0.0. *2026-10-19:* built and merged in PR #118, with #119's sweep of unread
+  `inbound/` handoffs.
 
 **Full reasoning:** `bugs.md` Bug 170; `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §6.

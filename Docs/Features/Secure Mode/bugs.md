@@ -13799,7 +13799,8 @@ None automated: the folder is decided by iOS from `Info.plist`. Checked in the S
 **Status:** Open in part. Found 2026-10-19 while checking whether Prekey Continuity D9's blobs suit the app's
 other keys (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`, decision 15). Not verified on a device in this pass.
 - **Decided 2026-10-19 by the owner (decision 15):** per-install keys stay in the keychain, the new phrase key
-  included. Erase All Data is to delete the share staging key; that is decided, not built.
+  included. Erase All Data deletes the share staging key, built and merged 2026-10-19 (PR #118, with #119's
+  sweep of unread `inbound/` handoffs).
 - **Still open, needs a decision:** the legacy keychain prekeys, and the shard custody key.
 `SECURITY_CHECKLIST.md` (the 2026-08-15 correction under Bug 82) already relies on the same iOS behaviour for
 the identity key.
@@ -13850,8 +13851,9 @@ delete path, so its key and its creation date survive a wipe.
 - **15a.** The passphrase work's per-install Enclave key is a keychain item, not a blob in the app's files.
 - **15b.** The identity key stays in the keychain.
 - **15c.** The keys graduation retires aren't moved first.
-- **15d.** Erase All Data deletes the share staging key, which stays a keychain item. This doesn't depend on the
-  passphrase work and can ship in 2.0.0.
+- **15d.** Erase All Data deletes the share staging key, which stays a keychain item. Built and merged 2026-10-19
+  in PR #118, together with the share extension's leftovers in the App Group, and #119's sweep of unread
+  `inbound/` handoffs. It ships in 2.0.0.
 
 Per-install keys therefore keep outliving an app deletion, with their creation dates. The analysis below is
 kept as the record; its "Proposed" line was not taken.
