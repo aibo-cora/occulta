@@ -17,7 +17,7 @@ extension Manager {
             self.vault = vault
         }
 
-        /// Deletes all app data: prekeys, contacts, vault, share-extension leftovers, and SE keys.
+        /// Deletes all app data: prekeys, contacts, drafts, vault, share-extension leftovers, and SE keys.
         /// SE keys are deleted last — once gone, all data encrypted under them is permanently inaccessible.
         ///
         /// The parameters are a seam for a test that runs this without wiping the Simulator's canonical keys, which
@@ -35,7 +35,11 @@ extension Manager {
         ) throws {
             erasePrekeys()
             try self.contacts.deleteAllContacts()
+            try self.contacts.deleteAllDrafts()
             try self.vault.deleteAllData()
+            // Every row is gone; flush the pre-deletion frames out of the WAL. `secure_delete` only zeroes the
+            // page being freed, and nothing else checkpoints before the next launch or unlock.
+            self.contacts.security.checkpointStore()
             if let stagingContainer {
                 ShareSession.removeAll(in: stagingContainer)
             }

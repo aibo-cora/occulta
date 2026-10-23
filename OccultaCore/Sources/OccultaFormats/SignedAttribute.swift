@@ -191,6 +191,13 @@ public struct SignedAttribute: Codable, Identifiable {
     public func verify(against publicKeyData: Data) -> Bool {
         guard publicKeyData.count == 65 else { return false }
 
+        // Both dates come from the sender's JSON, unbounded. `signingPayload` traps on one it cannot encode as a
+        // UInt64 (negative, 2^64 or more, NaN), so reject it before the payload is built (Bug 176). Not clamped:
+        // two different dates would then sign the same bytes. A fractional second is fine: the payload truncates it.
+        let encodable: (Date) -> Bool = { 0 <= $0.timeIntervalSince1970 && $0.timeIntervalSince1970 < 0x1p64 }
+
+        guard encodable(self.createdAt), self.expiresAt.map(encodable) ?? true else { return false }
+
         // Expiry check before crypto — fast-path rejection, no SE access.
         if let exp = self.expiresAt, exp < Date() { return false }
 

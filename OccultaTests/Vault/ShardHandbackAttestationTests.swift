@@ -246,7 +246,7 @@ struct ShardHandbackAttestationTests {
         // The owner's device has since rotated — the trustee sees a different current key
         // for them now, which is what triggers the mismatch-handback.
         let ownerNewPub = try TestKeyManager().retrieveIdentity()
-        let ops = try trusteeCustody.buildShardOperations(for: "owner", currentContactPublicKey: ownerNewPub)
+        let ops = try trusteeCustody.buildShardOperations(for: "owner", currentContactPublicKey: ownerNewPub, isCardContact: false)
         let handback = try #require(ops.first { $0.kind == .handback })
 
         #expect(handback.attribute?.id == distributedAttr.id,

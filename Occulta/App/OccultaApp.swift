@@ -1182,8 +1182,9 @@ struct RootView: View {
             switch recipient {
             case .contact(let contactID):
                 let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
-                let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
-                let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
+                let isCard     = try self.contactManager.isCardContact(identifier: contactID)
+                let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub, isCardContact: isCard)
+                let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID, isCardContact: isCard)
 
                 occData = try self.contactManager.encryptBundle(
                     basket:          basket,

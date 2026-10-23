@@ -13994,3 +13994,36 @@ Decided, for the record: D1 and D6 (accept the downgrade loss for TestFlight and
 **Stage 1, 2026-10-21: flipped.** The peer test asserts that the new peer is P and not G, and that G remains only as the legacy peer. The exchange with P is asserted not to be a function of Q. Every Enclave-bound site asserts `!=` against what a holder of Q can rebuild, with the tier secret and without it, for the share staging, vault, shard custody, restore vault, PIN wrap and local DB sites. The real `Manager.Key` and `ShareStagingKeyManager` keys are asserted too, all but the vault key, which a Simulator can't create. The equalities stay for the legacy derivations, relabelled legacy and migration-only: what is sealed under them is still open to a holder of Q until the reseal moves it. That includes the identity-derived v1 local DB key and the PIN inner verifier key, which Stage 3 wraps. The control and the layer-key corollary stay. `publicPointOfTheVaultACLKeyNeedsNoEvaluation` and its helpers are removed.
 
 **Stage 1b, 2026-10-21: extended to the hybrid form.** Every site also asserts `!=` for the hybrid key, built from a real Enclave ML-KEM key, against an attacker who holds Q, the tier secret and the record's ciphertext c, and has no `ss`: with `ss` omitted, with a zero `ss`, and against the classical form of the same inputs. The real `Manager.Key` and `ShareStagingKeyManager` keys are asserted in whichever form this device's records are.
+
+---
+
+## Bug 177 — The Contacts screen shows an empty list differently when contacts are hidden
+
+**Status:** Fixed 2026-10-21 on `claude/contacts-empty-state-depth-849a87`. Found by an audit of the `v2.0.0/introduction-cards` diff.
+
+**Target:** `v2.0.0`. Present since the v2 Contacts screen.
+
+### Severity: High (a coercer can tell hidden contacts exist), conditional on a duress depth where every contact is hidden
+
+### What happens
+
+`ContactsV2` holds every contact at every depth in `contacts` (`@Query`) and filters it to `visibleContacts` for display. Two decisions read the unfiltered list instead:
+
+- the trust summary card showed when `!self.contacts.isEmpty`;
+- the "Tap **+** to create a new contact" hint showed when `self.contacts.isEmpty`.
+
+At a duress depth that hides every contact, the screen showed a 0/0/0 trust summary, no create-contact hint and "0 contacts · encrypted at rest". A genuinely empty install shows the hint and no summary. Whoever holds the unlocked phone can tell the two apart, and so learn that contacts exist that this depth hides.
+
+### Fix
+
+`ContactListFilter.isEmptyList(_:atDepth:)` answers from the contacts visible at the depth, and both conditions read it through `ContactsV2.isListEmpty`.
+
+The rest of the file was checked for the same pattern and needs no change:
+
+- `self.groups`: groups are not depth-filtered. A group is listed at every depth and only its membership differs (`Group+Model.swift`, `encryptedName`), so the groups list and its "N groups" footer show the same thing at every depth.
+- `self.drafts`: only decides the "Draft" tag on a row that is already visible.
+- `open(_:)` and `fetchContacts`: already use `visibleContacts` and `currentDepth`.
+
+### Guard
+
+`ContactsEmptyStateDepthTests`: two contacts hidden at depth 1, Secure Mode active and entered at depth 1 through the duress PIN, asserts the stored list is non-empty and the screen is still in its empty state. Failed against the unfiltered logic, passes with the fix. A SwiftUI body can't be tested directly, so this covers the decision, not that the view calls it; the two call sites are the only readers.

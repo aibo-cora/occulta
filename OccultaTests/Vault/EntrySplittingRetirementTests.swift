@@ -45,7 +45,7 @@ private struct Device {
     }
 
     func queuedPieceIDs() throws -> Set<UUID> {
-        Set(try self.custody.buildShardOperations(for: "trustee", currentContactPublicKey: nil).compactMap { $0.attribute?.id })
+        Set(try self.custody.buildShardOperations(for: "trustee", currentContactPublicKey: nil, isCardContact: false).compactMap { $0.attribute?.id })
     }
 
     func count<T: PersistentModel>(_ type: T.Type) throws -> Int {
