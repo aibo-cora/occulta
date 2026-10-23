@@ -55,7 +55,7 @@ public struct WireHandle {
         let fingerprintNonce = try r.read(16)
         let senderFP         = try r.read(32)
         let ctLen            = try r.uint64BE()
-        let ciphertext       = try r.read(Int(ctLen))
+        let ciphertext       = try r.read(length: ctLen)
 
         guard minReaderVersion <= Self.versionByte else {
             throw OccultaBundle.BundleError.unsupportedVersion
@@ -210,8 +210,8 @@ public struct WireHandle {
 
         let metaLen  = Int(try r.uint32BE())
         let metaJSON = try r.read(metaLen)
-        let msgLen   = Int(try r.uint64BE())
-        let message  = try r.read(msgLen)
+        let msgLen   = try r.uint64BE()
+        let message  = try r.read(length: msgLen)
 
         let meta = try JSONDecoder().decode(PayloadMeta.self, from: metaJSON)
 
@@ -271,8 +271,8 @@ public struct WireHandle {
         for _ in 0..<fileCount {
             let fMetaLen  = Int(try r.uint32BE())
             let fMetaJSON = try r.read(fMetaLen)
-            let ctLen     = Int(try r.uint64BE())
-            let content   = ctLen > 0 ? try r.read(ctLen) : nil
+            let ctLen     = try r.uint64BE()
+            let content   = ctLen > 0 ? try r.read(length: ctLen) : nil
 
             let fMeta = try JSONDecoder().decode(FileMeta.self, from: fMetaJSON)
             files.append(File(id: fMeta.id, content: content, format: fMeta.format, date: fMeta.date))
@@ -411,10 +411,17 @@ private struct Reader {
     var remaining: Int { data.endIndex - offset }
 
     mutating func read(_ count: Int) throws -> Data {
-        let end = offset + count
-        guard end <= data.endIndex else { throw OccultaBundle.BundleError.unsupportedVersion }
-        defer { offset = end }
-        return data[offset..<end]
+        guard count >= 0, count <= self.remaining else { throw OccultaBundle.BundleError.unsupportedVersion }
+        let end = self.offset + count
+        defer { self.offset = end }
+        return self.data[self.offset..<end]
+    }
+
+    /// For a length taken straight off the wire. `Int(length)` traps from 2^63 up, and the
+    /// check has to come first: a hostile value is rejected here as a short file would be.
+    mutating func read(length: UInt64) throws -> Data {
+        guard length <= UInt64(self.remaining) else { throw OccultaBundle.BundleError.unsupportedVersion }
+        return try self.read(Int(length))
     }
 
     mutating func uint8() throws -> UInt8 {

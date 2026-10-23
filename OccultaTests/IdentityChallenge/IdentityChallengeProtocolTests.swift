@@ -30,7 +30,7 @@ private struct Party {
 
     /// Clock shared between challenger and responder so tests can advance
     /// both in lockstep. Default is a fixed instant well inside the window.
-    static let defaultEpoch: UInt64 = 1_700_000_000
+    nonisolated static let defaultEpoch: UInt64 = 1_700_000_000
 
     init(name: String, clock: @escaping () -> Date = { Date(timeIntervalSince1970: TimeInterval(defaultEpoch)) }) {
         let km = TestKeyManager()

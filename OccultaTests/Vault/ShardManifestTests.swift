@@ -132,7 +132,7 @@ private func distribute(
         let attr = try distribute(from: km, to: bobCustody, vaultManager: vault)
         #expect(try custodyCount(in: bobCont) == 1)
 
-        let manifest = try bobCustody.buildCustodyManifest(for: "alice")
+        let manifest = try bobCustody.buildCustodyManifest(for: "alice", isCardContact: false)
         #expect(manifest.contains(attr.id))
     }
 }
@@ -191,7 +191,7 @@ private func distribute(
         )
 
         #expect(try custodyCount(in: bobCont) == 1, "one shard: new replaces old")
-        let manifest = try bobCustody.buildCustodyManifest(for: "alice")
+        let manifest = try bobCustody.buildCustodyManifest(for: "alice", isCardContact: false)
         #expect(manifest.contains(newAttr.id))
         #expect(!manifest.contains(oldAttr.id))
     }
@@ -220,7 +220,7 @@ private func distribute(
         deliver(.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id))
 
         #expect(try custodyCount(in: bobCont) == 1)
-        #expect(try bobCustody.buildCustodyManifest(for: "alice") == [newAttr.id])
+        #expect(try bobCustody.buildCustodyManifest(for: "alice", isCardContact: false) == [newAttr.id])
     }
 }
 
@@ -246,7 +246,7 @@ private func distribute(
 
         // Bob's contact record now has Alice's NEW public key.
         // buildShardOperations detects mismatch → includes .handback.
-        let ops = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub)
+        let ops = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub, isCardContact: false)
         #expect(ops.contains { $0.kind == .handback }, "must handback mismatch shard")
         _ = aliceOldPub // silence warning
     }
@@ -276,11 +276,11 @@ private func distribute(
 
         // Mismatch shard is gone; only the new one remains.
         #expect(try custodyCount(in: bobCont) == 1)
-        let manifest = try bobCustody.buildCustodyManifest(for: "alice")
+        let manifest = try bobCustody.buildCustodyManifest(for: "alice", isCardContact: false)
         #expect(manifest.count == 1)
 
         // buildShardOperations no longer emits .handback (no mismatch shards left).
-        let ops = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub)
+        let ops = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub, isCardContact: false)
         #expect(!ops.contains { $0.kind == .handback })
     }
 }
@@ -398,7 +398,7 @@ private func distribute(
         #expect(try distributeRowCount(in: aliceCont) == 1, "row exists after queuing")
 
         // Build outbound ops (simulates send) — row must NOT be deleted by this.
-        _ = try aliceCustody.buildShardOperations(for: "bob", currentContactPublicKey: nil)
+        _ = try aliceCustody.buildShardOperations(for: "bob", currentContactPublicKey: nil, isCardContact: false)
         #expect(try distributeRowCount(in: aliceCont) == 1, "row persists until manifest confirms")
 
         // Manifest confirms → row deleted.
@@ -419,10 +419,10 @@ private func distribute(
         // Bob holds mismatch shard.
         _ = try distribute(from: aliceOld, to: bobCustody, vaultManager: vault)
 
-        let ops1 = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub)
+        let ops1 = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub, isCardContact: false)
         #expect(ops1.contains { $0.kind == .handback }, "handback on first bundle")
 
-        let ops2 = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub)
+        let ops2 = try bobCustody.buildShardOperations(for: "alice", currentContactPublicKey: aliceNewPub, isCardContact: false)
         #expect(ops2.contains { $0.kind == .handback }, "handback on second bundle — still present")
     }
 
@@ -431,10 +431,10 @@ private func distribute(
         let (_, aliceCustody, km, _) = try makeAlice()
         try aliceCustody.queueDistribute(attribute: try makeAttr(signer: km), for: "bob")
 
-        let ops1 = try aliceCustody.buildShardOperations(for: "bob", currentContactPublicKey: nil)
+        let ops1 = try aliceCustody.buildShardOperations(for: "bob", currentContactPublicKey: nil, isCardContact: false)
         #expect(ops1.contains { $0.kind == .distribute })
 
-        let ops2 = try aliceCustody.buildShardOperations(for: "bob", currentContactPublicKey: nil)
+        let ops2 = try aliceCustody.buildShardOperations(for: "bob", currentContactPublicKey: nil, isCardContact: false)
         #expect(ops2.contains { $0.kind == .distribute }, "distribute included again — not fire-and-forget")
     }
 
@@ -469,7 +469,7 @@ private func distribute(
         let attr1 = try distribute(from: km, to: bobCustody, vaultManager: vault)
         let attr2 = try distribute(from: km, to: bobCustody, vaultManager: vault)
 
-        let manifest = try bobCustody.buildCustodyManifest(for: "alice")
+        let manifest = try bobCustody.buildCustodyManifest(for: "alice", isCardContact: false)
         #expect(manifest.count == 2)
         #expect(manifest.contains(attr1.id))
         #expect(manifest.contains(attr2.id))
@@ -483,7 +483,7 @@ private func distribute(
 
         _ = try distribute(from: km, to: bobCustody, vaultManager: vault)
 
-        let carolManifest = try bobCustody.buildCustodyManifest(for: "carol")
+        let carolManifest = try bobCustody.buildCustodyManifest(for: "carol", isCardContact: false)
         #expect(carolManifest.isEmpty)
     }
 }

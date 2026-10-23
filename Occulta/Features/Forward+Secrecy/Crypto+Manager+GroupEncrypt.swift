@@ -49,6 +49,10 @@ struct GroupRecipient {
     /// verify it renders the message unopenable.
     let prefixesEphemeralSignature: Bool
 
+    /// Non-nil for a card conversation's recipient (`CardSlot`): `publicKey` is then the peer's card agreement key
+    /// and the slot is built by `wrapCardRecipient`. Nil for every other recipient.
+    let card: CardSlot?
+
     init(
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
@@ -56,7 +60,8 @@ struct GroupRecipient {
         contactPrekeyIsLastResort: Bool = false,
         pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?,
         shardOperations: [OccultaBundle.ShardOperation] = [],
-        prefixesEphemeralSignature: Bool = false
+        prefixesEphemeralSignature: Bool = false,
+        card: CardSlot? = nil
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
@@ -65,6 +70,7 @@ struct GroupRecipient {
         self.pendingBatch            = pendingBatch
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
+        self.card                    = card
     }
 }
 
@@ -118,17 +124,21 @@ extension Manager.Crypto {
     /// `contactPrekey == nil` → fallback: ECDH(senderLongTerm, r.publicKey) [+ ML-KEM]
     ///
     /// The caller is responsible for enforcing FS when required (e.g. shard ops).
+    ///
+    /// `senderIdentity` replaces the long-term identity key in `senderFingerprint` and `senderProof`; a card
+    /// conversation passes the sender's card agreement key (`SPEC.md` §3).
     func seal(
         sealedPayload: OccultaBundle.SealedPayload,
         groupID: UUID,
-        recipients: [GroupRecipient]
+        recipients: [GroupRecipient],
+        senderIdentity: Data? = nil
     ) throws -> OccultaBundle {
         guard !recipients.isEmpty else { throw EncryptionError.noRecipients }
 
         let sessionKey     = SymmetricKey(size: .bits256)
         let sessionKeyData = sessionKey.withUnsafeBytes { Data($0) }
 
-        let senderPub = try self.keyManager.retrieveIdentity()
+        let senderPub = try senderIdentity ?? self.keyManager.retrieveIdentity()
         let senderProof = Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
 
         // Per-bundle group blind: HMAC(key: groupID.rawBytes, msg: blindNonce).
@@ -194,6 +204,9 @@ extension Manager.Crypto {
         bodyDigest: Data
     ) throws -> OccultaBundle.Recipient {
         guard r.publicKey.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
+        if let card = r.card {
+            return try self.wrapCardRecipient(r, card: card, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: bodyDigest)
+        }
 
         let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(
             contactPrekey: r.contactPrekey,
@@ -289,7 +302,7 @@ extension Manager.Crypto {
     /// encoder in `WireHandle`, used for v4 baskets — the 70/71/72 spread becomes directly
     /// observable and this filler stops doing its job. Pad to the real signature's length at
     /// that point, or keep the encoding.
-    private static func randomEphemeralSignatureFiller() -> Data {
+    static func randomEphemeralSignatureFiller() -> Data {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<72).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }

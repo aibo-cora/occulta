@@ -36,6 +36,11 @@ final class ShareStagingKeyManager {
     /// is an input to the derivation, so changing it changes the key.
     private static let hkdfInfo = "Occulta-v1-share-index-2026".data(using: .utf8)!
 
+    /// Domain separator for the compose staging key (see `deriveComposeStagingKey`). Distinct
+    /// from `hkdfInfo` so the key sealing the extension's staged files can never open compose
+    /// staging files, and the other way round.
+    private static let composeHkdfInfo = "Occulta-v1-group-compose-staging-2026".data(using: .utf8)!
+
     /// P-256 generator base point G (uncompressed x9.63, 65 bytes).
     /// Same constant used by Key+Manager for local DB key derivation.
     /// ECDH(privKey, G) produces a deterministic secret tied to the private key.
@@ -117,6 +122,27 @@ final class ShareStagingKeyManager {
         }
     }
 
+    // MARK: - SE Key Deletion
+
+    /// Delete the SE key. Erase All Data calls this after the staged files sealed under it.
+    ///
+    /// The key and its `kSecAttrCreationDate` record when the user first shared a file into
+    /// Occulta, so an erased install must not keep them. The next access creates a fresh key.
+    /// Matches the same item `retrievePrivateKey` finds. A missing key counts as deleted.
+    @discardableResult
+    func deleteKey() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrApplicationTag as String: Self.tag.data(using: .utf8)!,
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecAttrAccessGroup as String: Self.accessGroup
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
     // MARK: - Symmetric Key Derivation
 
     /// Derive the symmetric key for encrypting a share session's staged files and manifest.
@@ -136,6 +162,18 @@ final class ShareStagingKeyManager {
     /// Salt is the public key (not XOR) — differs from Key+Manager's local DB pattern
     /// because this key has no peer; the public key alone provides per-key uniqueness.
     func deriveSymmetricKey() throws -> SymmetricKey {
+        try self.deriveKey(info: Self.hkdfInfo)
+    }
+
+    /// Derive the key that seals compose attachments staged in `tmp/` and `Drafts/` for a
+    /// recipient with no per-contact key (a group, or a contact never exchanged keys with).
+    /// Same Enclave key as `deriveSymmetricKey`, different HKDF info, so no new Keychain item.
+    /// Never shared: the group bundle is encrypted per member after these files are read back.
+    func deriveComposeStagingKey() throws -> SymmetricKey {
+        try self.deriveKey(info: Self.composeHkdfInfo)
+    }
+
+    private func deriveKey(info: Data) throws -> SymmetricKey {
         let privateKey = try self.retrievePrivateKey()
 
         guard let fixedPubKey = Self.convertToSecKey(Self.generatorG) else {
@@ -159,7 +197,7 @@ final class ShareStagingKeyManager {
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: pubData,
-            info: Self.hkdfInfo,
+            info: info,
             outputByteCount: 32
         )
     }

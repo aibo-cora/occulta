@@ -7190,6 +7190,8 @@ The one way out before the fix was blind: deleting the hostile trustee's contact
 
 ### Fix, as built (2026-09-23)
 
+**Moved 2026-10-13** (modularization Phase 3, step 4): the search is now `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)` in `OccultaCore`, and `verifiedKey` passes it the GCM check. Same order, cap and zeroing; the Bug 95 suite in `VaultRestoreTrustTests` passes unchanged.
+
 - **Subset search** (`VaultManager.Backup.verifiedKey`). It tries every shard first. If that fails, it
   retries with shards left out, fewest first, and stops at the first candidate that opens the file.
   Extra honest shards never change the result, so the first subset that works is the full set minus the
@@ -7407,7 +7409,8 @@ be:** `JSONEncoder`/`JSONDecoder` internals, labels while they pass through Swif
 
 **Follow-up, 2026-09-26 (branch code review):** per-entry key reconstruction had the same gap.
 `reconstructEntry` (`Vault+Manager+Reconstruction.swift`) opened the entry's content to check the GCM tag
-and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` does. Not
+and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` did (since 2026-10-13, the check `verifiedKey`
+passes to `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)`). Not
 covered by a test, like the other zeroing points: a leftover copy in freed memory isn't observable from one.
 
 ### 4 — Minor, recorded so they are not rediscovered
@@ -13883,3 +13886,36 @@ Renaming the tags to drop "occulta" doesn't help, because the access group names
 ### Guard
 
 None yet.
+
+---
+
+## Bug 177 — The Contacts screen shows an empty list differently when contacts are hidden
+
+**Status:** Fixed 2026-10-21 on `claude/contacts-empty-state-depth-849a87`. Found by an audit of the `v2.0.0/introduction-cards` diff.
+
+**Target:** `v2.0.0`. Present since the v2 Contacts screen.
+
+### Severity: High (a coercer can tell hidden contacts exist), conditional on a duress depth where every contact is hidden
+
+### What happens
+
+`ContactsV2` holds every contact at every depth in `contacts` (`@Query`) and filters it to `visibleContacts` for display. Two decisions read the unfiltered list instead:
+
+- the trust summary card showed when `!self.contacts.isEmpty`;
+- the "Tap **+** to create a new contact" hint showed when `self.contacts.isEmpty`.
+
+At a duress depth that hides every contact, the screen showed a 0/0/0 trust summary, no create-contact hint and "0 contacts · encrypted at rest". A genuinely empty install shows the hint and no summary. Whoever holds the unlocked phone can tell the two apart, and so learn that contacts exist that this depth hides.
+
+### Fix
+
+`ContactListFilter.isEmptyList(_:atDepth:)` answers from the contacts visible at the depth, and both conditions read it through `ContactsV2.isListEmpty`.
+
+The rest of the file was checked for the same pattern and needs no change:
+
+- `self.groups`: groups are not depth-filtered. A group is listed at every depth and only its membership differs (`Group+Model.swift`, `encryptedName`), so the groups list and its "N groups" footer show the same thing at every depth.
+- `self.drafts`: only decides the "Draft" tag on a row that is already visible.
+- `open(_:)` and `fetchContacts`: already use `visibleContacts` and `currentDepth`.
+
+### Guard
+
+`ContactsEmptyStateDepthTests`: two contacts hidden at depth 1, Secure Mode active and entered at depth 1 through the duress PIN, asserts the stored list is non-empty and the screen is still in its empty state. Failed against the unfiltered logic, passes with the fix. A SwiftUI body can't be tested directly, so this covers the decision, not that the view calls it; the two call sites are the only readers.

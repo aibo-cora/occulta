@@ -29,7 +29,7 @@ private func insertSender(
         nickname: "", organizationName: "", departmentName: "", jobTitle: ""
     )
     profile.contactPublicKeys = [Contact.Profile.Key(
-        material: try #require(try Manager.Crypto().encrypt(data: publicKey)), owner: Data(), date: Data(),
+        material: try Manager.Crypto().encrypt(data: publicKey), owner: Data(), date: Data(),
         quantumKeyMaterialEncrypted: nil
     )]
     profile.maxBundleVersion = marker
@@ -261,10 +261,79 @@ private final class SoftwareOneTimePrekey: PrekeyPrivateKeys {
         #expect(carolsKey.consumed == [carolsKey.id], "the genuine bundle uses it up, as any other")
     }
 
+    /// The two cleartext fields of the outer header that a group sender always leaves constant, and the parser still
+    /// accepts any value for. Neither is read until the shared ciphertext is opened, so a copy that carries one
+    /// opens the recipient's slot all the same (Bug 181).
+    enum HeaderTamper: String, CaseIterable {
+        case ephemeralKey, prekeyID
+
+        func apply(to original: OccultaBundle) -> OccultaBundle {
+            OccultaBundle(
+                version: original.version,
+                secrecy: OccultaBundle.SecrecyContext(
+                    mode: .group,
+                    ephemeralPublicKey: self == .ephemeralKey ? Data([0x04] + Array(repeating: 0x01, count: 64)) : Data(),
+                    prekeyID: self == .prekeyID ? UUID().uuidString : nil
+                ),
+                ciphertext: original.ciphertext,
+                fingerprintNonce: original.fingerprintNonce,
+                senderFingerprint: original.senderFingerprint,
+                group: original.group
+            )
+        }
+    }
+
+    /// Anyone holding a copy of the file can change the header and deliver that copy first. It must not use up the
+    /// key the genuine bundle is sealed to.
+    @Test("A copy with an altered outer header doesn't use up the slot's one-time key; the genuine bundle still opens",
+          .ambientTestKeyManager, arguments: HeaderTamper.allCases)
+    func headerTamperKeepsTheOneTimeKey(tamper: HeaderTamper) throws {
+        let carol = TestKeyManager()
+        let carolsKey = try SoftwareOneTimePrekey()
+        let alicePublicKey = try self.alice.retrieveIdentity()
+
+        let original = try Manager.Crypto(keyManager: self.alice).seal(
+            sealedPayload: OccultaBundle.SealedPayload(message: Data("Lunch at one.".utf8)),
+            groupID: UUID(),
+            recipients: [
+                GroupRecipient(publicKey: try self.bob.retrieveIdentity(), quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil),
+                GroupRecipient(
+                    publicKey: try carol.retrieveIdentity(), quantumMaterial: nil,
+                    contactPrekey: Prekey(id: carolsKey.id, contactID: "carol", publicKey: carolsKey.publicKey),
+                    pendingBatch: nil
+                ),
+            ]
+        )
+        let blind = try #require(original.group).blind
+
+        // The wire carries the altered header, so a copy of the file can.
+        let altered  = tamper.apply(to: original)
+        let tampered = try OccultaBundle.decoded(from: WireHandle.encode(altered))
+        #expect(tampered.secrecy.ephemeralPublicKey == altered.secrecy.ephemeralPublicKey)
+        #expect(tampered.secrecy.prekeyID == altered.secrecy.prekeyID)
+
+        let carolsCrypto = Manager.Crypto(keyManager: carol)
+        #expect(throws: (any Error).self) {
+            try carolsCrypto.findAndOpenRecipientSlot(
+                in: tampered, blind: blind, senderContactID: "alice",
+                senderPublicKey: alicePublicKey, quantumMaterial: nil, prekeys: carolsKey
+            )
+        }
+        #expect(carolsKey.consumed.isEmpty)
+
+        let (_, used, mode) = try carolsCrypto.findAndOpenRecipientSlot(
+            in: original, blind: blind, senderContactID: "alice",
+            senderPublicKey: alicePublicKey, quantumMaterial: nil, prekeys: carolsKey
+        )
+        #expect(mode == .forwardSecretNoPQ)
+        #expect(used == .oneTime(Prekey(id: carolsKey.id, contactID: "alice", publicKey: Data())))
+        #expect(carolsKey.consumed == [carolsKey.id], "the genuine bundle uses it up, as any other")
+    }
+
     enum RecordedTier: String, CaseIterable {
         case atTheTier, belowTheTier, none, stranded
 
-        func marker() throws -> Data? {
+        @MainActor func marker() throws -> Data? {
             switch self {
             case .atTheTier:    return try Manager.Crypto().encrypt(data: Data([try #require(OccultaBundle.Version.bodyDigestCapable.wireByte)]))
             case .belowTheTier: return try Manager.Crypto().encrypt(data: Data([try #require(OccultaBundle.Version.prefixedSenderSignatureCapable.wireByte)]))

@@ -57,7 +57,7 @@ private struct Fixture {
         ])
         let container  = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         self.container = container
-        self.cm        = ContactManager(modelContainer: container, security: try Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
+        self.cm        = ContactManager(modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
         self.senderKM  = TestKeyManager()
         self.senderID  = "trigger.\(UUID().uuidString)"
         self.selfPub   = try Manager.Key().retrieveIdentity()
@@ -436,6 +436,35 @@ private struct Fixture {
         #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: try f.savedRecord) == nil)
     }
 
+    /// The exception's other half (`bugs.md` Bug 181): a copy of the genuine bundle with its outer header altered
+    /// opens the slot and fails only on the outer ciphertext. Using the key up would make the genuine bundle unopenable.
+    @Test("A copy with an altered outer header leaves the prekey, and the genuine bundle then opens", .enabled(if: secureEnclaveAvailable()))
+    func headerTamperKeepsThePrekey() throws {
+        let f = try Fixture()
+        defer { f.cleanUp() }
+
+        _ = try f.cm.openGroup(bundle: try f.groupBundle(), ownerID: f.senderID)
+        let prekey  = try f.firstPendingPrekey()
+        let genuine = try f.groupBundle(prekey: prekey)
+        let tampered = OccultaBundle(
+            version: genuine.version,
+            secrecy: OccultaBundle.SecrecyContext(
+                mode: .group, ephemeralPublicKey: Data([0x04] + Array(repeating: 0x01, count: 64)), prekeyID: nil
+            ),
+            ciphertext: genuine.ciphertext, fingerprintNonce: genuine.fingerprintNonce,
+            senderFingerprint: genuine.senderFingerprint, group: genuine.group
+        )
+
+        #expect(throws: (any Error).self) {
+            _ = try f.cm.openGroup(bundle: tampered, ownerID: f.senderID)
+        }
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: try f.savedRecord) != nil)
+        #expect(PrekeyBookkeeper().hasPendingBatch(try f.savedRecord), "nothing was delivered")
+
+        #expect(try f.cm.openGroup(bundle: genuine, ownerID: f.senderID).sealed.message == Data("hi".utf8))
+        #expect(PrekeyBookkeeper().blob(forPrekeyID: prekey.id, in: try f.savedRecord) == nil)
+    }
+
     /// D1: a retired batch's leftover keys are kept 30 days for files sealed to them and still on their way. The
     /// contact seals two files to batch A, moves on to batch B, and only then do those files arrive: the first,
     /// within the 30 days, opens; the second, after the sweep at 31 days, doesn't.
@@ -561,7 +590,7 @@ private struct Fixture {
         legacy.pendingOutboundBatch = try JSONEncoder().encode(batch)
         let sender = try f.sender
         sender.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
-        sender.retiredForwardSecrecyEncrypted = try #require(try JSONEncoder().encode(legacy).encrypt())
+        sender.retiredForwardSecrecyEncrypted = try JSONEncoder().encode(legacy).encrypt()
         try f.cm.modelContext.save()
         try DatabaseMigration.migratePrekeyRecords(modelContext: f.cm.modelContext)
 

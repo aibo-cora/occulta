@@ -5,6 +5,18 @@ import Photos
 import AVFoundation
 import UniformTypeIdentifiers
 import OccultaFormats
+import CryptoKit
+
+// MARK: - ComposeStagingKeyProviding
+
+/// The device-bound key that seals attachments staged for a recipient with no per-contact key:
+/// every group, and a contact we hold no public key for. Production passes
+/// `ShareStagingKeyManager`; tests pass an in-memory key and run without a Secure Enclave.
+protocol ComposeStagingKeyProviding {
+    func deriveComposeStagingKey() throws -> SymmetricKey
+}
+
+extension ShareStagingKeyManager: ComposeStagingKeyProviding {}
 
 // MARK: - PendingImport
 
@@ -45,18 +57,48 @@ final class ComposeViewModel {
 
     private(set) var attachmentManager: AttachmentManager? = nil
 
-    init(recipient: Recipient) {
+    private let stagingKeyProvider: any ComposeStagingKeyProviding
+
+    init(recipient: Recipient, stagingKeyProvider: any ComposeStagingKeyProviding = ShareStagingKeyManager()) {
         self.recipient = recipient
+        self.stagingKeyProvider = stagingKeyProvider
     }
 
     // MARK: Setup
 
+    /// A contact we hold a key for seals staged files under their per-contact key. A group, or a
+    /// contact with no key yet, seals them under the device staging key. If neither key can be
+    /// derived the manager stays nil and every import refuses — there is no plaintext fallback.
     func setup(contactManager: ContactManager) {
-        guard
-            case .contact(let identifier) = self.recipient,
-            let key = try? contactManager.fileEncryptionKey(for: identifier)
-        else { return }
-        self.attachmentManager = AttachmentManager(contactKey: key)
+        if case .contact(let identifier) = self.recipient,
+           let key = try? contactManager.fileEncryptionKey(for: identifier) {
+            self.attachmentManager = AttachmentManager(contactKey: key)
+        } else if let key = try? self.stagingKeyProvider.deriveComposeStagingKey() {
+            self.attachmentManager = AttachmentManager(contactKey: key)
+        }
+    }
+
+    /// Adopts a restored draft's attachments. Any file an earlier build staged as plaintext
+    /// (group and key-less drafts) is sealed in place first, so nothing is lost and nothing is
+    /// left readable. A file that can't be sealed is dropped from the draft and deleted.
+    func adopt(draftMessages: [OccultaFormats.File]) async {
+        guard let manager = self.attachmentManager else {
+            self.messages = draftMessages
+            return
+        }
+        var adopted: [OccultaFormats.File] = []
+        for file in draftMessages {
+            guard let url = file.url else { adopted.append(file); continue }
+            let sealed = await Task.detached(priority: .userInitiated) {
+                (try? manager.sealInPlace(at: url)) != nil
+            }.value
+            if sealed {
+                adopted.append(file)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        self.messages = adopted
     }
 
     var recipientIDString: String {
@@ -97,13 +139,13 @@ final class ComposeViewModel {
         let filename = "media_\(UUID().uuidString.prefix(8))"
         let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
         let isVideo  = FileExtensions.Video(rawValue: ext) != nil
-        let manager  = self.attachmentManager
+
+        guard let manager = self.attachmentManager else {
+            await MainActor.run { self.showError("Secure storage not ready.") }
+            return
+        }
 
         if isVideo {
-            guard let manager else {
-                await MainActor.run { self.showError("Secure storage not ready.") }
-                return
-            }
             let pending = PendingImport(filename: filename, ext: ext)
             await MainActor.run { self.pendingImports.append(pending) }
 
@@ -144,11 +186,7 @@ final class ComposeViewModel {
             do {
                 let data = try await loadItemData(from: provider, typeID: typeID)
                 try await Task.detached(priority: .userInitiated) {
-                    if let manager {
-                        try manager.encrypt(data, to: url)
-                    } else {
-                        try data.writeProtected(to: url)
-                    }
+                    try manager.encrypt(data, to: url)
                 }.value
                 await MainActor.run {
                     self.pendingImports.removeAll { $0.id == pending.id }
@@ -176,29 +214,17 @@ final class ComposeViewModel {
                 let filename = srcURL.deletingPathExtension().lastPathComponent
                 let ext      = srcURL.pathExtension.lowercased()
                 let tmp      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-                let manager  = self.attachmentManager
+                guard let manager = self.attachmentManager else {
+                    await MainActor.run { self.showError("Secure storage not ready.") }
+                    return
+                }
 
                 let pending = PendingImport(filename: filename, ext: ext)
                 pendingImport = pending
                 await MainActor.run { self.pendingImports.append(pending) }
 
                 try await Task.detached(priority: .userInitiated) {
-                    if let manager {
-                        let source = try FileHandle(forReadingFrom: srcURL)
-
-                        defer { try? source.close() }
-                        let encryptor = try await manager.streamingEncryptor(to: tmp)
-
-
-                        while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
-                            try await encryptor.append(chunk)
-                        }
-
-                        try await encryptor.finalize()
-                    } else {
-                        let data = try Data(contentsOf: srcURL, options: .mappedIfSafe)
-                        try data.writeProtected(to: tmp)
-                    }
+                    try await Self.seal(contentsOf: srcURL, to: tmp, using: manager)
                 }.value
 
                 await MainActor.run {
@@ -216,6 +242,20 @@ final class ComposeViewModel {
                 }
             }
         }
+    }
+
+    /// Streams `srcURL` into a sealed file at `tmp`, 64 KB at a time. Never writes plaintext.
+    nonisolated static func seal(contentsOf srcURL: URL, to tmp: URL, using manager: AttachmentManager) async throws {
+        let source = try FileHandle(forReadingFrom: srcURL)
+
+        defer { try? source.close() }
+        let encryptor = try await manager.streamingEncryptor(to: tmp)
+
+        while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
+            try await encryptor.append(chunk)
+        }
+
+        try await encryptor.finalize()
     }
 
     // MARK: Bundle encryption
@@ -257,13 +297,9 @@ final class ComposeViewModel {
             let processed: [OccultaFormats.File] = try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
                 for file in allFiles {
                     if let fileURL = file.url {
+                        guard let manager else { throw ImportError.stagingKeyUnavailable }
                         group.addTask {
-                            let data: Data
-                            if let manager {
-                                data = try await manager.data(at: fileURL)
-                            } else {
-                                (data, _) = try await URLSession.shared.data(from: fileURL)
-                            }
+                            let data = try await manager.data(at: fileURL)
                             return OccultaFormats.File(content: data, format: file.format, date: file.date)
                         }
                     } else {
@@ -279,8 +315,9 @@ final class ComposeViewModel {
             let basket     = Basket(files: processed)
             let contactPub = try? contactManager.currentPublicKey(forIdentifier: identifier)
 
-            let shardOps   = try shardCustodyManager?.buildShardOperations(for: identifier, currentContactPublicKey: contactPub) ?? []
-            let manifest   = try? shardCustodyManager?.buildCustodyManifest(for: identifier)
+            let isCard     = try contactManager.isCardContact(identifier: identifier)
+            let shardOps   = try shardCustodyManager?.buildShardOperations(for: identifier, currentContactPublicKey: contactPub, isCardContact: isCard) ?? []
+            let manifest   = try? shardCustodyManager?.buildCustodyManifest(for: identifier, isCardContact: isCard)
 
             let encrypted: Data
 
@@ -331,11 +368,13 @@ final class ComposeViewModel {
                 allFiles.append(OccultaFormats.File(content: text.data(using: .utf8), format: .text, date: Date()))
             }
 
+            let manager = self.attachmentManager
             let processed: [OccultaFormats.File] = try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
                 for file in allFiles {
                     if let fileURL = file.url {
+                        guard let manager else { throw ImportError.stagingKeyUnavailable }
                         group.addTask {
-                            let (data, _) = try await URLSession.shared.data(from: fileURL)
+                            let data = try await manager.data(at: fileURL)
                             return OccultaFormats.File(content: data, format: file.format, date: file.date)
                         }
                     } else {
@@ -545,12 +584,14 @@ enum ImportError: LocalizedError {
     case photosAccessDenied
     case assetNotFound
     case noVideoResource
+    case stagingKeyUnavailable
 
     var errorDescription: String? {
         switch self {
         case .photosAccessDenied: return "Photos access is required to import videos."
         case .assetNotFound:      return "Could not find the selected video."
         case .noVideoResource:    return "The selected item has no video resource."
+        case .stagingKeyUnavailable: return "Secure storage not ready."
         }
     }
 }

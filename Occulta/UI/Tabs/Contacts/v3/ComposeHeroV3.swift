@@ -19,6 +19,8 @@ struct ComposeHeroV3: View {
     /// `nil` hides the indicator — used for group compose, where the answer
     /// is per-recipient rather than a single yes/no.
     var secrecy: NextSendSecrecy? = nil
+    /// The recipient's name, for the secrecy description.
+    var recipientName = ""
     let onEncrypt:        () async -> Void
 
     @State private var showMediaPicker = false
@@ -128,7 +130,7 @@ struct ComposeHeroV3: View {
 
             // Its own line, below the size and the Encrypt button, with its description (D2).
             if let secrecy = self.secrecy {
-                SecrecyIndicator(secrecy: secrecy)
+                SecrecyIndicator(secrecy: secrecy, name: self.recipientName)
                     .padding(.top, 10)
             }
         }
@@ -157,10 +159,18 @@ struct ComposeHeroV3: View {
 /// post-send label agree. A prediction, not a guarantee — the actual mode is
 /// still decided inside `ContactManager.encryptBundle` at send time.
 /// How the next message will be sealed, with what that means always shown under it, so the user can hold back
-/// sensitive material before sending (prekey continuity D2; wording signed off 2026-10-07). The wording assumes
-/// received messages aren't stored after they're closed: if message history ships, "Single View" must change.
+/// sensitive material before sending (prekey continuity D2; wording signed off 2026-10-07, names in place of
+/// "they" 2026-10-17). The wording assumes received messages aren't stored after they're closed: if message
+/// history ships, "Single View" must change.
 struct SecrecyIndicator: View {
     let secrecy: NextSendSecrecy
+    /// The recipient's name, said in the description in place of "they".
+    let name: String
+    /// A card contact's messages sealed to the card key (SPEC §4.3): labelled Standard Encryption, and otherwise
+    /// shown as the long-term key, whatever `secrecy` says. The card key stays until the meeting or a discard.
+    var standard = false
+    /// A Not verified contact: the forward-secret state drops its green, keeping its label and description (Q-09).
+    var isNotVerified = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -181,30 +191,39 @@ struct SecrecyIndicator: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var shown: NextSendSecrecy { self.standard ? .longTerm : self.secrecy }
+
     private var colour: Color {
-        switch self.secrecy {
-        case .forwardSecret: .occultaVerified
-        case .temporaryKey:  .occultaTemporary
-        case .longTerm:      .occultaWarn
+        switch self.shown {
+        case .forwardSecret: return self.isNotVerified ? Color.secondary : Color.occultaVerified
+        case .temporaryKey:  return Color.occultaTemporary
+        case .longTerm:      return Color.occultaWarn
         }
     }
 
     private var label: String {
+        if self.standard { return IntroCardCopy.standardEncryptionLabel }
         switch self.secrecy {
-        case .forwardSecret: "Single View · Forward Secret"
-        case .temporaryKey:  "Multiple Views · Temporary Key"
-        case .longTerm:      "Multiple Views · Long-Term Key"
+        case .forwardSecret: return "Single View · Forward Secret"
+        case .temporaryKey:  return "Multiple Views · Temporary Key"
+        case .longTerm:      return "Multiple Views · Long-Term Key"
         }
     }
 
     private var description: String {
-        switch self.secrecy {
+        Self.description(self.shown, name: self.name)
+    }
+
+    /// What `secrecy` means for a message to `name`. "The recipient" stands in for a contact with no given name.
+    static func description(_ secrecy: NextSendSecrecy, name: String) -> String {
+        let name = name.isEmpty ? "the recipient" : name
+        switch secrecy {
         case .forwardSecret:
-            "Once they open it, their phone can no longer open saved copies."
+            return "Once \(name) opens it, \(name)'s phone can no longer open saved copies."
         case .temporaryKey:
-            "This message can be opened by anyone who gets into the recipient's device for 30 days or more, until the temporary key expires. Wait for their reply before sending anything sensitive."
+            return "This message can be opened by anyone who gets into \(name)'s device for 30 days or more, until the temporary key expires. Wait for \(name)'s reply before sending anything sensitive."
         case .longTerm:
-            "This message can be opened by anyone who gets into either device, yours or theirs, with no time limit. Hold back anything sensitive."
+            return "This message can be opened by anyone who gets into either device, yours or \(name)'s, with no time limit. Hold back anything sensitive."
         }
     }
 }

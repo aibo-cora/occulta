@@ -697,6 +697,11 @@ public struct OccultaBundle: Codable {
         /// `.bodyDigestCapable`. Added in v2.0.0.
         public let bodyDigest: Data?
 
+        /// A card conversation's opening: the recipient of an introduction card sends her own card keys, signed
+        /// over the card's digest, in every bootstrap message (`Docs/Features/Introduction Cards/SPEC.md` §4.4).
+        /// `nil` in every other message. Added with introduction cards.
+        public let introduction: CardIntroduction?
+
         public init(
             sessionKey: Data,
             prekeyBatch: SealedPayload.PrekeySyncBatch? = nil,
@@ -705,7 +710,8 @@ public struct OccultaBundle: Codable {
             custodyManifestCount: Int = 0,
             shardMetadataAttempted: Bool = false,
             senderEphemeralSignature: Data? = nil,
-            bodyDigest: Data? = nil
+            bodyDigest: Data? = nil,
+            introduction: CardIntroduction? = nil
         ) {
             self.sessionKey               = sessionKey
             self.prekeyBatch              = prekeyBatch
@@ -715,6 +721,7 @@ public struct OccultaBundle: Codable {
             self.shardMetadataAttempted   = shardMetadataAttempted
             self.senderEphemeralSignature = senderEphemeralSignature
             self.bodyDigest               = bodyDigest
+            self.introduction             = introduction
         }
 
         // Custom decoding: a payload from a pre-groupShardCapable sender simply
@@ -724,7 +731,7 @@ public struct OccultaBundle: Codable {
         // shardMetadataAttempted defaults to false for the same reason — a sender
         // old enough not to know about it never attempted anything.
         enum CodingKeys: String, CodingKey {
-            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature, bodyDigest
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature, bodyDigest, introduction
         }
 
         public init(from decoder: Decoder) throws {
@@ -737,6 +744,7 @@ public struct OccultaBundle: Codable {
             self.shardMetadataAttempted   = try c.decodeIfPresent(Bool.self, forKey: .shardMetadataAttempted) ?? false
             self.senderEphemeralSignature = try c.decodeIfPresent(Data.self, forKey: .senderEphemeralSignature)
             self.bodyDigest               = try c.decodeIfPresent(Data.self, forKey: .bodyDigest)
+            self.introduction             = try c.decodeIfPresent(CardIntroduction.self, forKey: .introduction)
         }
     }
 

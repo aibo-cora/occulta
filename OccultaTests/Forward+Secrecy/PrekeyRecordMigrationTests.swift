@@ -246,7 +246,7 @@ struct PrekeyRecordUnmigratedRowTests {
             Contact.Profile.Key.self,
         ])
         let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        return ContactManager(modelContainer: container, security: try Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
+        return ContactManager(modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
     }
 
     @Test("It reads as its old record, and a store then the pass keep what was used", .ambientTestKeyManager)

@@ -47,7 +47,7 @@ private func makeContactManager() throws -> ContactManager {
         Contact.Profile.Key.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
     return ContactManager(modelContainer: container, security: security)
 }
 
@@ -393,6 +393,53 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(ownerID == "sender")
         #expect(sealed.shardOperations == nil, "shardOperations must be dropped on a fallback bundle")
         #expect(sealed.custodyManifest == nil, "custodyManifest must be dropped on a fallback bundle")
+    }
+}
+
+/// Bug 175: `custodyManifestCount` comes off the wire as an unchecked `Int`, and `prefix(_:)` traps on a negative one.
+///
+/// Through `ContactManager.receivedManifest`, the function `openGroup` calls, not through `openGroup`: the payload
+/// is decoded from JSON, because this build never seals `shardMetadataAttempted: true` and so no sealed bundle can
+/// carry it. The count a paired contact controls is the one that matters, and it enters here.
+@Suite("openGroup — a hostile custodyManifestCount (Bug 175)")
+@MainActor struct ReceivedManifestTests {
+
+    private let ids = [UUID(), UUID(), UUID()]
+
+    private func payload(count: Int, attempted: Bool = true) throws -> OccultaBundle.RecipientPayload {
+        let json = """
+        {"sessionKey":"aGVsbG8=","custodyManifest":[\(self.ids.map { "\"\($0.uuidString)\"" }.joined(separator: ","))],
+         "custodyManifestCount":\(count),"shardMetadataAttempted":\(attempted)}
+        """
+        return try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: Data(json.utf8))
+    }
+
+    @Test("A negative count is dropped instead of trapping", arguments: [-1, -3, Int.min])
+    func negativeCountIsNil(count: Int) throws {
+        let payload = try self.payload(count: count)
+        #expect(payload.custodyManifestCount == count, "the decoder still accepts it; the receiver is what must cope")
+        #expect(ContactManager.receivedManifest(payload, isFallback: false) == nil)
+    }
+
+    @Test("A count inside the manifest returns that many IDs (control)")
+    func inRangeCount() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 2), isFallback: false) == Array(self.ids.prefix(2)))
+    }
+
+    @Test("A zero count is still an empty list, the loss-detection signal, not nil")
+    func zeroCountIsEmptyList() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 0), isFallback: false) == [])
+    }
+
+    @Test("A count past the end returns the whole manifest")
+    func oversizedCount() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 1_000), isFallback: false) == self.ids)
+    }
+
+    @Test("Not attempted, or a fallback slot, returns nil whatever the count")
+    func notAttemptedOrFallbackIsNil() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 2, attempted: false), isFallback: false) == nil)
+        #expect(ContactManager.receivedManifest(try self.payload(count: 2), isFallback: true) == nil)
     }
 }
 

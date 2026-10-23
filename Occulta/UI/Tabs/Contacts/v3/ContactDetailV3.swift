@@ -100,6 +100,7 @@ struct ContactDetailV3: View {
                             headerRight:     "→ TO \(self.givenName.uppercased())",
                             encryptLabel:    "Encrypt",
                             secrecy:         self.secrecy,
+                            recipientName:   self.givenName,
                             onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm) }
                         )
                     }
@@ -130,7 +131,7 @@ struct ContactDetailV3: View {
                 modelContext:      self.contactManager.modelContext
             ) {
                 self.composeVM.draftText = loaded.text
-                self.composeVM.messages  = loaded.messages
+                await self.composeVM.adopt(draftMessages: loaded.messages)
                 self.useThreadCompose    = loaded.wasThreadMode
             }
         }

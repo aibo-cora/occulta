@@ -34,6 +34,35 @@ final class AttachmentManager: Sendable {
         try StreamingEncryptor(url: url, contactKey: self.contactKey)
     }
 
+    /// True when the file starts with the sealed-attachment magic. A plaintext file left by an
+    /// earlier build (which staged group and key-less attachments unsealed) does not.
+    nonisolated static func isSealed(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: Header.magic.count) else { return false }
+        return head.elementsEqual(Header.magic)
+    }
+
+    /// Seals a plaintext file where it lies: writes the sealed copy beside it, then atomically
+    /// replaces the original. A file that is already sealed is left untouched.
+    nonisolated func sealInPlace(at url: URL) throws {
+        guard !Self.isSealed(at: url) else { return }
+        let sealed = url.appendingPathExtension("sealing")
+        do {
+            let source = try FileHandle(forReadingFrom: url)
+            defer { try? source.close() }
+            let encryptor = try StreamingEncryptor(url: sealed, contactKey: self.contactKey)
+            while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
+                try encryptor.append(chunk)
+            }
+            try encryptor.finalize()
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: sealed)
+        } catch {
+            try? FileManager.default.removeItem(at: sealed)
+            throw error
+        }
+    }
+
     nonisolated func encryptWithProgress(_ data: Data, to url: URL) -> AsyncThrowingStream<Double, Error> {
         let key = self.contactKey
         

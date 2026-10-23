@@ -66,6 +66,14 @@ extension Contact {
         /// `ContactManager`.
         var prekeyRecordEncrypted: Data?
 
+        /// The sealed `CardState` for this contact (`CardStateCodec`): always `CardStateCodec.capacity` bytes of
+        /// plaintext, so its length says nothing about whether the contact has an introduction card or what kind.
+        /// Written at creation and by `DatabaseMigration.migrateCardFields`, so it is never nil in steady state;
+        /// overwritten with the sealed empty state at deletion, which also drops the Enclave key blobs a card holds.
+        /// Read through `Contact.Profile.cardState` and written by `ContactManager.store(_:for:)`, nowhere else.
+        /// SwiftData lightweight migration: new optional column, no plan required.
+        var introductionCardEncrypted: Data?
+
         /// Encrypted JSON-encoded [SignedAttribute] blob (Issue #6).
         /// nil until the contact has shared at least one signed attribute.
         /// SwiftData lightweight migration: new optional column, no plan required.

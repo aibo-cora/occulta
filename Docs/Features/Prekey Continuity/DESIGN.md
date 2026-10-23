@@ -631,9 +631,12 @@ a line with today. The description sits under the indicator. Neither is behind a
 
 | Colour | Label | When | Description |
 |---|---|---|---|
-| `occultaVerified` (green), unchanged | Single View · Forward Secret | We hold a one-time key | Once they open it, their phone can no longer open saved copies. |
-| New blue token (mockup `#3D74A8`) | Multiple Views · Temporary Key | Only the last-resort key | This message can be opened by anyone who gets into the recipient's device for 30 days or more, until the temporary key expires. Wait for their reply before sending anything sensitive. |
-| `occultaWarn` (amber), unchanged | Multiple Views · Long-Term Key | Neither | This message can be opened by anyone who gets into either device, yours or theirs, with no time limit. Hold back anything sensitive. |
+| `occultaVerified` (green), unchanged | Single View · Forward Secret | We hold a one-time key | Once {Name} opens it, {Name}'s phone can no longer open saved copies. |
+| New blue token (mockup `#3D74A8`) | Multiple Views · Temporary Key | Only the last-resort key | This message can be opened by anyone who gets into {Name}'s device for 30 days or more, until the temporary key expires. Wait for {Name}'s reply before sending anything sensitive. |
+| `occultaWarn` (amber), unchanged | Multiple Views · Long-Term Key | Neither | This message can be opened by anyone who gets into either device, yours or {Name}'s, with no time limit. Hold back anything sensitive. |
+
+`{Name}` is the contact's given name, or "the recipient" when there is none. The descriptions said "they" and
+"their" until 2026-10-17, when names replaced them, as in the introduction cards' copy.
 
 *Why blue and not red.* `occultaDanger` (`#D04840`) is nearly the Encrypt button's `occultaAccent`
 (`#D34F2C`), so a red dot beside it doesn't read as its own state. Keeping the long-term state amber also means

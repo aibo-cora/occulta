@@ -22,6 +22,14 @@ struct ContactClassification: View {
     /// Contacts the user has moved to the Sensitive section during this session.
     @State private var sensitiveIDs: Set<String> = []
 
+    /// Each contact's status, read once when the list appears or changes: it decrypts, and the lists below are
+    /// read several times per pass.
+    @State private var statuses: [String: VerificationStatus] = [:]
+
+    private func status(of contact: Contact.Profile) -> VerificationStatus {
+        self.statuses[contact.identifier] ?? .pending
+    }
+
     // MARK: - Derived lists
 
     /// Contacts in scope for this classification pass: visible at the current depth.
@@ -37,11 +45,15 @@ struct ContactClassification: View {
     }
 
     private var verifiedVisible: [Contact.Profile] {
-        self.visibleContacts.filter { $0.verificationStatus == .verified }
+        self.visibleContacts.filter { self.status(of: $0) == .verified }
     }
 
     private var unverifiedVisible: [Contact.Profile] {
-        self.visibleContacts.filter { $0.verificationStatus != .verified }
+        self.visibleContacts.filter { self.status(of: $0) == .unverified }
+    }
+
+    private var pendingVisible: [Contact.Profile] {
+        self.visibleContacts.filter { self.status(of: $0) == .pending }
     }
 
     private var sensitiveContacts: [Contact.Profile] {
@@ -59,23 +71,37 @@ struct ContactClassification: View {
                     .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
 
                 // MARK: Visible
-                if !self.verifiedVisible.isEmpty || !self.unverifiedVisible.isEmpty {
+                if !self.visibleContacts.isEmpty {
                     Section {
                         if !self.verifiedVisible.isEmpty {
                             groupHeader("Verified")
                             ForEach(self.verifiedVisible) { contact in
                                 ClassificationRow(
                                     contact:     contact,
+                                    status:      self.status(of: contact),
                                     inSensitive: false,
                                     onTap:       { self.sensitiveIDs.insert(contact.identifier) }
                                 )
                             }
                         }
                         if !self.unverifiedVisible.isEmpty {
-                            groupHeader("Unverified")
+                            groupHeader("Not verified")
                             ForEach(self.unverifiedVisible) { contact in
                                 ClassificationRow(
                                     contact:     contact,
+                                    status:      self.status(of: contact),
+                                    inSensitive: false,
+                                    onTap:       { self.sensitiveIDs.insert(contact.identifier) }
+                                )
+                                .opacity(0.45)
+                            }
+                        }
+                        if !self.pendingVisible.isEmpty {
+                            groupHeader("Pending")
+                            ForEach(self.pendingVisible) { contact in
+                                ClassificationRow(
+                                    contact:     contact,
+                                    status:      self.status(of: contact),
                                     inSensitive: false,
                                     onTap:       { self.sensitiveIDs.insert(contact.identifier) }
                                 )
@@ -99,10 +125,11 @@ struct ContactClassification: View {
                         ForEach(self.sensitiveContacts) { contact in
                             ClassificationRow(
                                 contact:     contact,
+                                status:      self.status(of: contact),
                                 inSensitive: true,
                                 onTap:       { self.sensitiveIDs.remove(contact.identifier) }
                             )
-                            .opacity(contact.verificationStatus != .verified ? 0.45 : 1)
+                            .opacity(self.status(of: contact) != .verified ? 0.45 : 1)
                         }
                     }
                 } header: {
@@ -125,6 +152,9 @@ struct ContactClassification: View {
                 }
             }
             .onAppear { self.loadSensitiveIDs() }
+            .onChange(of: self.contacts.map(\.identifier), initial: true) { _, _ in
+                self.statuses = Dictionary(self.contacts.map { ($0.identifier, $0.verificationStatus) }, uniquingKeysWith: { first, _ in first })
+            }
     }
 
     // MARK: - Helpers
@@ -170,6 +200,7 @@ struct ContactClassification: View {
 private struct ClassificationRow: View {
 
     let contact:     Contact.Profile
+    let status:      VerificationStatus
     let inSensitive: Bool
     let onTap:       () -> Void
 
@@ -199,9 +230,9 @@ private struct ClassificationRow: View {
                         .font(.body)
                         .lineLimit(1)
 
-                    Text(self.contact.verificationStatus.chipLabel)
+                    Text(self.status.chipLabel)
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(self.contact.verificationStatus.color)
+                        .foregroundStyle(self.status.color)
                 }
 
                 Spacer()

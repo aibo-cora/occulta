@@ -24,6 +24,9 @@ class ShareViewController: UIViewController {
     private let shareKeyManager = ShareStagingKeyManager()
     private var sessionID: String?
 
+    /// Per-file ceiling for the in-memory encrypt step in `copyFileRepresentation`.
+    private static let maxFileBytes = 100_000_000
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -197,6 +200,12 @@ class ShareViewController: UIViewController {
                     return
                 }
                 do {
+                    // The whole file is read into memory to encrypt it, and the extension
+                    // is killed near ~120 MB. Refuse early, before the read, so the user
+                    // gets a clean cancel instead of a silent jetsam.
+                    let size = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    guard size <= Self.maxFileBytes else { throw ShareError.fileTooLarge }
+
                     var plaintext = try Data(contentsOf: sourceURL)
                     let ciphertext = try self.shareKeyManager.encrypt(data: plaintext)
                     _ = plaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }

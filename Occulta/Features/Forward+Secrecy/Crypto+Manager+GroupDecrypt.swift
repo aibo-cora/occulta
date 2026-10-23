@@ -55,6 +55,9 @@ enum GroupDecryptError: Error, Equatable {
     /// challenge, or under a body claiming an app version at that tier. No sender puts any of those in a group
     /// bundle without one, so the body could be another recipient's (`bugs.md` Bug 165).
     case missingBodyDigest
+    /// A card conversation's bootstrap message carries no introduction, or one other than the introduction redeemed
+    /// (`Docs/Features/Introduction Cards/SPEC.md` §6.6).
+    case cardIntroductionMismatch
 }
 
 // MARK: - Group-decrypt crypto helpers
@@ -164,6 +167,11 @@ extension Manager.Crypto {
             if let bodyDigest = payload.bodyDigest, bodyDigest != Data(SHA256.hash(data: bundle.ciphertext)) {
                 throw GroupDecryptError.bodyDigestMismatch
             }
+
+            // The outer ciphertext opens under this slot's key, or the bundle isn't the one the sender sealed. Its
+            // header is authenticated only here, and nothing else reads it: a copy with an altered header opens
+            // the slot all the same, and would use up the key the genuine bundle needs (Bug 181).
+            _ = try self.openGroupCiphertext(bundle, using: SymmetricKey(data: payload.sessionKey))
 
             // The prekey has now done its work. Recorded before the signature
             // check below so that a rejection destroys it too.

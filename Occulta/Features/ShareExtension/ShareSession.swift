@@ -125,6 +125,42 @@ enum ShareSession {
         return files
     }
 
+    // MARK: - Introduction card
+
+    /// The staged file's bytes, if the session is one file and it is an introduction card (Q-04: a card has no
+    /// name or extension, so the extension can't tell it from any other attachment; the app can, once unlocked).
+    ///
+    /// Reads nothing but the manifest and, when it names one small file, that file. Doesn't delete the session
+    /// and doesn't throw: anything else, including a stale or unreadable session, is nil and the caller carries on
+    /// as before.
+    static func introductionCard(
+        id: String,
+        in container: URL,
+        keyManager: any ShareSessionDecrypting,
+        now: Date = .now
+    ) -> Data? {
+        let sessionDir = self.directory(for: id, in: container)
+
+        guard
+            let manifestData = try? keyManager.decrypt(data: Data(contentsOf: sessionDir.appendingPathComponent("manifest.enc"))),
+            let manifest = try? JSONDecoder().decode(ShareManifest.self, from: manifestData),
+            manifest.createdAt > now.addingTimeInterval(-Self.staleAfter),
+            manifest.files.count == 1,
+            let entry = manifest.files.first
+        else { return nil }
+
+        let file = sessionDir.appendingPathComponent(entry.filename)
+        // The sealed file is a little longer than the card, so this keeps a large attachment from being read.
+        guard
+            let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+            size >= IntroductionCard.byteCount, size <= IntroductionCard.byteCount + 1024,
+            let plaintext = try? keyManager.decrypt(data: Data(contentsOf: file)),
+            IntroductionCard.recognize(plaintext) != nil
+        else { return nil }
+
+        return plaintext
+    }
+
     // MARK: - Cleanup
 
     static func delete(id: String, in container: URL) {
@@ -160,6 +196,35 @@ enum ShareSession {
         }
     }
 
+    /// Delete `.occ` handoffs the app never read.
+    ///
+    /// The extension writes `inbound/<uuid>.occ` and opens the app, which reads and deletes it
+    /// at once, holding the bytes in memory if it is locked. One older than `staleAfter` is a
+    /// handoff whose open never reached the app; nothing else reads `inbound/`, so it would
+    /// stay until Erase All Data, recording that someone sent the user an Occulta file.
+    ///
+    /// Judged by modification date: the file is sealed by its sender, so there is no manifest
+    /// to read a date from.
+    ///
+    /// Leaves `inbound/` itself, even when empty (`forensic-trace-avoidance.md` U6).
+    static func sweepInbound(in container: URL) {
+        let fm = FileManager.default
+
+        guard let files = try? fm.contentsOfDirectory(
+            at: container.appendingPathComponent("inbound"),
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+
+        let cutoff = Date.now.addingTimeInterval(-Self.staleAfter)
+
+        for file in files where file.pathExtension == "occ" {
+            let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            if let modified, modified < cutoff {
+                try? fm.removeItem(at: file)
+            }
+        }
+    }
+
     /// Delete `ShareIndex.sqlite` and its companions, left behind by builds before the picker
     /// moved into the app.
     ///
@@ -175,6 +240,23 @@ enum ShareSession {
         for name in ["ShareIndex.sqlite", "ShareIndex.sqlite-wal", "ShareIndex.sqlite-shm"] {
             try? FileManager.default.removeItem(at: container.appendingPathComponent(name))
         }
+    }
+
+    /// Delete everything the share extension has left in the App Group. Erase All Data calls
+    /// this before it deletes the share-staging key.
+    ///
+    /// - `pending/` — staged sessions, including fresh ones `sweep` would keep
+    /// - `inbound/` — `.occ` handoffs, including fresh ones `sweepInbound` would keep
+    /// - the legacy contact index
+    ///
+    /// Removes the two directories themselves, not just what is in them. The extension
+    /// creates each one on first use, so its creation date records the first share into
+    /// Occulta just as the key's does.
+    static func removeAll(in container: URL) {
+        for name in ["pending", "inbound"] {
+            try? FileManager.default.removeItem(at: container.appendingPathComponent(name))
+        }
+        self.removeLegacyContactIndex(in: container)
     }
 
     // MARK: - Private

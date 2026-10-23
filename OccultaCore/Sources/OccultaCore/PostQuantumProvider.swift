@@ -6,7 +6,7 @@
 //  All iOS 26 / CryptoKit ML-KEM availability gating is confined to this file.
 //
 //  Production: SecureEnclave.MLKEM1024.PrivateKey — private key never leaves hardware.
-//  Tests:      In-memory MLKEM1024 — no SE required in test runner.
+//  Tests:      In-memory MLKEM1024 — no SE required in test runner. Debug builds only.
 //
 
 import Foundation
@@ -47,6 +47,30 @@ public protocol PostQuantumProvider {
     ///   - privateKeyHandle: Opaque handle from `generateKeyPair`.
     /// - Returns: 32-byte shared secret, or nil on failure.
     func decapsulate(ciphertext: Data, privateKeyHandle: Any) -> Data?
+
+    /// Generate an ML-KEM-1024 key pair whose private key can be stored and used later, in another
+    /// process lifetime. Unlike `generateKeyPair`, the private key comes back as bytes.
+    ///
+    /// Production: the Secure Enclave key, `WhenUnlockedThisDeviceOnly` with `.privateKeyUsage`.
+    /// The blob is the key's `dataRepresentation`, usable only by the Enclave of this device.
+    /// Tests: the in-memory key's seed. The blob **is** the private key.
+    ///
+    /// The caller owns the blob: the key exists nowhere else, and deleting the blob deletes the key.
+    ///
+    /// - Returns: The public key bytes and the blob to store, or nil if the key can't be created.
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)?
+
+    /// Decapsulate a ciphertext using a blob from `generatePersistentKeyPair`.
+    ///
+    /// - Returns: 32-byte shared secret, or nil if the blob or ciphertext is invalid.
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data?
+
+    /// The public key of a blob from `generatePersistentKeyPair`, for a caller that kept only the blob (an
+    /// introduction card's recipient signs her ML-KEM public key into her first messages, long after the pair
+    /// was made).
+    ///
+    /// - Returns: The public key bytes, or nil if the blob is invalid.
+    func publicKey(forKeyBlob keyBlob: Data) -> Data?
 }
 
 // MARK: - Factory
@@ -62,14 +86,19 @@ public enum PostQuantumProviderFactory {
         return nil
     }
 
+    #if DEBUG
     /// Returns an in-memory PQ provider for unit tests (no Secure Enclave required).
     /// Returns nil on iOS < 26.
+    ///
+    /// Debug builds only. Its private keys live in app memory, not the Secure Enclave, so a
+    /// Release build must not be able to reach it.
     public static func createForTesting() -> PostQuantumProvider? {
         if #available(iOS 26, *) {
             return InMemoryPostQuantumProvider()
         }
         return nil
     }
+    #endif
 }
 
 // MARK: - Production: Secure Enclave ML-KEM-1024
@@ -123,10 +152,39 @@ private final class SecureEnclavePostQuantumProvider: PostQuantumProvider {
 
         return sharedSecret.withUnsafeBytes { Data($0) }
     }
+
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)? {
+        var error: Unmanaged<CFError>?
+        guard
+            let accessControl = SecAccessControlCreateWithFlags(
+                kCFAllocatorDefault,
+                kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                .privateKeyUsage,
+                &error
+            ),
+            let privateKey = try? SecureEnclave.MLKEM1024.PrivateKey(accessControl: accessControl)
+        else { return nil }
+
+        return (privateKey.publicKey.rawRepresentation, privateKey.dataRepresentation)
+    }
+
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data? {
+        guard
+            let privateKey = try? SecureEnclave.MLKEM1024.PrivateKey(dataRepresentation: keyBlob),
+            let sharedSecret = try? privateKey.decapsulate(ciphertext)
+        else { return nil }
+
+        return sharedSecret.withUnsafeBytes { Data($0) }
+    }
+
+    func publicKey(forKeyBlob keyBlob: Data) -> Data? {
+        (try? SecureEnclave.MLKEM1024.PrivateKey(dataRepresentation: keyBlob))?.publicKey.rawRepresentation
+    }
 }
 
 // MARK: - Testing: In-memory ML-KEM-1024
 
+#if DEBUG
 /// In-memory ML-KEM-1024 for unit tests. No Secure Enclave required.
 /// Cryptographic operations are identical — only the key storage differs.
 @available(iOS 26, *)
@@ -165,4 +223,33 @@ private final class InMemoryPostQuantumProvider: PostQuantumProvider {
 
         return sharedSecret.withUnsafeBytes { Data($0) }
     }
+
+    func generatePersistentKeyPair() -> (publicKeyData: Data, keyBlob: Data)? {
+        guard
+            let privateKey = try? MLKEM1024.PrivateKey()
+        else { return nil }
+
+        return (privateKey.publicKey.rawRepresentation, privateKey.seedRepresentation)
+    }
+
+    func decapsulate(ciphertext: Data, keyBlob: Data) -> Data? {
+        // The seed initialiser traps on a wrong-size seed, so the size is checked first.
+        guard
+            keyBlob.count == 64,
+            let privateKey = try? MLKEM1024.PrivateKey(seedRepresentation: keyBlob, publicKey: nil),
+            let sharedSecret = try? privateKey.decapsulate(ciphertext)
+        else { return nil }
+
+        return sharedSecret.withUnsafeBytes { Data($0) }
+    }
+
+    func publicKey(forKeyBlob keyBlob: Data) -> Data? {
+        guard
+            keyBlob.count == 64,
+            let privateKey = try? MLKEM1024.PrivateKey(seedRepresentation: keyBlob, publicKey: nil)
+        else { return nil }
+
+        return privateKey.publicKey.rawRepresentation
+    }
 }
+#endif

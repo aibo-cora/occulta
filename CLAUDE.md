@@ -79,7 +79,14 @@ constants that are wire format, such as the `OCCB` magic. The package must stay 
 its `Package.swift` declares none, and adding one is the same supply-chain change as adding it to
 the app. It is nonisolated by default and builds in Swift 6 mode, unlike the app's `MainActor`.
 Its tests stay in `OccultaTests` (`@testable import OccultaCore` or `OccultaFormats`) so the one
-test command below still runs them.
+test command below still runs them — except `OccultaCore/Tests/OccultaCoreAPITests`, which uses
+`OccultaCore` as another app would (plain `import`, no `OccultaFormats`) and so can't live in the
+app's test bundle, which links both. Run it from `OccultaCore/` with
+`xcodebuild test -scheme OccultaCore-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`.
+That scheme builds every package target into one directory, so an undeclared
+`import OccultaFormats` there still compiles; `swift build --build-tests
+--explicit-target-dependency-import-check error --triple arm64-apple-ios18.6-simulator --sdk
+"$(xcrun --sdk iphonesimulator --show-sdk-path)"` is the check that catches it. CI runs both.
 `OccultaTests/Interop/InteropVectors.json` pins the formats byte for byte; a change that alters a
 recorded vector breaks compatibility with existing contacts.
 
@@ -136,7 +143,7 @@ private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `DuressModePrekeyTests`, `PrekeySecretsManagerTests`, `ForwardSecrecyIntegrationTests`,
 `PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the five suites in that file),
 `PrekeyGenerationMeasurementTests`, `IdentityChallengeGroupForwardSecretTests` (a challenge on a forward-secret
-slot needs a prekey this device holds), `PrekeyConversationTests` (two phones generating real prekeys), the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
+slot needs a prekey this device holds), `PrekeyConversationTests` (two phones generating real prekeys), `IntroCardEnclaveKeyPersistenceTests` and the Enclave test in `PostQuantumPersistenceTests` (an introduction card's ML-KEM key kept as an Enclave blob), the introduction-card suites whose phones import or redeem a card, which generates prekeys (`CardConversationTests`, `CardRedemptionRejectionTests`, `CardHardBlockTests`, `CardNonCardRegressionTests`, `CardMeetingTableTests`, `CardMeetingConversationSaveTests`, and the import and crossing-card tests in `CardImportTests` and `CardScreenBehaviourTests`), the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
 and four tests in `ShardFallbackGatingTests` whose receive path generates a fresh prekey batch
 (`decryptSealed` calls `installFreshBatch` when a fallback message arrives with no

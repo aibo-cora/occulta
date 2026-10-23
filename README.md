@@ -12,7 +12,7 @@ Occulta is a contact book where every entry is a cryptographic key you collected
 
 **Professionals with legally sensitive information** — doctors, lawyers, accountants, journalists. When sensitive files move through a messaging platform, they travel through infrastructure someone else controls. Occulta removes that infrastructure: files are encrypted to a key that lives only on your contact's device, so there is nothing for a platform or a subpoena to reach.
 
-**Travelers and activists** operating in high-risk environments. Your cryptographic identity in Occulta is locked to a hardware chip on your specific iPhone. No one can impersonate you remotely or take over your identity by compromising an account.
+**Travelers and activists** operating in high-risk environments. Your cryptographic identity in Occulta is locked to a hardware chip on your specific iPhone. No one can impersonate you remotely to a contact who verified you in person, or take over your identity by compromising an account.
 
 **Anyone who wants their private files to stay private.** You don't need a specific adversary to want your information to be yours.
 
@@ -43,6 +43,16 @@ The result: a contact whose identity is guaranteed by physics, not by a server o
 Apple's Contact Key Verification brings a similar in-person check to iMessage. It requires an Apple Account on both sides and covers iMessage conversations only. Occulta needs no account of any kind, and the key you collect works for any file you send over any channel.
 
 → [How the exchange works technically](https://github.com/aibo-cora/occulta/wiki/Key-Exchange-Flow)
+
+---
+
+### Introduction Cards
+
+When you can't meet someone yet, you can give them an introduction card: a small file you send over any channel. It lets that one person write to you before you meet. They have 24 hours to send their first message, and after that there is no time limit.
+
+Until you meet and exchange keys in person, the contact is marked **Not verified** everywhere in the app. Whoever carried the card could have swapped it, so you can't be sure who is writing. A Not verified contact can't join a group, hold a piece of your Vault backup, or take part in identity checks. Their first messages, before you reply, don't have forward secrecy and are labelled Standard Encryption.
+
+When you do meet, the exchange also checks that the person in front of you is the one you were writing to, and tells you if they aren't. Cards need iOS 26 on both phones.
 
 ---
 
@@ -103,7 +113,7 @@ Additional protections:
 
 Occulta has no account. Your identity is a key that lives in your iPhone's Secure Enclave — a dedicated hardware chip that never lets the key leave. There is no password to phish, no phone number to SIM-swap, no cloud account to compromise, and no server to subpoena.
 
-If someone takes over your Signal account or iCloud, they cannot read your Occulta messages or impersonate you in Occulta. Your contacts will simply stop receiving valid bundles from "you" — and that silence is the signal.
+If someone takes over your Signal account or iCloud, they cannot read your Occulta messages or impersonate you to contacts who verified you in person. They could send an introduction card in your name, but whoever imports it sees a Not verified contact until the two of you meet. Your contacts will simply stop receiving valid bundles from "you" — and that silence is the signal.
 
 ---
 
@@ -129,7 +139,7 @@ If someone takes over your Signal account or iCloud, they cannot read your Occul
 
 - iOS 18.6+
 - iPhone with U1 or U2 chip (required for UWB key exchange)
-- iOS 26+ for post-quantum hybrid key exchange
+- iOS 26+ for post-quantum hybrid key exchange and introduction cards
 
 ---
 

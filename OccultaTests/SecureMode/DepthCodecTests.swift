@@ -48,7 +48,7 @@ struct DepthCodecTests {
     func plaintextLengthIsUniform() throws {
         var lengthsByValue: [Int: Int] = [:]
         for value in Self.allWrittenValues {
-            lengthsByValue[value] = try DepthCodec.encode(value).count
+            lengthsByValue[value] = DepthCodec.encode(value).count
         }
         let distinct = Set(lengthsByValue.values)
         #expect(distinct.count == 1, """
@@ -67,7 +67,7 @@ struct DepthCodecTests {
     func sealedLengthTracksPlaintextByAConstant() throws {
         let key = SymmetricKey(size: .bits256)
         for value in Self.allWrittenValues {
-            let plain  = try DepthCodec.encode(value)
+            let plain  = DepthCodec.encode(value)
             let sealed = try AES.GCM.seal(plain, using: key).combined
             #expect(sealed?.count == plain.count + 28,
                     "AES-GCM .combined is nonce(12) + ciphertext + tag(16) for value \(value)")
@@ -82,7 +82,7 @@ struct DepthCodecTests {
     @Test("Every written value survives encode → decode unchanged")
     func everyWrittenValueRoundTrips() throws {
         for value in Self.allWrittenValues {
-            let decoded = DepthCodec.decode(try DepthCodec.encode(value))
+            let decoded = DepthCodec.decode(DepthCodec.encode(value))
             #expect(decoded == value, "\(value) did not survive the round-trip (got \(String(describing: decoded)))")
         }
     }
