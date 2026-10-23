@@ -508,7 +508,7 @@ struct TierSecretKeychainTests {
         ] as CFDictionary, nil)
     }
 
-    @Test("r_U: created once, read back, and a second create leaves it as it is")
+    @Test("r_U: created once, read back, and a second create leaves it as it is", .enabled(if: keychainAvailable()))
     func deviceUnlockSecret() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -528,7 +528,7 @@ struct TierSecretKeychainTests {
         #expect(attributes[kSecAttrAccessible as String] as? String == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
     }
 
-    @Test("r_B: created with the vault's access control, read through a context, and never replaced")
+    @Test("r_B: created with the vault's access control, read through a context, and never replaced", .enabled(if: keychainAvailable()))
     func biometrySecret() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -551,7 +551,7 @@ struct TierSecretKeychainTests {
         #expect(attributes[kSecAttrAccessible as String] as? String == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
     }
 
-    @Test("Reading a missing secret returns nil and writes nothing")
+    @Test("Reading a missing secret returns nil and writes nothing", .enabled(if: keychainAvailable()))
     func readingWritesNothing() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -561,7 +561,7 @@ struct TierSecretKeychainTests {
         #expect(Self.attributes(account: account) == nil)
     }
 
-    @Test("An item of the wrong size reads as missing, and create neither replaces it nor pretends it is fine")
+    @Test("An item of the wrong size reads as missing, and create neither replaces it nor pretends it is fine", .enabled(if: keychainAvailable()))
     func malformedItem() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -579,7 +579,7 @@ struct TierSecretKeychainTests {
         #expect((item as? Data)?.count == 16, "the damaged item must be left for a person to see, not overwritten")
     }
 
-    @Test("deleteTierSecret removes the item, and a missing item counts as deleted")
+    @Test("deleteTierSecret removes the item, and a missing item counts as deleted", .enabled(if: keychainAvailable()))
     func deleting() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -591,7 +591,7 @@ struct TierSecretKeychainTests {
         #expect(manager.deleteTierSecret(account: account))
     }
 
-    @Test("r_S: created in the shared access group, read back, never replaced, and removed by deleteTierSecret")
+    @Test("r_S: created in the shared access group, read back, never replaced, and removed by deleteTierSecret", .enabled(if: sharedKeychainAvailable()))
     func stagingSecret() throws {
         let account = Self.account()
         let staging = ShareStagingKeyManager(tierSecretAccount: account)
@@ -627,7 +627,7 @@ struct TierSecretKeychainTests {
         #expect(ShareStagingKeyManager.defaultTierSecretAccount == "share.staging.random.key.occulta")
     }
 
-    @Test("Without r_S the staging derivation throws tierSecretMissing, before it fetches the Enclave key")
+    @Test("Without r_S the staging derivation throws tierSecretMissing, before it fetches the Enclave key", .enabled(if: sharedKeychainAvailable()))
     func stagingMissingSecret() throws {
         let staging = ShareStagingKeyManager(tierSecretAccount: Self.account())
 

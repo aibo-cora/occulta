@@ -661,7 +661,7 @@ struct HybridUpgradeOtherTiersTests {
         #expect(keys.tierPQRecordB?.mode == .hybrid)
     }
 
-    @Test("Tier S's record moves to hybrid at the launch, and a session sealed in the classical form still opens")
+    @Test("Tier S's record moves to hybrid at the launch, and a session sealed in the classical form still opens", .enabled(if: sharedKeychainAvailable()))
     func tierSRecord() throws {
         let (keys, store) = try classicalDevice()
         let phone = try Phone()
@@ -687,7 +687,7 @@ struct HybridUpgradeOtherTiersTests {
         #expect(again.records?.staging == false)
     }
 
-    @Test("A blocked launch changes no other record: tier B and tier S stay classical")
+    @Test("A blocked launch changes no other record: tier B and tier S stay classical", .enabled(if: sharedKeychainAvailable()))
     func blockedLaunchLeavesTheRecords() throws {
         let (keys, store) = try classicalDevice()
         let phone = try Phone()

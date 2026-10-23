@@ -64,7 +64,7 @@ private func creationDate(of account: String) -> Date? {
 @MainActor
 struct HybridUpgradeRecordOperationTests {
 
-    @Test("A pending record is stored beside the tier's own, read back, never replaced by a second add, and deleted")
+    @Test("A pending record is stored beside the tier's own, read back, never replaced by a second add, and deleted", .enabled(if: keychainAvailable()))
     func pendingRecord() throws {
         let (keys, items) = makeItems()
         defer { remove(keys, items) }
@@ -89,7 +89,7 @@ struct HybridUpgradeRecordOperationTests {
         }
     }
 
-    @Test("A pending record is the same size as the tier's own, whichever mode, and is a separate item")
+    @Test("A pending record is the same size as the tier's own, whichever mode, and is a separate item", .enabled(if: keychainAvailable()))
     func pendingRecordSize() throws {
         let (keys, items) = makeItems()
         defer { remove(keys, items) }
@@ -109,7 +109,7 @@ struct HybridUpgradeRecordOperationTests {
         #expect(try keys.tierPQRecord(.deviceUnlock)?.mode == .classical, "the tier's own record is untouched")
     }
 
-    @Test("Replacing the tier's record changes its data in place: same item, same creation date, and it never creates one")
+    @Test("Replacing the tier's record changes its data in place: same item, same creation date, and it never creates one", .enabled(if: keychainAvailable()))
     func replaceInPlace() throws {
         let (keys, items) = makeItems()
         defer { remove(keys, items) }
@@ -136,7 +136,7 @@ struct HybridUpgradeRecordOperationTests {
         #expect(try keys.makeHybridPQRecord(provider: nil) == nil)
     }
 
-    @Test("Erase All Data removes a pending record an interrupted upgrade left")
+    @Test("Erase All Data removes a pending record an interrupted upgrade left", .enabled(if: keychainAvailable()))
     func eraseRemovesPending() throws {
         let (keys, items) = makeItems()
         defer { remove(keys, items) }

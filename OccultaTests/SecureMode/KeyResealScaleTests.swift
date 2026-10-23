@@ -288,7 +288,7 @@ struct KeyResealEraseTests {
         try app.eraseAllData(erasePrekeys: {}, stagingContainer: nil, staging: items.staging, keys: items.erasing)
     }
 
-    @Test("Erase All Data leaves no r_U, r_B, r_S, tier PQ record or epoch (passes today: Stage 1 made deleteAllKeys and deleteKey remove them)")
+    @Test("Erase All Data leaves no r_U, r_B, r_S, tier PQ record or epoch (passes today: Stage 1 made deleteAllKeys and deleteKey remove them)", .enabled(if: keychainAvailable() && sharedKeychainAvailable()))
     func eraseLeavesNothing() throws {
         let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
         let items = try createItems()
@@ -313,7 +313,7 @@ struct KeyResealEraseTests {
         #expect(try context.fetchCount(FetchDescriptor<Contact.Profile>()) == 0)
     }
 
-    @Test("After Erase All Data the next launch finds no epoch and no secret and starts as a fresh install, creating them again")
+    @Test("After Erase All Data the next launch finds no epoch and no secret and starts as a fresh install, creating them again", .enabled(if: keychainAvailable() && sharedKeychainAvailable()))
     func launchAfterEraseIsFresh() throws {
         let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
         let items = try createItems()

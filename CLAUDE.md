@@ -156,6 +156,16 @@ The share-staging key (`ShareStagingKeyManager`) has its own, simpler seam: `Sha
 Only `ShareStagingKeyManagerTests`, which tests the real Enclave key (and, on iOS 26, its ML-KEM key), stays gated. Each call site
 passes its own key, so no `Manager.Ambient`-style override is needed there.
 
+**Some tests need a Keychain, not an Enclave.** The Bug 171 tests that store real Keychain items on accounts of their
+own (the tier secrets, the tier PQ records, share staging's items in the App Group) gate on `keychainAvailable()` or
+`sharedKeychainAvailable()` (`OccultaTests/KeychainAvailability.swift`) instead. CI builds with
+`CODE_SIGNING_ALLOWED=NO`, so its test host has no entitlements and every `SecItem` call there fails with
+`errSecMissingEntitlement` (-34018), while `secureEnclaveAvailable()` gates nothing that never creates an Enclave key.
+The gated tests are in `TierSecretKeychainTests`, `TierPQRecordKeychainTests`, `StagingPostQuantumTests`,
+`ShareStagingEnclaveBoundTests`, `HybridUpgradeRecordOperationTests`, `HybridUpgradeOtherTiersTests`,
+`KeyResealEraseTests` and `ComposeStagingKeyDerivationTests`. They skip on CI and run on the Simulator, so they don't
+change the local pass condition below.
+
 **With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
 stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
 Simulator *does* create SE keys there — the tempting "just gate it on `secureEnclaveAvailable()`"

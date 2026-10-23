@@ -388,7 +388,7 @@ struct ComposeStagingKeyDerivationTests {
     }
 
     @Test("it is stable, 32 bytes, and distinct from the local DB key, the custody key and the share session keys (legacy and Enclave-bound)",
-          arguments: KeyForm.allCases)
+          .enabled(if: sharedKeychainAvailable()), arguments: KeyForm.allCases)
     func domainSeparated(form: KeyForm) throws {
         let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
         keys.become(form)

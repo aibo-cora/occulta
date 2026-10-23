@@ -115,7 +115,7 @@ struct ShareStagingEnclaveBoundTests {
 
     // MARK: - Sealing
 
-    @Test("A hybrid device seals under the hybrid key: not the classical one, not the legacy one, and the legacy derivation never runs")
+    @Test("A hybrid device seals under the hybrid key: not the classical one, not the legacy one, and the legacy derivation never runs", .enabled(if: sharedKeychainAvailable()))
     func hybridDeviceSealsHybrid() throws {
         let device = try Device()
         defer { device.clean() }
@@ -132,7 +132,7 @@ struct ShareStagingEnclaveBoundTests {
         #endif
     }
 
-    @Test("A classical device seals under the classical key, not the legacy one")
+    @Test("A classical device seals under the classical key, not the legacy one", .enabled(if: sharedKeychainAvailable()))
     func classicalDeviceSealsClassical() throws {
         let device = try Device()
         defer { device.clean() }
@@ -184,7 +184,7 @@ struct ShareStagingEnclaveBoundTests {
         #expect((try manager.tierSecret() != nil) == itemsExist, "decrypt made no secret")
     }
 
-    @Test("A classical-sealed session opens after the record became hybrid; sealing under the classical form no longer happens")
+    @Test("A classical-sealed session opens after the record became hybrid; sealing under the classical form no longer happens", .enabled(if: sharedKeychainAvailable()))
     func classicalSessionOpensAfterTheRecordBecameHybrid() throws {
         let device = try Device()
         defer { device.clean() }
@@ -214,7 +214,7 @@ struct ShareStagingEnclaveBoundTests {
         #expect(throws: ShareStagingKeyManager.KeyError.postQuantumFailed) { try without.encrypt(data: self.plaintext) }
     }
 
-    @Test("A new session opens under no key but the current one: not the legacy key, not the classical key on a hybrid device, and not another phone's")
+    @Test("A new session opens under no key but the current one: not the legacy key, not the classical key on a hybrid device, and not another phone's", .enabled(if: sharedKeychainAvailable()))
     func newSessionsOpenUnderTheCurrentKeyOnly() throws {
         let device = try Device(), other = try Device()
         defer { device.clean(); other.clean() }
@@ -231,7 +231,7 @@ struct ShareStagingEnclaveBoundTests {
         #expect(throws: (any Error).self) { try impostor.decrypt(data: sealed) }
     }
 
-    @Test("An older build, which derives the legacy key only, can open its own sessions and none of the new ones")
+    @Test("An older build, which derives the legacy key only, can open its own sessions and none of the new ones", .enabled(if: sharedKeychainAvailable()))
     func olderBuildOpensOnlyLegacySessions() throws {
         let device = try Device()
         defer { device.clean() }
@@ -298,7 +298,7 @@ struct ShareStagingEnclaveBoundTests {
         #expect(try app.decrypt(data: sealed) == self.plaintext)
     }
 
-    @Test("Items are in the shared group, WhenUnlockedThisDeviceOnly, and the record is the one size in both forms")
+    @Test("Items are in the shared group, WhenUnlockedThisDeviceOnly, and the record is the one size in both forms", .enabled(if: sharedKeychainAvailable()))
     func itemAttributes() throws {
         let hybridDevice = try Device(), classicalDevice = try Device()
         defer { hybridDevice.clean(); classicalDevice.clean() }
@@ -318,7 +318,7 @@ struct ShareStagingEnclaveBoundTests {
         }
     }
 
-    @Test("Two processes creating at once end with one secret and one record, and neither is replaced")
+    @Test("Two processes creating at once end with one secret and one record, and neither is replaced", .enabled(if: sharedKeychainAvailable()))
     func racingCreators() throws {
         let device = try Device()
         defer { device.clean() }
@@ -336,7 +336,7 @@ struct ShareStagingEnclaveBoundTests {
         #expect(try second.createTierPQRecordIfAbsent() == false)
     }
 
-    @Test("A provider that can't make the key stores nothing, and sealing then fails instead of using a lower form")
+    @Test("A provider that can't make the key stores nothing, and sealing then fails instead of using a lower form", .enabled(if: sharedKeychainAvailable()))
     func refusedRecordFailsLoudly() throws {
         let device = try Device()
         defer { device.clean() }
@@ -406,7 +406,7 @@ struct ShareStagingEnclaveBoundTests {
         #expect(launch.staging == nil)
     }
 
-    @Test("A blocked launch (Stage 2c) writes no staging items")
+    @Test("A blocked launch (Stage 2c) writes no staging items", .enabled(if: sharedKeychainAvailable()))
     func blockedLaunchWritesNoStagingItems() throws {
         let device = try Device()
         defer { device.clean() }
@@ -422,7 +422,7 @@ struct ShareStagingEnclaveBoundTests {
         #expect(try app.tierSecret() == nil && app.tierPQRecord() == nil)
     }
 
-    @Test("Erase All Data removes r_S and the record, and the next session is sealed under new ones: nothing sealed before opens")
+    @Test("Erase All Data removes r_S and the record, and the next session is sealed under new ones: nothing sealed before opens", .enabled(if: sharedKeychainAvailable()))
     func eraseRemovesThemAndTheNextSessionStartsOver() throws {
         let device = try Device()
         defer { device.clean() }

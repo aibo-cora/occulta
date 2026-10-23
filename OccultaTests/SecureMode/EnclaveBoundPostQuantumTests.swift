@@ -617,7 +617,7 @@ struct TierPQRecordKeychainTests {
         return (data, dict)
     }
 
-    @Test("A classical record is created without a provider, and is the same size as a hybrid one")
+    @Test("A classical record is created without a provider, and is the same size as a hybrid one", .enabled(if: keychainAvailable()))
     func classicalAndHybridAreTheSameSize() throws {
         let manager   = Manager.Key()
         let classical = Self.account()
@@ -642,7 +642,7 @@ struct TierPQRecordKeychainTests {
         #expect(storedClassical.attributes[kSecAttrAccessible as String] as? String == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
     }
 
-    @Test("An existing record is read, not replaced, and costs no new key")
+    @Test("An existing record is read, not replaced, and costs no new key", .enabled(if: keychainAvailable()))
     func existingRecordIsKept() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -656,7 +656,7 @@ struct TierPQRecordKeychainTests {
         #expect(try manager.readTierPQRecord(account: account) == first)
     }
 
-    @Test("Two creators racing end with one record: the second add finds the first and reads it")
+    @Test("Two creators racing end with one record: the second add finds the first and reads it", .enabled(if: keychainAvailable()))
     func duplicateAddReturnsTheSameRecord() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -678,7 +678,7 @@ struct TierPQRecordKeychainTests {
         #expect(try manager.readTierPQRecord(account: account) == first)
     }
 
-    @Test("Reading a missing record returns nil and writes nothing")
+    @Test("Reading a missing record returns nil and writes nothing", .enabled(if: keychainAvailable()))
     func readingWritesNothing() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -687,7 +687,7 @@ struct TierPQRecordKeychainTests {
         #expect(Self.rawItem(account: account) == nil)
     }
 
-    @Test("An item that isn't a record throws, is never replaced, and blocks the creator")
+    @Test("An item that isn't a record throws, is never replaced, and blocks the creator", .enabled(if: keychainAvailable()))
     func malformedItem() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -705,7 +705,7 @@ struct TierPQRecordKeychainTests {
         #expect(Self.rawItem(account: account)?.data.count == 100)
     }
 
-    @Test("A provider that can't make the key, or whose blob doesn't fit, throws and stores nothing")
+    @Test("A provider that can't make the key, or whose blob doesn't fit, throws and stores nothing", .enabled(if: keychainAvailable()))
     func creationFailureStoresNothing() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -720,7 +720,7 @@ struct TierPQRecordKeychainTests {
         #expect(Self.rawItem(account: account) == nil, "no classical record is left in their place")
     }
 
-    @Test("deleteTierSecret removes a record, and a missing one counts as deleted")
+    @Test("deleteTierSecret removes a record, and a missing one counts as deleted", .enabled(if: keychainAvailable()))
     func deleting() throws {
         let manager = Manager.Key()
         let account = Self.account()
@@ -831,7 +831,7 @@ struct StagingPostQuantumTests {
         return (data, dict)
     }
 
-    @Test("The record is created in the shared group, hybrid with a provider and classical without, at one size")
+    @Test("The record is created in the shared group, hybrid with a provider and classical without, at one size", .enabled(if: sharedKeychainAvailable()))
     func createsTheRecord() throws {
         let hybridAccounts = Accounts(), classicalAccounts = Accounts()
         defer { hybridAccounts.clean(); classicalAccounts.clean() }
@@ -859,7 +859,7 @@ struct StagingPostQuantumTests {
         #expect(try hybrid.tierPQRecord() == hybridRecord)
     }
 
-    @Test("Two creators racing end with one record")
+    @Test("Two creators racing end with one record", .enabled(if: sharedKeychainAvailable()))
     func duplicateAddReturnsTheSameRecord() throws {
         let accounts = Accounts()
         defer { accounts.clean() }
@@ -873,7 +873,7 @@ struct StagingPostQuantumTests {
         #expect(try manager.tierPQRecord() == first)
     }
 
-    @Test("A provider that can't make the key stores nothing; an item that isn't a record throws")
+    @Test("A provider that can't make the key stores nothing; an item that isn't a record throws", .enabled(if: sharedKeychainAvailable()))
     func failures() throws {
         let accounts = Accounts()
         defer { accounts.clean() }
@@ -893,7 +893,7 @@ struct StagingPostQuantumTests {
         #expect(throws: ShareStagingKeyManager.KeyError.tierPQRecordUnreadable) { try manager.createTierPQRecordIfAbsent() }
     }
 
-    @Test("Without its record the derivation throws before it fetches the Enclave key, and a read creates nothing")
+    @Test("Without its record the derivation throws before it fetches the Enclave key, and a read creates nothing", .enabled(if: sharedKeychainAvailable()))
     func missingRecord() throws {
         let accounts = Accounts()
         defer { accounts.clean() }
@@ -904,7 +904,7 @@ struct StagingPostQuantumTests {
         #expect(try manager.tierPQRecord() == nil)
     }
 
-    @Test("A hybrid record never derives a classical key: no ML-KEM, or a corrupt blob, throws")
+    @Test("A hybrid record never derives a classical key: no ML-KEM, or a corrupt blob, throws", .enabled(if: sharedKeychainAvailable()))
     func hybridFailuresThrow() throws {
         let accounts = Accounts()
         defer { accounts.clean() }
