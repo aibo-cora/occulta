@@ -70,6 +70,10 @@ struct ContactsV2: View {
         ContactListFilter.visibleContacts(self.contacts, atDepth: self.security.currentDepth)
     }
 
+    private var isListEmpty: Bool {
+        ContactListFilter.isEmptyList(self.contacts, atDepth: self.security.currentDepth)
+    }
+
     private var sortedContacts: [Contact.Profile] {
         ContactListFilter.sortedContacts(self.visibleContacts, matching: self.searchText)
     }
@@ -122,7 +126,7 @@ struct ContactsV2: View {
                         let unverified = sorted.filter { statuses[$0.identifier] == .unverified }
                         let pending = sorted.filter { statuses[$0.identifier] == .pending }
 
-                        if self.showTrustSummary && !self.contacts.isEmpty {
+                        if self.showTrustSummary && !self.isListEmpty {
                             Section {
                                 TrustSummaryCard(verified: verified.count, unverified: unverified.count, pending: pending.count)
                                 .listRowInsets(EdgeInsets())
@@ -148,7 +152,7 @@ struct ContactsV2: View {
                             }
                         }
 
-                        if self.contacts.isEmpty {
+                        if self.isListEmpty {
                             Section {
                                 VStack(alignment: .leading, spacing: 10) {
                                     if #available(iOS 18.0, *) {
