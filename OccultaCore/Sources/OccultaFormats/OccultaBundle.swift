@@ -74,6 +74,9 @@ public struct OccultaBundle: Codable {
         case unsupportedMode
         /// Wire data contains a structural violation (e.g. duplicate TLV section).
         case malformedBundle
+        /// The bundle is too large for this device to open in memory. Refused before any key is
+        /// derived or prekey touched (`STREAMING_SPEC.md` §7).
+        case tooLargeForDevice
     }
 
     // MARK: - Version
@@ -144,6 +147,18 @@ public struct OccultaBundle: Codable {
         /// included: every build that has it would refuse that build's messages (`ROLLOUT_PLAN.md`, release
         /// mechanics).
         case bodyDigestCapable
+        /// The streamed body layout (`Docs/Features/Bundle/STREAMING_SPEC.md`): the body is a chunked STREAM
+        /// over AES-GCM, so neither side holds a whole attachment in memory. Unlike the tiers above it is also
+        /// a wire `version` — `0x0A` in the header, and its raw value is in each chunk's AAD — and is stored in
+        /// `Contact.Profile.maxBundleVersion` as the same byte.
+        ///
+        /// The tier a contact is recorded at once their build can read it, from 2.0.0. A send uses the layout
+        /// only when every recipient resolves to it (`STREAMING_SPEC.md` §10).
+        ///
+        /// ⚠️ Keyed on the app version, like `.bodyDigestCapable`: no build numbered 2.0.0 or later may ship
+        /// without the receive path and the send path, TestFlight included. Such a build would be recorded at
+        /// this tier and sent bundles it can't open (`ROLLOUT_PLAN.md`, release mechanics).
+        case streamedBodyCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -162,6 +177,7 @@ public struct OccultaBundle: Codable {
             case .senderSignatureCapable: return "1.10.0"
             case .prefixedSenderSignatureCapable: return "1.10.2"
             case .bodyDigestCapable: return "2.0.0"
+            case .streamedBodyCapable: return "2.0.0"
             default:                return nil
             }
         }
@@ -176,6 +192,7 @@ public struct OccultaBundle: Codable {
             case .senderSignatureCapable: return 0x07
             case .prefixedSenderSignatureCapable: return 0x08
             case .bodyDigestCapable: return 0x09
+            case .streamedBodyCapable: return 0x0A
             default:                 return nil
             }
         }
@@ -202,6 +219,7 @@ public struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
+            .streamedBodyCapable, // 2.0.0+ — the body of a group bundle is a chunk stream (wire version 0x0A)
             .bodyDigestCapable, // 2.0.0+  — every group slot carries the body's digest
             .prefixedSenderSignatureCapable, // 1.10.2+ — domain-separated ephemeral signature
             .senderSignatureCapable, // 1.10.0+ — signs FS-mode group recipients' ephemeral key
@@ -881,6 +899,27 @@ public enum ShardPadding {
 // MARK: - WireHandle bridge
 
 extension OccultaBundle {
+    /// The envelope of a streamed bundle, read from its header and sections alone. `ciphertext` is empty:
+    /// the chunk stream is read from the file, never held (`STREAMING_SPEC.md` §5.2 step 1). A streamed
+    /// bundle without a group envelope is malformed.
+    public init(header: WireHandle.Header, sections: WireHandle.Sections) throws {
+        if header.version == WireHandle.streamedVersionByte, sections.groupEnvelope == nil {
+            throw BundleError.malformedBundle
+        }
+        try self.init(wireBundle: WireHandle.Bundle(
+            version:           header.version,
+            minReaderVersion:  header.minReaderVersion,
+            mode:              header.mode,
+            flags:             header.flags,
+            prekeyID:          header.prekeyID,
+            ephemeralKey:      header.ephemeralKey,
+            fingerprintNonce:  header.fingerprintNonce,
+            senderFingerprint: header.senderFingerprint,
+            ciphertext:        Data(),
+            groupEnvelope:     sections.groupEnvelope
+        ))
+    }
+
     /// Reconstruct an `OccultaBundle` from a parsed binary outer envelope.
     public init(wireBundle b: WireHandle.Bundle) throws {
         guard let version = WireHandle.byteToVersion(b.version) else {

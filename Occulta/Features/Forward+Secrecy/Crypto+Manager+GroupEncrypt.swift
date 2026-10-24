@@ -133,10 +133,118 @@ extension Manager.Crypto {
         recipients: [GroupRecipient],
         senderIdentity: Data? = nil
     ) throws -> OccultaBundle {
+        let context = try self.groupSealContext(
+            sealedPayload: sealedPayload, groupID: groupID, recipients: recipients, senderIdentity: senderIdentity
+        )
+
+        var outerAAD = try OccultaBundle.computeAdditionalAuthentication(version: .v4, secrecy: context.outerSecrecy)
+        outerAAD.append(context.blind)
+
+        let payloadData = try WireHandle.encode(payload: context.payload)
+
+        guard let ciphertext = try AES.GCM.seal(
+            payloadData, using: context.sessionKey, nonce: AES.GCM.Nonce(), authenticating: outerAAD
+        ).combined else { throw EncryptionError.sealFailed }
+
+        // Every recipient holds the session key, so each slot commits to the body it unlocks; without this a
+        // recipient could put a body of their own behind the others' slots (bugs.md Bug 165).
+        let bodyDigest = Data(SHA256.hash(data: ciphertext))
+
+        return OccultaBundle(
+            version: .v4,
+            secrecy: context.outerSecrecy,
+            ciphertext: ciphertext,
+            fingerprintNonce: context.outerNonce,
+            senderFingerprint: context.senderFingerprint,
+            group: try self.groupEnvelope(for: recipients, context: context, bodyDigest: bodyDigest)
+        )
+    }
+
+    /// The streamed layout's seal (`STREAMING_SPEC.md` §8.3): the same steps as `seal(sealedPayload:...)`, but the
+    /// body is a chunk stream written to `files.destination` as it is sealed, so it is never in memory whole.
+    ///
+    /// `sealedPayload.message` is the basket with each streamed file's `streamedLength` and no content (or the
+    /// message of a bundle that carries no basket); `files.sources` are the streamed files' bytes, in the order
+    /// the basket lists them. The file is written in full or not at all: a failure removes it.
+    func sealStreamed(
+        sealedPayload: OccultaBundle.SealedPayload,
+        groupID: UUID,
+        recipients: [GroupRecipient],
+        senderIdentity: Data? = nil,
+        files: StreamedFiles
+    ) throws {
+        let context = try self.groupSealContext(
+            sealedPayload: sealedPayload, groupID: groupID, recipients: recipients, senderIdentity: senderIdentity
+        )
+
+        // The manifest, framed, and the length of everything the stream will hold.
+        let manifest = try BodyStream.Manifest.frame(payload: context.payload)
+        var plaintextLength = UInt64(manifest.count)
+        for source in files.sources { plaintextLength += source.length }
+        let layout = try BodyStream.Layout(plaintextLength: plaintextLength)
+
+        // The header first: it names the stream's length. The slots need the digest, so they and the sections
+        // come last, after the stream.
+        let envelope = OccultaBundle(
+            version: .streamedBodyCapable, secrecy: context.outerSecrecy, ciphertext: Data(),
+            fingerprintNonce: context.outerNonce, senderFingerprint: context.senderFingerprint
+        )
+        let writer = try NoCacheFile.writer(files.destination)
+        do {
+            try writer.write(try WireHandle.encodeHeader(envelope, ciphertextLength: layout.streamLength))
+
+            var sealer = BodyStream.Sealer(
+                sessionKey: context.sessionKey,
+                header: try BodyStream.headerAAD(secrecy: context.outerSecrecy, blind: context.blind),
+                layout: layout
+            )
+            try sealer.append(manifest) { try writer.write($0) }
+            for source in files.sources {
+                var delivered: UInt64 = 0
+                try source.feed { piece in
+                    delivered += UInt64(piece.count)
+                    guard delivered <= source.length else { throw BodyStream.StreamError.lengthMismatch }
+                    try sealer.append(piece) { try writer.write($0) }
+                }
+                // A file that changed under us, or one whose header lied, must not become a bundle that fails to open.
+                guard delivered == source.length else { throw BodyStream.StreamError.lengthMismatch }
+            }
+            let digest = try sealer.finish { try writer.write($0) }
+
+            let bundle = OccultaBundle(
+                version: .streamedBodyCapable, secrecy: context.outerSecrecy, ciphertext: Data(),
+                fingerprintNonce: context.outerNonce, senderFingerprint: context.senderFingerprint,
+                group: try self.groupEnvelope(for: recipients, context: context, bodyDigest: digest)
+            )
+            try writer.write(try WireHandle.encodeSections(bundle))
+            try writer.finish()
+        } catch {
+            writer.abandon()
+            throw error
+        }
+    }
+
+    /// What both layouts' seals start from: a fresh session key, the sender proof and the per-bundle blind.
+    private struct GroupSealContext {
+        let sessionKey: SymmetricKey
+        let senderPublicKey: Data
+        let blindNonce: Data
+        let blind: Data
+        let payload: OccultaBundle.SealedPayload
+        let outerSecrecy: OccultaBundle.SecrecyContext
+        let outerNonce: Data
+        let senderFingerprint: Data
+    }
+
+    private func groupSealContext(
+        sealedPayload: OccultaBundle.SealedPayload,
+        groupID: UUID,
+        recipients: [GroupRecipient],
+        senderIdentity: Data?
+    ) throws -> GroupSealContext {
         guard !recipients.isEmpty else { throw EncryptionError.noRecipients }
 
-        let sessionKey     = SymmetricKey(size: .bits256)
-        let sessionKeyData = sessionKey.withUnsafeBytes { Data($0) }
+        let sessionKey = SymmetricKey(size: .bits256)
 
         let senderPub = try senderIdentity ?? self.keyManager.retrieveIdentity()
         let senderProof = Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
@@ -165,39 +273,26 @@ extension Manager.Crypto {
         let outerSecrecy = OccultaBundle.SecrecyContext(
             mode: .group, ephemeralPublicKey: Data(), prekeyID: nil
         )
-
-        var outerAAD = try OccultaBundle.computeAdditionalAuthentication(version: .v4, secrecy: outerSecrecy)
-        outerAAD.append(blind)
-
-        let payloadData = try WireHandle.encode(payload: authenticatedPayload)
-
-        guard let ciphertext = try AES.GCM.seal(
-            payloadData, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: outerAAD
-        ).combined else { throw EncryptionError.sealFailed }
-
         let outerNonce = try OccultaBundle.SecrecyContext.generateNonce()
-        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
 
-        // Every recipient holds the session key, so each slot commits to the body it unlocks; without this a
-        // recipient could put a body of their own behind the others' slots (bugs.md Bug 165).
-        let bodyDigest = Data(SHA256.hash(data: ciphertext))
-
-        let recipientEntries = try recipients.map { r in
-            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: bodyDigest)
-        }
-
-        let envelope = OccultaBundle.GroupEnvelope(blind: blind, blindNonce: blindNonce, recipients: recipientEntries)
-        return OccultaBundle(
-            version: .v4,
-            secrecy: outerSecrecy,
-            ciphertext: ciphertext,
-            fingerprintNonce: outerNonce,
-            senderFingerprint: senderFingerprint,
-            group: envelope
+        return GroupSealContext(
+            sessionKey: sessionKey, senderPublicKey: senderPub, blindNonce: blindNonce, blind: blind,
+            payload: authenticatedPayload, outerSecrecy: outerSecrecy, outerNonce: outerNonce,
+            senderFingerprint: OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
         )
     }
 
-    private func wrapRecipient(
+    private func groupEnvelope(
+        for recipients: [GroupRecipient], context: GroupSealContext, bodyDigest: Data
+    ) throws -> OccultaBundle.GroupEnvelope {
+        let sessionKeyData = context.sessionKey.withUnsafeBytes { Data($0) }
+        let entries = try recipients.map { r in
+            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: context.blind, bodyDigest: bodyDigest)
+        }
+        return OccultaBundle.GroupEnvelope(blind: context.blind, blindNonce: context.blindNonce, recipients: entries)
+    }
+
+    func wrapRecipient(
         _ r: GroupRecipient,
         sessionKeyData: Data,
         blind: Data,
@@ -306,4 +401,20 @@ extension Manager.Crypto {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<72).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }
+}
+
+// MARK: - Streamed files
+
+/// A streamed bundle's destination, and the files whose bytes follow its manifest.
+struct StreamedFiles {
+    let destination: URL
+    /// In the order the basket lists the streamed files.
+    let sources: [StreamedFileSource]
+}
+
+/// One streamed file: how long it is, and a way to read it a piece at a time.
+struct StreamedFileSource {
+    /// Plaintext bytes `feed` delivers. A source that delivers any other count fails the send.
+    let length: UInt64
+    let feed: (_ emit: (Data) throws -> Void) throws -> Void
 }

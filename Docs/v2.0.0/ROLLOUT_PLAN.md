@@ -85,6 +85,10 @@ however the stages are cut.
   also not decided.
   *2026-10-19:* **decided by the owner:** the passphrase work ships in the release after 2.0.0, not in 2.0.0.
   Whether its data slices ship together is still open ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §7.1).
+- **Streamed bundle bodies ship in 2.0.0** (decided 2026-10-23, [`STREAMING_SPEC.md`](../Features/Bundle/STREAMING_SPEC.md)
+  §12). Their tier, `streamedBodyCapable`, is also keyed on app version 2.0.0, so the same rule applies: nothing
+  numbered 2.0.0 or later goes out without the streamed reader and writer, TestFlight included. Such a build would
+  be recorded at the tier and sent bundles it can't open. The release branch was at 1.11.1 on 2026-10-23.
 
 ## Stages
 

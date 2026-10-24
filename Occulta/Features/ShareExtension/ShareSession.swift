@@ -14,6 +14,7 @@
 //
 
 import Foundation
+import CryptoKit
 import ImageIO
 import UniformTypeIdentifiers
 import OccultaFormats
@@ -22,9 +23,14 @@ import OccultaFormats
 /// extension sealed.
 protocol ShareSessionDecrypting {
     func decrypt(data: Data) throws -> Data
+    /// The keys a streamed (`.eatt`) staged file could be sealed under, most likely first. The one that opens the file
+    /// is found by its header (`AttachmentManager.opens(at:)`).
+    func stagingKeys() -> [SymmetricKey]
 }
 
-extension ShareStagingKeyManager: ShareSessionDecrypting {}
+extension ShareStagingKeyManager: ShareSessionDecrypting {
+    func stagingKeys() -> [SymmetricKey] { self.openingKeys() }
+}
 
 enum ShareSession {
 
@@ -58,7 +64,22 @@ enum ShareSession {
 
     // MARK: - Load
 
-    /// Decrypt a staged session into plaintext files, ready for `encryptBundle`.
+    /// A staged session, read: the files for `encryptBundle`, and what opens the ones still on disk.
+    struct Staged {
+        /// Each file either carries its `content`, or a `url` to a sealed `.eatt` in the session directory.
+        var files: [OccultaFormats.File]
+        /// Opens the `url` files. Nil when none has one.
+        let attachments: AttachmentManager?
+    }
+
+    /// Reads a staged session without decrypting its streamed files.
+    ///
+    /// Two formats, told apart by `AttachmentManager.isSealed` (STREAMING_SPEC §8.4). A file the extension staged
+    /// as `.eatt` stays on disk, sealed, and is read a chunk at a time when it is sent: its `url` is returned and
+    /// nothing is decrypted. A file staged by the build before this one is one AES-GCM blob, read and decrypted
+    /// whole as it always was. Sessions are deleted after use, so the legacy reader can go in the next release.
+    ///
+    /// An image is decrypted either way, because its EXIF is stripped (below), and that needs the whole image.
     ///
     /// Deletes the session directory on **any** throw. The caller deletes it on the success
     /// and cancellation paths, but the guarantee that a failed load leaves no plaintext on
@@ -69,12 +90,12 @@ enum ShareSession {
     /// never reach the sealed payload. A format `CGImageSource` cannot parse is passed
     /// through unchanged: the metadata then stays inside the encrypted bundle, visible only
     /// to the recipient.
-    static func load(
+    static func staged(
         id: String,
         in container: URL,
         keyManager: any ShareSessionDecrypting,
         now: Date = .now
-    ) throws -> [OccultaFormats.File] {
+    ) throws -> Staged {
         let sessionDir = self.directory(for: id, in: container)
 
         var files: [OccultaFormats.File] = []
@@ -93,26 +114,44 @@ enum ShareSession {
                 throw Errors.stale
             }
 
+            var attachments: AttachmentManager?
+            var attachmentsKey: Int?
+            let keys = keyManager.stagingKeys()
             for entry in manifest.files {
-                var ciphertext = try Data(contentsOf: sessionDir.appendingPathComponent(entry.filename))
-                var content = try keyManager.decrypt(data: ciphertext)
-                _ = ciphertext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                ciphertext = Data()
+                let url = sessionDir.appendingPathComponent(entry.filename)
+                let isImage = UTType(entry.uti)?.conforms(to: .image) == true
+                let format = OccultaFormats.File.Format.file(OccultaFormats.File.Metadata(
+                    name: UUID().uuidString,
+                    extension: entry.fileExtension
+                ))
 
-                if UTType(entry.uti)?.conforms(to: .image) == true,
-                   let stripped = self.stripEXIF(from: content, uti: entry.uti) {
+                var content: Data
+                if AttachmentManager.isSealed(at: url) {
+                    // The key that opens it is the one whose header check passes. One manager serves every file that
+                    // stays on disk; a file sealed under another key, which a session staged across a key change
+                    // could hold, is read whole instead.
+                    guard let (index, manager) = Self.opener(of: url, among: keys) else { throw AttachmentError.headerMACFailed }
+                    if attachments == nil { attachments = manager; attachmentsKey = index }
+                    guard isImage || index != attachmentsKey else {
+                        files.append(OccultaFormats.File(url: url, format: format))
+                        continue
+                    }
+                    content = try manager.plaintextBlocking(at: url)
+                } else {
+                    var ciphertext = try Data(contentsOf: url)
+                    content = try keyManager.decrypt(data: ciphertext)
+                    _ = ciphertext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                    ciphertext = Data()
+                }
+
+                if isImage, let stripped = self.stripEXIF(from: content, uti: entry.uti) {
                     _ = content.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
                     content = stripped
                 }
 
-                files.append(OccultaFormats.File(
-                    content: content,
-                    format: .file(OccultaFormats.File.Metadata(
-                        name: UUID().uuidString,
-                        extension: entry.fileExtension
-                    ))
-                ))
+                files.append(OccultaFormats.File(content: content, format: format))
             }
+            return Staged(files: files, attachments: attachments)
         } catch {
             // Whatever was decrypted before the throw is heap plaintext with no owner.
             for i in files.indices {
@@ -121,8 +160,40 @@ enum ShareSession {
             self.delete(id: id, in: container)
             throw error
         }
+    }
 
-        return files
+    /// The manager, and its place in `keys`, whose key opens the sealed file at `url`.
+    private static func opener(of url: URL, among keys: [SymmetricKey]) -> (index: Int, manager: AttachmentManager)? {
+        for (index, key) in keys.enumerated() {
+            let manager = AttachmentManager(contactKey: key)
+            if manager.opens(at: url) { return (index, manager) }
+        }
+        return nil
+    }
+
+    /// Decrypt a staged session into plaintext files, ready for `encryptBundle`. Every file is read into memory;
+    /// `staged` leaves the streamed ones on disk.
+    static func load(
+        id: String,
+        in container: URL,
+        keyManager: any ShareSessionDecrypting,
+        now: Date = .now
+    ) throws -> [OccultaFormats.File] {
+        var staged = try self.staged(id: id, in: container, keyManager: keyManager, now: now)
+        do {
+            for index in staged.files.indices {
+                guard let url = staged.files[index].url, let attachments = staged.attachments else { continue }
+                staged.files[index].content = try attachments.plaintextBlocking(at: url)
+                staged.files[index].url = nil
+            }
+        } catch {
+            for i in staged.files.indices {
+                _ = staged.files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+            }
+            self.delete(id: id, in: container)
+            throw error
+        }
+        return staged.files
     }
 
     // MARK: - Introduction card
@@ -153,10 +224,17 @@ enum ShareSession {
         // The sealed file is a little longer than the card, so this keeps a large attachment from being read.
         guard
             let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-            size >= IntroductionCard.byteCount, size <= IntroductionCard.byteCount + 1024,
-            let plaintext = try? keyManager.decrypt(data: Data(contentsOf: file)),
-            IntroductionCard.recognize(plaintext) != nil
+            size >= IntroductionCard.byteCount, size <= IntroductionCard.byteCount + 1024
         else { return nil }
+
+        // A file the extension staged as `.eatt`, or one the build before it sealed whole.
+        let plaintext: Data?
+        if AttachmentManager.isSealed(at: file) {
+            plaintext = Self.opener(of: file, among: keyManager.stagingKeys()).flatMap { try? $0.manager.plaintextBlocking(at: file) }
+        } else {
+            plaintext = try? keyManager.decrypt(data: Data(contentsOf: file))
+        }
+        guard let plaintext, IntroductionCard.recognize(plaintext) != nil else { return nil }
 
         return plaintext
     }

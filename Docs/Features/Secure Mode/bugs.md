@@ -14018,7 +14018,7 @@ xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
   - **Open, needs a decision (D8).** Until the first unlock after the upgrade the per-entry keys stay under the legacy vault key, and the epoch shows anyone holding the tier U key whether the vault has been opened since.
 - **5:** share staging. **Built**, 2026-10-22. The cross-process ML-KEM blob check passed on the Simulator (below); a phone is still pending.
   - **Sealing and opening** (`ShareStagingKeyManager.swift`). `encrypt` seals under the Enclave-bound key in the form the S record says: `t ‖ ss ‖ r_S` with the `-pq` info and SHA-256(c) on iOS 26+, `t ‖ r_S` below. It never seals under the legacy key, and a hybrid record that won't decapsulate makes it throw instead of sealing in a lower form. `decrypt` tries the current form, then the classical form if the record is hybrid (a session staged while the device was classical, before Stage 6 rewrites the record), then the legacy ECDH-against-G key (a session the previous build staged), and returns the first that authenticates. A form whose key can't be derived (no `r_S` or record yet) is skipped, and decrypting creates nothing. **The classical and legacy fallbacks go one release after 2.0.0**, when no session sealed that way can be alive (sessions are swept after an hour); the header of the file says which two functions to delete.
-  - **Creation** (`createTierItemsIfAbsent()`): `r_S` and the S record are made by whichever process first needs them. The app's launch does it (`LaunchSequence.run(staging:)`, passed by `OccultaApp`, after the blocked check: a blocked launch writes nothing, and the result lands in `Report.staging`), and so does the extension's first `encrypt`. Both read first and add only what is missing; a race ends with one item each, because the adder reads what the other added on `errSecDuplicateItem`. S is the one tier where this is allowed at any time: staging holds nothing for longer than an hour. A launch that can't create them (a locked device) goes on, and the extension creates them. On iOS 26+ the record is hybrid, made with the file's own `SecureEnclave.MLKEM1024` code; a provider that can't make the key throws with nothing stored, so a hybrid-capable device never gets a classical record. The extension still links only `ShareStagingKeyManager.swift` and `ShareManifest.swift`.
+  - **Creation** (`createTierItemsIfAbsent()`): `r_S` and the S record are made by whichever process first needs them. The app's launch does it (`LaunchSequence.run(staging:)`, passed by `OccultaApp`, after the blocked check: a blocked launch writes nothing, and the result lands in `Report.staging`), and so does the extension's first `encrypt`. Both read first and add only what is missing; a race ends with one item each, because the adder reads what the other added on `errSecDuplicateItem`. S is the one tier where this is allowed at any time: staging holds nothing for longer than an hour. A launch that can't create them (a locked device) goes on, and the extension creates them. On iOS 26+ the record is hybrid, made with the file's own `SecureEnclave.MLKEM1024` code; a provider that can't make the key throws with nothing stored, so a hybrid-capable device never gets a classical record. The extension's key code is still only `ShareStagingKeyManager.swift`; it also compiles `ShareManifest.swift`, and since streamed bundles (`STREAMING_SPEC.md` §8.4) the sealed-file writer (`Attachment+Manager.swift`, `NoCacheFile.swift`, `AttachmentKeyInfo.swift`, `Data.swift`) and links `OccultaFormats`. Staged files are sealed as `.eatt` under `deriveStreamSealingKey()`, the same key `encrypt(data:)` seals under; the app opens them under whichever of the current, classical and legacy keys passes the file's header check.
   - **Erase All Data** already removed `r_S` and the record (`deleteKey()`, Stage 1); a test now shows the next session starts over on fresh ones and nothing sealed before opens.
   - **Downgrade, from the code at `b471bac`.** The previous build derives the legacy key only. It opens its own sessions, and so does this one through the fallback. It cannot open a session this build staged: `ShareSession.load` deletes that session's directory and throws, and `sweep` deletes an unreadable manifest at once, so a share staged by this build and opened by the older app is lost and has to be shared again. The older build's Erase All Data doesn't know `r_S` or the record and leaves both in the shared group; a re-upgrade finds and uses them. Nothing is resealed in either direction.
   - **Trace.** Two generic-password items in the shared group on every install (`r_S`, 32 bytes, and the PQ record, 9,763 bytes in both modes), dated at the first 2.0.0 launch, or at the first share if the extension gets there first. No Enclave key is added: the ML-KEM key is a blob inside the record.
@@ -14137,3 +14137,55 @@ The rest of the file was checked for the same pattern and needs no change:
 ### Guard
 
 `ContactsEmptyStateDepthTests`: two contacts hidden at depth 1, Secure Mode active and entered at depth 1 through the duress PIN, asserts the stored list is non-empty and the screen is still in its empty state. Failed against the unfiltered logic, passes with the fix. A SwiftUI body can't be tested directly, so this covers the decision, not that the view calls it; the two call sites are the only readers.
+
+---
+
+## Bug 183 — Opening a bundle with a large attachment kills the app
+
+**Status:** Fixed in `v2.0.0/streaming-bundles` (`STREAMING_SPEC.md` stages 1–4). The share extension now stages files by streaming too, and keeps its 100 MB cap until its peak memory has been measured on a device (`STREAMING_SPEC.md` §8.4). Reported 2026-10-23: a contact opened a bundle carrying an ~800 MB video and the app crashed before the message appeared. Partly mitigated first by PR #132 (`v2.0.0/stream-attachment-write`).
+
+**Target:** `v2.0.0`. Present since the bundle format (one AES-GCM seal over the whole body).
+
+### Severity: High (messages with large attachments can't be opened)
+
+### What happens
+
+The group body is one AES-GCM seal over metadata, text and every attachment, so nothing can be shown until all of it is decrypted into one buffer. On receive, the inbound file is mapped and read through, and the body is opened twice in full: once in `openRecipientSlot` for the Bug 181 check, then in `openGroup`. Then `Encryptor.write` built each sealed attachment in another full-size buffer before writing it. For an 800 MB attachment that is roughly 2.4–3.2 GB resident, above the foreground Jetsam limit on many iPhones. No crash log was collected; the cause is from code reading.
+
+The send side holds about four copies at once: the decrypted staged attachment, the encoded basket, the ciphertext, and the encoded bundle. It survived here, probably on a phone with more memory.
+
+### Fix
+
+PR #132 writes each sealed chunk straight to disk in `Encryptor.write`, removing the last buffer. The full fix streams the body in fixed chunks on both sides (`STREAMING_SPEC.md`), with a memory guard for the inline layout that older contacts still need.
+
+### Guard
+
+`AttachmentWriteTests` (PR #132). `STREAMING_SPEC.md` §11 specifies the memory regression test for the full fix.
+
+**The fix, by stage:** the memory guard refuses an inline bundle that can't fit (stage 1); the chunked body codec (stage 2); a streamed bundle is read from an open file, its message shown first and its attachments decrypted a chunk at a time (stage 3); every send to a recipient set at the new tier streams its staged files from disk (stage 4). `StreamedMemoryTests` sends and receives a 1.5 GB attachment in the Simulator: the footprint grew by 1.6 MiB on send and 10.4 MiB on receive, against a limit of 64 MiB. A recipient below the tier is still sent the inline layout, under the guard, until their first message from 2.0.0 raises their recorded tier.
+
+---
+
+## Bug 184 — A received attachment from a sender we hold no key for is written to `tmp/` in plaintext
+
+**Status:** Fixed in `v2.0.0/streaming-bundles`, stage 1 of `STREAMING_SPEC.md`. Found 2026-10-23 by code reading while investigating Bug 183.
+
+**Target:** `v2.0.0`.
+
+### Severity: High (plaintext attachment on disk), conditional on a sender with no stored public key
+
+### What happens
+
+`OccultaApp.buildOwnedBasket` seals each received `.file` attachment under `try? fileEncryptionKey(for: ownerID)`. When that is nil, it writes the content with `writeProtected`: file protection, but plaintext in `tmp/`. `fileEncryptionKey` throws `contactHasNoKeys` for a contact with no `contactPublicKeys`, which includes an introduction-card contact not yet met in person. The message sheet builds its reader from the same call, so it reads those files unsealed.
+
+The send side had the same fallback and was fixed on 2026-10-22 (`Message Persistence/FINDINGS.md`), using the compose staging key. The receive side was not changed.
+
+### Fix
+
+`ContactManager.receivedAttachmentKey(for:)` is the one resolver, used by the writer (`ContactManager.sealReceivedFiles`, called from `OccultaApp.buildOwnedBasket`) and by the message sheet's reader. It uses the contact's file key, or failing that the compose staging key. With neither, the message is refused with "Secure storage not ready." before anything is written, so a received file is never in plaintext in `tmp/`. A message with no `.file` attachment needs no key and opens as before.
+
+Refusing the whole message rather than only the attachment is how this reads `STREAMING_SPEC.md` §6, "dropped with an error": the existing failure path for an attachment that can't be written already fails the message, and this state means the Enclave is unavailable, which is not the sender's doing.
+
+### Guard
+
+`ReceivedFilesSealedTests`: a key-less sender's attachment is sealed on disk, no plaintext marker is found in the directory, and it opens through the key the sheet resolves; with no key nothing is written; text needs no key; a hostile extension stays inside the directory. `ReceivedAttachmentKeyTests` covers the resolver's three outcomes. The tests drive `sealReceivedFiles`, which carries the writer's logic; that `OccultaApp` calls it, and that the sheet calls the resolver, is by inspection, since `OccultaApp` can't be built in a test.

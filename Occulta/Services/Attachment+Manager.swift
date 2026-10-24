@@ -5,6 +5,7 @@
 
 import Foundation
 import CryptoKit
+import OccultaFormats
 import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -30,7 +31,7 @@ final class AttachmentManager: Sendable {
         try Encryptor.write(data, contactKey: self.contactKey, to: url)
     }
 
-    func streamingEncryptor(to url: URL) throws -> StreamingEncryptor {
+    nonisolated func streamingEncryptor(to url: URL) throws -> StreamingEncryptor {
         try StreamingEncryptor(url: url, contactKey: self.contactKey)
     }
 
@@ -49,12 +50,9 @@ final class AttachmentManager: Sendable {
         guard !Self.isSealed(at: url) else { return }
         let sealed = url.appendingPathExtension("sealing")
         do {
-            let source = try FileHandle(forReadingFrom: url)
-            defer { try? source.close() }
+            let source = try NoCacheFile.reader(url)
             let encryptor = try StreamingEncryptor(url: sealed, contactKey: self.contactKey)
-            while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
-                try encryptor.append(chunk)
-            }
+            try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
             try encryptor.finalize()
             _ = try FileManager.default.replaceItemAt(url, withItemAt: sealed)
         } catch {
@@ -181,6 +179,21 @@ final class AttachmentManager: Sendable {
 
     // MARK: Read
 
+    /// Plaintext length of a sealed file, from its header alone. Nothing is decrypted.
+    nonisolated func plaintextSize(at url: URL) throws -> Int {
+        try Decryptor.header(at: url, contactKey: self.contactKey).plaintextSize
+    }
+
+    /// Each chunk of a sealed file's plaintext, in order, one alive at a time. For sending a staged file.
+    nonisolated func forEachChunk(at url: URL, _ body: (Data) throws -> Void) throws {
+        try Decryptor.forEachChunk(at: url, contactKey: self.contactKey, body)
+    }
+
+    /// The whole plaintext, read on the calling thread. For the inline layout, behind the memory guard.
+    nonisolated func plaintextBlocking(at url: URL) throws -> Data {
+        try Decryptor.all(at: url, contactKey: self.contactKey)
+    }
+
     func data(at url: URL) async throws -> Data {
         let key = self.contactKey
         
@@ -274,7 +287,8 @@ private struct Header {
 // MARK: - Encryptor
 
 private enum Encryptor {
-    nonisolated static let chunkSize = 262_144 // 256 KB
+    /// The same value as `BodyStream.chunkSize`: one constant for the at-rest and the wire chunk.
+    nonisolated static let chunkSize = BodyStream.chunkSize // 256 KB
 
     nonisolated static func write(
         _ plaintext: Data,
@@ -300,40 +314,25 @@ private enum Encryptor {
 
         // Each sealed chunk goes straight to disk. Collecting the whole file in a `Data` first cost
         // another `total` bytes of heap on top of `plaintext` (more while it grew), which is what
-        // took a ~800 MB attachment past the Jetsam limit on the receiving side.
-        FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.protectionKey: FileProtectionType.complete])
+        // took a ~800 MB attachment past the Jetsam limit on the receiving side. The writer keeps
+        // complete protection, bypasses the page cache, excludes the file from backup, and removes
+        // a half-written file: one left in the temp directory is a trace of its own.
+        let writer = try NoCacheFile.writer(url)
+        try writer.write(header)
 
-        do {
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-
-            // Same reason as `StreamingEncryptor`: no dirty pages piling up in the page cache.
-            _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
-
-            try handle.write(contentsOf: header)
-
-            let base = plaintext.startIndex
-            for i in 0..<chunks {
-                let start = base + i * chunkSize
-                let end   = min(start + chunkSize, base + total)
-                let box   = try AES.GCM.seal(
-                    total > 0 ? plaintext[start..<end] : Data(),
-                    using: fileKey,
-                    nonce: derivedNonce(base: baseNonce, index: i)
-                )
-                try handle.write(contentsOf: box.ciphertext + box.tag)
-                onProgress?(Double(i + 1) / Double(chunks))
-            }
-        } catch {
-            // A half-written sealed file left in the temp directory is a trace of its own.
-            try? FileManager.default.removeItem(at: url)
-            throw error
+        let base = plaintext.startIndex
+        for i in 0..<chunks {
+            let start = base + i * chunkSize
+            let end   = min(start + chunkSize, base + total)
+            let box   = try AES.GCM.seal(
+                total > 0 ? plaintext[start..<end] : Data(),
+                using: fileKey,
+                nonce: derivedNonce(base: baseNonce, index: i)
+            )
+            try writer.write(box.ciphertext + box.tag)
+            onProgress?(Double(i + 1) / Double(chunks))
         }
-
-        var url = url
-        var resourceValues = URLResourceValues()
-        resourceValues.isExcludedFromBackup = true
-        try? url.setResourceValues(resourceValues)
+        try writer.finish()
     }
 }
 
@@ -348,26 +347,42 @@ private enum Decryptor {
 
     nonisolated static func range(at url: URL, offset: Int, length: Int, contactKey: SymmetricKey) throws -> Data {
         guard length > 0 else { return Data() }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
 
-        guard let headerBytes = try handle.read(upToCount: Header.byteCount),
-              headerBytes.count == Header.byteCount
-        else { throw AttachmentError.invalidHeader }
-
-        let h             = try parseHeader(headerBytes, contactKey: contactKey)
-        let fileKey       = derivedFileKey(contactKey: contactKey, salt: h.keySalt)
+        let h             = try header(at: url, contactKey: contactKey)
         let clampedLength = min(length, h.plaintextSize - offset)
 
         let first = offset / h.chunkSize
         let last  = min((offset + clampedLength - 1) / h.chunkSize, h.chunkCount - 1)
 
         var plaintext = Data()
-        for i in first...last {
+        try forEachChunk(at: url, contactKey: contactKey, chunks: first...last) { plaintext.append($0) }
+
+        let trimStart = offset - first * h.chunkSize
+        return Data(plaintext[trimStart..<(trimStart + clampedLength)])
+    }
+
+    /// Each chunk's plaintext, in order, one alive at a time: all of the file, or the chunks in `chunks`.
+    /// Reads go through `NoCacheFile`, so nothing accumulates in the page cache behind the cursor.
+    nonisolated static func forEachChunk(
+        at url: URL,
+        contactKey: SymmetricKey,
+        chunks: ClosedRange<Int>? = nil,
+        _ body: (Data) throws -> Void
+    ) throws {
+        let reader = try NoCacheFile.reader(url)
+
+        guard let headerBytes = try? reader.read(at: 0, count: Header.byteCount),
+              headerBytes.count == Header.byteCount
+        else { throw AttachmentError.invalidHeader }
+
+        let h       = try parseHeader(headerBytes, contactKey: contactKey)
+        let fileKey = derivedFileKey(contactKey: contactKey, salt: h.keySalt)
+        guard h.chunkCount > 0 else { throw AttachmentError.invalidHeader }
+
+        for i in chunks ?? 0...(h.chunkCount - 1) {
             let isLast         = i == h.chunkCount - 1
             let ciphertextSize = isLast ? h.plaintextSize - i * h.chunkSize : h.chunkSize
-            try handle.seek(toOffset: UInt64(Header.byteCount + i * (h.chunkSize + 16)))
-            guard let raw = try handle.read(upToCount: ciphertextSize + 16),
+            guard let raw = try? reader.read(at: UInt64(Header.byteCount + i * (h.chunkSize + 16)), count: ciphertextSize + 16),
                   raw.count == ciphertextSize + 16
             else { throw AttachmentError.truncated }
 
@@ -376,11 +391,8 @@ private enum Decryptor {
                 ciphertext: raw.prefix(ciphertextSize),
                 tag:        raw.suffix(16)
             )
-            plaintext.append(contentsOf: try AES.GCM.open(box, using: fileKey))
+            try body(try AES.GCM.open(box, using: fileKey))
         }
-
-        let trimStart = offset - first * h.chunkSize
-        return Data(plaintext[trimStart..<(trimStart + clampedLength)])
     }
 
     nonisolated static func header(at url: URL, contactKey: SymmetricKey) throws -> Header {
@@ -420,76 +432,56 @@ private enum Decryptor {
 // MARK: - StreamingEncryptor
 
 nonisolated final class StreamingEncryptor: @unchecked Sendable {
-    private let handle:    FileHandle
+    private let writer:    NoCacheFile.Writer
     private let fileKey:   SymmetricKey
     private let baseNonce: AES.GCM.Nonce
     private let keySalt:   Data
-    private let chunkSize: Int
-    private var index:     Int  = 0
-    private var buffer:    Data = Data()
+    private var index:     Int = 0
+    private var buffer     = BodyStream.ChunkBuffer(chunkSize: Encryptor.chunkSize)
 
     private(set) var totalBytes: Int = 0
 
     init(url: URL, contactKey: SymmetricKey) throws {
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        
-        self.handle    = try FileHandle(forWritingTo: url)
-        // Bypass the page cache for all writes — prevents 2GB of dirty pages
-        // accumulating in RAM during large video encryption.
-        let result = fcntl(self.handle.fileDescriptor, F_NOCACHE, 1)
-        
-        #if DEBUG
-        debugPrint("No cache setting result was \(result)")
-        #endif
-        
-        self.chunkSize = Encryptor.chunkSize
+        // Created with complete protection, outside the page cache (2 GB of dirty pages would otherwise
+        // accumulate in RAM during a large video's encryption), excluded from backup, and deleted if the
+        // encryption fails or is abandoned.
+        self.writer    = try NoCacheFile.writer(url)
         self.keySalt   = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         self.baseNonce = AES.GCM.Nonce()
         self.fileKey   = derivedFileKey(contactKey: contactKey, salt: self.keySalt)
         // Reserve space for header — finalize() overwrites it
-        try self.handle.write(contentsOf: Data(count: Header.byteCount))
+        try self.writer.write(Data(count: Header.byteCount))
     }
 
     func append(_ incoming: Data) throws {
         self.totalBytes += incoming.count
-        var offset = 0
-        
-        while offset < incoming.count {
-            let take = min(self.chunkSize - self.buffer.count, incoming.count - offset)
-            
-            self.buffer.append(contentsOf: incoming[offset..<(offset + take)])
-            
-            offset += take
-            
-            if self.buffer.count == self.chunkSize {
-                try self.flush(self.buffer)
-                
-                self.buffer.removeAll(keepingCapacity: true)
-            }
-        }
+        try self.buffer.append(incoming) { try self.flush($0) }
     }
 
     func finalize() throws {
         // Only flush remaining bytes; skip if input was an exact multiple of chunkSize
-        if !self.buffer.isEmpty || self.index == 0 {
-            try self.flush(self.buffer)
+        let rest = self.buffer.drain()
+        if !rest.isEmpty || self.index == 0 {
+            try self.flush(rest)
         }
-        self.buffer.removeAll()
-        try self.handle.synchronize()
 
         var hdr = Data()
         hdr.append(contentsOf: Header.magic)
         hdr.append(Header.version)
-        hdr.append(contentsOf: UInt32(self.chunkSize).bigEndianData)
+        hdr.append(contentsOf: UInt32(Encryptor.chunkSize).bigEndianData)
         hdr.append(contentsOf: UInt64(self.index).bigEndianData)
         hdr.append(contentsOf: UInt64(self.totalBytes).bigEndianData)
         hdr.append(contentsOf: self.baseNonce.dataRepresentation)
         hdr.append(contentsOf: self.keySalt)
         hdr.append(contentsOf: HMAC<SHA256>.authenticationCode(for: hdr, using: self.fileKey))
 
-        try self.handle.seek(toOffset: 0)
-        try self.handle.write(contentsOf: hdr)
-        try self.handle.close()
+        try self.writer.overwrite(hdr, at: 0)
+        try self.writer.finish()
+    }
+
+    /// Drops what has been written: the file is removed. For a receive that was cancelled or failed.
+    func abandon() {
+        self.writer.abandon()
     }
 
     private func flush(_ plaintext: Data) throws {
@@ -498,8 +490,7 @@ nonisolated final class StreamingEncryptor: @unchecked Sendable {
             using: self.fileKey,
             nonce: derivedNonce(base: self.baseNonce, index: self.index)
         )
-        try self.handle.write(contentsOf: box.ciphertext)
-        try self.handle.write(contentsOf: box.tag)
+        try self.writer.write(box.ciphertext + box.tag)
         self.index += 1
     }
 }
@@ -510,7 +501,7 @@ nonisolated private func derivedFileKey(contactKey: SymmetricKey, salt: some Dat
     HKDF<SHA256>.deriveKey(
         inputKeyMaterial: contactKey,
         salt:             salt,
-        info:             SaltInfo.kFileKeyInfo,
+        info:             AttachmentKeyInfo.fileKey,
         outputByteCount:  32
     )
 }
