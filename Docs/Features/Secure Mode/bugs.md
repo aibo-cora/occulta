@@ -13825,6 +13825,15 @@ A user who deletes Occulta to hide it therefore leaves these behind:
 | Share staging key | `share.index.se.key.occulta`, group `group.com.occulta.shared` | First access |
 | Legacy prekeys | `prekey.<contactID>.<uuid>` | Each batch |
 
+*Added 2026-10-24: items from Bug 171's fix (#123), which outlive an app deletion the same way.* Erase All Data
+deletes them (`Manager.Key.deleteAllKeys`, `ShareStagingKeyManager.deleteKey`).
+
+| Item | Account | Created |
+|---|---|---|
+| Tier B secret `r_B` | `vault.random.key.occulta` | When Bug 171's upgrade runs for tier B |
+| Tier U and B ML-KEM records, iOS 26+ | `local.db.pq.key.occulta`, `vault.pq.key.occulta`, and `.pending` versions during an upgrade | When the upgrade runs for that tier on iOS 26+ |
+| Share staging secret `r_S` and its ML-KEM record | `share.staging.random.key.occulta`, `share.staging.pq.key.occulta`, App Group | When share staging first runs after the upgrade |
+
 **What an examiner learns from them, without the app:**
 - **The app was set up and used,** not only downloaded. The access group identifies the app whatever the tags
   say. Every item carries `kSecAttrCreationDate`, which dates first launch, first vault use and each prekey
@@ -13870,7 +13879,9 @@ Taken key by key:
 - **The passphrase work's per-install Enclave key** (`PASSPHRASE_LAYER_KEYS.md` §1, 2026-10-15). It doesn't
   exist yet, so it can start as a blob at no cost.
 - **Keys the passphrase work retires:** the local DB key and its random component, the Secure Mode PIN key and
-  the vault key.
+  the vault key. *Corrected 2026-10-24:* since Bug 171's fix the random component is tier U's `r_U`, which
+  shard custody, the restore buffer and compose staging also use. So only the Enclave key retires with the local
+  DB until those move.
   - Graduation deletes them, but only on installs that graduate, and only while the app runs.
   - Until then they survive a deletion.
   - Moving them first isn't worth a migration of its own.

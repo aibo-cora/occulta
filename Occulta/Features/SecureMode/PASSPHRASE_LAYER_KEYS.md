@@ -183,16 +183,16 @@ Each attempt is one PBKDF2 run and one Enclave call, then a trial open of the 32
 
 **Proposed 2026-10-19: key slots** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1). **Not adopted, decided
 2026-10-19 by the owner:** depth keys come directly from the phrase, as above (`decisions.md`).
-
-**Decided 2026-10-19: installs with no lock** use the same derivation, with an empty phrase for depth 0, so
-every install has the same storage. Turning a lock on reseals depth 0 under the new phrase
-(`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.4).
 - **What changes.** A depth's header slot would also hold a random depth key, and rows would be sealed
   under that key instead of under `layerKey_D`.
 - **What it buys.** A later change to this derivation, such as the iteration count or the KDF itself,
   rewraps one slot instead of resealing every row.
 - **What it doesn't.** A key that moves from device-only to phrase-only stays open to earlier images, which
   keep the device-wrapped copy. Cutting them off still needs a reseal.
+
+**Decided 2026-10-19: installs with no lock** use the same derivation, with an empty phrase for depth 0, so
+every install has the same storage. Turning a lock on reseals depth 0 under the new phrase
+(`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.4).
 
 ---
 

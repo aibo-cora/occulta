@@ -971,7 +971,8 @@ passphrase work is about 3–5 months of build (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.
 
 **Decision:**
 - **A new store file.** The reseal writes the migrated data to it, under phrase-derived keys only.
-- **The old store stays until graduation,** with its keys (the local DB Enclave key and the keychain random) and
+- **The old store stays until graduation,** with its keys (the local DB Enclave key and the keychain random; see the
+  2026-10-24 note below) and
   the PIN verifiers inside it.
 - **The way back.** A phrase forgotten during the week can be bypassed with the old PIN, which opens the old
   store as it was at setup. Changes made since are lost, and the screen says so.
@@ -988,6 +989,9 @@ passphrase work is about 3–5 months of build (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.
 - A phrase forgotten during the week loses that week's changes.
 - Two stores sit on disk for the week.
 - Still open: what a newer build does with a store an older build wrote to in the meantime.
+- *2026-10-24, after Bug 171's fix (#123):* the keychain random is tier U's `r_U`, which shard custody, the restore
+  buffer, the PIN-verifier wrap and compose staging also use. Graduation deletes the local DB Enclave key, which
+  leaves the old store unreadable, and `r_U` only once nothing else uses tier U.
 
 **Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.2; `ROLLOUT_PLAN.md` Rule 4 and "A downgrade loses
 nothing"; `bugs.md` Bug 168.
@@ -1179,7 +1183,9 @@ were compared:
 when generating.
 
 **Why:** Memorising is the larger burden, at 7 words per depth. The full list asks for the fewest. All three
-options are far beyond guessing once every guess needs the Enclave.
+options are far beyond guessing once every guess needs the Enclave. *Correction 2026-10-24:* Bug 171 showed the
+  spec's construction doesn't put the Enclave in every guess (`PASSPHRASE_LAYER_KEYS.md` §1, D2, open). The comparison
+  still holds: spec §4 sizes 7 words with PBKDF2 to stand without the Enclave.
 
 **Consequences:**
 - Typing needs a suggestion bar from the third letter, because a prefix can match up to 85 words. The bar shows
@@ -1255,7 +1261,8 @@ the share staging key.
 **Decision:**
 - **15a.** The passphrase work's new per-install Enclave key is a keychain item.
 - **15b.** The identity key stays in the keychain.
-- **15c.** The keys graduation retires (the local DB key and its random component, the Secure Mode PIN key, the
+- **15c.** The keys graduation retires (the local DB key and its random component, which is shared with other
+  tier U keys since Bug 171's fix, 2026-10-24; the Secure Mode PIN key; the
   vault key) aren't moved first.
 - **15d.** Erase All Data deletes the share staging key, which stays a keychain item.
 

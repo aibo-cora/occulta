@@ -24,6 +24,8 @@ applies and logged in `decisions.md`.
 - how 7c is made identical to an ordinary lock-on;
 - whether the data slices ship together;
 - the spec's own 2026-10-15 sub-items.
+- D2 from Bug 171 (added 2026-10-24): drop the spec's requirement that the Enclave take part in every guess,
+  which its construction doesn't meet, and keep the `ECDH(d, P)` device-binding term (spec §1; open there).
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -356,7 +358,11 @@ Assuming §1.2: the reseal happens at phrase setup, into a new store.
 
 **Graduation.** When every phrase is proven, these are deleted together:
 - the old store;
-- the local DB Enclave key and the keychain random (`local.db.random.key.occulta`);
+- the local DB Enclave key (`local.db.se.key.occulta`), which leaves every copy of the old store unreadable.
+  - *Corrected 2026-10-24 for Bug 171's fix (#123):* tier U's Keychain secret `r_U` (`local.db.random.key.occulta`)
+    and, on iOS 26+, its ML-KEM record (`local.db.pq.key.occulta`) also key shard custody, the restore buffer, the
+    PIN-verifier wrap and compose staging.
+  - So they go only once nothing else uses tier U (ROLLOUT_PLAN stage 4).
 - the Secure Mode PIN Enclave key (`app.layer.key.occulta.v1`).
 
 **What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. Since every
@@ -589,6 +595,9 @@ there and aren't repeated here.
     monthly at unlock, plus a manual entry in Settings.
 15. ~~**Where per-install keys live** (§6, `bugs.md` Bug 170).~~ **Decided 2026-10-19:** the keychain, for the
     new phrase key and the identity key; retired keys aren't moved; Erase All Data deletes the share staging key.
+16. **D2 from Bug 171** (added 2026-10-24): drop the per-guess Enclave requirement, which the spec's construction
+    doesn't meet (`PASSPHRASE_LAYER_KEYS.md` §1). Open there; it changes no decision above, since 7 words with
+    PBKDF2 are sized to hold without the Enclave (spec §4).
 
 ---
 
