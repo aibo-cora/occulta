@@ -37,9 +37,63 @@ public struct WireHandle {
 
     // MARK: - Outer envelope: parse
 
+    /// The 167-byte header (`SPEC.md` §4.1): everything before the ciphertext, and its length.
+    public struct Header {
+        public let version: UInt8
+        public let minReaderVersion: UInt8
+        public let mode: UInt8
+        public let flags: UInt16
+        public let prekeyID: Data?          // nil or 36-byte UTF-8 UUID
+        public let ephemeralKey: Data       // 65-byte P-256 key, or empty Data on longTerm paths
+        public let fingerprintNonce: Data   // 16 bytes
+        public let senderFingerprint: Data  // 32 bytes
+        public let ciphertextLength: UInt64
+    }
+
+    /// The TLV sections that follow the ciphertext (§4.4).
+    public struct Sections {
+        public let groupEnvelope: Data?     // TLV section 0x01 — JSON(GroupEnvelope), nil for non-group bundles
+    }
+
+    /// Bytes of the header, and so the offset of the ciphertext.
+    public static let headerLength = 167
+
+    /// Wire `version` of the streamed layout (`STREAMING_SPEC.md` §4.1).
+    public static let streamedVersionByte: UInt8 = 0x0A
+
     /// Parse the binary outer envelope without decrypting.
-    /// Throws `BundleError.unsupportedVersion` if `min_reader_version` exceeds this build.
+    /// Throws `BundleError.unsupportedVersion` if the wire version is not one this build reads.
     public static func parse(_ data: Data) throws -> Bundle {
+        let header = try Self.parseHeader(data)
+        var r = Reader(data)
+        _ = try r.read(Self.headerLength)
+        let ciphertext = try r.read(length: header.ciphertextLength)
+        let sections = try Self.parseSections(try r.read(r.remaining))
+
+        if header.version == Self.streamedVersionByte {
+            guard sections.groupEnvelope != nil else { throw OccultaBundle.BundleError.malformedBundle }
+        }
+
+        return Bundle(
+            version:           header.version,
+            minReaderVersion:  header.minReaderVersion,
+            mode:              header.mode,
+            flags:             header.flags,
+            prekeyID:          header.prekeyID,
+            ephemeralKey:      header.ephemeralKey,
+            fingerprintNonce:  header.fingerprintNonce,
+            senderFingerprint: header.senderFingerprint,
+            ciphertext:        ciphertext,
+            groupEnvelope:     sections.groupEnvelope
+        )
+    }
+
+    /// Parse the 167-byte header at the start of `data`, which may be longer.
+    ///
+    /// Reader rules (`STREAMING_SPEC.md` §4.1): accept exactly `0x04` and `0x0A` as `version`, and require
+    /// `min_reader_version` to equal it. `0x05`–`0x09` exist only as capability markers: `byteToVersion` maps
+    /// them to tiers, and a reader that let them through would route them as bundles.
+    public static func parseHeader(_ data: Data) throws -> Header {
         var r = Reader(data)
 
         let magic4 = try r.read(4)
@@ -55,18 +109,33 @@ public struct WireHandle {
         let fingerprintNonce = try r.read(16)
         let senderFP         = try r.read(32)
         let ctLen            = try r.uint64BE()
-        let ciphertext       = try r.read(length: ctLen)
 
-        guard minReaderVersion <= Self.versionByte else {
-            throw OccultaBundle.BundleError.unsupportedVersion
-        }
+        guard version == Self.versionByte || version == Self.streamedVersionByte,
+              minReaderVersion == version
+        else { throw OccultaBundle.BundleError.unsupportedVersion }
 
         let prekeyID = hasPrekeyID ? prekeyIDBytes : nil
         // 65 zero bytes signals empty ephemeral key (longTerm paths).
         // A real P-256 key always begins with 0x04 — all-zero is not a valid key.
         let ephemeralKey = ephemeralKeyRaw.allSatisfy({ $0 == 0 }) ? Data() : ephemeralKeyRaw
 
-        // TLV extension sections (§4.4). Unknown types are skipped.
+        return Header(
+            version:           version,
+            minReaderVersion:  minReaderVersion,
+            mode:              mode,
+            flags:             flags,
+            prekeyID:          prekeyID,
+            ephemeralKey:      ephemeralKey,
+            fingerprintNonce:  fingerprintNonce,
+            senderFingerprint: senderFP,
+            ciphertextLength:  ctLen
+        )
+    }
+
+    /// Parse the TLV extension sections (§4.4): the bytes after the ciphertext, to the end. Unknown types
+    /// are skipped.
+    public static func parseSections(_ data: Data) throws -> Sections {
+        var r = Reader(data)
         var groupEnvelope: Data? = nil
         while r.remaining >= 5 {
             let sectionType   = try r.uint8()
@@ -77,19 +146,7 @@ public struct WireHandle {
                 groupEnvelope = sectionBytes
             }
         }
-
-        return Bundle(
-            version:           version,
-            minReaderVersion:  minReaderVersion,
-            mode:              mode,
-            flags:             flags,
-            prekeyID:          prekeyID,
-            ephemeralKey:      ephemeralKey,
-            fingerprintNonce:  fingerprintNonce,
-            senderFingerprint: senderFP,
-            ciphertext:        ciphertext,
-            groupEnvelope:     groupEnvelope
-        )
+        return Sections(groupEnvelope: groupEnvelope)
     }
 
     // MARK: - Outer envelope: open
@@ -129,6 +186,16 @@ public struct WireHandle {
     /// Encode a fully constructed `OccultaBundle` as a binary outer envelope.
     /// The bundle's `ciphertext` must already be the AES-GCM combined output.
     public static func encode(_ bundle: OccultaBundle) throws -> Data {
+        var out = try Self.encodeHeader(bundle, ciphertextLength: UInt64(bundle.ciphertext.count))
+        out.append(bundle.ciphertext)
+        out.append(try Self.encodeSections(bundle))
+        return out
+    }
+
+    /// The 167-byte header of `bundle`, declaring a ciphertext of `ciphertextLength` bytes. The bundle's own
+    /// `ciphertext` is not read: a streamed writer writes the chunk stream after this, and the sections after
+    /// that.
+    public static func encodeHeader(_ bundle: OccultaBundle, ciphertextLength: UInt64) throws -> Data {
         guard let vByte = Self._versionToByte[bundle.version] else {
             throw OccultaBundle.BundleError.unsupportedVersion
         }
@@ -157,8 +224,13 @@ public struct WireHandle {
 
         w.data(bundle.fingerprintNonce)
         w.data(bundle.senderFingerprint)
-        w.uint64BE(UInt64(bundle.ciphertext.count))
-        w.data(bundle.ciphertext)
+        w.uint64BE(ciphertextLength)
+        return w.result
+    }
+
+    /// The TLV sections of `bundle`, for the bytes after the ciphertext.
+    public static func encodeSections(_ bundle: OccultaBundle) throws -> Data {
+        var w = Writer()
 
         // TLV section 0x01 — group envelope (§4.4). Written only for group bundles.
         //
@@ -232,6 +304,19 @@ public struct WireHandle {
     /// Binary-encode a `Basket`. The result becomes `SealedPayload.message`.
     /// File content is written as raw bytes; all other metadata is JSON.
     public static func encode(basket: Basket) throws -> Data {
+        try Self.encodeBasket(basket, streamedLengths: nil)
+    }
+
+    /// The streamed layout's basket (`STREAMING_SPEC.md` §4.4). `streamedLengths` runs parallel to
+    /// `basket.files`: a non-nil entry marks that file as streamed. Its content is not written, so
+    /// `content_length` is 0, and its `FileMeta` JSON gains `"streamedLength"`, the plaintext length of the
+    /// content that follows the manifest in the stream.
+    public static func encode(basket: Basket, streamedLengths: [UInt64?]) throws -> Data {
+        guard streamedLengths.count == basket.files.count else { throw OccultaBundle.BundleError.malformedBundle }
+        return try Self.encodeBasket(basket, streamedLengths: streamedLengths)
+    }
+
+    private static func encodeBasket(_ basket: Basket, streamedLengths: [UInt64?]?) throws -> Data {
         let meta = BasketMeta(id: basket.id, date: basket.date, owner: basket.owner)
         let metaJSON = try Self.sortedEncoder.encode(meta)
 
@@ -240,14 +325,16 @@ public struct WireHandle {
         w.data(metaJSON)
         w.uint32BE(UInt32(basket.files.count))
 
-        for file in basket.files {
-            let fileMeta = FileMeta(id: file.id, format: file.format, date: file.date)
+        for (index, file) in basket.files.enumerated() {
+            let streamedLength = streamedLengths?[index]
+            let fileMeta = FileMeta(id: file.id, format: file.format, date: file.date, streamedLength: streamedLength)
             let fileMetaJSON = try Self.sortedEncoder.encode(fileMeta)
 
             w.uint32BE(UInt32(fileMetaJSON.count))
             w.data(fileMetaJSON)
 
-            let content = file.content ?? Data()
+            // A streamed file's bytes travel in the stream, never here.
+            let content = streamedLength == nil ? (file.content ?? Data()) : Data()
             w.uint64BE(UInt64(content.count))
             w.data(content)
         }
@@ -259,6 +346,27 @@ public struct WireHandle {
 
     /// Decode binary Basket bytes produced by `encode(basket:)`.
     public static func decode(basket data: Data) throws -> Basket {
+        try Self.decodeBasket(data).basket
+    }
+
+    /// Decode the streamed layout's basket. `streamedLengths` runs parallel to `basket.files`.
+    ///
+    /// Every `.file` must be streamed and nothing else may be, and a streamed file carries no inline
+    /// content (§4.4); anything else is `malformedBundle`. Streamed files' `content` is nil: their bytes
+    /// are in the stream.
+    public static func decode(streamedBasket data: Data) throws -> (basket: Basket, streamedLengths: [UInt64?]) {
+        let (basket, lengths, inlineContentLengths) = try Self.decodeBasket(data)
+        for (file, (length, inline)) in zip(basket.files, zip(lengths, inlineContentLengths)) {
+            var isFile = false
+            if case .file = file.format { isFile = true }
+            guard isFile == (length != nil), length == nil || inline == 0 else {
+                throw OccultaBundle.BundleError.malformedBundle
+            }
+        }
+        return (basket, lengths)
+    }
+
+    private static func decodeBasket(_ data: Data) throws -> (basket: Basket, streamedLengths: [UInt64?], inlineContentLengths: [UInt64]) {
         var r = Reader(data)
 
         let metaLen   = Int(try r.uint32BE())
@@ -268,6 +376,8 @@ public struct WireHandle {
         let meta = try JSONDecoder().decode(BasketMeta.self, from: metaJSON)
 
         var files: [File] = []
+        var streamedLengths: [UInt64?] = []
+        var inlineContentLengths: [UInt64] = []
         for _ in 0..<fileCount {
             let fMetaLen  = Int(try r.uint32BE())
             let fMetaJSON = try r.read(fMetaLen)
@@ -276,9 +386,11 @@ public struct WireHandle {
 
             let fMeta = try JSONDecoder().decode(FileMeta.self, from: fMetaJSON)
             files.append(File(id: fMeta.id, content: content, format: fMeta.format, date: fMeta.date))
+            streamedLengths.append(fMeta.streamedLength)
+            inlineContentLengths.append(ctLen)
         }
 
-        return Basket(id: meta.id, files: files, date: meta.date, owner: meta.owner)
+        return (Basket(id: meta.id, files: files, date: meta.date, owner: meta.owner), streamedLengths, inlineContentLengths)
     }
 
     // MARK: - Version / mode byte tables
@@ -290,7 +402,9 @@ public struct WireHandle {
 
     // groupCapable/groupShardCapable/senderSignatureCapable/prefixedSenderSignatureCapable/bodyDigestCapable
     // all encode to 0x04 on the wire (same binary layout as v4); 0x05–0x09 are only written
-    // into Contact.Profile.maxBundleVersion as capability markers.
+    // into Contact.Profile.maxBundleVersion as capability markers. `streamedBodyCapable` is the
+    // exception: 0x0A is a marker and also the wire version of the streamed layout. `parseHeader`
+    // accepts exactly 0x04 and 0x0A, whatever these tables map.
     //
     // ⚠️ These two tables and `Version.wireByte` are three statements of one fact and must be
     // updated together. Adding a tier to the enum alone leaves its marker byte unmappable on
@@ -307,6 +421,7 @@ public struct WireHandle {
         .senderSignatureCapable: 0x04,
         .prefixedSenderSignatureCapable: 0x04,
         .bodyDigestCapable:      0x04,
+        .streamedBodyCapable:    0x0A,
     ]
     private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [
         0x04: .v4,
@@ -315,6 +430,7 @@ public struct WireHandle {
         0x07: .senderSignatureCapable,
         0x08: .prefixedSenderSignatureCapable,
         0x09: .bodyDigestCapable,
+        0x0A: .streamedBodyCapable,
     ]
 
     private static let _modeToByte: [OccultaBundle.Mode: UInt8] = [
@@ -386,15 +502,26 @@ private struct FileMeta: Codable {
     var id: UUID
     var format: File.Format?
     var date: Date?
+    /// Plaintext length of this file's content in the body stream. Present only on a streamed file of the
+    /// streamed layout, so an inline basket encodes exactly as it always did.
+    var streamedLength: UInt64?
+
+    init(id: UUID, format: File.Format?, date: Date?, streamedLength: UInt64? = nil) {
+        self.id             = id
+        self.format         = format
+        self.date           = date
+        self.streamedLength = streamedLength
+    }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.id,              forKey: .id)
-        try c.encodeIfPresent(self.format, forKey: .format)
-        try c.encodeIfPresent(self.date,   forKey: .date)
+        try c.encode(self.id,                      forKey: .id)
+        try c.encodeIfPresent(self.format,         forKey: .format)
+        try c.encodeIfPresent(self.date,           forKey: .date)
+        try c.encodeIfPresent(self.streamedLength, forKey: .streamedLength)
     }
 
-    enum CodingKeys: String, CodingKey { case id, format, date }
+    enum CodingKeys: String, CodingKey { case id, format, date, streamedLength }
 }
 
 // MARK: - Reader (sequential big-endian byte reader)

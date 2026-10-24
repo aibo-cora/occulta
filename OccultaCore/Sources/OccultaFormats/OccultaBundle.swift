@@ -147,6 +147,14 @@ public struct OccultaBundle: Codable {
         /// included: every build that has it would refuse that build's messages (`ROLLOUT_PLAN.md`, release
         /// mechanics).
         case bodyDigestCapable
+        /// The streamed body layout (`Docs/Features/Bundle/STREAMING_SPEC.md`): the body is a chunked STREAM
+        /// over AES-GCM, so neither side holds a whole attachment in memory. Unlike the tiers above it is also
+        /// a wire `version` — `0x0A` in the header, and its raw value is in each chunk's AAD — and is stored in
+        /// `Contact.Profile.maxBundleVersion` as the same byte.
+        ///
+        /// Not yet in `known` or given a `minimumAppVersion`: the codec reads and writes the layout, and the
+        /// tier becomes a contact's recorded capability when the send path lands (stage 4).
+        case streamedBodyCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -179,6 +187,7 @@ public struct OccultaBundle: Codable {
             case .senderSignatureCapable: return 0x07
             case .prefixedSenderSignatureCapable: return 0x08
             case .bodyDigestCapable: return 0x09
+            case .streamedBodyCapable: return 0x0A
             default:                 return nil
             }
         }
