@@ -31,7 +31,7 @@ final class AttachmentManager: Sendable {
         try Encryptor.write(data, contactKey: self.contactKey, to: url)
     }
 
-    func streamingEncryptor(to url: URL) throws -> StreamingEncryptor {
+    nonisolated func streamingEncryptor(to url: URL) throws -> StreamingEncryptor {
         try StreamingEncryptor(url: url, contactKey: self.contactKey)
     }
 
@@ -363,7 +363,7 @@ private enum Decryptor {
 
 // MARK: - StreamingEncryptor
 
-final class StreamingEncryptor: @unchecked Sendable {
+nonisolated final class StreamingEncryptor: @unchecked Sendable {
     private let writer:    NoCacheFile.Writer
     private let fileKey:   SymmetricKey
     private let baseNonce: AES.GCM.Nonce

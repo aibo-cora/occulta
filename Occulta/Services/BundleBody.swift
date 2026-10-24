@@ -213,7 +213,7 @@ nonisolated final class StreamCursor: @unchecked Sendable {
 // MARK: - Routing
 
 /// Receives the streamed files' bytes, one file after another, in manifest order.
-protocol StreamSink: AnyObject {
+nonisolated protocol StreamSink: AnyObject {
     /// The file at this index of the basket begins. Called for a zero-length file too.
     func begin(fileIndex: Int) throws
     func write(_ data: Data) throws

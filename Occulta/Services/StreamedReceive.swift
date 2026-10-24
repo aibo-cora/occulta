@@ -100,7 +100,7 @@ final class StreamedReceive {
         self.basket      = Basket(id: basket.id, files: shown, date: basket.date, owner: basket.owner)
 
         self.sink?.onFinished = { [weak self] id, url in
-            Task { @MainActor in self?.finished(id: id, at: url) }
+            Task { @MainActor [weak self] in self?.finished(id: id, at: url) }
         }
     }
 

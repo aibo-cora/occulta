@@ -41,10 +41,10 @@ extension ContactManager {
     func sealReceivedFiles(
         of basket: Basket,
         owner: String,
-        stagingKeyProvider: any ComposeStagingKeyProviding = ShareStagingKeyManager(),
+        stagingKeyProvider: (any ComposeStagingKeyProviding)? = nil,
         in directory: URL = FileManager.default.temporaryDirectory
     ) async throws -> OwnedBasket {
-        let attachmentManager = self.receivedAttachmentKey(for: owner, stagingKeyProvider: stagingKeyProvider)
+        let attachmentManager = self.receivedAttachmentKey(for: owner, stagingKeyProvider: stagingKeyProvider ?? ShareStagingKeyManager())
             .map { AttachmentManager(contactKey: $0) }
 
         // Checked before the loop so no task has started a write.

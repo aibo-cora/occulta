@@ -462,7 +462,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             return BodyStream.nonce(index: try #require(self.index)).withUnsafeBytes { Data($0) }
 
         case "streamAAD":
-            return BodyStream.aad(header: try Self.bytes(self.header), index: try #require(self.index), final: try #require(self.isFinal))
+            guard let isFinal = self.isFinal else { Issue.record("\(self.name): no isFinal"); return Data() }
+            return BodyStream.aad(header: try Self.bytes(self.header), index: try #require(self.index), final: isFinal)
 
         case "streamBody", "streamBodyDigest":
             // The complete chunk stream for a fixed session key, header and plaintext. The long ones record the
