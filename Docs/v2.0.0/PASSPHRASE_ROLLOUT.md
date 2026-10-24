@@ -23,9 +23,12 @@ applies and logged in `decisions.md`.
 - 11a and 11b, the vault's keys;
 - how 7c is made identical to an ordinary lock-on;
 - whether the data slices ship together;
-- the spec's own 2026-10-15 sub-items.
-- D2 from Bug 171 (added 2026-10-24): drop the spec's requirement that the Enclave take part in every guess,
-  which its construction doesn't meet, and keep the `ECDH(d, P)` device-binding term (spec §1; open there).
+- the spec's own 2026-10-15 sub-items;
+- 16, D2 from Bug 171 (added 2026-10-24): drop the spec's requirement that the Enclave take part in every
+  guess, which its construction doesn't meet, and keep the `ECDH(d, P)` device-binding term (spec §1; open there);
+- 17, the version number of the release after 2.0.0;
+- 18, what a newer build does with a store an older build wrote to;
+- 19, Bug 170's leftovers: the legacy keychain prekeys and the shard custody key.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -598,6 +601,14 @@ there and aren't repeated here.
 16. **D2 from Bug 171** (added 2026-10-24): drop the per-guess Enclave requirement, which the spec's construction
     doesn't meet (`PASSPHRASE_LAYER_KEYS.md` §1). Open there; it changes no decision above, since 7 words with
     PBKDF2 are sized to hold without the Enclave (spec §4).
+17. **The version number of the release after 2.0.0** (added 2026-10-24), for example 2.1.0. It names the
+    release branch (`release/v<version>`) and the prefix of the passphrase work's feature branches. Nothing on the
+    wire depends on it, since the work is local storage.
+18. **What a newer build does with a store an older build wrote to in the meantime** (added 2026-10-24; §1.2,
+    ROLLOUT_PLAN's "A downgrade loses nothing"). Left open by decision 4.
+19. **Bug 170's leftovers** (added 2026-10-24; §6, `bugs.md` Bug 170): the legacy keychain prekeys, whose tags name
+    contacts and outlive an app deletion until they retire, and the shard custody key, which waits on ROLLOUT_PLAN
+    stage 4.
 
 ---
 
