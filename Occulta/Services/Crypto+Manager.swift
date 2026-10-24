@@ -14,13 +14,26 @@ import CryptoKit
 
 enum Manager { }
 
+/// A key manager that can derive the v1 local DB key: `ECDH(identity key, G)` with no authenticated data, a function of the
+/// identity key's public point, which every contact holds (`bugs.md` Bug 171). Not part of `KeyManagerProtocol`, so nothing
+/// that takes a key manager can reach it: only `LegacyCryptoManager` asks for it, to open what `migrateToV2` is still moving.
+protocol LegacyLocalKeyProviding {
+    func createLocalEncryptionKey() throws -> SymmetricKey?
+}
+
 /// Crypto manager that uses the v1 key path for decryptLegacy.
 /// Used only during migration. Not stored or used after migration completes.
-final class LegacyCryptoManager: CryptoProtocol {
-    private let keyManager = Manager.Ambient.keyManager
+final class LegacyCryptoManager: LegacyCryptoProtocol {
+    private let keyManager: (any LegacyLocalKeyProviding)?
+
+    /// - Parameter keyManager: Where the v1 key comes from. The ambient key manager if it can derive one (the real one and
+    ///   `TestKeyManager` can); one that can't makes `decryptLegacy` return nil.
+    init(keyManager: (any LegacyLocalKeyProviding)? = Manager.Ambient.keyManager as? any LegacyLocalKeyProviding) {
+        self.keyManager = keyManager
+    }
 
     func decryptLegacy(data: Data?) throws -> Data? {
-        guard let data, let key = try self.keyManager.createLocalEncryptionKey() else { return nil }
+        guard let data, let key = try self.keyManager?.createLocalEncryptionKey() else { return nil }
         
         let box = try AES.GCM.SealedBox(combined: data)
         
@@ -77,13 +90,6 @@ extension Manager {
             return try AES.GCM.open(box, using: key, authenticating: aad)
         }
 
-        // MARK: - Legacy local decrypt (v1 — identity-derived key, no AAD)
-
-        /// Decrypt data encrypted under the v1 scheme (identity-derived key, no AAD).
-        ///
-        /// Used exclusively during migration from v1 → v2. After migration completes,
-        /// no v1 ciphertext should remain in the database. This method should not be
-        /// called from any path other than DatabaseMigration.
         // MARK: - Local encryption with a caller-supplied key (skips derivation)
 
         /// Same as `encrypt(data:)` but uses an already-derived key instead of deriving
@@ -108,18 +114,6 @@ extension Manager {
             let aad = EncryptionScheme.v2_hybridPQ.aad
 
             return try AES.GCM.open(box, using: key, authenticating: aad)
-        }
-
-        func decryptLegacy(data: Data?) throws -> Data? {
-            guard
-                let data,
-                let key = try self.keyManager.createLocalEncryptionKey()
-            else {
-                return nil
-            }
-
-            let box = try AES.GCM.SealedBox(combined: data)
-            return try AES.GCM.open(box, using: key)
         }
 
         // MARK: - Transport encryption (unchanged)
@@ -177,10 +171,16 @@ extension Manager {
 protocol CryptoProtocol {
     func encrypt(data: Data?) throws -> Data?
     func decrypt(data: Data?) throws -> Data?
-    func decryptLegacy(data: Data?) throws -> Data?
     func encrypt(message: Data, using material: Data?) throws -> Data?
     func decrypt(message: Data, using material: Data?) throws -> Data?
     func sign(data: Data?) throws -> String
+}
+
+/// A crypto manager that can also open a value sealed under the v1 key (identity-derived, no authenticated data). Only
+/// `DatabaseMigration.migrateToV2` takes one, and `LegacyCryptoManager` is the only conformer outside tests: after the
+/// migration no v1 ciphertext remains, and until then nothing but the migration may open one (`bugs.md` Bug 171).
+protocol LegacyCryptoProtocol: CryptoProtocol {
+    func decryptLegacy(data: Data?) throws -> Data?
 }
 
 // MARK: - Signing errors

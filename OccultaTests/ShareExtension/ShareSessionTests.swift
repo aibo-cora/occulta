@@ -506,6 +506,21 @@ struct ShareStagingKeyManagerTests {
         #expect(ShareStagingKeyManager().deleteKey())
     }
 
+    /// `r_S`, the staging tier's Keychain secret, and its PQ record are dated like the key (`bugs.md` Bug 171): the
+    /// wipe has to remove all three.
+    @Test("Deleting the key also removes r_S and the PQ record")
+    func deleteKeyAlsoRemovesTheTierSecretAndRecord() throws {
+        let staging = ShareStagingKeyManager()
+        try staging.createTierSecretIfAbsent()
+        try staging.createTierPQRecordIfAbsent()
+        #expect(try staging.tierSecret() != nil)
+        #expect(try staging.tierPQRecord() != nil)
+
+        #expect(staging.deleteKey())
+        #expect(try staging.tierSecret() == nil)
+        #expect(try staging.tierPQRecord() == nil)
+    }
+
     @Test("What one instance seals, another opens")
     func separateInstancesShareTheKey() throws {
         let plaintext = Data("staged".utf8)
@@ -518,5 +533,50 @@ struct ShareStagingKeyManagerTests {
         var sealed = try ShareStagingKeyManager().encrypt(data: Data("staged".utf8))
         sealed[sealed.count - 1] ^= 0x01
         #expect(throws: (any Error).self) { try ShareStagingKeyManager().decrypt(data: sealed) }
+    }
+
+    // MARK: Stage 5 (Bug 171): a real Enclave key, in each form
+
+    /// Items of a test's own, so the canonical key, `r_S` and record that other tests and the extension use stay alone.
+    private struct OwnItems {
+        let keyTag = "test.stage5.enclave.key.\(UUID().uuidString)"
+        let secret = "test.stage5.enclave.rs.\(UUID().uuidString)"
+        let record = "test.stage5.enclave.pqs.\(UUID().uuidString)"
+
+        func process(postQuantum: @escaping () -> (any StagingPostQuantum)?) -> ShareStagingKeyManager {
+            ShareStagingKeyManager(keyTag: self.keyTag, tierSecretAccount: self.secret, tierPQRecordAccount: self.record, postQuantum: postQuantum)
+        }
+    }
+
+    private func roundTrip(postQuantum: @escaping () -> (any StagingPostQuantum)?, expecting mode: ShareStagingKeyManager.PQRecord.Mode) throws {
+        let items = OwnItems()
+        let app = items.process(postQuantum: postQuantum), extension_ = items.process(postQuantum: postQuantum)
+        defer { app.deleteKey() }
+
+        let plaintext = Data("staged under the real Enclave key".utf8)
+        let sealed = try extension_.encrypt(data: plaintext)
+
+        #expect(try extension_.tierPQRecord()?.mode == mode)
+        #expect(try app.decrypt(data: sealed) == plaintext, "a second instance on the same items opens it")
+        #expect(try app.tierSecret() != nil)
+
+        let legacy = try app.deriveLegacySymmetricKey()
+        let box    = try AES.GCM.SealedBox(combined: sealed)
+        #expect((try? AES.GCM.open(box, using: legacy)) == nil, "not under the legacy key")
+
+        // And a session the previous build sealed under the legacy key still opens.
+        let old = try #require(try AES.GCM.seal(plaintext, using: legacy).combined)
+        #expect(try app.decrypt(data: old) == plaintext)
+    }
+
+    @Test("Classical form on the real Enclave key: sealed, opened by a second instance, not under the legacy key")
+    func realEnclaveClassicalRoundTrip() throws {
+        try self.roundTrip(postQuantum: { nil }, expecting: .classical)
+    }
+
+    @Test("Hybrid form on the real Enclave keys (P-256 and ML-KEM-1024): sealed, opened by a second instance, not under the legacy key",
+          .enabled(if: ShareStagingKeyManager.platformPostQuantum() != nil))
+    func realEnclaveHybridRoundTrip() throws {
+        try self.roundTrip(postQuantum: ShareStagingKeyManager.platformPostQuantum, expecting: .hybrid)
     }
 }

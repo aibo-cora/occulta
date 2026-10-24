@@ -16,6 +16,10 @@ import Testing
 @testable import Occulta
 
 struct AmbientTestKeyManagerTrait: TestTrait, SuiteTrait, TestScoping {
+    /// Bind the frozen manager (`TestKeyManager.frozen()`: fixed scalars, fixed secrets, a fixed ML-KEM record)
+    /// instead of a random one, for the tests that pin the bytes of the keys they derive.
+    var frozen = false
+
     /// On a suite, applies to each test inside it, so every test gets its own override
     /// and its own leak check rather than sharing one around the whole suite.
     var isRecursive: Bool { true }
@@ -25,7 +29,8 @@ struct AmbientTestKeyManagerTrait: TestTrait, SuiteTrait, TestScoping {
         testCase: Test.Case?,
         performing function: @Sendable @concurrent () async throws -> Void
     ) async throws {
-        let override = await MainActor.run { Manager.Ambient.Override(TestKeyManager()) }
+        let frozen   = self.frozen
+        let override = await MainActor.run { Manager.Ambient.Override(frozen ? TestKeyManager.frozen() : TestKeyManager()) }
 
         try await Manager.Ambient.$override.withValue(override) {
             try await function()
@@ -38,4 +43,7 @@ struct AmbientTestKeyManagerTrait: TestTrait, SuiteTrait, TestScoping {
 
 extension Trait where Self == AmbientTestKeyManagerTrait {
     static var ambientTestKeyManager: Self { Self() }
+
+    /// Like `ambientTestKeyManager`, with `TestKeyManager.frozen()`.
+    static var ambientFrozenTestKeyManager: Self { Self(frozen: true) }
 }

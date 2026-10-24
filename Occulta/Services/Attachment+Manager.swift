@@ -63,6 +63,74 @@ final class AttachmentManager: Sendable {
         }
     }
 
+    /// True when the file's header authenticates under this manager's key, that is when this key sealed it: the header
+    /// carries an HMAC under the per-file key derived from it. Reads 101 bytes. A plaintext file, a file under another
+    /// key and a half-written one are all false.
+    nonisolated func opens(at url: URL) -> Bool {
+        (try? Decryptor.header(at: url, contactKey: self.contactKey)) != nil
+    }
+
+    /// Moves a file sealed under this manager's key to `target`'s key (Bug 171, Stage 8: a draft attachment, when the compose
+    /// staging key goes from its classical form to the hybrid one). Streams a chunk at a time, so a large video never sits in
+    /// memory: each chunk is opened under this key and appended to `<url>.resealing` under the target's. The new file is then
+    /// read back under the target's key and its length and SHA-256 compared with what was written, and only then does it
+    /// replace the original, atomically. Any failure removes the temporary and leaves the original as it was.
+    ///
+    /// Throws if the file is not under this manager's key. On the main actor, like `StreamingEncryptor`, which it writes through.
+    @MainActor
+    func reseal(at url: URL, to target: AttachmentManager, beforeReadBack: ((URL) -> Void)? = nil) throws {
+        let header    = try Decryptor.header(at: url, contactKey: self.contactKey)
+        let temporary = Self.resealingURL(for: url)
+        try? FileManager.default.removeItem(at: temporary)
+
+        do {
+            var written   = SHA256()
+            let encryptor = try StreamingEncryptor(url: temporary, contactKey: target.contactKey)
+            var offset    = 0
+            while offset < header.plaintextSize {
+                let length = min(header.chunkSize, header.plaintextSize - offset)
+                let chunk  = try Decryptor.range(at: url, offset: offset, length: length, contactKey: self.contactKey)
+                written.update(data: chunk)
+                try encryptor.append(chunk)
+                offset += length
+            }
+            try encryptor.finalize()
+
+            // As `writeProtected` leaves a file: complete protection, and out of backups.
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: temporary.path)
+            var marked = temporary
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? marked.setResourceValues(values)
+
+            beforeReadBack?(temporary)
+
+            let back = try Decryptor.header(at: temporary, contactKey: target.contactKey)
+            guard back.plaintextSize == header.plaintextSize else { throw AttachmentError.resealMismatch }
+
+            var read = SHA256()
+            offset = 0
+            while offset < back.plaintextSize {
+                let length = min(back.chunkSize, back.plaintextSize - offset)
+                read.update(data: try Decryptor.range(at: temporary, offset: offset, length: length, contactKey: target.contactKey))
+                offset += length
+            }
+            guard read.finalize() == written.finalize() else { throw AttachmentError.resealMismatch }
+
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    /// The suffix of the temporary `reseal` writes beside a file, and that a run killed before the rename leaves behind.
+    nonisolated static let resealingSuffix = "resealing"
+
+    nonisolated static func resealingURL(for url: URL) -> URL {
+        url.appendingPathExtension(Self.resealingSuffix)
+    }
+
     nonisolated func encryptWithProgress(_ data: Data, to url: URL) -> AsyncThrowingStream<Double, Error> {
         let key = self.contactKey
         
@@ -230,22 +298,42 @@ private enum Encryptor {
         header.append(contentsOf: keySalt)
         header.append(contentsOf: HMAC<SHA256>.authenticationCode(for: header, using: fileKey))
 
-        var output = header
-        let base = plaintext.startIndex
-        for i in 0..<chunks {
-            let start = base + i * chunkSize
-            let end   = min(start + chunkSize, base + total)
-            let box   = try AES.GCM.seal(
-                total > 0 ? plaintext[start..<end] : Data(),
-                using: fileKey,
-                nonce: derivedNonce(base: baseNonce, index: i)
-            )
-            output.append(contentsOf: box.ciphertext)
-            output.append(contentsOf: box.tag)
-            onProgress?(Double(i + 1) / Double(chunks))
+        // Each sealed chunk goes straight to disk. Collecting the whole file in a `Data` first cost
+        // another `total` bytes of heap on top of `plaintext` (more while it grew), which is what
+        // took a ~800 MB attachment past the Jetsam limit on the receiving side.
+        FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.protectionKey: FileProtectionType.complete])
+
+        do {
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+
+            // Same reason as `StreamingEncryptor`: no dirty pages piling up in the page cache.
+            _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
+
+            try handle.write(contentsOf: header)
+
+            let base = plaintext.startIndex
+            for i in 0..<chunks {
+                let start = base + i * chunkSize
+                let end   = min(start + chunkSize, base + total)
+                let box   = try AES.GCM.seal(
+                    total > 0 ? plaintext[start..<end] : Data(),
+                    using: fileKey,
+                    nonce: derivedNonce(base: baseNonce, index: i)
+                )
+                try handle.write(contentsOf: box.ciphertext + box.tag)
+                onProgress?(Double(i + 1) / Double(chunks))
+            }
+        } catch {
+            // A half-written sealed file left in the temp directory is a trace of its own.
+            try? FileManager.default.removeItem(at: url)
+            throw error
         }
 
-        try output.writeProtected(to: url)
+        var url = url
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        try? url.setResourceValues(resourceValues)
     }
 }
 
@@ -331,7 +419,7 @@ private enum Decryptor {
 
 // MARK: - StreamingEncryptor
 
-final class StreamingEncryptor: @unchecked Sendable {
+nonisolated final class StreamingEncryptor: @unchecked Sendable {
     private let handle:    FileHandle
     private let fileKey:   SymmetricKey
     private let baseNonce: AES.GCM.Nonce
@@ -570,6 +658,8 @@ enum AttachmentError: Error {
     case headerMACFailed
     case truncated
     case invalidImageData
+    /// A resealed file read back differently from what was written.
+    case resealMismatch
 }
 
 // MARK: - Associated object key

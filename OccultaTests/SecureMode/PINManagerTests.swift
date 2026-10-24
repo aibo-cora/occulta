@@ -856,6 +856,29 @@ struct VerifierArrayPaddingTests {
     @Test func fillerSize_matchesPINManagerVerifierSize() {
         #expect(AppLayerConfig.verifierFillerSize == Manager.PINManager.verifierSize)
     }
+
+    /// Bug 171, Stage 3: the size is 53 until the process writes wrapped verifiers, then 81 for a verifier and for filler
+    /// alike. Pinned as numbers, so a change to either is a decision and not a drift.
+    @Test(.ambientTestKeyManager) func verifierSize_isPinnedInBothForms() {
+        Manager.Ambient.setPINVerifiers(.plain)
+        #expect(Manager.PINManager.verifierSize == 53)
+        #expect(AppLayerConfig.verifierFillerSize == 53)
+
+        Manager.Ambient.setPINVerifiers(.wrapped)
+        #expect(Manager.PINManager.verifierSize == 81)
+        #expect(AppLayerConfig.verifierFillerSize == 81)
+    }
+
+    @Test(.ambientTestKeyManager) func afterConfigurePIN_inAWrappedProcess_arraysAreUniformlyWrapped() throws {
+        Manager.Ambient.setPINVerifiers(.wrapped)
+        let container = try makeContainer()
+        let s         = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        try s.configurePIN("111111")
+
+        let config = try ModelContext(container).fetch(FetchDescriptor<AppLayerConfig>()).first!
+        let sizes  = Set((config.sealedNormalVerifiers + config.sealedDuressVerifiers + [config.sealedNormalVerifier].compactMap { $0 }).map(\.count))
+        #expect(sizes == [81])
+    }
 }
 
 // MARK: - Lockout counter

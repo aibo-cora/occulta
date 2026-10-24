@@ -1273,3 +1273,41 @@ the share staging key.
   `inbound/` handoffs.
 
 **Full reasoning:** `bugs.md` Bug 170; `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §6.
+
+## Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+
+
+**Status:** Plan adopted 2026-10-21. D1, D6 and the `identifier` question are the user's. Everything else here is recommended; open, needs a decision. Stages 1, 1b, 2, 3, 4, 5, 6, 7 and 8 are built, and the bug is fixed on the Simulator with the items under "What stays open" in `bugs.md` Bug 171 not decided or not done; after Stage 2 an upgraded install's local DB, shard custody and restore buffer data are under the Enclave-bound keys, after Stage 3 its PIN verifiers are wrapped under a key that needs `r_U`, and after the first vault unlock following Stage 4 the vault's per-entry keys and backup keys are under a key that needs `r_B`. After Stage 5 a share session is staged under a key that needs `r_S`, and, on iOS 26+, the Enclave's ML-KEM secret. After Stage 6 a device that was below iOS 26 at the first reseal is upgraded to the hybrid form at its first launch on iOS 26+.
+
+**Context:** Seven symmetric keys are `HKDF(ECDH(enclave_priv, G) …)`. ECDH against the generator G is d·G = Q, the key's own public point, so each is a function of Q and the Enclave never takes part (`bugs.md` Bug 171, `EnclaveGeneratorECDHTests`). The fix gives each key an input that needs the Enclave and a post-quantum-safe secret of its own access tier, and moves existing data over with no loss, no new forensic tell, and nothing a coercer can use. Ciphertext already copied with Q stays readable; no option changes that.
+
+**Decision (the user's, 2026-10-21):** D1, the quantum question.
+- Every iOS version gets the same fix: term 1, ECDH against a compiled-in nothing-up-my-sleeve point P, and term 2, a 32-byte Keychain secret per access tier. No OS-version split in them.
+- iOS 26+ also gets term 3, an Enclave ML-KEM secret, for all three tiers (device unlock, biometry or passcode, share staging).
+- Below 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer, stays open, needs a decision, until the device reaches 26 or the passphrase ships.
+
+**Recommended, not decided** (the plan's numbering; each stays open until the user decides it, and any can be overridden at a stage review):
+- **D2. The layer-key "Enclave in every guess" requirement.** Drop it and keep the ECDH(d, P) device-binding term. The spec already sizes 7 words with PBKDF2 to hold with the Secure Enclave broken, and the alternative (a hash-to-curve peer) is bespoke crypto with no independent review. Update `PASSPHRASE_LAYER_KEYS.md` and `HARDENING_STEPS.md` step 2.
+- **D3. One root per tier.** Keep today's Enclave keys, with one Keychain secret per tier (tier U reuses the existing `local.db.random.key.occulta`). Consolidating Enclave keys buys nothing measurable and adds keychain churn.
+- **D4. Whether an image alone yields Q.** Run it on the Simulator, done (`bugs.md` Bug 171, "Where Q sits at rest"): no cleartext column holds Q, only SHA-1(Q). A device answer needs extraction tooling we don't have, so it stays open.
+- **D5. P as a compiled-in NUMS constant, or a stored per-install point.** The constant: it needs no storage, no integrity protection and no scalar.
+- **D6. Downgrade.** Decided by the user, 2026-10-21: accept it for TestFlight and sideload, as Bug 168 did, and say so in the TestFlight notes. A new store file would keep an old-key copy that any Q-holder can read for as long as it exists.
+- **D7. Sequencing.** Fix all seven keys in 2.0.0. The passphrase release isn't built, and its storage design (spec §2) isn't decided. Key slots were decided against on 2026-10-19.
+- **D8. Vault rewrap timing.** At the first vault unlock. The window until then, with the per-entry keys still under the legacy vault key, is open, needs a decision.
+- **D9. Removing the v1 read path.** Keep it, migration-only: App Store updates jump straight to the newest version, so removing it loses data for installs that skipped versions.
+
+**Also decided by the user, 2026-10-21:** `Contact.Profile.identifier` stays byte-identical on every row, along with every record that stores it as a value. For contacts imported from the address book its plaintext is the iOS Contacts entry ID, so a holder of Q can still link each imported contact to its address-book entry until the passphrase migration reseals each contact as one record. Open, needs a decision.
+
+**Stage 2 rule (the plan, at the Stage 2a review; recommended; open, needs a decision): the keys follow the epoch.** The three tier U accessors return the Enclave-bound derivation only once `AppLayerConfig.keyEpoch` exists, and the legacy one before, decided once per process by the launch sequence after the reseal. The alternative, switching the keys as soon as the code ships, writes over data it can't read whenever the pass aborts (a background launch with the device locked, a missing secret, a failed read-back): prekey records, restore slots and `ReconstructShard` rows are the known cases. The cost is that an aborted pass leaves the session on the legacy keys until the next launch.
+
+**Decided by the user, 2026-10-22 (Stage 2c): a launch whose reseal stopped partway is blocked.** When the tier U pass committed at least one batch and ended without its epoch (a failed save, a read-back that fails partway, an abort partway), the store is a mix of both keys while the process is on the legacy ones, and the session would read what it can and write over what it can't. The launch reports `blocked`, runs nothing after the pass, and the app shows a neutral storage-error screen in place of the PIN prompt ("Occulta couldn't finish updating its data. Make sure the iPhone has free storage, then reopen the app."), with no retry button. The next launch finishes the pass. Not blocked: a pass that stopped before it wrote anything (a locked device, a missing secret), where the store isn't mixed and the app runs on the legacy keys; and a kill, which never reports. The screen comes before any PIN, so it is the same at every depth, it writes nothing, and its words name no keys, encryption, PIN or Secure Mode. This replaces the earlier recommendation, which let the session run with the committed fields reading as empty.
+
+**Decided by the user, 2026-10-23 (Stage 8): the compose staging key.** PR #122 added an eighth affected key, `ShareStagingKeyManager.deriveComposeStagingKey()`: ECDH against G on the share staging key, with its own HKDF info, which seals the attachments staged for a group or a key-less contact in the app's `tmp/` and `Drafts/`. (1) **No reseal and no legacy fallback:** the key was only ever in dev builds, so files sealed under release's derivation are not carried over. (2) **It moves to the app-only tier, tier U, not to share staging:** compose runs only in the app and its files live in the app's own container, and tier U already has Stage 6's pending-record upgrade. The key is the local DB Enclave key and `r_U` with its own info string, in the form of tier U's record, and it exists only in a process whose tier U keys are Enclave-bound: otherwise imports are refused, never staged in plaintext. The Stage 6 upgrade reseals the draft attachments sealed under the classical compose key to the hybrid one before it commits.
+
+**Why:** The tier secrets are symmetric, so a quantum computer gets only Grover's speed-up against them, and ECDH against P is the same Enclave call as today with a different peer, so no Enclave key is added or replaced. ML-KEM on 26+ closes the keychain-dump case there with an Enclave blob a dump can't use.
+
+**Consequences:**
+- Every affected key needs a one-way reseal of what is sealed under it, with the migration plan and tests each stage carries.
+- Devices below iOS 26 reseal once into the classical form, and once more into the hybrid form if they reach 26 later.
+- The tier secrets are never created by a read. A missing one is nil, a loud failure, once data is sealed under it.
+
+**Full reasoning:** `bugs.md` Bug 171 (Fix, with the stages; Guard).

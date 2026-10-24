@@ -77,7 +77,17 @@ Enclave exploit, which at this level has to be assumed.
 
 **Ships with 1, not after it.** Adding it later changes the key, which forces a second full reseal.
 
-**Tracked:** spec §1, requirement of 2026-09-29.
+**Found 2026-10-21 (`bugs.md` Bug 171), and what the fix changes. Recommended; open, needs a decision (D2, not decided).**
+The construction this step names does not meet it: `ECDH(SE_priv, s·G)` equals `ECDH(s, Q)`, which an attacker computes in
+software, so the Enclave takes no part in a guess. The fix that landed in 2.0.0 gives the keys that exist today an Enclave term
+that is real (`ECDH(SE_priv, P)`, P a point nobody knows the discrete log of) plus a Keychain secret per access tier and, on
+iOS 26+, an Enclave ML-KEM secret. That is one Enclave call per unlock, not per guess, because P can't depend on the phrase.
+Recommendation: drop the per-guess requirement from this step and keep the `ECDH(d, P)` device-binding term. At 7 words with
+PBKDF2 the ~90 bits and the KDF hold the line even with the Enclave broken, and a phrase-dependent peer is a bespoke
+hash-to-curve construction with no independent review. Until it is decided, this step and `PASSPHRASE_LAYER_KEYS.md` §1 stay
+as written with that note beside them.
+
+**Tracked:** spec §1, requirement of 2026-09-29; Bug 171.
 
 ### 3. Every row opens under every depth's key
 
