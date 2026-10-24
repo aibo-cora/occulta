@@ -151,9 +151,18 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let encapsulatedSecret: String?
     let decapsulatedSecret: String?
 
-    // gcm
+    // gcm, streamBody
     let key: String?
     let plaintext: String?
+
+    // streamHeaderAAD, streamNonce, streamAAD, streamBody, streamBodyDigest
+    let blind: String?
+    let header: String?
+    let index: UInt64?
+    let isFinal: Bool?
+    /// A pattern repeated to `length` bytes, for a plaintext too long to write out.
+    let repeating: String?
+    let length: Int?
 
     // groupEnvelope
     let group: GroupInput?
@@ -286,6 +295,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let fileName: String?
         let fileExtension: String?
         let fileNote: String?
+        /// Streamed layout only: the file's content is in the body stream, not the basket.
+        let streamedLength: Int?
     }
 
     var testDescription: String { self.name }
@@ -434,13 +445,57 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             return try Self.attribute(try #require(self.attribute)).signingPayload()
 
         case "basket":
-            let basket = Basket(
-                id:    try Self.uuid(self.id),
-                files: try (self.files ?? []).map(Self.file),
-                date:  self.date.map(Date.init(timeIntervalSinceReferenceDate:)),
-                owner: try self.owner.map(Self.bytes)
+            let basket = try self.basket()
+            let streamed = self.streamedLengths()
+            return streamed.contains { $0 != nil }
+                ? try WireHandle.encode(basket: basket, streamedLengths: streamed)
+                : try WireHandle.encode(basket: basket)
+
+        case "streamKey":
+            return BodyStream.streamKey(sessionKey: SymmetricKey(data: try Self.bytes(self.sessionKey)))
+                .withUnsafeBytes { Data($0) }
+
+        case "streamHeaderAAD":
+            return try BodyStream.headerAAD(secrecy: try self.secrecy(), blind: try Self.bytes(self.blind))
+
+        case "streamNonce":
+            return BodyStream.nonce(index: try #require(self.index)).withUnsafeBytes { Data($0) }
+
+        case "streamAAD":
+            guard let isFinal = self.isFinal else { Issue.record("\(self.name): no isFinal"); return Data() }
+            return BodyStream.aad(header: try Self.bytes(self.header), index: try #require(self.index), final: isFinal)
+
+        case "streamBody", "streamBodyDigest":
+            // The complete chunk stream for a fixed session key, header and plaintext. The long ones record the
+            // SHA-256 of the stream, which is what `bodyDigest` is. Production `Opener` must then open the bytes.
+            let plaintext = self.kind == "streamBody" ? try Self.bytes(self.plaintext) : try self.repeatedPlaintext()
+            let sessionKey = SymmetricKey(data: try Self.bytes(self.sessionKey))
+            let header = try Self.bytes(self.header)
+            let layout = try BodyStream.Layout(plaintextLength: UInt64(plaintext.count))
+            var sealer = BodyStream.Sealer(sessionKey: sessionKey, header: header, layout: layout)
+            var stream = Data()
+            try sealer.append(plaintext) { stream.append($0) }
+            let digest = try sealer.finish { stream.append($0) }
+
+            #expect(UInt64(stream.count) == layout.streamLength, "\(self.name): the stream is not T bytes")
+            #expect(digest == Data(SHA256.hash(data: stream)), "\(self.name): the digest is not the stream's")
+            var opener = BodyStream.Opener(sessionKey: sessionKey, header: header, layout: layout)
+            var opened = Data()
+            for index in 0..<layout.chunkCount {
+                let start = Int(layout.wireOffset(ofChunk: index))
+                opened.append(try opener.open(stream[start..<(start + layout.wireLength(ofChunk: index))], index: index))
+            }
+            #expect(opened == plaintext, "\(self.name): production Opener did not recover the plaintext")
+            return self.kind == "streamBody" ? stream : digest
+
+        case "streamManifest":
+            let payload = OccultaBundle.SealedPayload(
+                message:     try WireHandle.encode(basket: try self.basket(), streamedLengths: self.streamedLengths()),
+                appVersion:  self.appVersion,
+                senderProof: try self.senderProof.map(Self.bytes),
+                groupID:     try self.groupID.map(Self.uuid)
             )
-            return try WireHandle.encode(basket: basket)
+            return try BodyStream.Manifest.frame(payload: payload)
 
         case "depth":
             return DepthCodec.encode(try #require(self.value))
@@ -529,6 +584,25 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             Issue.record("\(self.name): unknown kind \(self.kind)")
             return Data()
         }
+    }
+
+    private func basket() throws -> Basket {
+        Basket(
+            id:    try Self.uuid(self.id),
+            files: try (self.files ?? []).map(Self.file),
+            date:  self.date.map(Date.init(timeIntervalSinceReferenceDate:)),
+            owner: try self.owner.map(Self.bytes)
+        )
+    }
+
+    private func streamedLengths() -> [UInt64?] {
+        (self.files ?? []).map { $0.streamedLength.map(UInt64.init) }
+    }
+
+    private func repeatedPlaintext() throws -> Data {
+        let unit = try Self.bytes(self.repeating)
+        let count = try #require(self.length)
+        return Data((0..<count).map { unit[$0 % unit.count] })
     }
 
     private func secrecy() throws -> OccultaBundle.SecrecyContext {

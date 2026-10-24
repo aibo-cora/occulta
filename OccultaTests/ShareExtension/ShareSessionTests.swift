@@ -42,6 +42,8 @@ private struct TestShareStagingKey: ShareSessionDecrypting {
     func decrypt(data: Data) throws -> Data {
         try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: Self.key)
     }
+
+    func stagingKeys() -> [SymmetricKey] { [Self.key] }
 }
 
 private func makeContainer() throws -> URL {

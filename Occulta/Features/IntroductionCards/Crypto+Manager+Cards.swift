@@ -263,8 +263,10 @@ extension Manager.Crypto {
         blind: Data,
         senderContactID: String,
         card: CardReceiveContext,
-        prekeys: PrekeyPrivateKeys
+        prekeys: PrekeyPrivateKeys,
+        body: BundleBody? = nil
     ) throws -> CardSlotOpening {
+        let body = body ?? .inline(bundle)
         guard let recipients = bundle.group?.recipients else { throw GroupDecryptError.noGroupEnvelope }
         guard recipients.count <= Group.slotCount else { throw GroupDecryptError.tooManyRecipients }
 
@@ -280,10 +282,10 @@ extension Manager.Crypto {
             else { continue }
 
             guard let bodyDigest = opened.payload.bodyDigest else { throw GroupDecryptError.missingBodyDigest }
-            guard bodyDigest == Data(SHA256.hash(data: bundle.ciphertext)) else { throw GroupDecryptError.bodyDigestMismatch }
+            guard bodyDigest == (try body.digest()) else { throw GroupDecryptError.bodyDigestMismatch }
 
             // As in `openRecipientSlot`: the outer header is authenticated only by this open (Bug 181).
-            _ = try self.openGroupCiphertext(bundle, using: SymmetricKey(data: opened.payload.sessionKey))
+            try body.authenticateHeader(sessionKey: SymmetricKey(data: opened.payload.sessionKey))
 
             usedPrekey = source.used.consumable
 

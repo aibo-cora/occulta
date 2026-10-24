@@ -20,6 +20,12 @@ struct OwnedBasket: Identifiable, Equatable, Codable {
     
     let basket: Basket
     let owner: String
+
+    /// Set when the message's attachments are still being decrypted from a streamed bundle. The sheet
+    /// reads `receive.files` in place of `basket.files`. Never encoded.
+    var receive: StreamedReceive? = nil
+
+    private enum CodingKeys: String, CodingKey { case id, basket, owner }
 }
 
 struct FileURL: Transferable {

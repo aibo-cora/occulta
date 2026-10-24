@@ -105,10 +105,10 @@ extension IdentityChallenge {
             contextNote: String?
         ) throws {
             let crypto = Occulta.Manager.Crypto()
-            let encoded: Data
+            let url: URL
             if Self.takesGroupFormat(contact, using: crypto) {
-                encoded = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote) { envelope in
-                    try self.contactManager.encryptBundle(for: contact.identifier, identityChallenge: envelope)
+                url = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote) { envelope in
+                    try self.sealToFile(for: contact.identifier, envelope: envelope)
                 }
             } else {
                 guard
@@ -124,15 +124,15 @@ extension IdentityChallenge {
                     else { return nil }
                     return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
                 }()
-                encoded = try self.manager.createChallenge(
+                let encoded = try self.manager.createChallenge(
                     recipientKey:     recipientKey,
                     recipientQuantum: quantum,
                     contactID:        contact.identifier,
                     contextNote:      contextNote
                 ).encoded()
+                url = try Self.writeOCC(encoded, kind: "challenge")
             }
             let displayName = contact.givenName.decrypt()
-            let url = try Self.writeOCC(encoded, kind: "challenge")
             self.outboundShare = OutboundShare(
                 url:         url,
                 contactID:   contact.identifier,
@@ -285,16 +285,15 @@ extension IdentityChallenge {
                     self.incomingChallenge = nil
                     guard authenticated else { return }
                     do {
-                        let encoded: Data
+                        let url: URL
                         if let challenger = try? self.contactManager.fetchContact(by: pending.challengerID),
                            Self.takesGroupFormat(challenger, using: Occulta.Manager.Crypto()) {
-                            encoded = try self.manager.respond(to: pending) { envelope in
-                                try self.contactManager.encryptBundle(for: pending.challengerID, identityChallenge: envelope)
+                            url = try self.manager.respond(to: pending) { envelope in
+                                try self.sealToFile(for: pending.challengerID, envelope: envelope)
                             }
                         } else {
-                            encoded = try self.manager.respond(to: pending).encoded()
+                            url = try Self.writeOCC(try self.manager.respond(to: pending).encoded(), kind: "response")
                         }
-                        let url    = try Self.writeOCC(encoded, kind: "response")
                         self.outboundShare = OutboundShare(
                             url:         url,
                             contactID:   pending.challengerID,
@@ -337,6 +336,19 @@ extension IdentityChallenge {
         /// every build reads (prekey continuity §3.4).
         private static func takesGroupFormat(_ contact: Contact.Profile, using crypto: Occulta.Manager.Crypto) -> Bool {
             ContactManager.resolveTargetVersion(for: contact, using: crypto).isAtLeast(.bodyDigestCapable)
+        }
+
+        /// A challenge or response in group format, written to a temp `.occ` for the share sheet. It travels in the
+        /// layout a message to the same contact would: streamed, with only a manifest, when the contact can read
+        /// that. A layout of its own would tell it apart from a message (STREAMING_SPEC §3).
+        private func sealToFile(for contactID: String, envelope: IdentityChallengeEnvelope) throws -> URL {
+            let name = (UUID().uuidString.components(separatedBy: "-").last ?? "unknown") + ".occ"
+            let url  = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+            try self.contactManager.encryptBundle(
+                for: contactID, identityChallenge: envelope,
+                output: .file(destination: url, attachments: nil, memoryGuard: .system)
+            )
+            return url
         }
 
         /// Write bundle bytes to a temp `.occ` file ready for share sheet.

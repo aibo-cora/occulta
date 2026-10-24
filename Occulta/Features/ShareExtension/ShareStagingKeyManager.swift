@@ -27,8 +27,9 @@
 //  still say "share.index" because both are persisted: renaming the tag would orphan the
 //  existing Enclave key, and renaming the label would change the derived key.
 //
-//  This is the ONLY crypto code the extension links. It never touches the identity key,
-//  the local DB key or prekeys. Its one ML-KEM key is its own: the staging tier's, the third term of the
+//  This is the only code in the extension that derives or holds a key. (It also compiles the sealed-file writer,
+//  `StreamingEncryptor`, which is handed a key and derives only a per-file key from it: STREAMING_SPEC §8.4.) It never
+//  touches the identity key, the local DB key or prekeys. Its one ML-KEM key is its own: the staging tier's, the third term of the
 //  Enclave-bound key on iOS 26+ (`bugs.md` Bug 171). It is made and used here and nowhere else, through CryptoKit
 //  directly, because the extension doesn't link `OccultaCore`; `StagingPostQuantum` below mirrors the persistent-key
 //  methods of `PostQuantumProvider` for that reason.
@@ -628,6 +629,29 @@ final class ShareStagingKeyManager {
         if let legacy = attempt({ try self.deriveLegacySymmetricKey() }) { return legacy }
 
         throw failure ?? KeyError.decryptionFailed
+    }
+
+    // MARK: - Streamed files (`.eatt`)
+
+    /// The key a staged `.eatt` is sealed under: the one `encrypt(data:)` seals under, made the same way. The extension's
+    /// first use of the staging tier makes `r_S` and the PQ record if the app hasn't yet, and a hybrid record that can't
+    /// be decapsulated fails here instead of sealing in a lower form. A file is sealed in chunks by `StreamingEncryptor`,
+    /// which derives a key of its own per file from this one.
+    func deriveStreamSealingKey() throws -> SymmetricKey {
+        try self.createTierItemsIfAbsent()
+        return try self.deriveEnclaveBoundKey()
+    }
+
+    /// The keys a staged `.eatt` could have been sealed under, in the order `decrypt` tries them: the current form, the
+    /// classical form, the legacy key. Each is skipped if it can't be derived, and nothing is created. The caller finds
+    /// the one that opens the file, which its header authenticates. The classical and legacy ones go one release after
+    /// 2.0.0, as in `decrypt`.
+    func openingKeys() -> [SymmetricKey] {
+        [
+            try? self.deriveEnclaveBoundKey(),
+            try? self.deriveClassicalEnclaveBoundKey(),
+            try? self.deriveLegacySymmetricKey()
+        ].compactMap { $0 }
     }
 
     // MARK: - Helpers
