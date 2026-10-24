@@ -235,22 +235,42 @@ private enum Encryptor {
         header.append(contentsOf: keySalt)
         header.append(contentsOf: HMAC<SHA256>.authenticationCode(for: header, using: fileKey))
 
-        var output = header
-        let base = plaintext.startIndex
-        for i in 0..<chunks {
-            let start = base + i * chunkSize
-            let end   = min(start + chunkSize, base + total)
-            let box   = try AES.GCM.seal(
-                total > 0 ? plaintext[start..<end] : Data(),
-                using: fileKey,
-                nonce: derivedNonce(base: baseNonce, index: i)
-            )
-            output.append(contentsOf: box.ciphertext)
-            output.append(contentsOf: box.tag)
-            onProgress?(Double(i + 1) / Double(chunks))
+        // Each sealed chunk goes straight to disk. Collecting the whole file in a `Data` first cost
+        // another `total` bytes of heap on top of `plaintext` (more while it grew), which is what
+        // took a ~800 MB attachment past the Jetsam limit on the receiving side.
+        FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.protectionKey: FileProtectionType.complete])
+
+        do {
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+
+            // Same reason as `StreamingEncryptor`: no dirty pages piling up in the page cache.
+            _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
+
+            try handle.write(contentsOf: header)
+
+            let base = plaintext.startIndex
+            for i in 0..<chunks {
+                let start = base + i * chunkSize
+                let end   = min(start + chunkSize, base + total)
+                let box   = try AES.GCM.seal(
+                    total > 0 ? plaintext[start..<end] : Data(),
+                    using: fileKey,
+                    nonce: derivedNonce(base: baseNonce, index: i)
+                )
+                try handle.write(contentsOf: box.ciphertext + box.tag)
+                onProgress?(Double(i + 1) / Double(chunks))
+            }
+        } catch {
+            // A half-written sealed file left in the temp directory is a trace of its own.
+            try? FileManager.default.removeItem(at: url)
+            throw error
         }
 
-        try output.writeProtected(to: url)
+        var url = url
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        try? url.setResourceValues(resourceValues)
     }
 }
 
