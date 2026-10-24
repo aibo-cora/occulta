@@ -466,6 +466,8 @@ Two identical small fetch snippets, one per call site, not factored into a share
 
 **Testing note, given this touches a Critical-severity operation:** the whole drafts feature already has zero automated test coverage (`Manager.Key()` is hardcoded, not injectable via `KeyManagerProtocol`, requiring real Secure Enclave hardware) — this change would need real-device manual verification (delete a contact with an active draft, then activate/duress-enter and confirm the draft is gone; create a group draft and confirm it survives) rather than a unit test, same limitation as everything else in this feature.
 
+**Superseded for groups (Bug 178, 2026-10-25).** "A draft addressed to a group always survives this pass" no longer holds. Groups are not depth-filtered and `GroupDetailV3` loads the draft with no depth check, so a group draft written at depth 0 loaded into the compose field at a duress depth. `purgeUnsafe` now takes no `allGroupIdentifiers`: it keeps a draft only if its recipient is a contact visible at the depth just entered, so every group draft is deleted whenever the session goes deeper (a routed duress PIN or `.duress`; Bug 172). A normal login, an upgrade and a launch at depth 0 delete nothing. The owner loses an unsent group draft after a coercion, as they already lose a draft to a contact hidden at that depth. A draft typed into a group at a duress depth is deleted by the next descent and is not scoped to its depth. Depth-scoping group drafts was considered and not chosen: it adds a second, depth-keyed form of the recipient id for `find`, `purgeUnsafe` and the draft indicator, and leaves rows behind for depths that no longer exist.
+
 ### Closing the staleness gap: forced WAL checkpoint after every draft purge
 
 **Status: implemented.**

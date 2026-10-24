@@ -216,12 +216,13 @@ extension Message {
         /// Removal Stage 0) — nothing needs re-sealing under a new key, because there is
         /// no new key; a surviving draft is left completely untouched.
         ///
-        /// Same survive/purge semantics as `reKeyOrPurgeAll`: a draft survives if its
-        /// recipient is a known group or a contact visible at the current depth; anything
-        /// undecryptable under `key`, or whose recipient doesn't match, is purged.
+        /// A draft survives only if its recipient is a contact visible at the current depth;
+        /// anything undecryptable under `key`, or whose recipient doesn't match, is purged.
+        /// That includes every group draft (Bug 178): groups are not depth-filtered, so a
+        /// group's compose screen is open to whoever holds the phone at any depth, and it
+        /// loads whatever draft is keyed by the group's id.
         static func purgeUnsafe(
             safeContactIdentifiers: Set<String>,
-            allGroupIdentifiers:    Set<String>,
             using key: SymmetricKey,
             in modelContext: ModelContext
         ) throws {
@@ -235,8 +236,7 @@ extension Message {
                     continue
                 }
 
-                let survives = allGroupIdentifiers.contains(recipientID) || safeContactIdentifiers.contains(recipientID)
-                if !survives {
+                if !safeContactIdentifiers.contains(recipientID) {
                     delete(draft, in: modelContext)
                 }
             }
