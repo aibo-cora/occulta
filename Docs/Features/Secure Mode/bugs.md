@@ -13766,7 +13766,9 @@ mechanism is the same.
 - **Not taken for the refactor:** making a downgrade lose nothing by keeping migrated data where an older build
   doesn't look, such as a new store file. For the refactor that would mean moving the store, which is new work.
   `ROLLOUT_PLAN.md` still proposes it for the passphrase migration, where a downgrade would delete everything
-  resealed rather than prekey records alone. That is not decided.
+  resealed rather than prekey records alone. That is not decided. *Decided 2026-10-19 for the passphrase
+  migration:* a new store file, with the old store kept until graduation as Rule 4's way back
+  (`decisions.md`, 2026-10-19). The prekey refactor's acceptance above is unchanged.
 - **Already rejected:** a "last reported version" marker (D6). It would be a downgrade lever for anyone with
   temporary use of a contact's identity key.
 
@@ -13789,6 +13791,114 @@ The key is removed from the app target. Opening `.occ` and `.occbak` files doesn
 ### Guard
 
 None automated: the folder is decided by iOS from `Info.plist`. Checked in the Simulator: no Occulta folder in Files, and a `.occ` opened from Files still reaches the app.
+
+---
+
+## Bug 170 — Deleting the app leaves its keychain items, including prekey tags that name contacts
+
+**Status:** Open in part. Found 2026-10-19 while checking whether Prekey Continuity D9's blobs suit the app's
+other keys (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`, decision 15). Not verified on a device in this pass.
+- **Decided 2026-10-19 by the owner (decision 15):** per-install keys stay in the keychain, the new phrase key
+  included. Erase All Data deletes the share staging key, built and merged 2026-10-19 (PR #118, with #119's
+  sweep of unread `inbound/` handoffs).
+- **Still open, needs a decision:** the legacy keychain prekeys, and the shard custody key.
+`SECURITY_CHECKLIST.md` (the 2026-08-15 correction under Bug 82) already relies on the same iOS behaviour for
+the identity key.
+
+**Target:** `v2.0.0`, with the passphrase work. Present since the first release.
+
+### Severity: Medium (forensic trace after the app is deleted; the legacy prekey tags name contacts)
+
+### What happens
+
+iOS keeps an app's keychain items after the app is deleted. The app container goes, and the keychain items stay.
+A user who deletes Occulta to hide it therefore leaves these behind:
+
+| Item | Tag or account | Created |
+|---|---|---|
+| Identity key | `master.key.privacy.turtles.are.cute` | First launch |
+| Local DB Enclave key | `local.db.se.key.occulta` | First use of the local DB key |
+| Local DB random component | account `local.db.random.key.occulta` | Same |
+| Vault key | `vault.key.occulta.v1` | First vault use |
+| Shard custody key | `shard.custody.occulta` | First custody use |
+| Secure Mode PIN key | `app.layer.key.occulta.v1` | First launch (`Manager.Security.init`) |
+| Share staging key | `share.index.se.key.occulta`, group `group.com.occulta.shared` | First access |
+| Legacy prekeys | `prekey.<contactID>.<uuid>` | Each batch |
+
+*Added 2026-10-24: items from Bug 171's fix (#123), which outlive an app deletion the same way.* Erase All Data
+deletes them (`Manager.Key.deleteAllKeys`, `ShareStagingKeyManager.deleteKey`).
+
+| Item | Account | Created |
+|---|---|---|
+| Tier B secret `r_B` | `vault.random.key.occulta` | When Bug 171's upgrade runs for tier B |
+| Tier U and B ML-KEM records, iOS 26+ | `local.db.pq.key.occulta`, `vault.pq.key.occulta`, and `.pending` versions during an upgrade | When the upgrade runs for that tier on iOS 26+ |
+| Share staging secret `r_S` and its ML-KEM record | `share.staging.random.key.occulta`, `share.staging.pq.key.occulta`, App Group | When share staging first runs after the upgrade |
+
+**What an examiner learns from them, without the app:**
+- **The app was set up and used,** not only downloaded. The access group identifies the app whatever the tags
+  say. Every item carries `kSecAttrCreationDate`, which dates first launch, first vault use and each prekey
+  batch.
+- **The contacts, from the legacy prekeys.** Their tags carry contact identifiers, which step 17 of
+  `HARDENING_STEPS.md` already treats as naming contacts.
+  - D9 moved new prekeys into the sealed record.
+  - Legacy keychain prekeys retire 30 days after their batch's last use, but only while the app runs.
+  - Deleting the app before then leaves them for good.
+
+**What it adds to traces that already exist.** App Store download history and the OS's own usage records
+already show that the app was installed and used (`HARDENING_STEPS.md` step 11). The keychain adds:
+- a record on the device itself, which needs no cooperation from Apple;
+- the dates of specific features' first use;
+- for legacy prekeys, the contacts.
+
+**A smaller, related gap: Erase All Data keeps the share staging key.** `eraseAllData`
+(`Manager+App.swift:22`) deletes the prekeys and every key `Manager.Key` lists. `ShareStagingKeyManager` has no
+delete path, so its key and its creation date survive a wipe.
+
+### Fix — decided in part, 2026-10-19
+
+**Decided by the owner (decision 15):**
+- **15a.** The passphrase work's per-install Enclave key is a keychain item, not a blob in the app's files.
+- **15b.** The identity key stays in the keychain.
+- **15c.** The keys graduation retires aren't moved first.
+- **15d.** Erase All Data deletes the share staging key, which stays a keychain item. Built and merged 2026-10-19
+  in PR #118, together with the share extension's leftovers in the App Group, and #119's sweep of unread
+  `inbound/` handoffs. It ships in 2.0.0.
+
+Per-install keys therefore keep outliving an app deletion, with their creation dates. The analysis below is
+kept as the record; its "Proposed" line was not taken.
+
+**Still open, needs a decision:**
+- **The legacy keychain prekeys,** which name contacts.
+- **The shard custody key,** with stage 5.
+
+**The analysis before the decision:**
+
+**Proposed:** keep per-install keys out of the keychain, as CryptoKit Enclave blobs in files inside the app's
+container, under `FileProtectionType.complete`. Deleting the app deletes the container, and the blobs with it.
+Taken key by key:
+- **The passphrase work's per-install Enclave key** (`PASSPHRASE_LAYER_KEYS.md` §1, 2026-10-15). It doesn't
+  exist yet, so it can start as a blob at no cost.
+- **Keys the passphrase work retires:** the local DB key and its random component, the Secure Mode PIN key and
+  the vault key. *Corrected 2026-10-24:* since Bug 171's fix the random component is tier U's `r_U`, which
+  shard custody, the restore buffer and compose staging also use. So only the Enclave key retires with the local
+  DB until those move.
+  - Graduation deletes them, but only on installs that graduate, and only while the app runs.
+  - Until then they survive a deletion.
+  - Moving them first isn't worth a migration of its own.
+- **Identity key.** An Enclave key in the keychain can't be converted into a CryptoKit blob, so moving it means
+  a new identity, which strands every contact (Bug 82). It would also stop surviving a reinstall, which is what
+  lets a reinstalled app keep its identity today.
+- **Shard custody key.** It depends on how ROLLOUT_PLAN stage 4 seals custody rows.
+- **Share staging key.** The App Group container is shared with the extension, so a blob there would work.
+  Separately from the decision, Erase All Data should delete it.
+- **Legacy prekeys.** Nothing in the app can act after it is deleted. Shortening their retirement only narrows
+  the window.
+
+Renaming the tags to drop "occulta" doesn't help, because the access group names the app.
+
+### Guard
+
+None yet.
 
 ---
 

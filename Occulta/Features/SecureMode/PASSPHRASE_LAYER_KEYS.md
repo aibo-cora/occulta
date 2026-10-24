@@ -11,6 +11,17 @@ deliberately accepts.
 wider hardening plan: the steps around it, a proposed staged rollout, and a protection assessment. This
 document stays the owner of the cryptographic design, and that folder owns sequencing.
 
+**Passphrase rollout, 2026-10-19 — [`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md).
+Proposed, not decided.** It plans how the phrase ships, on top of the 2026-10-15 design discussion
+below. It covers:
+- phrase entry and learning;
+- migration from the PIN and the local DB key;
+- depths under phrases;
+- stages and effort.
+
+It proposed one change to §1, key slots, which was not adopted on 2026-10-19. It also touches §4's entry and
+recovery requirements and §5. Until decided, this document stands as written.
+
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
 shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
 confirmed gone (grepped, zero matches, repeatedly this session). The blocker §5 names is cleared —
@@ -169,6 +180,19 @@ layerKey_D = HKDF-SHA256(IKM: s ‖ ECDH(SE_priv, Q), …) — one Enclave key p
 Each attempt is one PBKDF2 run and one Enclave call, then a trial open of the 32 header slots (§2,
 2026-10-15), which is cheap. *The Enclave call buys nothing per guess as written: open, needs a decision (Bug 171, D2); with the fix it is one real call per unlock.* The cost: each guess is tested against every depth at once, about 5 bits off
 90 at 32 slots. The salt only has to be unique per install, which is what defeats precomputation.
+
+**Proposed 2026-10-19: key slots** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1). **Not adopted, decided
+2026-10-19 by the owner:** depth keys come directly from the phrase, as above (`decisions.md`).
+- **What changes.** A depth's header slot would also hold a random depth key, and rows would be sealed
+  under that key instead of under `layerKey_D`.
+- **What it buys.** A later change to this derivation, such as the iteration count or the KDF itself,
+  rewraps one slot instead of resealing every row.
+- **What it doesn't.** A key that moves from device-only to phrase-only stays open to earlier images, which
+  keep the device-wrapped copy. Cutting them off still needs a reseal.
+
+**Decided 2026-10-19: installs with no lock** use the same derivation, with an empty phrase for depth 0, so
+every install has the same storage. Turning a lock on reseals depth 0 under the new phrase
+(`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.4).
 
 ---
 
@@ -639,3 +663,10 @@ vault and contacts together, even though the vault would ship first.
 **2026-10-15:** §2 has a proposed storage design, not decided: one key per row, a chain between depths,
 and a shared key in place of "every-depth sealing". The write-frequency requirement leaves the list above:
 it can't be met against a surrendered phrase and is open, needs a decision (§2, finding of that date).
+
+**Passphrase rollout, 2026-10-19 — `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`. Proposed, not decided.** It
+plans a release built on the 2026-10-15 design and covers:
+- phrase entry and learning;
+- migration from the PIN;
+- Rule 4's way back, through the old store file (Bug 168's new-store proposal);
+- stages and effort.
