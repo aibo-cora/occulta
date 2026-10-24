@@ -40,6 +40,10 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
 
     @Published private(set) var phase: ScreenPhase = .covered
 
+    /// The launch is blocked (Bug 171, Stage 2c) and `StorageErrorView` is up. Set for the rest of the process: no PIN
+    /// flow starts, and no cover goes over the message. A new launch is the only way out.
+    private(set) var isBlocked = false
+
     // MARK: - Private
 
     private var security: Manager.Security?
@@ -115,7 +119,7 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     func wire(security: Manager.Security) {
         // Guard prevents a SwiftUI .task re-fire from re-evaluating as a cold
         // launch and incorrectly presenting PINEntry mid-session.
-        guard self.security == nil else { return }
+        guard self.security == nil, !self.isBlocked else { return }
         self.security = security
         self.evaluate(coldLaunch: true)
     }
@@ -124,6 +128,13 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
 
     /// PINEntry.onAppear — PIN view is on screen, safe to drop the UIKit cover.
     func pinViewAppeared() {
+        self.removeCover()
+    }
+
+    /// `StorageErrorView.onAppear` — the launch is blocked. The cover goes, and none is installed again: this screen
+    /// shows nothing sensitive, and the cover would otherwise stay over it, since nothing in a blocked launch removes it.
+    func blockedViewAppeared() {
+        self.isBlocked = true
         self.removeCover()
     }
 
@@ -184,6 +195,7 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     // MARK: - Cover
 
     private func installCover(for scene: UIWindowScene) {
+        guard !self.isBlocked else { return }
         guard let window = scene.windows.first(where: { !$0.isHidden }) else { return }
         guard self.coverView == nil else { return }  // already installed
 

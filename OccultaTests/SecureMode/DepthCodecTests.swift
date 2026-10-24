@@ -324,9 +324,10 @@ struct DepthFixedWidthMigrationTests {
     /// on the format change would not error: it would quietly show the real address book
     /// to someone who should be seeing a duress layer.
     ///
-    /// `Manager.Security` is also constructed before `migrate()` runs in `App.init()`, so
-    /// this read genuinely happens against un-migrated bytes on the first launch after
-    /// upgrade. It is not a hypothetical ordering.
+    /// `Manager.Security` was constructed before the migration passes ran in `App.init()`, so
+    /// this read happened against un-migrated bytes on the first launch after upgrade. The
+    /// launch sequence now runs first (Bug 171, Stage 2), but a pass that fails leaves the
+    /// old bytes in place, so the read still has to cope with them.
     @Test("A legacy persistedDepth still reads — the fallback on failure is the real depth")
     func legacyScalarsStillRead() throws {
         let config = AppLayerConfig()
