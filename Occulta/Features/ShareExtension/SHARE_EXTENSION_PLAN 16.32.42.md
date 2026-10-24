@@ -82,6 +82,25 @@ HKDF<SHA256>(
 
 New domain separator — never reuses an existing info string. The derivation is deterministic: both the main app and the extension derive the same symmetric key because they share access to the same SE private key via the access group.
 
+### Update, 2026-10-22 (Bug 171, Stage 5): what seals a session now
+
+The derivation above is the **legacy** one. ECDH against G is the key's own public point, so it was a function of that point alone and the Enclave took no part (`Docs/Features/Secure Mode/bugs.md` Bug 171). Sessions are now sealed under an Enclave-bound key, in `ShareStagingKeyManager.swift`:
+
+```
+t   = ECDH(shareStagingSEKey, P)                 P: a compiled-in nothing-up-my-sleeve point, no known discrete log
+r_S = 32-byte Keychain secret, group.com.occulta.shared, WhenUnlockedThisDeviceOnly
+iOS 26+ (hybrid record):  HKDF(IKM: t ‖ ss ‖ r_S, salt: Q, info: "Occulta-v2-share-staging-pq-2026" ‖ SHA-256(c))
+below 26 (classical):     HKDF(IKM: t ‖ r_S,      salt: Q, info: "Occulta-v2-share-staging-2026")
+```
+
+`ss` is the Enclave ML-KEM-1024 key's decapsulation of `c`, both from the staging tier's **PQ record**: one more generic-password item in the shared group (9,763 bytes in both modes: a mode byte, a padded `SecureEnclave.MLKEM1024` blob and `c`, with filler below iOS 26). The ML-KEM code is in `ShareStagingKeyManager.swift` itself, because the extension links only that file and `ShareManifest.swift`, not `OccultaCore`.
+
+- **Creation.** `r_S` and the record are made by whichever process first needs them: the app at launch, or the extension on its first `encrypt`. Each reads first, adds what is missing, and on `errSecDuplicateItem` reads what the other added. Unlike the other tiers' they may be created at any time, since a session lives an hour.
+- **Opening.** `decrypt` tries the current form, then the classical form if the record is hybrid, then the legacy key, so a session staged by the previous build or before the device reached iOS 26 still opens. **The classical and legacy fallbacks go one release after 2.0.0.**
+- **A device that reaches iOS 26** after its record was made classical has the record replaced by a hybrid one, in place, at the app's next launch (Stage 6). No session is resealed: one sealed in the classical form opens through the fallback, which derives that key from `r_S` and does not read the record.
+- **Erase All Data** deletes the key, `r_S` and the record together.
+- **Downgrade.** An older app can't open a session this build staged; it deletes it, and the share has to be repeated.
+
 ### Where This Lives
 
 Add a new manager class: `ShareIndexKeyManager`. It handles:
@@ -90,7 +109,7 @@ Add a new manager class: `ShareIndexKeyManager`. It handles:
 - Deriving the symmetric key via ECDH(privKey, G) → HKDF
 - Encrypting/decrypting Data blobs for the index
 
-Both the main app and the extension link this class. It is the only crypto code the extension needs. It never touches the identity key, the local DB key, prekeys, or ML-KEM material.
+Both the main app and the extension link this class. It is the only crypto code the extension needs. It never touches the identity key, the local DB key or prekeys. Its one ML-KEM key is its own, the staging tier's (see the update above), and it is made and used in this file only.
 
 ### Why Not Reuse the Local DB Key
 
@@ -563,7 +582,7 @@ Every item must be true at all times. A violation of any item is a shipping bloc
 
 1. **No plaintext contact data in the shared container.** The `ShareableContact` fields are AES-GCM encrypted with the share index key. The manifest's contact identifier is inside an AES-GCM encrypted blob.
 
-2. **No key material in the shared container.** The shared store contains only encrypted display names and identifiers. No public keys, no ML-KEM secrets, no prekey state, no private key references.
+2. **No key material in the shared container.** The shared store contains only encrypted display names and identifiers. No public keys, no ML-KEM secrets, no prekey state, no private key references. (Since Bug 171, Stage 5, the shared *Keychain group*, not the container, also holds `r_S` and the staging tier's PQ record, whose ML-KEM key is an Enclave blob that only this phone's Enclave can use. Neither is a file in the container.)
 
 3. **The share index SE key never touches the main contact database.** It encrypts only the `ShareableContact` index and the manifest. Different SE key, different HKDF info string, different purpose.
 

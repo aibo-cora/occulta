@@ -31,6 +31,8 @@ struct OccultaApp: App {
     /// SwiftData store URL. Retained so `reapplyFileProtection()` can stamp
     /// fresh -wal/-shm files that SQLite creates after the initial attributes call.
     private let storeURL: URL
+    /// The app, or the storage error of a blocked launch (Bug 171, Stage 2c).
+    private let launchScreen: LaunchScreen
 
     /// Every persisted model. Extracted from `init()` as its own static property rather than
     /// left inline, so it can be read (not just constructed) from outside `init()` — load-bearing
@@ -65,9 +67,9 @@ struct OccultaApp: App {
         let schema = Self.schema
 
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
-        let sharedModelContainer: ModelContainer
+        let realContainer: ModelContainer
         do {
-            sharedModelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            realContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
@@ -84,9 +86,37 @@ struct OccultaApp: App {
         Self.applySecureDeletePragma(at: url)
         Self.walCheckpoint(at: url)
 
+        // The key reseal and the migration passes (Bug 171, Stage 2), before anything reads the store or derives a key:
+        // `Manager.Security.init` reads `persistedDepth` and `pinEnabledPerDepth`, and has to read them under the key
+        // they are sealed under. The sequence also tells the process which keys tier U's accessors return.
+        //
+        // Not in a test host (`#if DEBUG`): tests run in this process, and the sequence would decide its keys from the
+        // Simulator's real store, which keeps an epoch from run to run. The tests that bind no key manager of their
+        // own expect the default, the legacy keys. The sequence has its own tests.
+        #if DEBUG
+        let hostsTests = NSClassFromString("XCTestCase") != nil
+        #else
+        let hostsTests = false
+        #endif
+        var launch: LaunchSequence.Report?
+        if !hostsTests {
+            launch = LaunchSequence.run(context: ModelContext(realContainer), locations: .production(store: url), staging: ShareStagingKeyManager())
+        }
+        let screen = launch?.screen ?? .app
+
+        // A blocked launch (a reseal that stopped partway, Stage 2c) builds everything below over an empty in-memory
+        // store, with Secure Mode off, so that nothing it constructs can read, write or create a key. `RootView` shows
+        // the storage error and goes no further.
+        let sharedModelContainer: ModelContainer
+        do {
+            sharedModelContainer = try launch?.container(real: realContainer) ?? realContainer
+        } catch {
+            fatalError("Could not create ModelContainer: \(error)")
+        }
+
         let security = Manager.Security(modelContainer: sharedModelContainer,
                                         storeURL: url,
-                                        enabled: FeatureFlags.isEnabled(.secureMode))
+                                        enabled: FeatureFlags.isEnabled(.secureMode) && screen == .app)
 
         self.security = security
 
@@ -94,136 +124,19 @@ struct OccultaApp: App {
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
 
         self.sharedModelContainer = sharedModelContainer
+        self.launchScreen         = screen
         self.contactManager       = contactManager
         self.identityChallenge    = IdentityChallenge.Coordinator(contactManager: contactManager)
         self.vaultManager         = vaultManager
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
 
-        self.migrate()
         FileManager.default.clearTemporaryDirectory()
-    }
-
-    /// Run migration before any UI accesses contacts.
-    ///
-    /// Migrate our local database encryption scheme to a PQ resistant variant.
-    private func migrate() {
-        let context = ModelContext(self.sharedModelContainer)
-        let legacyCrypto = LegacyCryptoManager()
-        let newCrypto = Manager.Crypto()
-
-        // Every migration below relies on its own explicit save() being the only write it
-        // makes — `migrateDepthFieldsToFixedWidth` accumulates into `didChange` and saves
-        // once at the end precisely so a failure part-way leaves the original bytes for the
-        // next launch. A RunLoop- or backgrounding-triggered autosave breaks that: it can
-        // commit a partially-applied pass before the function decides whether to.
-        //
-        // Same idiom and same reason as `activateSecureMode`, `deactivateSecureMode` and
-        // `Message.Draft`'s purge, all of which suspend autosave for a multi-step sequence
-        // and restore it after. Doing it once here covers every migration rather than asking
-        // each to defend itself.
-        context.autosaveEnabled = false
-        defer { context.autosaveEnabled = true }
-
-        do {
-            try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
-        } catch {
-            // Migration failure is not recoverable — the DB is in a known state
-            // because migration saves per-record. Log and continue; un-migrated
-            // records will be retried on next launch.
-            #if DEBUG
-            debugPrint("Migration error: \(error)")
-            #endif
-        }
-
-        // Independent of the v1→v2 migration above — runs regardless of Secure Mode
-        // configuration status, since legacy nil rows can exist either way.
-        do {
-            try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("visibleThroughDepth backfill error: \(error)")
-            #endif
-        }
-
-        do {
-            try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("Global Trustees retirement error: \(error)")
-            #endif
-        }
-
-        do {
-            try DatabaseMigration.migrateOriginDepthBackfill(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("originDepth backfill error: \(error)")
-            #endif
-        }
-
-        // Must run after the three backfills above: they own the nil case, and this pass
-        // deliberately leaves nil alone rather than manufacturing a value of its own.
-        do {
-            try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("depth field fixed-width normalisation error: \(error)")
-            #endif
-        }
-
-        // After the fixed-width pass, not before: that pass converts what it can read, and
-        // this one scrubs what is left on rows whose content is already erased (Bug 89).
-        do {
-            try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("soft-deleted depth stamp scrub error: \(error)")
-            #endif
-        }
-
-
-        // Before the reseal of contacts per depth, whenever that ships (`migratePrekeyRecords`), and after
-        // `migrateToV2`, whose rows it skips until they're converted.
-        do {
-            try DatabaseMigration.migratePrekeyRecords(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("prekey record migration error: \(error)")
-            #endif
-        }
-
-        // Introduction cards, stage A: the card field is never nil either.
-        do {
-            try DatabaseMigration.migrateCardFields(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("card field migration error: \(error)")
-            #endif
-        }
-
-        // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
-        // this runs (Bug 133). Independent of every pass above.
-        do {
-            try DatabaseMigration.migrateVaultEntryDeletionTokens(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("VaultEntry deletionToken backfill error: \(error)")
-            #endif
-        }
-
-        do {
-            try DatabaseMigration.migrateDeleteGlobalShardConfig(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("GlobalShardConfig deletion error: \(error)")
-            #endif
-        }
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(storeURL: self.storeURL)
+            RootView(storeURL: self.storeURL, launchScreen: self.launchScreen)
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
@@ -260,7 +173,7 @@ struct OccultaApp: App {
         sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
     }
 
-    private static func walCheckpoint(at url: URL) {
+    static func walCheckpoint(at url: URL) {
         var db: OpaquePointer?
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
         defer { sqlite3_close(db) }
@@ -273,6 +186,7 @@ struct OccultaApp: App {
 struct RootView: View {
 
     let storeURL: URL
+    let launchScreen: LaunchScreen
 
     @EnvironmentObject private var appScreen: AppScreen
     @Environment(Manager.Security.self) private var security
@@ -342,7 +256,19 @@ struct RootView: View {
 
     // MARK: Body
 
+    @ViewBuilder
     var body: some View {
+        switch self.launchScreen {
+        case .storageError:
+            // Before the PIN flow, and without any of what the app view below does at launch: none of its tasks,
+            // handlers or observers is attached to this.
+            StorageErrorView()
+        case .app:
+            self.appBody
+        }
+    }
+
+    private var appBody: some View {
         self.phaseContent
             // No transitions between phases — content must never flash through states.
             .animation(.none, value: self.appScreen.phase)

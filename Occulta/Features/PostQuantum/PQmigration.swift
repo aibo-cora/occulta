@@ -51,7 +51,7 @@ struct DatabaseMigration {
     ///   - modelContext: The SwiftData context to fetch and save contacts.
     ///   - legacyCrypto: Crypto manager configured with the v1 key path.
     ///   - newCrypto: Crypto manager configured with the v2 hybrid key path.
-    static func migrateToV2(modelContext: ModelContext, legacyCrypto: CryptoProtocol, newCrypto: CryptoProtocol) throws {
+    static func migrateToV2(modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol) throws {
         let v1 = EncryptionScheme.v1_identityDerived.rawValue
         let descriptor = FetchDescriptor<Contact.Profile>(
             predicate: #Predicate { $0.encryptionScheme == v1 }
@@ -80,7 +80,7 @@ struct DatabaseMigration {
                 // live object; without this the next contact's `save()` would commit them and
                 // create exactly the half-converted row this fix exists to repair.
                 //
-                // Safe because `migrate()` suspends autosave for the whole sequence and this
+                // Safe because `LaunchSequence.run` suspends autosave for the whole sequence and this
                 // migration runs first, so nothing else has pending changes on this context —
                 // correct by ordering, which is why it is written down here.
                 modelContext.rollback()
@@ -442,7 +442,7 @@ struct DatabaseMigration {
 
     // MARK: - Per-contact migration
 
-    private static func migrateContact(_ contact: Contact.Profile, legacyCrypto: CryptoProtocol, newCrypto: CryptoProtocol) throws {
+    private static func migrateContact(_ contact: Contact.Profile, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol) throws {
         let id = contact.identifier
 
         // MARK: Scalar string fields (base64-encoded ciphertext)
@@ -681,7 +681,7 @@ struct DatabaseMigration {
                                       alreadyV2: alreadyV2, underlying: error)
     }
 
-    private static func reencryptString(_ base64: String, field: String, id: String, legacy: CryptoProtocol, new: CryptoProtocol) throws -> String {
+    private static func reencryptString(_ base64: String, field: String, id: String, legacy: LegacyCryptoProtocol, new: CryptoProtocol) throws -> String {
         guard !base64.isEmpty else { return "" }
 
         guard let ciphertext = Data(base64Encoded: base64) else {
@@ -721,7 +721,7 @@ struct DatabaseMigration {
         _ data: Data?,
         field: String,
         id: String,
-        legacy: CryptoProtocol,
+        legacy: LegacyCryptoProtocol,
         new: CryptoProtocol
     ) throws -> Data? {
         guard let data, !data.isEmpty else { return nil }

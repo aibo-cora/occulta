@@ -359,8 +359,9 @@ extension VaultManager {
     /// working recovery for a marginal one. Tests assert on reading the value back rather than on
     /// this not throwing.
     ///
-    /// What this does and does not buy: the payloads are already sealed and device-bound, so a
-    /// backup copy was never readable off-device. What travelled with it was existence, length and
+    /// What this does and does not buy: the payloads are already sealed under keys that need this device's Enclave and
+    /// Keychain secrets (the vault's after its first unlock on 2.0.0, `bugs.md` Bug 171; before that its key was a
+    /// function of a public point), so a backup copy is not readable off-device. What travelled with it was existence, length and
     /// timestamps — and a backup is a far softer target than the device, obtainable without the
     /// passcode prompt `.completeFileProtection` depends on. See Bug 101 for the same content in a
     /// worse place; this remedy is incomplete without it.
@@ -838,6 +839,8 @@ extension VaultManager {
     /// Removes the export metadata file. Only the wipe calls this (`bugs.md` Bug 128).
     func deleteBackupExportMetadata() {
         try? FileManager.default.removeItem(at: Self.backupExportMetaURL)
+        // A vault rewrap (Bug 171, Stage 4) that was killed between the file and its commit leaves its temp file.
+        try? FileManager.default.removeItem(at: KeyReseal.exportMetadataTemporaryURL(in: Self.backupExportMetaURL.deletingLastPathComponent()))
     }
 
     /// Recompute `backupStaleness` for `currentDepth` by comparing that depth's sealed

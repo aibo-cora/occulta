@@ -199,14 +199,7 @@ extension Manager {
             if let existing = try? context.fetch(FetchDescriptor<AppLayerConfig>()).first {
                 config = existing
             } else {
-                let seed = AppLayerConfig()
-                try? seed.writePersistedDepth(0)
-                // pinEnabledPerDepth initialised to all-true in AppLayerConfig.init().
-                // coercerBaseDepth seeded to 0 at row creation so its presence is
-                // forensically constant — a field that first appears after a coercion
-                // event would itself be a tell. Value 0 means "real user's depth is
-                // home", which is always correct for a fresh install.
-                try? seed.writeCoercerBaseDepth(0)
+                let seed = AppLayerConfig.seeded()
                 context.insert(seed)
                 try? context.save()
                 config = seed
@@ -285,16 +278,37 @@ extension Manager {
             if depthChanged { self.sessionID = UUID() }
         }
 
+        // MARK: - PIN keys
+
+        /// The two keys a verifier is built or checked with: the inner one every verifier has always had, and the wrap key
+        /// of Bug 171, Stage 3, which a wrapped verifier is sealed under on top of it.
+        private struct PINKeys {
+            let seKey: SymmetricKey
+            let wrapKey: SymmetricKey?
+        }
+
+        /// Derives both. The wrap key is derived whenever it can be, whatever the process writes
+        /// (`Manager.Ambient.pinVerifiers`): checking opens an 81-byte slot in a plain process too, as a store can hold
+        /// both sizes (a downgrade wrote a 53-byte verifier into a wrapped one, and the pass has not run since), and a
+        /// correct PIN must not read as a wrong attempt. It is nil if it can't be derived: a verifier the process writes
+        /// wrapped then fails to build, and a wrapped slot fails to check, instead of falling back to the plain form.
+        /// What gets built is still the process's own form (`PINManager.buildVerifier`).
+        private func pinKeys() throws -> PINKeys {
+            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
+                throw SecurityError.keyDerivationFailed
+            }
+            let wrapKey = try? self.keyManager.enclaveBoundKey(.secureModeWrap)
+            return PINKeys(seKey: seKey, wrapKey: wrapKey)
+        }
+
         // MARK: - PIN Setup
 
         /// Builds a normal PIN verifier, persists config, and transitions from no-PIN to PIN-only
         /// (`requiresPIN` becomes `true`, `isSecureModeActive` remains `false`).
         ///
         func configurePIN(_ pin: String) throws {
-            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
-            let sealedNormal = try PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: seKey)
+            let keys = try self.pinKeys()
+            let sealedNormal = try PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: keys.seKey, wrapKey: keys.wrapKey)
 
             // Update the always-present row in place — never delete and recreate.
             let config = try self.requireConfig()
@@ -317,12 +331,10 @@ extension Manager {
         func deactivatePIN(confirmingNormalPIN: String) throws {
             let config = try self.requireConfig()
             guard config.sealedDuressVerifier == nil else { throw SecurityError.invalidStateTransition }
-            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
+            let keys = try self.pinKeys()
             guard config.sealedNormalVerifiers.indices.contains(0),
                   PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
-                                           verifier: config.sealedNormalVerifiers[0], seKey: seKey)
+                                           verifier: config.sealedNormalVerifiers[0], seKey: keys.seKey, wrapKey: keys.wrapKey)
             else { throw SecurityError.incorrectPIN }
 
             config.sealedNormalVerifier = nil  // scalar
@@ -367,34 +379,32 @@ extension Manager {
             let config = try self.requireConfig()
             let depth  = self.currentDepth
 
-            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
+            let keys = try self.pinKeys()
 
             // Confirm entry PIN against the normal verifier at the current depth.
             guard depth < config.sealedNormalVerifiers.count,
                   PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
-                                           verifier: config.sealedNormalVerifiers[depth], seKey: seKey)
+                                           verifier: config.sealedNormalVerifiers[depth], seKey: keys.seKey, wrapKey: keys.wrapKey)
             else { throw SecurityError.incorrectPIN }
 
             // Duress PIN must not match ANY existing verifier (normal or duress at any depth).
             // The old dummy-blob-slot write on collision is gone along with the blob itself —
             // there is no disk footprint left to make indistinguishable from a real activation.
             let collidesWithNormal = config.sealedNormalVerifiers.contains {
-                PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel, verifier: $0, seKey: seKey)
+                PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel, verifier: $0, seKey: keys.seKey, wrapKey: keys.wrapKey)
             }
             let collidesWithDuress = config.sealedDuressVerifiers.contains {
-                PINManager.checkVerifier(pin: duressPIN, label: Self.duressLabel, verifier: $0, seKey: seKey)
+                PINManager.checkVerifier(pin: duressPIN, label: Self.duressLabel, verifier: $0, seKey: keys.seKey, wrapKey: keys.wrapKey)
             }
             if collidesWithNormal || collidesWithDuress {
                 throw SecurityError.pinCollision
             }
 
-            let duressVerifier = try PINManager.buildVerifier(pin: duressPIN, label: Self.duressLabel, seKey: seKey)
+            let duressVerifier = try PINManager.buildVerifier(pin: duressPIN, label: Self.duressLabel, seKey: keys.seKey, wrapKey: keys.wrapKey)
             // The routing alias is the SAME duress PIN built with normalLabel so that
             // verify()'s step-1 scan (which uses normalLabel for all entries) can find it
             // at cold start without walking through intermediate depths.
-            let routingAlias = try PINManager.buildVerifier(pin: duressPIN, label: Self.normalLabel, seKey: seKey)
+            let routingAlias = try PINManager.buildVerifier(pin: duressPIN, label: Self.normalLabel, seKey: keys.seKey, wrapKey: keys.wrapKey)
 
             config.writeDuressVerifier(duressVerifier, at: depth)
             config.writeNormalVerifier(routingAlias, at: depth + 1)
@@ -445,16 +455,14 @@ extension Manager {
             // depth 0→1 layer and return to pinOnly. depth 0 is valid here — the real
             // app owner deactivates from their master view.
 
-            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
+            let keys = try self.pinKeys()
 
             // Confirm PIN against the normal verifier at the current depth.
             // depth 0 → sealedNormalVerifiers[0] (master PIN).
             // depth 1 → sealedNormalVerifiers[1] (routing alias = duress PIN).
             guard depth < config.sealedNormalVerifiers.count,
                   PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
-                                           verifier: config.sealedNormalVerifiers[depth], seKey: seKey)
+                                           verifier: config.sealedNormalVerifiers[depth], seKey: keys.seKey, wrapKey: keys.wrapKey)
             else { throw SecurityError.incorrectPIN }
 
             // Clear verifiers and transition state.
@@ -506,13 +514,11 @@ extension Manager {
         func forceDeactivateForRecovery(confirmingEntryPIN: String) throws {
             let config = try self.requireConfig()
             guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
-            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
+            let keys = try self.pinKeys()
             // Use the master normal verifier (depth 0) for force-deactivation.
             guard config.sealedNormalVerifiers.indices.contains(0),
                   PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
-                                           verifier: config.sealedNormalVerifiers[0], seKey: seKey)
+                                           verifier: config.sealedNormalVerifiers[0], seKey: keys.seKey, wrapKey: keys.wrapKey)
             else { throw SecurityError.incorrectPIN }
 
             // Clear everything — force deactivation resets all layers.
@@ -662,14 +668,12 @@ extension Manager {
                 // Required delay has genuinely elapsed — fall through to verification.
             }
 
-            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
+            let keys = try self.pinKeys()
 
             // ── Step 1: Scan all normal verifiers ────────────────────────────────────
             for (k, verifier) in config.sealedNormalVerifiers.enumerated() {
                 if PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
-                                            verifier: verifier, seKey: seKey) {
+                                            verifier: verifier, seKey: keys.seKey, wrapKey: keys.wrapKey) {
                     self.resetCounters()
                     return .normal(depth: k)
                 }
@@ -679,7 +683,7 @@ extension Manager {
             if self.currentDepth < config.sealedDuressVerifiers.count {
                 let dv = config.sealedDuressVerifiers[self.currentDepth]
                 if PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
-                                            verifier: dv, seKey: seKey) {
+                                            verifier: dv, seKey: keys.seKey, wrapKey: keys.wrapKey) {
                     self.resetCounters()
                     return .duress
                 }
@@ -834,11 +838,11 @@ extension Manager {
         func checkNormalPIN(_ pin: String) -> Bool {
             guard
                 let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                let seKey  = try? self.keyManager.deriveSecureModeKey(),
+                let keys   = try? self.pinKeys(),
                 config.sealedNormalVerifiers.indices.contains(0)
             else { return false }
             return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
-                                            verifier: config.sealedNormalVerifiers[0], seKey: seKey)
+                                            verifier: config.sealedNormalVerifiers[0], seKey: keys.seKey, wrapKey: keys.wrapKey)
         }
 
         // MARK: - Coercion-resistant gate
@@ -905,7 +909,7 @@ extension Manager {
         func reEnablePIN(_ pin: String) -> Bool {
             guard
                 let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                let seKey  = try? self.keyManager.deriveSecureModeKey()
+                let keys   = try? self.pinKeys()
             else { return false }
 
             // ── Step 1: Scan all normal verifiers (same ordering as verify()) ────────
@@ -913,7 +917,7 @@ extension Manager {
             // Route to that depth and re-enable the gate.
             for (k, verifier) in config.sealedNormalVerifiers.enumerated() {
                 if PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
-                                            verifier: verifier, seKey: seKey) {
+                                            verifier: verifier, seKey: keys.seKey, wrapKey: keys.wrapKey) {
                     try? self.setState(k, config: config)
                     try? self.modelContext.save()
                     return true
@@ -924,7 +928,7 @@ extension Manager {
             // A match at index K means the entered PIN is the push-down from depth K to K+1.
             for (k, verifier) in config.sealedDuressVerifiers.enumerated() {
                 if PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
-                                            verifier: verifier, seKey: seKey) {
+                                            verifier: verifier, seKey: keys.seKey, wrapKey: keys.wrapKey) {
                     try? self.setState(k + 1, config: config)
                     try? self.modelContext.save()
                     return true
@@ -965,8 +969,8 @@ extension Manager {
             guard self.currentDepth > 0 else { return false }
 
             guard
-                let duressVerifier = try? PINManager.buildVerifier(pin: pin, label: Self.duressLabel, seKey: seKey),
-                let routingAlias   = try? PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: seKey)
+                let duressVerifier = try? PINManager.buildVerifier(pin: pin, label: Self.duressLabel, seKey: keys.seKey, wrapKey: keys.wrapKey),
+                let routingAlias   = try? PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: keys.seKey, wrapKey: keys.wrapKey)
             else { return false }
 
             config.writeDuressVerifier(duressVerifier, at: self.currentDepth)
@@ -999,7 +1003,7 @@ extension Manager {
         func checkCurrentLayerPIN(_ pin: String) -> Bool {
             guard
                 let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                let seKey  = try? self.keyManager.deriveSecureModeKey()
+                let keys   = try? self.pinKeys()
             else { return false }
 
             let depth = self.currentDepth
@@ -1007,7 +1011,7 @@ extension Manager {
             if config.sealedNormalVerifiers.indices.contains(depth),
                PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
                                         verifier: config.sealedNormalVerifiers[depth],
-                                        seKey: seKey) {
+                                        seKey: keys.seKey, wrapKey: keys.wrapKey) {
                 return true
             }
 
@@ -1017,7 +1021,7 @@ extension Manager {
             }
             return PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                             verifier: config.sealedDuressVerifiers[duressIdx],
-                                            seKey: seKey)
+                                            seKey: keys.seKey, wrapKey: keys.wrapKey)
         }
 
         // MARK: - Safe vault entries
