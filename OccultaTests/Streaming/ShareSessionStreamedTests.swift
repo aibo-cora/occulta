@@ -22,7 +22,7 @@ private struct StagingKey: ShareSessionDecrypting {
         try #require(try AES.GCM.seal(data, using: Self.key, nonce: AES.GCM.Nonce()).combined)
     }
     func decrypt(data: Data) throws -> Data { try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: Self.key) }
-    func stagingKey() throws -> SymmetricKey { Self.key }
+    func stagingKeys() -> [SymmetricKey] { [Self.key] }
 }
 
 private enum Format { case legacy, eatt }
@@ -239,14 +239,14 @@ private func hasGPS(_ data: Data) -> Bool {
 // MARK: - The extension's key
 
 private func shareKeyAvailable() -> Bool {
-    (try? ShareStagingKeyManager().deriveSymmetricKey()) != nil
+    sharedKeychainAvailable() && (try? ShareStagingKeyManager().encrypt(data: Data([0]))) != nil
 }
 
 @Suite("Share session — the extension's real key")
 @MainActor struct ShareSessionRealKeyTests {
 
     /// What the extension does, with the key it has: the file sealed by `StreamingEncryptor` under
-    /// `deriveSymmetricKey()`, the manifest by `encrypt(data:)`. The app must read both back.
+    /// `deriveStreamSealingKey()`, the manifest by `encrypt(data:)`. The app must read both back.
     @Test("a session staged the way the extension stages one opens in the app", .enabled(if: shareKeyAvailable()))
     func extensionFormatOpens() async throws {
         let box = try container(); defer { try? FileManager.default.removeItem(at: box) }
@@ -256,7 +256,7 @@ private func shareKeyAvailable() -> Bool {
         let id  = UUID().uuidString
         let dir = ShareSession.directory(for: id, in: box)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let encryptor = try StreamingEncryptor(url: dir.appendingPathComponent("0.tmp"), contactKey: try keys.deriveSymmetricKey())
+        let encryptor = try StreamingEncryptor(url: dir.appendingPathComponent("0.tmp"), contactKey: try keys.deriveStreamSealingKey())
         var offset = 0
         while offset < plaintext.count {
             let end = min(offset + 65_536, plaintext.count)

@@ -106,10 +106,22 @@ final class AppLayerConfig {
     /// re-anchors rather than treating as elapsed time.
     var lockoutAnchorUptimeEncrypted: Data? = nil
 
+    /// Sealed `KeyReseal.Epoch`, fixed width. Set once, by the last write of the key reseal (Bug 171, Stage 2),
+    /// when every sealed value of tier U sits under its Enclave-bound key; later launches skip the pass on seeing
+    /// it. nil until then, and again after a downgrade: an older build's lightweight migration drops the column, and
+    /// re-upgrading reruns the pass. Whether it is nil is the signal; the value says which form the data is under.
+    /// A new optional column, the same on every install, so no migration plan is needed.
+    var keyEpoch: Data? = nil
+
+    /// Sealed `KeyReseal.Epoch` of the vault tier, fixed width: 1 until the first vault unlock after the upgrade
+    /// rewraps the vault's keys (Stage 4). Seeded at 1 by the Stage 2 bootstrap on every install, so its presence
+    /// is the same everywhere.
+    var vaultKeyEpoch: Data? = nil
+
     // MARK: - Verifier arrays (multi-layer)
     //
     // Both arrays are always padded to maxDepthCount entries. Filler entries are
-    // random bytes of exactly verifierFillerSize (= PINManager.verifierSize = 53 bytes),
+    // random bytes of exactly verifierFillerSize (= PINManager.verifierSize: 53 bytes, 81 once wrapped),
     // indistinguishable in size from real verifiers. `verify()` simply ignores entries
     // that fail to open — filler always fails. A forensic examiner always sees exactly
     // maxDepthCount sealed entries per array regardless of how many real layers are
@@ -131,6 +143,21 @@ final class AppLayerConfig {
         self.sealedNormalVerifiers = Self.verifierFillerArray()
         self.sealedDuressVerifiers = Self.verifierFillerArray()
         self.pinEnabledPerDepth    = Self.pinEnabledFillerArray()
+    }
+
+    /// The row a fresh install starts with. `Manager.Security.init` creates it when none exists, and so does the key
+    /// reseal's bootstrap, which now runs before it (`KeyReseal.bootstrap`): one function, so the row is the same
+    /// whichever got there first.
+    static func seeded() -> AppLayerConfig {
+        let seed = AppLayerConfig()
+        try? seed.writePersistedDepth(0)
+        // pinEnabledPerDepth initialised to all-true in AppLayerConfig.init().
+        // coercerBaseDepth seeded to 0 at row creation so its presence is
+        // forensically constant — a field that first appears after a coercion
+        // event would itself be a tell. Value 0 means "real user's depth is
+        // home", which is always correct for a fresh install.
+        try? seed.writeCoercerBaseDepth(0)
+        return seed
     }
 
     // MARK: - Verifier array helpers
@@ -168,8 +195,9 @@ final class AppLayerConfig {
     /// Fixed capacity `pinEnabledPerDepth` is padded to — must equal `maxDepthCount`
     /// so all three per-depth arrays stay the same forensically-constant length.
     private static let paddedArrayCount = 32
-    /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize (53).
-    static let verifierFillerSize = 53
+    /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize: 53 until the process writes
+    /// wrapped verifiers (Bug 171, Stage 3), 81 after.
+    static var verifierFillerSize: Int { Manager.PINManager.verifierSize }
 
     private func ensurePadded() {
         while self.pinEnabledPerDepth.count < Self.paddedArrayCount {

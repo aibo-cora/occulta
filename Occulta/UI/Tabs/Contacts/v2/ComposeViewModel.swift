@@ -10,13 +10,22 @@ import CryptoKit
 // MARK: - ComposeStagingKeyProviding
 
 /// The device-bound key that seals attachments staged for a recipient with no per-contact key:
-/// every group, and a contact we hold no public key for. Production passes
-/// `ShareStagingKeyManager`; tests pass an in-memory key and run without a Secure Enclave.
+/// every group, and a contact we hold no public key for. Production passes `TierUComposeStagingKey`;
+/// tests pass an in-memory key and run without a Secure Enclave.
 protocol ComposeStagingKeyProviding {
     func deriveComposeStagingKey() throws -> SymmetricKey
 }
 
-extension ShareStagingKeyManager: ComposeStagingKeyProviding {}
+/// Tier U's compose key, through the ambient key manager (`bugs.md` Bug 171, Stage 8). Compose runs only in the app and its
+/// files live in the app's own container, so this is the app-only tier and not share staging. It exists only in a process
+/// whose tier U keys are Enclave-bound; in any other it throws, `setup` leaves the attachment manager nil, and every import is
+/// refused instead of falling back to plaintext or to a key of another form.
+struct TierUComposeStagingKey: ComposeStagingKeyProviding {
+    func deriveComposeStagingKey() throws -> SymmetricKey {
+        guard let key = try Manager.Ambient.keyManager.deriveComposeStagingKey() else { throw ImportError.stagingKeyUnavailable }
+        return key
+    }
+}
 
 // MARK: - PendingImport
 
@@ -62,7 +71,7 @@ final class ComposeViewModel {
 
     init(
         recipient: Recipient,
-        stagingKeyProvider: any ComposeStagingKeyProviding = ShareStagingKeyManager(),
+        stagingKeyProvider: any ComposeStagingKeyProviding = TierUComposeStagingKey(),
         memoryGuard: MemoryGuard = .system
     ) {
         self.recipient = recipient

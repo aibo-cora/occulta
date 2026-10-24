@@ -23,12 +23,13 @@ import OccultaFormats
 /// extension sealed.
 protocol ShareSessionDecrypting {
     func decrypt(data: Data) throws -> Data
-    /// The key a streamed (`.eatt`) staged file is sealed under: `deriveSymmetricKey()` on the real manager.
-    func stagingKey() throws -> SymmetricKey
+    /// The keys a streamed (`.eatt`) staged file could be sealed under, most likely first. The one that opens the file
+    /// is found by its header (`AttachmentManager.opens(at:)`).
+    func stagingKeys() -> [SymmetricKey]
 }
 
 extension ShareStagingKeyManager: ShareSessionDecrypting {
-    func stagingKey() throws -> SymmetricKey { try self.deriveSymmetricKey() }
+    func stagingKeys() -> [SymmetricKey] { self.openingKeys() }
 }
 
 enum ShareSession {
@@ -114,6 +115,8 @@ enum ShareSession {
             }
 
             var attachments: AttachmentManager?
+            var attachmentsKey: Int?
+            let keys = keyManager.stagingKeys()
             for entry in manifest.files {
                 let url = sessionDir.appendingPathComponent(entry.filename)
                 let isImage = UTType(entry.uti)?.conforms(to: .image) == true
@@ -124,9 +127,12 @@ enum ShareSession {
 
                 var content: Data
                 if AttachmentManager.isSealed(at: url) {
-                    let manager = try attachments ?? AttachmentManager(contactKey: try keyManager.stagingKey())
-                    attachments = manager
-                    guard isImage else {
+                    // The key that opens it is the one whose header check passes. One manager serves every file that
+                    // stays on disk; a file sealed under another key, which a session staged across a key change
+                    // could hold, is read whole instead.
+                    guard let (index, manager) = Self.opener(of: url, among: keys) else { throw AttachmentError.headerMACFailed }
+                    if attachments == nil { attachments = manager; attachmentsKey = index }
+                    guard isImage || index != attachmentsKey else {
                         files.append(OccultaFormats.File(url: url, format: format))
                         continue
                     }
@@ -154,6 +160,15 @@ enum ShareSession {
             self.delete(id: id, in: container)
             throw error
         }
+    }
+
+    /// The manager, and its place in `keys`, whose key opens the sealed file at `url`.
+    private static func opener(of url: URL, among keys: [SymmetricKey]) -> (index: Int, manager: AttachmentManager)? {
+        for (index, key) in keys.enumerated() {
+            let manager = AttachmentManager(contactKey: key)
+            if manager.opens(at: url) { return (index, manager) }
+        }
+        return nil
     }
 
     /// Decrypt a staged session into plaintext files, ready for `encryptBundle`. Every file is read into memory;
@@ -215,7 +230,7 @@ enum ShareSession {
         // A file the extension staged as `.eatt`, or one the build before it sealed whole.
         let plaintext: Data?
         if AttachmentManager.isSealed(at: file) {
-            plaintext = (try? keyManager.stagingKey()).flatMap { try? AttachmentManager(contactKey: $0).plaintextBlocking(at: file) }
+            plaintext = Self.opener(of: file, among: keyManager.stagingKeys()).flatMap { try? $0.manager.plaintextBlocking(at: file) }
         } else {
             plaintext = try? keyManager.decrypt(data: Data(contentsOf: file))
         }

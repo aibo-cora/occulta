@@ -213,7 +213,7 @@ class ShareViewController: UIViewController {
 
                     let source = try NoCacheFile.reader(sourceURL)
                     let encryptor = try StreamingEncryptor(
-                        url: destination, contactKey: try self.shareKeyManager.deriveSymmetricKey()
+                        url: destination, contactKey: try self.shareKeyManager.deriveStreamSealingKey()
                     )
                     try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
                     try encryptor.finalize()
@@ -247,7 +247,7 @@ class ShareViewController: UIViewController {
             throw ShareError.fileTooLarge
         }
 
-        let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.shareKeyManager.deriveSymmetricKey())
+        let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.shareKeyManager.deriveStreamSealingKey())
         try encryptor.append(data)
         try encryptor.finalize()
         _ = data.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }

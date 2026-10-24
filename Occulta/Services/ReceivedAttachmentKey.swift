@@ -24,7 +24,7 @@ extension ContactManager {
     /// A nil result means the attachment is refused. Callers never write it unsealed.
     func receivedAttachmentKey(
         for owner: String,
-        stagingKeyProvider: any ComposeStagingKeyProviding = ShareStagingKeyManager()
+        stagingKeyProvider: any ComposeStagingKeyProviding = TierUComposeStagingKey()
     ) -> SymmetricKey? {
         if let key = try? self.fileEncryptionKey(for: owner) {
             return key
@@ -44,7 +44,7 @@ extension ContactManager {
         stagingKeyProvider: (any ComposeStagingKeyProviding)? = nil,
         in directory: URL = FileManager.default.temporaryDirectory
     ) async throws -> OwnedBasket {
-        let attachmentManager = self.receivedAttachmentKey(for: owner, stagingKeyProvider: stagingKeyProvider ?? ShareStagingKeyManager())
+        let attachmentManager = self.receivedAttachmentKey(for: owner, stagingKeyProvider: stagingKeyProvider ?? TierUComposeStagingKey())
             .map { AttachmentManager(contactKey: $0) }
 
         // Checked before the loop so no task has started a write.

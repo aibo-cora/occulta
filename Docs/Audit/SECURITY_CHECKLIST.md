@@ -148,13 +148,22 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       (`PrekeyManager.swift:70`, `ShareIndexKeyManager.swift:147`, and `TestKeyManager`'s
       in-memory pairs). Delete this item or re-point it at whatever replaced the component.
 - [x] Local DB encryption key is inaccessible after restore to a different device
-      — **wording amended.** The item described `ECDH(ourSEKey, G)`; the derivation is now
-      hybrid — `HKDF(ECDH(localDB_SE_priv, G) ‖ keychain_random)`, salted with the SE public key
-      (`Key+Manager.swift:432`). Both halves are device-bound and the property is stronger than
-      before: the SE half is `kSecAttrTokenIDSecureEnclave` with `.privateKeyUsage` only and
-      `WhenUnlockedThisDeviceOnly` (`:506`), so it is non-exportable and non-migratable; the
-      random half is `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (`:562`), so it does not
-      travel in an encrypted backup. Neither half can be reconstructed on another device.
+      — **wording amended twice.** The item described `ECDH(ourSEKey, G)`; the derivation was then
+      hybrid — `HKDF(ECDH(localDB_SE_priv, G) ‖ keychain_random)`, salted with the SE public key — and
+      the old text called both halves device-bound. **That was wrong for the SE half (`bugs.md` Bug 171,
+      found 2026-10-21): ECDH against G is d·G, the key's own public point Q, so the half is a function of
+      Q and needs no Enclave; the key was in effect its random half alone, and the item held only while
+      Q was not in whatever was restored.** Fixed in 2.0.0: the key is now
+      `HKDF(ECDH(localDB_SE_priv, P) ‖ [ss ‖] r_U)` (`Manager.Key.enclaveBoundKey(.localDB)`), with P a point
+      nobody knows the discrete log of, `r_U` the Keychain random half
+      (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, so it does not travel in an encrypted backup), and on
+      iOS 26+ `ss` from an Enclave ML-KEM key held only as a blob this device's Enclave can use. The SE
+      half is `kSecAttrTokenIDSecureEnclave` with `.privateKeyUsage` only and `WhenUnlockedThisDeviceOnly`,
+      so it is non-exportable and non-migratable. None of the terms can be reconstructed on another device.
+      **Open, needs a decision:** (a) data already sealed under the legacy key and copied before the
+      launch reseal moved it stays readable to a holder of Q; no option changes that. (b) Below iOS 26 there is
+      no ML-KEM term, so a keychain dump that holds Q and `r_U`, analysed later with a quantum computer, is
+      open until the device reaches iOS 26 (Stage 6) or the passphrase release ships.
 
 ## 3. Protocol Invariants
 

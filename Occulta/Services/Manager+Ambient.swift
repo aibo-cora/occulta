@@ -28,6 +28,15 @@ extension Manager {
             let keyManager: any KeyManagerProtocol
             private(set) var realKeyConstructions = 0
 
+            /// This test's `tierUKeys`, in place of the process-wide one.
+            var tierUKeys = TierUKeys.legacy
+
+            /// This test's `pinVerifiers`, in place of the process-wide one.
+            var pinVerifiers = PINVerifiers.plain
+
+            /// This test's `vaultKeys`, in place of the process-wide one.
+            var vaultKeys = VaultKeys.legacy
+
             init(_ keyManager: any KeyManagerProtocol) {
                 self.keyManager = keyManager
             }
@@ -45,6 +54,139 @@ extension Manager {
             if let override = Self.override { return override.keyManager }
             #endif
             return Manager.Key()
+        }
+
+        // MARK: - Which keys tier U's accessors return (Bug 171, Stage 2)
+
+        /// Which derivation `createHybridLocalEncryptionKey()`, `deriveShardCustodyKey()` and
+        /// `deriveRestoreVaultKey()` return.
+        enum TierUKeys {
+            /// The derivations of the releases before the fix (`legacyKey(_:)`).
+            case legacy
+            /// The Enclave-bound ones (`enclaveBoundKey(_:)`).
+            case enclaveBound
+        }
+
+        private static var process = TierUKeys.legacy
+
+        /// The keys tier U's three accessors return: the key the tier's epoch says the data is under.
+        ///
+        /// Decided once per process, by `LaunchSequence`, after the key reseal and before anything else derives, and
+        /// never changed after. It is `.enclaveBound` only when `AppLayerConfig.keyEpoch` exists, so a pass that
+        /// aborted or didn't finish leaves the whole process on the legacy keys, consistent with a store that is
+        /// still sealed under them. The default is `.legacy`: a process that never runs the launch sequence derives
+        /// what it always did. There is no retry mid-session, because a key derived before the switch could write
+        /// legacy ciphertext after the epoch is set, and the pass would never see it.
+        ///
+        /// Process state and not a fetch per derivation: it is read on every `String.decrypt()`. A test binds its own
+        /// with the key manager (`Override.tierUKeys`), for the same reason `override` is a task-local.
+        static var tierUKeys: TierUKeys {
+            #if DEBUG
+            if let override = Self.override { return override.tierUKeys }
+            #endif
+            return Self.process
+        }
+
+        /// Only `LaunchSequence` (and `KeyReseal.bootstrap`, for the one row it seals) calls this.
+        static func setTierUKeys(_ keys: TierUKeys) {
+            #if DEBUG
+            if let override = Self.override {
+                override.tierUKeys = keys
+                return
+            }
+            #endif
+            Self.process = keys
+        }
+
+        // MARK: - Which form PIN verifiers are written in (Bug 171, Stage 3)
+
+        /// The form a PIN verifier is written in.
+        enum PINVerifiers {
+            /// 53 bytes: the sentinel sealed under the PIN key (`PINManager`).
+            case plain
+            /// 81 bytes: that, sealed again under the wrap key, which needs `r_U` and the tier U record.
+            case wrapped
+        }
+
+        private static var processVerifiers = PINVerifiers.plain
+
+        /// How `PINManager` builds verifiers, and so how big a filler slot is. Decided once per process, by
+        /// `LaunchSequence`, after the verifier wrap pass, and by size alone: `.wrapped` when every verifier in the store
+        /// is 81 bytes, `.plain` otherwise. Checking accepts both sizes whatever this says. Writing follows it so that an
+        /// array is never mixed: a pass that aborted leaves the store at 53 and the process writing 53, and a store
+        /// at 81 has the process writing 81. The default is `.plain`, which is what a process that never runs the launch
+        /// sequence did before.
+        static var pinVerifiers: PINVerifiers {
+            #if DEBUG
+            if let override = Self.override { return override.pinVerifiers }
+            #endif
+            return Self.processVerifiers
+        }
+
+        /// Only `LaunchSequence` (and `KeyReseal.bootstrap`, for the config row it creates) calls this.
+        static func setPINVerifiers(_ verifiers: PINVerifiers) {
+            #if DEBUG
+            if let override = Self.override {
+                override.pinVerifiers = verifiers
+                return
+            }
+            #endif
+            Self.processVerifiers = verifiers
+        }
+
+        /// Runs `body` with `pinVerifiers` set to `verifiers`, and restores what it was.
+        static func withPINVerifiers<R>(_ verifiers: PINVerifiers, _ body: () throws -> R) rethrows -> R {
+            let previous = Self.pinVerifiers
+            Self.setPINVerifiers(verifiers)
+            defer { Self.setPINVerifiers(previous) }
+            return try body()
+        }
+
+        // MARK: - Which key the vault derives (Bug 171, Stage 4)
+
+        /// Which derivation `deriveVaultKey(context:)` returns.
+        enum VaultKeys {
+            /// The legacy derivation (`legacyKey(.vault)`).
+            case legacy
+            /// The Enclave-bound one (`enclaveBoundKey(.vault)`): `r_B` and the tier B record go in, in the form the
+            /// record says.
+            case enclaveBound
+            /// The Enclave-bound one in the classical form, whatever the tier B record says (Stage 6): the vault's data is
+            /// still under it when the record has become hybrid and the rewrap has not yet moved the data.
+            case enclaveBoundClassical
+        }
+
+        private static var processVaultKeys = VaultKeys.legacy
+
+        /// The key `deriveVaultKey(context:)` returns: the one the vault's epoch (`AppLayerConfig.vaultKeyEpoch`) says
+        /// the vault's data is under. `.legacy` until `VaultManager.unlock(context:)` has moved the vault (epoch 1 to 2)
+        /// or found it moved, and `.legacy` again if that failed: a rewrap that rolled back leaves the vault where it
+        /// was, readable, and the next unlock tries again. It is set inside `unlock`, before any other vault operation,
+        /// and vault code derives the key per operation and keeps none across it.
+        static var vaultKeys: VaultKeys {
+            #if DEBUG
+            if let override = Self.override { return override.vaultKeys }
+            #endif
+            return Self.processVaultKeys
+        }
+
+        /// Only `VaultManager.unlock(context:)` and `LaunchSequence` (which resets it) call this.
+        static func setVaultKeys(_ keys: VaultKeys) {
+            #if DEBUG
+            if let override = Self.override {
+                override.vaultKeys = keys
+                return
+            }
+            #endif
+            Self.processVaultKeys = keys
+        }
+
+        /// Runs `body` with `tierUKeys` set to `keys`, and restores what it was.
+        static func withTierUKeys<R>(_ keys: TierUKeys, _ body: () throws -> R) rethrows -> R {
+            let previous = Self.tierUKeys
+            Self.setTierUKeys(keys)
+            defer { Self.setTierUKeys(previous) }
+            return try body()
         }
     }
 }

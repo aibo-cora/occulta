@@ -64,9 +64,9 @@ struct V1EncryptionTests {
         #expect(decrypted == plaintext)
     }
 
-    @Test("v1 ciphertext via CryptoProtocol roundtrips through decryptLegacy")
+    @Test("v1 ciphertext via LegacyCryptoProtocol roundtrips through decryptLegacy")
     func legacyCryptoProtocolRoundtrip() throws {
-        let crypto = Manager.Crypto(keyManager: keyManager)
+        let crypto = LegacyCryptoManager(keyManager: keyManager)
         let plaintext = "protocol roundtrip".data(using: .utf8)!
 
         // Simulate v1 encryption (no AAD) manually.
@@ -205,13 +205,14 @@ struct AADTests {
     @Test("v2 ciphertext cannot be decrypted via decryptLegacy")
     func v2CiphertextRejectsLegacyDecrypt() throws {
         let crypto = Manager.Crypto(keyManager: keyManager)
+        let legacy = LegacyCryptoManager(keyManager: keyManager)
         let plaintext = "cross-version test".data(using: .utf8)!
 
         let encrypted = try #require(try crypto.encrypt(data: plaintext))
 
         // decryptLegacy uses the v1 key without AAD — must fail on v2 ciphertext.
         #expect(throws: (any Error).self) {
-            _ = try crypto.decryptLegacy(data: encrypted)
+            _ = try legacy.decryptLegacy(data: encrypted)
         }
     }
 
@@ -441,12 +442,13 @@ struct EncryptionSchemeTests {
 
 /// Crypto wrapper that only exposes the legacy decrypt path.
 /// Prevents accidental use of v2 encrypt during migration test setup.
-@MainActor
-private final class LegacyOnlyCrypto: CryptoProtocol {
+private final class LegacyOnlyCrypto: LegacyCryptoProtocol {
     private let inner: Manager.Crypto
+    private let legacy: LegacyCryptoManager
 
     init(keyManager: TestKeyManager) {
-        self.inner = Manager.Crypto(keyManager: keyManager)
+        self.inner  = Manager.Crypto(keyManager: keyManager)
+        self.legacy = LegacyCryptoManager(keyManager: keyManager)
     }
 
     func encrypt(data: Data?) throws -> Data? {
@@ -460,7 +462,7 @@ private final class LegacyOnlyCrypto: CryptoProtocol {
     }
 
     func decryptLegacy(data: Data?) throws -> Data? {
-        try self.inner.decryptLegacy(data: data)
+        try self.legacy.decryptLegacy(data: data)
     }
 
     func encrypt(message: Data, using material: Data?) throws -> Data? {
