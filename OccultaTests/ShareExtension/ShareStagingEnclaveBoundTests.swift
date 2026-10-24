@@ -150,6 +150,7 @@ struct ShareStagingEnclaveBoundTests {
     }
 
     @Test("Each call seals with a fresh nonce, and a tampered ciphertext is rejected in every form",
+          .enabled(if: sharedKeychainAvailable()),
           arguments: [true, false])
     func nonceAndTamper(hybrid: Bool) throws {
         let device = try Device()
@@ -169,6 +170,7 @@ struct ShareStagingEnclaveBoundTests {
     // MARK: - Opening
 
     @Test("A session the previous build staged (legacy key) opens, whether the items exist yet or not, and opening creates nothing",
+          .enabled(if: sharedKeychainAvailable()),
           arguments: [true, false], [true, false])
     func legacySessionOpens(hybrid: Bool, itemsExist: Bool) throws {
         let device = try Device()
@@ -246,7 +248,8 @@ struct ShareStagingEnclaveBoundTests {
 
     // MARK: - The app and the extension
 
-    @Test("What the extension seals the app opens, and the reverse, in both forms", arguments: [true, false])
+    @Test("What the extension seals the app opens, and the reverse, in both forms", .enabled(if: sharedKeychainAvailable()),
+          arguments: [true, false])
     func appAndExtensionAgree(hybrid: Bool) throws {
         let device = try Device()
         defer { device.clean() }
@@ -262,6 +265,7 @@ struct ShareStagingEnclaveBoundTests {
     }
 
     @Test("A missing secret and record are created by the app's bootstrap, and the extension then uses them without changing them",
+          .enabled(if: sharedKeychainAvailable()),
           arguments: [true, false])
     func appCreatesThem(hybrid: Bool) throws {
         let device = try Device()
@@ -282,6 +286,7 @@ struct ShareStagingEnclaveBoundTests {
     }
 
     @Test("A missing secret and record are created by the extension on first use, and the app then uses them without changing them",
+          .enabled(if: sharedKeychainAvailable()),
           arguments: [true, false])
     func extensionCreatesThem(hybrid: Bool) throws {
         let device = try Device()
@@ -349,6 +354,7 @@ struct ShareStagingEnclaveBoundTests {
     // MARK: - Fresh install, erase, sweep
 
     @Test("A fresh install: the app's launch creates the items, and the first session is sealed under them with no legacy derivation",
+          .enabled(if: sharedKeychainAvailable()),
           arguments: [true, false])
     func freshInstall(hybrid: Bool) throws {
         let device = try Device()
@@ -468,6 +474,7 @@ struct ShareStagingEnclaveBoundTests {
     }
 
     @Test("The sweep is unchanged: it keeps a fresh session in any form, and deletes a stale one, one without a manifest and a corrupt one",
+          .enabled(if: sharedKeychainAvailable()),
           arguments: [true, false])
     func sweepIsUnchanged(hybrid: Bool) throws {
         let device = try Device()
