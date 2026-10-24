@@ -747,7 +747,14 @@ extension Manager {
         /// from briefly appearing when the content transitions to .unlocked.
         func applyVerifyState(for result: PINVerifyResult) {
             switch result {
-            case .normal(let depth): self.currentDepth = depth
+            case .normal(let depth):
+                // An activated duress PIN routes here, not to `.duress`: `activateSecureMode` writes it into
+                // `sealedNormalVerifiers[depth + 1]`, which `verify()` matches first (Bug 172). Purge on going
+                // deeper only: a drop to a lower depth leaves what that layer saved, and the draft's
+                // recipient is not visible there anyway.
+                let isDeeper = depth > self.currentDepth
+                self.currentDepth = depth
+                if isDeeper { self.purgeDraftsNotSafeAtCurrentDepth() }
             case .duress:
                 self.currentDepth += 1
                 self.purgeDraftsNotSafeAtCurrentDepth()
