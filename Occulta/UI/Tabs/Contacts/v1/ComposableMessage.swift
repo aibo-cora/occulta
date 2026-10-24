@@ -173,6 +173,10 @@ extension ComposableMessage {
         var attachmentManager: AttachmentManager? = nil
         var thumbnails:        [URL: UIImage]     = [:]
         var onDelete:          ((OccultaFormats.File) -> Void)? = nil
+        /// Files of a received streamed bundle that are still being decrypted: shown as placeholders.
+        var incomingIDs:       Set<UUID>          = []
+        /// The attachments of a received streamed bundle could not be opened.
+        var receiveFailed:     Bool               = false
 
         enum Modes {
             case read(messageOwner: String), write
@@ -207,6 +211,13 @@ extension ComposableMessage {
             VStack {
                 if case .read(let owner) = self.mode {
                     Contact.Info(identifier: owner).padding(.top)
+                }
+
+                if self.receiveFailed {
+                    Text("Some attachments couldn't be opened.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
                 }
 
                 ScrollViewReader { proxy in
@@ -247,6 +258,7 @@ extension ComposableMessage {
                         mode: self.mode,
                         attachmentManager: self.attachmentManager,
                         thumbnails: self.thumbnails,
+                        isIncoming: self.incomingIDs.contains(file.id),
                         onDelete: self.onDelete.map { cb in { cb(file) } }
                     )
                 }
@@ -273,6 +285,8 @@ extension ComposableMessage {
         let mode:              Conversation.Modes
         var attachmentManager: AttachmentManager? = nil
         var thumbnails:        [URL: UIImage]      = [:]
+        /// A streamed attachment whose bytes have not all arrived: a placeholder, not a file.
+        var isIncoming:        Bool                = false
         var onDelete:          (() -> Void)?      = nil
 
         @State private var showingFullScreen = false
@@ -337,6 +351,9 @@ extension ComposableMessage {
                             }
                         }
                 }
+
+            case .file(let metadata) where self.isIncoming:
+                self.incomingBubble(name: metadata.name ?? "file")
 
             case .file(let metadata):
                 let name = metadata.name ?? "file"
@@ -451,6 +468,17 @@ extension ComposableMessage {
 
                 self.fileCaptionRow(name: name)
             }
+        }
+
+        @ViewBuilder private func incomingBubble(name: String) -> some View {
+            HStack(spacing: 12) {
+                ProgressView().tint(.white)
+                Text(name).lineLimit(1)
+            }
+            .padding(14)
+            .background(Color.occultaAccent)
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
         }
 
         @ViewBuilder private func genericFileBubble(name: String, metadata: OccultaFormats.File.Metadata) -> some View {

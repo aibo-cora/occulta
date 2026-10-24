@@ -63,6 +63,10 @@ however the stages are cut.
   2.0.0. The 2.0.0 numbering that Bug 165's tier needs is unaffected. Which release carries the passphrase work
   is not decided. The owner leans towards shipping all its data slices together in one release (2026-10-15),
   also not decided.
+- **Streamed bundle bodies ship in 2.0.0** (decided 2026-10-23, [`STREAMING_SPEC.md`](../Features/Bundle/STREAMING_SPEC.md)
+  §12). Their tier, `streamedBodyCapable`, is also keyed on app version 2.0.0, so the same rule applies: nothing
+  numbered 2.0.0 or later goes out without the streamed reader and writer, TestFlight included. Such a build would
+  be recorded at the tier and sent bundles it can't open. The release branch was at 1.11.1 on 2026-10-23.
 
 ## Stages
 

@@ -1,6 +1,6 @@
 # Streaming Large Attachments Through the Bundle Format — Problem Statement
 
-**Status:** Proposal — not scoped for implementation, not started
+**Status:** Superseded 2026-10-23 by `STREAMING_SPEC.md`, the design that came out of this problem statement. Kept for its background.
 **Origin:** `Docs/Audit/SecurityReview2026-07-24/README.md`, finding #11 (unbounded inbound file read, SEC-5) — this document captures a follow-on question raised while fixing that finding, not the fix itself
 **Related:** `Docs/Features/Bundle/SPEC.md` (v4 wire format — fixes size bloat, not memory), `Docs/Features/Import/Large Video Import — OOM Investigation.md` (proven streaming-encryption techniques, different layer), `Occulta/Services/Attachment+Manager.swift` (existing chunked at-rest format)
 
