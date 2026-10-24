@@ -64,3 +64,30 @@ only by tests until then; the inline path is the one every real bundle takes.
   streamed lengths are checked against the stream's *P* as soon as the manifest is decoded (§5.3 names the end of
   the stream), so a bundle whose lengths disagree is refused before any file is written; and `wrapRecipient` is
   internal rather than private, for the tests' sender.
+
+## Stage 4 — send path, share session, tier activation
+
+**Stored data changed: none that is read back.** What changes is what the app writes to `tmp/` and sends.
+
+- **Tier activation.** `Version.streamedBodyCapable` is first in `Version.known`, keyed on 2.0.0. A contact is
+  recorded at it from their first message from a 2.0.0 build; before that, and for any marker we can't read, they
+  resolve below it and get the inline layout. Contacts already recorded keep their tier (`isAtLeast(.bodyDigestCapable)`
+  is still true at the new one), and a byte above `0x0A` still reads as a newer build. **No build numbered 2.0.0 or
+  later may ship with stages 3 and 4 missing**, and this branch changes no `MARKETING_VERSION` (still 1.11.1).
+- **Which layout, decided once.** `ContactManager.encryptBundle`, `encryptGroupBundle` and `sendCardBundle` take a
+  `BundleOutput`. Written to a file, a send is streamed when every recipient resolves to the tier, and inline
+  otherwise. A card send is always streamed. An identity challenge or response in group format, and a shard-only
+  bundle, take the layout a message to the same contact would, carrying a manifest and no files: a layout of their
+  own would tell them apart. The memory guard (stage 1) now sits inside the inline branch, ahead of the first prekey
+  taken, so it never meets a streamed send. The `Data`-returning forms remain for callers with nothing to stream.
+- **Compose, drafts and the share sheet** pass the staged `.eatt` files through unread. A streamed send reads each
+  one a chunk at a time; an inline send reads it whole once the guard allows. A draft's file is not touched by
+  either, and is still removed by whoever removed it before.
+- **Share sessions.** `ShareSession.staged` reads both formats. A session staged by the previous build (one AES-GCM
+  blob per file, decrypted whole, as before) still sends, and still takes the streamed layout from memory when the
+  recipient can read it. A session staged as `.eatt` stays on disk until it is sent. An image is read whole either
+  way, because its EXIF is stripped and that needs the whole image. The introduction-card check reads both.
+- **Wire compatibility.** A recipient on any build before this one is never sent `0x0A`: it is only chosen for a
+  contact recorded at the tier, which only a 2.0.0 build can have caused.
+- **Not done: the share extension's own staging.** See the stage 4 hand-over note. Until then the extension still
+  stages one AES-GCM blob per file, capped at 100 MB, and the app reads them with the legacy reader above.

@@ -152,8 +152,12 @@ public struct OccultaBundle: Codable {
         /// a wire `version` — `0x0A` in the header, and its raw value is in each chunk's AAD — and is stored in
         /// `Contact.Profile.maxBundleVersion` as the same byte.
         ///
-        /// Not yet in `known` or given a `minimumAppVersion`: the codec reads and writes the layout, and the
-        /// tier becomes a contact's recorded capability when the send path lands (stage 4).
+        /// The tier a contact is recorded at once their build can read it, from 2.0.0. A send uses the layout
+        /// only when every recipient resolves to it (`STREAMING_SPEC.md` §10).
+        ///
+        /// ⚠️ Keyed on the app version, like `.bodyDigestCapable`: no build numbered 2.0.0 or later may ship
+        /// without the receive path and the send path, TestFlight included. Such a build would be recorded at
+        /// this tier and sent bundles it can't open (`ROLLOUT_PLAN.md`, release mechanics).
         case streamedBodyCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
@@ -173,6 +177,7 @@ public struct OccultaBundle: Codable {
             case .senderSignatureCapable: return "1.10.0"
             case .prefixedSenderSignatureCapable: return "1.10.2"
             case .bodyDigestCapable: return "2.0.0"
+            case .streamedBodyCapable: return "2.0.0"
             default:                return nil
             }
         }
@@ -214,6 +219,7 @@ public struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
+            .streamedBodyCapable, // 2.0.0+ — the body of a group bundle is a chunk stream (wire version 0x0A)
             .bodyDigestCapable, // 2.0.0+  — every group slot carries the body's digest
             .prefixedSenderSignatureCapable, // 1.10.2+ — domain-separated ephemeral signature
             .senderSignatureCapable, // 1.10.0+ — signs FS-mode group recipients' ephemeral key

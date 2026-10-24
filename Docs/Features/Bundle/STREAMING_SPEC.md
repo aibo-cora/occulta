@@ -1,6 +1,6 @@
 # Streamed Bundle Bodies — Specification
 
-**Status:** Approved for implementation, 2026-10-23. Not started. Every stage ships in 2.0.0 (§12).
+**Status:** Approved for implementation, 2026-10-23. Stages 1–4 implemented on `v2.0.0/streaming-bundles`, except the share extension's staging (§8.4), which waits on a decision: `STREAMING_MIGRATION_NOTES.md` records each stage's migration and where the code departs from this text. Every stage ships in 2.0.0 (§12).
 **Replaces:** `Streaming Large Attachments — Problem Statement.md` (this is its design)
 **Extends:** `SPEC.md` (v4 wire format). Everything in that document not changed here still holds.
 **Related:** `Docs/Features/Group Messaging/SPEC.md`, `Docs/Features/Import/Large Video Import — OOM Investigation.md`,

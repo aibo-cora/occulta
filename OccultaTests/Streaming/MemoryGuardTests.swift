@@ -99,12 +99,8 @@ struct MemoryGuardTests {
         return OccultaFormats.File(url: staged, format: .file(.init(name: "clip", extension: "mp4")), date: Date())
     }
 
-    private func outputs() -> Set<String> {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)) ?? []
-        return Set(names.filter { $0.hasSuffix(".occ") })
-    }
-
-    @Test("a send that cannot fit in memory writes no bundle and leaves the staged file alone", .ambientTestKeyManager)
+    // That no bundle is written is checked where the destination is known: `StreamedSendContactTests.guardOnlyBindsInline`.
+    @Test("a send that cannot fit in memory leaves the staged file alone and says so", .ambientTestKeyManager)
     func refusedSendWritesNothing() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("guard-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -118,7 +114,6 @@ struct MemoryGuardTests {
         vm.setup(contactManager: cm)
         let staged = try await stagedVideo(in: dir, using: vm)
         vm.messages = [staged]
-        let before = self.outputs()
         let stagedBytes = try Data(contentsOf: try #require(staged.url))
 
         await vm.encrypt(contactManager: cm)
@@ -126,7 +121,6 @@ struct MemoryGuardTests {
         #expect(vm.encryptedURL == nil)
         #expect(vm.isShowingError)
         #expect(vm.errorMessage == MemoryGuard.SendRefusal.tooLargeToSend.localizedDescription)
-        #expect(self.outputs() == before)
         #expect(try Data(contentsOf: try #require(staged.url)) == stagedBytes)
     }
 

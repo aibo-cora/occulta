@@ -13827,7 +13827,7 @@ The rest of the file was checked for the same pattern and needs no change:
 
 ## Bug 183 — Opening a bundle with a large attachment kills the app
 
-**Status:** Open. Reported 2026-10-23: a contact opened a bundle carrying an ~800 MB video and the app crashed before the message appeared. Partly mitigated by PR #132 (`v2.0.0/stream-attachment-write`). The fix is `Docs/Features/Bundle/STREAMING_SPEC.md`.
+**Status:** Fixed in `v2.0.0/streaming-bundles` (`STREAMING_SPEC.md` stages 1–4), apart from the share extension's own staging, which still reads a whole file into the extension and keeps its 100 MB cap (`STREAMING_SPEC.md` §8.4; open, needs a decision). Reported 2026-10-23: a contact opened a bundle carrying an ~800 MB video and the app crashed before the message appeared. Partly mitigated first by PR #132 (`v2.0.0/stream-attachment-write`).
 
 **Target:** `v2.0.0`. Present since the bundle format (one AES-GCM seal over the whole body).
 
@@ -13847,7 +13847,7 @@ PR #132 writes each sealed chunk straight to disk in `Encryptor.write`, removing
 
 `AttachmentWriteTests` (PR #132). `STREAMING_SPEC.md` §11 specifies the memory regression test for the full fix.
 
-**Progress on `v2.0.0/streaming-bundles`:** stage 1 (the memory guard, which refuses an inline bundle that can't fit), stage 2 (the codec) and stage 3 (the receive path: a streamed bundle is read from an open file, its message shown first, its attachments decrypted a chunk at a time) are committed. Nothing sends a streamed bundle until stage 4, so the bug stays open until then.
+**The fix, by stage:** the memory guard refuses an inline bundle that can't fit (stage 1); the chunked body codec (stage 2); a streamed bundle is read from an open file, its message shown first and its attachments decrypted a chunk at a time (stage 3); every send to a recipient set at the new tier streams its staged files from disk (stage 4). `StreamedMemoryTests` sends and receives a 1.5 GB attachment in the Simulator: the footprint grew by 1.6 MiB on send and 10.4 MiB on receive, against a limit of 64 MiB. A recipient below the tier is still sent the inline layout, under the guard, until their first message from 2.0.0 raises their recorded tier.
 
 ---
 

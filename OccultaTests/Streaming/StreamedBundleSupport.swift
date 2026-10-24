@@ -111,7 +111,9 @@ func writeStreamedBundle(
 /// `publicKey` as a contact on this device. A pending batch of ours stands waiting for them, so a bundle from
 /// them generates no new one, which would need an Enclave.
 @MainActor
-func insertStreamedSender(identifier: String, publicKey: Data, in contactManager: ContactManager) throws {
+func insertStreamedSender(
+    identifier: String, publicKey: Data, marker: OccultaBundle.Version? = nil, in contactManager: ContactManager
+) throws {
     let profile = Contact.Profile(
         identifier: identifier, givenName: "", familyName: "", middleName: "",
         nickname: "", organizationName: "", departmentName: "", jobTitle: ""
@@ -120,6 +122,10 @@ func insertStreamedSender(identifier: String, publicKey: Data, in contactManager
         material: try Manager.Crypto().encrypt(data: publicKey), owner: Data(), date: Data(),
         quantumKeyMaterialEncrypted: nil
     )]
+    // The tier recorded for them: what decides the layout of a send to them.
+    if let marker, let byte = marker.wireByte {
+        profile.maxBundleVersion = try Manager.Crypto().encrypt(data: Data([byte]))
+    }
     var record = PrekeyRecord.empty
     record.ownBatches = [PrekeyRecord.OwnBatch(
         id: Data((0..<16).map { _ in .random(in: .min ... .max) }), createdAt: Date(), retiredAt: nil, isPending: true,

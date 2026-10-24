@@ -116,6 +116,16 @@ final class AttachmentManager: Sendable {
         try Decryptor.header(at: url, contactKey: self.contactKey).plaintextSize
     }
 
+    /// Each chunk of a sealed file's plaintext, in order, one alive at a time. For sending a staged file.
+    nonisolated func forEachChunk(at url: URL, _ body: (Data) throws -> Void) throws {
+        try Decryptor.forEachChunk(at: url, contactKey: self.contactKey, body)
+    }
+
+    /// The whole plaintext, read on the calling thread. For the inline layout, behind the memory guard.
+    nonisolated func plaintextBlocking(at url: URL) throws -> Data {
+        try Decryptor.all(at: url, contactKey: self.contactKey)
+    }
+
     func data(at url: URL) async throws -> Data {
         let key = self.contactKey
         

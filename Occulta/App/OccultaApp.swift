@@ -1269,22 +1269,26 @@ struct RootView: View {
         defer { ShareSession.delete(id: sessionID, in: container) }
 
         do {
-            var files = try ShareSession.load(
+            // Read, not decrypted: a file the extension staged as `.eatt` stays on disk and is streamed from there.
+            var staged = try ShareSession.staged(
                 id: sessionID, in: container, keyManager: ShareStagingKeyManager()
             )
 
-            // files holds decrypted attachment content. Zero it on every exit from here on —
-            // the success path included, where it is dead the moment the bundle is sealed.
+            // Whatever is held in memory — an image, whose EXIF is stripped, or a file staged by the build before
+            // this one — is zeroed on every exit from here on, the success path included, where it is dead the
+            // moment the bundle is sealed.
             defer {
-                for i in files.indices {
-                    _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                for i in staged.files.indices {
+                    _ = staged.files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
                 }
             }
 
-            try MemoryGuard.system.checkSend(plaintextLength: files.reduce(0) { $0 + ($1.content?.count ?? 0) })
-
-            let basket = Basket(files: files, date: Date())
-            let occData: Data
+            let basket = Basket(files: staged.files, date: Date())
+            let occID  = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
+            let occURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(occID).occ")
+            // The layout is the recipient's to choose, and a file is read into memory only if it is inline,
+            // under the guard (STREAMING_SPEC §3, §7).
+            let output = BundleOutput.file(destination: occURL, attachments: staged.attachments, memoryGuard: .system)
 
             switch recipient {
             case .contact(let contactID):
@@ -1293,27 +1297,24 @@ struct RootView: View {
                 let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub, isCardContact: isCard)
                 let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID, isCardContact: isCard)
 
-                occData = try self.contactManager.encryptBundle(
+                try self.contactManager.encryptBundle(
                     basket:          basket,
                     for:             contactID,
                     shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: custody
+                    custodyManifest: custody,
+                    output:          output
                 )
 
             case .group(let groupID):
                 // Depth filtering of the membership is encryptGroupBundle's own — it reads
                 // members(atDepth: currentDepth) and re-filters by each member's isVisible.
-                occData = try self.contactManager.encryptGroupBundle(
+                try self.contactManager.encryptGroupBundle(
                     basket:              basket,
                     groupID:             groupID,
-                    shardCustodyManager: self.shardCustodyManager
+                    shardCustodyManager: self.shardCustodyManager,
+                    output:              output
                 )
             }
-
-            let occID = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
-            let occURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(occID).occ")
-            try occData.writeProtected(to: occURL)
 
             self.shareResult = ShareResult(url: occURL)
         } catch {

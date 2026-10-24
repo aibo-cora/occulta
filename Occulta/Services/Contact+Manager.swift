@@ -1069,6 +1069,42 @@ extension ContactManager {
         custodyManifest: [UUID]? = nil,
         identityChallenge: IdentityChallengeEnvelope? = nil
     ) throws -> Data {
+        let sent = try self.sendBundle(
+            basket: basket, for: identifier, shardOperations: shardOperations,
+            custodyManifest: custodyManifest, identityChallenge: identityChallenge, output: .memory
+        )
+        guard let data = sent.data else { throw Errors.messageHasNoData }
+        return data
+    }
+
+    /// `encryptBundle`, written to a file: the destination of `output`.
+    ///
+    /// The layout is chosen here, once, from the recipient's recorded tier (§10.2): streamed when they can read
+    /// it, otherwise inline under the memory guard. Either way the file is ciphertext. A refusal by the guard
+    /// happens before any prekey is taken or any file written.
+    @discardableResult
+    func encryptBundle(
+        basket: Basket? = nil,
+        for identifier: String,
+        shardOperations: [OccultaBundle.ShardOperation]? = nil,
+        custodyManifest: [UUID]? = nil,
+        identityChallenge: IdentityChallengeEnvelope? = nil,
+        output: BundleOutput
+    ) throws -> BundleLayout {
+        try self.sendBundle(
+            basket: basket, for: identifier, shardOperations: shardOperations,
+            custodyManifest: custodyManifest, identityChallenge: identityChallenge, output: output
+        ).layout
+    }
+
+    private func sendBundle(
+        basket: Basket?,
+        for identifier: String,
+        shardOperations: [OccultaBundle.ShardOperation]?,
+        custodyManifest: [UUID]?,
+        identityChallenge: IdentityChallengeEnvelope?,
+        output: BundleOutput
+    ) throws -> SentBundle {
         guard basket != nil || shardOperations != nil || custodyManifest != nil || identityChallenge != nil else {
             throw Errors.messageHasNoData
         }
@@ -1080,9 +1116,9 @@ extension ContactManager {
 
         // A card conversation seals under the card keys, never the identity key (introduction cards, SPEC §3).
         if contact.cardState.isCardContact {
-            return try self.encryptCardBundle(
+            return try self.sendCardBundle(
                 basket: basket, for: contact, shardOperations: shardOperations,
-                custodyManifest: custodyManifest, identityChallenge: identityChallenge
+                custodyManifest: custodyManifest, identityChallenge: identityChallenge, output: output
             )
         }
 
@@ -1125,6 +1161,11 @@ extension ContactManager {
             throw Errors.identityChallengeBelowTier
         }
 
+        // The layout, chosen before anything is taken (§10.2): streamed when the recipient can read it, which
+        // implies the group format. Otherwise inline, and then a staged file is read into memory here, if it fits.
+        let streams = output.destination != nil && targetVersion.isAtLeast(.streamedBodyCapable)
+        let basket  = streams ? basket : try output.inlineBasket(basket)
+
         // Pop a prekey for forward secrecy.
         // Message sends always attempt FS; shard sends on the group path require it.
         // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
@@ -1155,10 +1196,18 @@ extension ContactManager {
         let custodyManifest = custodyManifest.map { Self.paddedCustodyManifest($0) }
 
         let messageData: Data
+        var streamedFiles: StreamedFiles?
         if let basket {
-            messageData = wireVersion == .v4
-                ? try WireHandle.encode(basket: basket)
-                : try JSONEncoder().encode(basket)
+            if streams {
+                let parts = try output.streamedParts(basket)
+                guard let message = parts.message else { throw Errors.messageHasNoData }
+                streamedFiles = parts.files
+                messageData   = message
+            } else {
+                messageData = wireVersion == .v4
+                    ? try WireHandle.encode(basket: basket)
+                    : try JSONEncoder().encode(basket)
+            }
         } else if let identityChallenge {
             // The same text the long-term format carries, for the same size. Nothing at this tier shows it: the
             // receiver routes on the envelope (`bugs.md` Bug 167 holds the size question).
@@ -1168,6 +1217,10 @@ extension ContactManager {
         } else {
             messageData = Data("Occulta vault operation. Please update your app.".utf8)
         }
+
+        // A bundle with no basket (a challenge, a shard operation) streams nothing but its manifest. It takes the
+        // same layout as a message to the same recipient: one that didn't would be told apart by it (§3).
+        if streams, streamedFiles == nil { streamedFiles = try output.streamedParts(nil).files }
 
         // 1.9.0+ contacts: all sends use the group bundle format with an ephemeral
         // single-recipient envelope. Shard ops require forward secrecy — the FS
@@ -1190,21 +1243,26 @@ extension ContactManager {
                 custodyManifest:   onFallback ? nil : custodyManifest,
                 appVersion:        Bundle.main.appVersion
             )
-            let bundle = try Manager.Crypto().seal(
-                sealedPayload: sealedPayload,
-                groupID:       UUID(),
-                recipients:    [GroupRecipient(
-                    publicKey:       recipientMaterial,
-                    quantumMaterial: quantumMaterial,
-                    contactPrekey:   contactPrekey ?? lastResortPrekey,
-                    contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
-                    pendingBatch:    outboundBatch,
-                    prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
-                )]
-            )
-            let encodedBundle = try bundle.encoded(version: .v4)
+            let recipients = [GroupRecipient(
+                publicKey:       recipientMaterial,
+                quantumMaterial: quantumMaterial,
+                contactPrekey:   contactPrekey ?? lastResortPrekey,
+                contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
+                pendingBatch:    outboundBatch,
+                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
+            )]
+            let sent: SentBundle
+            if let streamedFiles {
+                try Manager.Crypto().sealStreamed(
+                    sealedPayload: sealedPayload, groupID: UUID(), recipients: recipients, files: streamedFiles
+                )
+                sent = SentBundle(data: nil, layout: .streamed)
+            } else {
+                let bundle = try Manager.Crypto().seal(sealedPayload: sealedPayload, groupID: UUID(), recipients: recipients)
+                sent = try output.deliver(try bundle.encoded(version: .v4))
+            }
             if contactPrekey != nil { try self.modelContext.save() }
-            return encodedBundle
+            return sent
         }
 
         let sealedPayload = OccultaBundle.SealedPayload(
@@ -1226,14 +1284,14 @@ extension ContactManager {
             quantumMaterial:   quantumMaterial,
             version:           wireVersion
         )
-        let encodedBundle = try bundle.encoded(version: wireVersion)
+        let sent = try output.deliver(try bundle.encoded(version: wireVersion))
         
         if contactPrekey != nil {
             // Persist prekey state only when it was mutated (message mode).
             try self.modelContext.save()
         }
 
-        return encodedBundle
+        return sent
     }
 }
 
@@ -1277,6 +1335,33 @@ extension ContactManager {
         groupID: UUID,
         shardCustodyManager: ShardCustodyManager? = nil
     ) throws -> Data {
+        let sent = try self.sendGroupBundle(
+            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, output: .memory
+        )
+        guard let data = sent.data else { throw Errors.messageHasNoData }
+        return data
+    }
+
+    /// `encryptGroupBundle`, written to a file. Streamed only when **every** member's recorded tier can read it, and
+    /// inline, under the memory guard, when any one cannot (§10.2).
+    @discardableResult
+    func encryptGroupBundle(
+        basket: Basket,
+        groupID: UUID,
+        shardCustodyManager: ShardCustodyManager? = nil,
+        output: BundleOutput
+    ) throws -> BundleLayout {
+        try self.sendGroupBundle(
+            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, output: output
+        ).layout
+    }
+
+    private func sendGroupBundle(
+        basket: Basket,
+        groupID: UUID,
+        shardCustodyManager: ShardCustodyManager?,
+        output: BundleOutput
+    ) throws -> SentBundle {
         // Pass 1 below pops each member's oldest prekey (mutating
         // contact.prekeyRecordEncrypted in memory) before any of the fallible work
         // that follows — the per-member `buildShardOperations` call still inside pass 1,
@@ -1314,6 +1399,12 @@ extension ContactManager {
 
         var prekeyConsumed = false
         let cryptoOps = Manager.Crypto()
+
+        // The layout, before any member's prekey is taken (§10.2): streamed only when every member can read it. A
+        // card contact in the list is refused below, in pass 1, whichever layout this would have been.
+        let streams = output.destination != nil
+            && members.allSatisfy { Self.resolveTargetVersion(for: $0, using: cryptoOps).isAtLeast(.streamedBodyCapable) }
+        let basket = streams ? basket : (try output.inlineBasket(basket) ?? basket)
 
         // ── Pass 1: resolve per-member key material + real (unpadded) shard content ──
         let pending: [PendingGroupRecipient] = try members.map { contact in
@@ -1380,18 +1471,29 @@ extension ContactManager {
             )
         }
 
-        let bundle = try Manager.Crypto().seal(
-            message:    try WireHandle.encode(basket: basket),
-            groupID:    groupID,
-            recipients: recipients
-        )
-        let encodedBundle = try bundle.encoded(version: .v4)
+        let sent: SentBundle
+        if streams {
+            let parts = try output.streamedParts(basket)
+            guard let message = parts.message else { throw Errors.messageHasNoData }
+            try Manager.Crypto().sealStreamed(
+                sealedPayload: OccultaBundle.SealedPayload(message: message, appVersion: Bundle.main.appVersion),
+                groupID: groupID, recipients: recipients, files: parts.files
+            )
+            sent = SentBundle(data: nil, layout: .streamed)
+        } else {
+            let bundle = try Manager.Crypto().seal(
+                message:    try WireHandle.encode(basket: basket),
+                groupID:    groupID,
+                recipients: recipients
+            )
+            sent = try output.deliver(try bundle.encoded(version: .v4))
+        }
 
         if prekeyConsumed {
             try self.modelContext.save()
         }
 
-        return encodedBundle
+        return sent
     }
 
     /// Pad `real` with filler `ShardOperation`s (`kind: .unsupported`, already

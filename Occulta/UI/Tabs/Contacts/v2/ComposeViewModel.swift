@@ -289,66 +289,32 @@ final class ComposeViewModel {
         shardCustodyManager: ShardCustodyManager?
     ) async {
         do {
-            var allFiles = self.messages
-            let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                allFiles.append(OccultaFormats.File(content: text.data(using: .utf8), format: .text, date: Date()))
-            }
-
-            let manager = self.attachmentManager
-            try self.checkMemory(for: allFiles, using: manager)
-            let processed: [OccultaFormats.File] = try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
-                for file in allFiles {
-                    if let fileURL = file.url {
-                        guard let manager else { throw ImportError.stagingKeyUnavailable }
-                        group.addTask {
-                            let data = try await manager.data(at: fileURL)
-                            return OccultaFormats.File(content: data, format: file.format, date: file.date)
-                        }
-                    } else {
-                        let captured = file
-                        group.addTask { captured }
-                    }
-                }
-                var results: [OccultaFormats.File] = []
-                for try await file in group { results.append(file) }
-                return results.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
-            }
-
-            let basket     = Basket(files: processed)
+            let basket     = self.outgoingBasket()
             let contactPub = try? contactManager.currentPublicKey(forIdentifier: identifier)
 
             let isCard     = try contactManager.isCardContact(identifier: identifier)
             let shardOps   = try shardCustodyManager?.buildShardOperations(for: identifier, currentContactPublicKey: contactPub, isCardContact: isCard) ?? []
             let manifest   = try? shardCustodyManager?.buildCustodyManifest(for: identifier, isCardContact: isCard)
 
-            let encrypted: Data
+            // The staged files are not read here. The layout is chosen from the recipient's tier, and only the
+            // inline one reads them into memory, behind the guard (STREAMING_SPEC §3, §7).
+            let output = self.bundleOutput()
 
             do {
-                encrypted = try contactManager.encryptBundle(
+                try contactManager.encryptBundle(
                     basket:          basket,
                     for:             identifier,
                     shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: manifest
+                    custodyManifest: manifest,
+                    output:          output
                 )
             } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
-                encrypted = try contactManager.encryptBundle(basket: basket, for: identifier)
+                try contactManager.encryptBundle(basket: basket, for: identifier, output: output)
             }
 
-            guard !encrypted.isEmpty else {
-                await MainActor.run {
-                    self.isEncrypting = false
-                    self.showError("Encryption failed. Try again.")
-                }
-                return
-            }
-
-            let name = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
-            let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
-            try encrypted.writeProtected(to: outURL)
             await MainActor.run {
                 self.isEncrypting = false
-                self.encryptedURL = outURL
+                self.encryptedURL = output.destination
             }
         } catch {
             await MainActor.run {
@@ -364,55 +330,15 @@ final class ComposeViewModel {
         shardCustodyManager: ShardCustodyManager? = nil
     ) async {
         do {
-            var allFiles = self.messages
-            
-            let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                allFiles.append(OccultaFormats.File(content: text.data(using: .utf8), format: .text, date: Date()))
-            }
-
-            let manager = self.attachmentManager
-            try self.checkMemory(for: allFiles, using: manager)
-            let processed: [OccultaFormats.File] = try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
-                for file in allFiles {
-                    if let fileURL = file.url {
-                        guard let manager else { throw ImportError.stagingKeyUnavailable }
-                        group.addTask {
-                            let data = try await manager.data(at: fileURL)
-                            return OccultaFormats.File(content: data, format: file.format, date: file.date)
-                        }
-                    } else {
-                        let captured = file
-                        group.addTask { captured }
-                    }
-                }
-                var results: [OccultaFormats.File] = []
-                for try await file in group { results.append(file) }
-                return results.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
-            }
-
-            let basket    = Basket(files: processed)
-            let encrypted = try contactManager.encryptGroupBundle(
-                basket: basket, groupID: groupID,
-                shardCustodyManager: shardCustodyManager
+            let output = self.bundleOutput()
+            try contactManager.encryptGroupBundle(
+                basket: self.outgoingBasket(), groupID: groupID,
+                shardCustodyManager: shardCustodyManager, output: output
             )
-            
-            guard !encrypted.isEmpty else {
-                await MainActor.run {
-                    self.isEncrypting = false
-                    self.showError("Encryption failed. Try again.")
-                }
-                return
-            }
-
-            let name   = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
-            let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
-
-            try encrypted.writeProtected(to: outURL)
 
             await MainActor.run {
                 self.isEncrypting = false
-                self.encryptedURL = outURL
+                self.encryptedURL = output.destination
             }
         } catch {
             await MainActor.run {
@@ -422,19 +348,24 @@ final class ComposeViewModel {
         }
     }
 
-    /// The inline layout holds the whole body in memory (STREAMING_SPEC §7). Runs before any staged
-    /// file is read back, so a refusal has read, taken and written nothing.
-    private func checkMemory(for files: [OccultaFormats.File], using manager: AttachmentManager?) throws {
-        var plaintextLength = 0
-        for file in files {
-            if let url = file.url {
-                guard let manager else { throw ImportError.stagingKeyUnavailable }
-                plaintextLength += try manager.plaintextSize(at: url)
-            } else {
-                plaintextLength += file.content?.count ?? 0
-            }
+    /// What is sent: the staged files, each still a sealed `.eatt` on disk, and the typed text, in date order.
+    private func outgoingBasket() -> Basket {
+        var allFiles = self.messages
+        let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            allFiles.append(OccultaFormats.File(content: text.data(using: .utf8), format: .text, date: Date()))
         }
-        try self.memoryGuard.checkSend(plaintextLength: plaintextLength)
+        return Basket(files: allFiles.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) })
+    }
+
+    /// A fresh `.occ` in `tmp/`, written as ciphertext with complete protection and deleted when the share sheet closes.
+    private func bundleOutput() -> BundleOutput {
+        let name = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
+        return .file(
+            destination: FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ"),
+            attachments: self.attachmentManager,
+            memoryGuard: self.memoryGuard
+        )
     }
 
     // MARK: Lifecycle
