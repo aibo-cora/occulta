@@ -235,3 +235,44 @@ private func hasGPS(_ data: Data) -> Bool {
         #expect(layout == (marker == .streamedBodyCapable ? .streamed : .inline))
     }
 }
+
+// MARK: - The extension's key
+
+private func shareKeyAvailable() -> Bool {
+    (try? ShareStagingKeyManager().deriveSymmetricKey()) != nil
+}
+
+@Suite("Share session — the extension's real key")
+@MainActor struct ShareSessionRealKeyTests {
+
+    /// What the extension does, with the key it has: the file sealed by `StreamingEncryptor` under
+    /// `deriveSymmetricKey()`, the manifest by `encrypt(data:)`. The app must read both back.
+    @Test("a session staged the way the extension stages one opens in the app", .enabled(if: shareKeyAvailable()))
+    func extensionFormatOpens() async throws {
+        let box = try container(); defer { try? FileManager.default.removeItem(at: box) }
+        let keys = ShareStagingKeyManager()
+        let plaintext = streamedPattern(700_000, seed: 31)
+
+        let id  = UUID().uuidString
+        let dir = ShareSession.directory(for: id, in: box)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let encryptor = try StreamingEncryptor(url: dir.appendingPathComponent("0.tmp"), contactKey: try keys.deriveSymmetricKey())
+        var offset = 0
+        while offset < plaintext.count {
+            let end = min(offset + 65_536, plaintext.count)
+            try encryptor.append(plaintext[offset..<end])
+            offset = end
+        }
+        try encryptor.finalize()
+        let manifest = ShareManifest(
+            files: [ShareManifest.FileEntry(filename: "0.tmp", uti: UTType.movie.identifier, fileExtension: "mov")], createdAt: .now
+        )
+        try keys.encrypt(data: JSONEncoder().encode(manifest)).write(to: dir.appendingPathComponent("manifest.enc"))
+
+        let staged = try ShareSession.staged(id: id, in: box, keyManager: keys)
+
+        let url = try #require(staged.files.first?.url)
+        #expect(staged.files.first?.content == nil)
+        #expect(try await #require(staged.attachments).data(at: url) == plaintext)
+    }
+}

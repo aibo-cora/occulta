@@ -89,5 +89,14 @@ only by tests until then; the inline path is the one every real bundle takes.
   way, because its EXIF is stripped and that needs the whole image. The introduction-card check reads both.
 - **Wire compatibility.** A recipient on any build before this one is never sent `0x0A`: it is only chosen for a
   contact recorded at the tier, which only a 2.0.0 build can have caused.
-- **Not done: the share extension's own staging.** See the stage 4 hand-over note. Until then the extension still
-  stages one AES-GCM blob per file, capped at 100 MB, and the app reads them with the legacy reader above.
+- **The share extension stages `.eatt`** through `StreamingEncryptor`, keyed by `deriveSymmetricKey()` and read from
+  `loadFileRepresentation`'s URL in 64 KB pieces, so a file is never in the extension's memory whole. The manifest is
+  still one AES-GCM blob. The 100 MB per-file cap stays until the extension's peak memory is measured on a device.
+  To compile it the extension target now includes `Attachment+Manager.swift`, `NoCacheFile.swift`, `Data.swift` and a
+  new `AttachmentKeyInfo.swift` (the one HKDF info string `Attachment+Manager.swift` took from `Key+Manager.swift`,
+  which the extension must not compile), and links the `OccultaFormats` package, for the chunk buffer. That package also
+  holds the bundle formats, so the extension's "never links `OccultaBundle`" rule is restated in
+  `ShareViewController.swift` as "never links key material or the bundle pipeline", with the reason. Nothing in the
+  extension calls a bundle type.
+- **A session in flight at upgrade** is staged in the old format and read by the legacy reader; a session staged by
+  this build and read by an older one can't happen, since the app and its extension upgrade together.

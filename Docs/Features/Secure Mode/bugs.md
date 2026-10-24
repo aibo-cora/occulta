@@ -13827,7 +13827,7 @@ The rest of the file was checked for the same pattern and needs no change:
 
 ## Bug 183 — Opening a bundle with a large attachment kills the app
 
-**Status:** Fixed in `v2.0.0/streaming-bundles` (`STREAMING_SPEC.md` stages 1–4), apart from the share extension's own staging, which still reads a whole file into the extension and keeps its 100 MB cap (`STREAMING_SPEC.md` §8.4; open, needs a decision). Reported 2026-10-23: a contact opened a bundle carrying an ~800 MB video and the app crashed before the message appeared. Partly mitigated first by PR #132 (`v2.0.0/stream-attachment-write`).
+**Status:** Fixed in `v2.0.0/streaming-bundles` (`STREAMING_SPEC.md` stages 1–4). The share extension now stages files by streaming too, and keeps its 100 MB cap until its peak memory has been measured on a device (`STREAMING_SPEC.md` §8.4). Reported 2026-10-23: a contact opened a bundle carrying an ~800 MB video and the app crashed before the message appeared. Partly mitigated first by PR #132 (`v2.0.0/stream-attachment-write`).
 
 **Target:** `v2.0.0`. Present since the bundle format (one AES-GCM seal over the whole body).
 

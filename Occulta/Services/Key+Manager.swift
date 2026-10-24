@@ -54,7 +54,7 @@ struct SaltInfo {
     /// a single legacy row and deleted them all (`bugs.md` Bug 137). Pinned by
     /// `RecoveryBufferKeyTests.infoStringIsV1_10_3s`.
     static let kRestoreVaultKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
-    nonisolated static let kFileKeyInfo           = "Occulta-v1-file-key-2025".data(using: .utf8)!
+    nonisolated static let kFileKeyInfo           = AttachmentKeyInfo.fileKey
 }
 
 // MARK: - SE Key Inventory

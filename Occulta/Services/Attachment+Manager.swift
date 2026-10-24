@@ -433,7 +433,7 @@ nonisolated private func derivedFileKey(contactKey: SymmetricKey, salt: some Dat
     HKDF<SHA256>.deriveKey(
         inputKeyMaterial: contactKey,
         salt:             salt,
-        info:             SaltInfo.kFileKeyInfo,
+        info:             AttachmentKeyInfo.fileKey,
         outputByteCount:  32
     )
 }
