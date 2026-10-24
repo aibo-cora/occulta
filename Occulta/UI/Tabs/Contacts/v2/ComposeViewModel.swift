@@ -58,10 +58,16 @@ final class ComposeViewModel {
     private(set) var attachmentManager: AttachmentManager? = nil
 
     private let stagingKeyProvider: any ComposeStagingKeyProviding
+    private let memoryGuard: MemoryGuard
 
-    init(recipient: Recipient, stagingKeyProvider: any ComposeStagingKeyProviding = ShareStagingKeyManager()) {
+    init(
+        recipient: Recipient,
+        stagingKeyProvider: any ComposeStagingKeyProviding = ShareStagingKeyManager(),
+        memoryGuard: MemoryGuard = .system
+    ) {
         self.recipient = recipient
         self.stagingKeyProvider = stagingKeyProvider
+        self.memoryGuard = memoryGuard
     }
 
     // MARK: Setup
@@ -294,6 +300,7 @@ final class ComposeViewModel {
             }
 
             let manager = self.attachmentManager
+            try self.checkMemory(for: allFiles, using: manager)
             let processed: [OccultaFormats.File] = try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
                 for file in allFiles {
                     if let fileURL = file.url {
@@ -369,6 +376,7 @@ final class ComposeViewModel {
             }
 
             let manager = self.attachmentManager
+            try self.checkMemory(for: allFiles, using: manager)
             let processed: [OccultaFormats.File] = try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
                 for file in allFiles {
                     if let fileURL = file.url {
@@ -416,6 +424,21 @@ final class ComposeViewModel {
                 self.showError(error.localizedDescription)
             }
         }
+    }
+
+    /// The inline layout holds the whole body in memory (STREAMING_SPEC §7). Runs before any staged
+    /// file is read back, so a refusal has read, taken and written nothing.
+    private func checkMemory(for files: [OccultaFormats.File], using manager: AttachmentManager?) throws {
+        var plaintextLength = 0
+        for file in files {
+            if let url = file.url {
+                guard let manager else { throw ImportError.stagingKeyUnavailable }
+                plaintextLength += try manager.plaintextSize(at: url)
+            } else {
+                plaintextLength += file.content?.count ?? 0
+            }
+        }
+        try self.memoryGuard.checkSend(plaintextLength: plaintextLength)
     }
 
     // MARK: Lifecycle

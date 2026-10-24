@@ -113,6 +113,11 @@ final class AttachmentManager: Sendable {
 
     // MARK: Read
 
+    /// Plaintext length of a sealed file, from its header alone. Nothing is decrypted.
+    nonisolated func plaintextSize(at url: URL) throws -> Int {
+        try Decryptor.header(at: url, contactKey: self.contactKey).plaintextSize
+    }
+
     func data(at url: URL) async throws -> Data {
         let key = self.contactKey
         

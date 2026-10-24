@@ -13851,7 +13851,7 @@ PR #132 writes each sealed chunk straight to disk in `Encryptor.write`, removing
 
 ## Bug 184 — A received attachment from a sender we hold no key for is written to `tmp/` in plaintext
 
-**Status:** Open, found 2026-10-23 by code reading while investigating Bug 183. Not yet confirmed by a test. The fix is `STREAMING_SPEC.md` §6, stage 1.
+**Status:** Fixed in `v2.0.0/streaming-bundles`, stage 1 of `STREAMING_SPEC.md`. Found 2026-10-23 by code reading while investigating Bug 183.
 
 **Target:** `v2.0.0`.
 
@@ -13865,8 +13865,10 @@ The send side had the same fallback and was fixed on 2026-10-22 (`Message Persis
 
 ### Fix
 
-Planned in `STREAMING_SPEC.md` §6: one resolver for both the writer and the sheet's reader. It uses the contact's file key, or failing that the compose staging key. With neither, the attachment is dropped with an error and never written in plaintext.
+`ContactManager.receivedAttachmentKey(for:)` is the one resolver, used by the writer (`ContactManager.sealReceivedFiles`, called from `OccultaApp.buildOwnedBasket`) and by the message sheet's reader. It uses the contact's file key, or failing that the compose staging key. With neither, the message is refused with "Secure storage not ready." before anything is written, so a received file is never in plaintext in `tmp/`. A message with no `.file` attachment needs no key and opens as before.
+
+Refusing the whole message rather than only the attachment is how this reads `STREAMING_SPEC.md` §6, "dropped with an error": the existing failure path for an attachment that can't be written already fails the message, and this state means the Enclave is unavailable, which is not the sender's doing.
 
 ### Guard
 
-Planned: a key-less sender's received attachment is sealed on disk, no plaintext marker is found in `tmp/`, and the attachment opens in the sheet.
+`ReceivedFilesSealedTests`: a key-less sender's attachment is sealed on disk, no plaintext marker is found in the directory, and it opens through the key the sheet resolves; with no key nothing is written; text needs no key; a hostile extension stays inside the directory. `ReceivedAttachmentKeyTests` covers the resolver's three outcomes. The tests drive `sealReceivedFiles`, which carries the writer's logic; that `OccultaApp` calls it, and that the sheet calls the resolver, is by inspection, since `OccultaApp` can't be built in a test.

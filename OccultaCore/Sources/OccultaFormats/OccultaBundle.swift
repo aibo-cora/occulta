@@ -74,6 +74,9 @@ public struct OccultaBundle: Codable {
         case unsupportedMode
         /// Wire data contains a structural violation (e.g. duplicate TLV section).
         case malformedBundle
+        /// The bundle is too large for this device to open in memory. Refused before any key is
+        /// derived or prekey touched (`STREAMING_SPEC.md` §7).
+        case tooLargeForDevice
     }
 
     // MARK: - Version

@@ -520,7 +520,7 @@ struct RootView: View {
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
             } content: { data in
-                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
+                let manager = self.contactManager.receivedAttachmentKey(for: data.owner)
                     .map { AttachmentManager(contactKey: $0) }
                 // Messages on Bob's card get W-08 around them, the same at every depth; any other sender's don't.
                 CardFirstMessageFrame(owner: data.owner) {
@@ -893,6 +893,10 @@ struct RootView: View {
                 OccultaBundle.BundleError.unsupportedMode {
             self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
             self.showError = true
+        // Names no contact and no depth, and says the same at every depth (STREAMING_SPEC §7).
+        } catch OccultaBundle.BundleError.tooLargeForDevice {
+            self.errorMessage = "This message is too large to open on this iPhone."
+            self.showError = true
         // ⚠️ One string for both, and it must stay that way. Splitting them is a duress oracle.
         //
         // `senderSignatureCapabilityUnknown` fires only when this device's record of the
@@ -1036,189 +1040,143 @@ struct RootView: View {
     /// After decryption, file-type attachments are written to a temporary directory
     /// so `AsyncImage` and `AVPlayer` can load them by URL.
     private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket? {
-        try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
-            let bundle = try? OccultaBundle.decoded(from: fileContents)
+        // Before the bundle is decoded, a key derived or a prekey touched: every layout still opens in
+        // memory, and a refusal must change nothing. The file's length bounds the body's (STREAMING_SPEC §7).
+        try MemoryGuard.system.checkReceive(bundleLength: fileContents.count)
 
-            debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
+        let bundle = try? OccultaBundle.decoded(from: fileContents)
 
-            let decrypted: (plaintext: Data, ownerID: String)
-            var decodedBundleVersion: OccultaBundle.Version = .v3fs
+        debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
 
-            switch bundle?.version {
-            case .v3fs, .v4:
-                guard let bundle else {
-                    throw ContactManager.Errors.messageHasNoData
-                }
-                let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
+        let decrypted: (plaintext: Data, ownerID: String)
+        var decodedBundleVersion: OccultaBundle.Version = .v3fs
 
-                // ⚠️ The envelope's presence reflects the **sender's view of us**, not the
-                // sender's own capability. `encryptBundle` picks the format from
-                // `resolveTargetVersion(for: recipient)`, so a current build sends the
-                // *non-group* format to anyone it resolves below `.groupCapable` — including
-                // every contact whose marker it has stranded, which is the whole Bug 77/80
-                // population. A non-group bundle therefore says nothing about how old the
-                // sender is, and no check here may infer that it does.
-                //
-                // Consequence worth knowing: `openGroup`'s sender-signature gate has no
-                // counterpart on the branch below, because `senderEphemeralSignature` lives on
-                // `RecipientPayload` and the non-group format has no such field. That asymmetry
-                // grants nothing today — the prekey store and the identity key sit behind
-                // identical access control (`.privateKeyUsage`, device-unlocked, no biometric),
-                // so anyone able to build a legacy FS bundle can equally sign a group one — but
-                // do not read the gate as covering both paths.
-                if bundle.group != nil {
-                    // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
-                    // (messages, shards, custody ops) use this path. Shard-only bundles signal
-                    // "no basket" via an empty message field.
-                    let (sealed, ownerID, _, recipShardOps, recipManifest, challenge) =
-                        try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
-                    decodedBundleVersion = bundle.version
-
-                    // Identity-challenge traffic inside a group bundle, already authenticated by `openGroup`
-                    // (prekey continuity §3.4). It sets `challenge` whenever the body carries one.
-                    if let challenge {
-                        if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                            _ = self.identityChallenge.handleAuthenticatedChallenge(challenge, sender: sender)
-                        }
-                        return nil
-                    }
-
-                    // Shard/custody ops. Per-recipient fields take priority; falling back
-                    // to the shared sealed payload's own fields keeps the already-shipped
-                    // 1:1-via-group-envelope shard path (single-recipient encryptBundle,
-                    // which has no per-recipient content to pad) working unchanged.
-                    if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
-                        _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  self.filterShardOperations(
-                                recipShardOps ?? sealed.shardOperations,
-                                from: ownerID
-                            ),
-                            custodyManifest:  recipManifest ?? sealed.custodyManifest,
-                            senderPublicKey:  senderPublicKey,
-                            senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
-                        )
-                        // Only a manifest can change a piece's status.
-                        if (recipManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
-                    }
-
-                    // Shard-only bundle (empty message) — ops handled above, no basket.
-                    guard !sealed.message.isEmpty else { return nil }
-                    decrypted = (sealed.message, ownerID)
-                } else {
-                    // ContactManager owns sender identification, prekey resolution,
-                    // consumed-key cleanup, inbound batch sync, and model persistence.
-                    //
-                    // We decrypt into the full SealedPayload (not just the message
-                    // bytes) so we can peek at the identity-challenge envelope and
-                    // route that traffic out of the basket pipeline entirely.
-                    let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
-
-                    // Identity-challenge traffic rides on .v3fs/.longTermFallback
-                    // but is NOT a basket — hand it to the coordinator and bail.
-                    if let identityEnvelope = sealed.identityChallenge {
-                        if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                            _ = self.identityChallenge.handleInboundChallenge(
-                                bundle:   bundle,
-                                envelope: identityEnvelope,
-                                sender:   sender
-                            )
-                        }
-
-                        return nil
-                    }
-
-                    #if DEBUG
-                    debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
-                    #endif
-
-                    // Handle shard operations and manifest reconciliation.
-
-                    if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
-                        _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  self.filterShardOperations(
-                                sealed.shardOperations,
-                                from: ownerID
-                            ),
-                            custodyManifest:  sealed.custodyManifest,
-                            senderPublicKey:  senderPublicKey,
-                            senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
-                        )
-                        // Only a manifest can change a piece's status.
-                        if sealed.custodyManifest != nil { self.reconcileBackupPieces() }
-                    }
-
-                    decodedBundleVersion = bundle.version
-                    decrypted = (sealed.message, ownerID)
-                }
-            case .unsupported:
-                throw OccultaBundle.BundleError.unsupportedVersion
-            default:
-                // Legacy path — nil, v1, v2, or pre-versioned files.
-                // Falls back to long-term ECDH trial decryption across all contacts.
-                decrypted = try self.contactManager.decrypt(data: fileContents)
+        switch bundle?.version {
+        case .v3fs, .v4:
+            guard let bundle else {
+                throw ContactManager.Errors.messageHasNoData
             }
+            let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
 
-            let basket: Basket
-            if decodedBundleVersion == .v4 {
-                basket = try WireHandle.decode(basket: decrypted.plaintext)
+            // ⚠️ The envelope's presence reflects the **sender's view of us**, not the
+            // sender's own capability. `encryptBundle` picks the format from
+            // `resolveTargetVersion(for: recipient)`, so a current build sends the
+            // *non-group* format to anyone it resolves below `.groupCapable` — including
+            // every contact whose marker it has stranded, which is the whole Bug 77/80
+            // population. A non-group bundle therefore says nothing about how old the
+            // sender is, and no check here may infer that it does.
+            //
+            // Consequence worth knowing: `openGroup`'s sender-signature gate has no
+            // counterpart on the branch below, because `senderEphemeralSignature` lives on
+            // `RecipientPayload` and the non-group format has no such field. That asymmetry
+            // grants nothing today — the prekey store and the identity key sit behind
+            // identical access control (`.privateKeyUsage`, device-unlocked, no biometric),
+            // so anyone able to build a legacy FS bundle can equally sign a group one — but
+            // do not read the gate as covering both paths.
+            if bundle.group != nil {
+                // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
+                // (messages, shards, custody ops) use this path. Shard-only bundles signal
+                // "no basket" via an empty message field.
+                let (sealed, ownerID, _, recipShardOps, recipManifest, challenge) =
+                    try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
+                decodedBundleVersion = bundle.version
+
+                // Identity-challenge traffic inside a group bundle, already authenticated by `openGroup`
+                // (prekey continuity §3.4). It sets `challenge` whenever the body carries one.
+                if let challenge {
+                    if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                        _ = self.identityChallenge.handleAuthenticatedChallenge(challenge, sender: sender)
+                    }
+                    return nil
+                }
+
+                // Shard/custody ops. Per-recipient fields take priority; falling back
+                // to the shared sealed payload's own fields keeps the already-shipped
+                // 1:1-via-group-envelope shard path (single-recipient encryptBundle,
+                // which has no per-recipient content to pad) working unchanged.
+                if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                    _ = self.shardCustodyManager.handleInbound(
+                        shardOperations:  self.filterShardOperations(
+                            recipShardOps ?? sealed.shardOperations,
+                            from: ownerID
+                        ),
+                        custodyManifest:  recipManifest ?? sealed.custodyManifest,
+                        senderPublicKey:  senderPublicKey,
+                        senderIdentifier: ownerID,
+                        vaultManager:     self.vaultManager
+                    )
+                    // Only a manifest can change a piece's status.
+                    if (recipManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
+                }
+
+                // Shard-only bundle (empty message) — ops handled above, no basket.
+                guard !sealed.message.isEmpty else { return nil }
+                decrypted = (sealed.message, ownerID)
             } else {
-                basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
-            }
+                // ContactManager owns sender identification, prekey resolution,
+                // consumed-key cleanup, inbound batch sync, and model persistence.
+                //
+                // We decrypt into the full SealedPayload (not just the message
+                // bytes) so we can peek at the identity-challenge envelope and
+                // route that traffic out of the basket pipeline entirely.
+                let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
 
-            // ── Write file attachments, photos, videos to temp directory ─────────────────
-
-            var processed: [OccultaFormats.File] = []
-            let tempDir         = FileManager.default.temporaryDirectory
-            let attachmentManager = (try? self.contactManager.fileEncryptionKey(for: decrypted.ownerID))
-                .map { AttachmentManager(contactKey: $0) }
-
-            for file in basket.files {
-                switch file.format {
-                case .file(let metadata):
-                    // metadata.name/.extension come from the decrypted, sender-controlled
-                    // Basket — never trusted for path construction. The name is dropped
-                    // entirely in favor of a fresh UUID (matching the outbound share-extension
-                    // path's existing discipline); the extension is validated by
-                    // sanitizedFilesystemExtension since a crafted value like
-                    // "../../etc/passwd" could otherwise steer the write outside tempDir.
-                    // Rejecting anything unsafe doesn't lose real data — the file's display
-                    // name/extension in the UI still comes from the untouched `metadata` in
-                    // `file.format` below, only the on-disk path changes.
-                    let fileURL = tempDir
-                        .appendingPathComponent(UUID().uuidString)
-                        .appendingPathExtension(OccultaFormats.File.Metadata.sanitizedFilesystemExtension(metadata.extension))
-                    let content = file.content ?? Data()
-
-                    group.addTask {
-                        if let manager = attachmentManager {
-                            try manager.encrypt(content, to: fileURL)
-                        } else {
-                            try content.writeProtected(to: fileURL)
-                        }
-                        return OccultaFormats.File(url: fileURL, format: file.format, date: file.date)
+                // Identity-challenge traffic rides on .v3fs/.longTermFallback
+                // but is NOT a basket — hand it to the coordinator and bail.
+                if let identityEnvelope = sealed.identityChallenge {
+                    if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                        _ = self.identityChallenge.handleInboundChallenge(
+                            bundle:   bundle,
+                            envelope: identityEnvelope,
+                            sender:   sender
+                        )
                     }
 
-                default:
-                    processed.append(file)
+                    return nil
                 }
+
+                #if DEBUG
+                debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
+                #endif
+
+                // Handle shard operations and manifest reconciliation.
+
+                if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                    _ = self.shardCustodyManager.handleInbound(
+                        shardOperations:  self.filterShardOperations(
+                            sealed.shardOperations,
+                            from: ownerID
+                        ),
+                        custodyManifest:  sealed.custodyManifest,
+                        senderPublicKey:  senderPublicKey,
+                        senderIdentifier: ownerID,
+                        vaultManager:     self.vaultManager
+                    )
+                    // Only a manifest can change a piece's status.
+                    if sealed.custodyManifest != nil { self.reconcileBackupPieces() }
+                }
+
+                decodedBundleVersion = bundle.version
+                decrypted = (sealed.message, ownerID)
             }
-
-            for try await file in group {
-                processed.append(file)
-            }
-
-            let sorted = processed.sorted { ($0.date ?? .now) < ($1.date ?? .now) }
-            let modifiedBasket = Basket(
-                id:    basket.id,
-                files: sorted,
-                date:  basket.date,
-                owner: basket.owner
-            )
-
-            return OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
+        case .unsupported:
+            throw OccultaBundle.BundleError.unsupportedVersion
+        default:
+            // Legacy path — nil, v1, v2, or pre-versioned files.
+            // Falls back to long-term ECDH trial decryption across all contacts.
+            decrypted = try self.contactManager.decrypt(data: fileContents)
         }
+
+        let basket: Basket
+        if decodedBundleVersion == .v4 {
+            basket = try WireHandle.decode(basket: decrypted.plaintext)
+        } else {
+            basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+        }
+
+        // ── Write file attachments, photos, videos to temp directory ─────────────────
+
+        return try await self.contactManager.sealReceivedFiles(of: basket, owner: decrypted.ownerID)
     }
 
     // MARK: Share Extension Processing
@@ -1249,6 +1207,8 @@ struct RootView: View {
                     _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
                 }
             }
+
+            try MemoryGuard.system.checkSend(plaintextLength: files.reduce(0) { $0 + ($1.content?.count ?? 0) })
 
             let basket = Basket(files: files, date: Date())
             let occData: Data
