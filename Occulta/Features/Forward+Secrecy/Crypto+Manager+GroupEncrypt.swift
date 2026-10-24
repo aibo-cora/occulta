@@ -197,7 +197,7 @@ extension Manager.Crypto {
         )
     }
 
-    private func wrapRecipient(
+    func wrapRecipient(
         _ r: GroupRecipient,
         sessionKeyData: Data,
         blind: Data,

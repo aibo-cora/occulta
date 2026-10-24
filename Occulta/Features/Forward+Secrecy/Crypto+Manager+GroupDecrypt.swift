@@ -104,11 +104,12 @@ extension Manager.Crypto {
         senderContactID: String,
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
-        prekeys: PrekeyPrivateKeys
+        prekeys: PrekeyPrivateKeys,
+        body: BundleBody? = nil
     ) throws -> (payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode) {
         let opened = try self.openRecipientSlot(
             in: bundle, blind: blind, senderContactID: senderContactID, senderPublicKey: senderPublicKey,
-            quantumMaterial: quantumMaterial, prekeys: prekeys
+            quantumMaterial: quantumMaterial, prekeys: prekeys, body: body
         )
         return (opened.payload, opened.used, opened.mode)
     }
@@ -121,11 +122,14 @@ extension Manager.Crypto {
         senderContactID: String,
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
-        prekeys: PrekeyPrivateKeys
+        prekeys: PrekeyPrivateKeys,
+        body: BundleBody? = nil
     ) throws -> (
         payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode,
         ephemeralPublicKey: Data
     ) {
+        // The body this bundle's slot commits to: inline unless the caller holds a streamed one (`BundleBody`).
+        let body = body ?? .inline(bundle)
         guard let recipients = bundle.group?.recipients else {
             throw GroupDecryptError.noGroupEnvelope
         }
@@ -164,14 +168,14 @@ extension Manager.Crypto {
 
             // Our slot. A body other than the one the sender sealed fails here, before the prekey is
             // recorded as used: the genuine bundle, still to come, needs it (Bug 165).
-            if let bodyDigest = payload.bodyDigest, bodyDigest != Data(SHA256.hash(data: bundle.ciphertext)) {
+            if let bodyDigest = payload.bodyDigest, bodyDigest != (try body.digest()) {
                 throw GroupDecryptError.bodyDigestMismatch
             }
 
             // The outer ciphertext opens under this slot's key, or the bundle isn't the one the sender sealed. Its
             // header is authenticated only here, and nothing else reads it: a copy with an altered header opens
             // the slot all the same, and would use up the key the genuine bundle needs (Bug 181).
-            _ = try self.openGroupCiphertext(bundle, using: SymmetricKey(data: payload.sessionKey))
+            try body.authenticateHeader(sessionKey: SymmetricKey(data: payload.sessionKey))
 
             // The prekey has now done its work. Recorded before the signature
             // check below so that a rejection destroys it too.
@@ -215,11 +219,7 @@ extension Manager.Crypto {
     ///
     /// AAD = computeAdditionalAuthentication(version: .v4, outerSecrecy) ‖ group.blind
     func openGroupCiphertext(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
-        guard let group = bundle.group else { throw GroupDecryptError.noGroupEnvelope }
-        var aad = try OccultaBundle.computeAdditionalAuthentication(version: bundle.version, secrecy: bundle.secrecy)
-        aad.append(group.blind)
-        let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
-        return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
+        try BundleBody.openInline(bundle, using: sessionKey)
     }
 
     /// Verify that `signature` is a valid ECDSA signature over `ephemeralPublicKey`,

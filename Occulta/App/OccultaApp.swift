@@ -290,8 +290,9 @@ struct RootView: View {
 
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
-    /// Raw encrypted `.occ` bytes queued while the app is locked.
-    /// Held without any processing until a PIN unlocks the app.
+    /// A raw encrypted `.occ` queued while the app is locked: its mapped bytes, or for a streamed bundle the
+    /// open file, unlinked already and readable only through the handle. Held without any processing until a
+    /// PIN unlocks the app.
     ///
     /// Drained by the shared `.onChange(of: appScreen.phase)` handler on **any** unlock, normal
     /// or duress alike. `onDuress` used to discard this instead — that discard was the last place
@@ -302,7 +303,7 @@ struct RootView: View {
     ///
     /// So reaching `processInboundFile` does **not** imply depth 0. Anything downstream that needs
     /// depth safety has to establish it for itself rather than inferring it from this path.
-    @State private var pendingFileData: Data?
+    @State private var pendingFileData: InboundFile?
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
@@ -397,9 +398,9 @@ struct RootView: View {
                 // only a depth-0 unlock can purge groups — a checkpoint that followed
                 // the deletion would otherwise announce it.
                 self.security.checkpointStore()
-                if let data = self.pendingFileData {
+                if let file = self.pendingFileData {
                     self.pendingFileData = nil
-                    Task { await self.processInboundFile(data) }
+                    Task { await self.processInboundFile(file) }
                 }
             }
             // A depth change while unlocked (`deactivateSecureMode` from Settings) has no PIN
@@ -524,9 +525,17 @@ struct RootView: View {
                     .map { AttachmentManager(contactKey: $0) }
                 // Messages on Bob's card get W-08 around them, the same at every depth; any other sender's don't.
                 CardFirstMessageFrame(owner: data.owner) {
-                    ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
+                    ComposableMessage.Conversation(
+                        mode: .read(messageOwner: data.owner),
+                        messages: .constant(data.receive?.files ?? data.basket.files),
+                        attachmentManager: manager,
+                        incomingIDs: data.receive?.incoming ?? [],
+                        receiveFailed: data.receive?.failed ?? false
+                    )
                 }
                 .onDisappear {
+                    // Stops pass 2 if it is running, and deletes what it wrote (STREAMING_SPEC §5.3).
+                    data.receive?.cancel()
                     data.basket.files.forEach { file in
                         if let url = file.url { try? FileManager.default.removeItem(at: url) }
                     }
@@ -624,6 +633,8 @@ struct RootView: View {
 
     private func endSession() {
         self.sessionEpoch           += 1
+        // A message still decrypting its attachments stops, and its files are deleted (STREAMING_SPEC §5.3).
+        self.openedFileContents?.receive?.cancel()
         self.openedFileContents      = nil
         self.shareResult             = nil
         self.pendingRestoreFile      = nil
@@ -766,13 +777,23 @@ struct RootView: View {
                 /// Run off the main actor: `RootView` conforms to `View`, which is
                 /// `@MainActor`, and while mapping itself is nearly free, touching pages
                 /// later (or a cold/on-demand-downloaded file) can still block briefly.
-                let data = try await Task.detached(priority: .userInitiated) {
-                    try Data(contentsOf: fileLocation, options: .mappedIfSafe)
+                //
+                // A streamed bundle (wire version 0x0A) is opened as a read handle instead and never mapped
+                // (STREAMING_SPEC §5.1): it is read a chunk at a time, so it need not fit in memory.
+                let inbound = try await Task.detached(priority: .userInitiated) {
+                    try InboundFile.open(fileLocation)
                 }.value
+
+                // Bug 101 for a streamed bundle: the copy iOS made in our container is unlinked as soon as the
+                // handle is open, and the open handle keeps it readable. The `defer` above covers everything else.
+                if case .streamed = inbound,
+                   openedThroughShareExtension || FileManager.default.isInsideAppContainer(fileLocation) {
+                    try? FileManager.default.removeItem(at: fileLocation)
+                }
 
                 // .occbak — vault backup restore file. Opening one only stages it in memory;
                 // the restore happens in `restoreConfirmedFile`, behind the confirmation below.
-                if fileLocation.pathExtension == "occbak" {
+                if fileLocation.pathExtension == "occbak", case .mapped(let data) = inbound {
                     // Confirm before restoring. A layer with no backup key of its own will
                     // reconstruct whatever key the file's shards rebuild and import its entries,
                     // and nothing in the file authenticates who authored it.
@@ -791,11 +812,11 @@ struct RootView: View {
                 // processing. Both unlock paths then drain it identically — see
                 // `pendingFileData`; a duress unlock no longer discards it.
                 if self.appScreen.phase != .unlocked {
-                    self.pendingFileData = data
+                    self.pendingFileData = inbound
                     return
                 }
 
-                await self.processInboundFile(data)
+                await self.processInboundFile(inbound)
             } catch {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
@@ -860,28 +881,42 @@ struct RootView: View {
     /// second attempt would only fail. Reachable only if the app is backgrounded past the grace
     /// period mid-decryption; `AppScreen.lockIfGracePeriodExpired` closes the common case. Losing
     /// the message then is an accepted cost (`Docs/General/decisions.md`).
-    private func processInboundFile(_ data: Data) async {
-        // An introduction card goes to the import sheet, before any bundle decoding (SPEC §2). A card is exactly
-        // 1,768 bytes with a valid signature, which no bundle is, and a mismatch costs one length check.
-        if IntroductionCard.recognize(data) != nil {
-            guard self.appScreen.phase == .unlocked else { return }
-            self.cardImport = CardImportData(data: data)
-            return
-        }
-
+    private func processInboundFile(_ file: InboundFile) async {
         let epoch = self.sessionEpoch
         let result: Result<OwnedBasket?, Error>
-        do {
-            result = .success(try await self.buildOwnedBasket(from: data))
-        } catch {
-            result = .failure(error)
+        switch file {
+        case .mapped(let data):
+            // An introduction card goes to the import sheet, before any bundle decoding (SPEC §2). A card is exactly
+            // 1,768 bytes with a valid signature, which no bundle is, and a mismatch costs one length check.
+            if IntroductionCard.recognize(data) != nil {
+                guard self.appScreen.phase == .unlocked else { return }
+                self.cardImport = CardImportData(data: data)
+                return
+            }
+            do {
+                result = .success(try await self.buildOwnedBasket(from: data))
+            } catch {
+                result = .failure(error)
+            }
+        case .streamed(let reader):
+            do {
+                result = .success(try await self.buildStreamedMessage(from: reader))
+            } catch {
+                result = .failure(error)
+            }
         }
 
-        guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else { return }
+        guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else {
+            // Nothing is shown, so nothing will read the attachments: release the file and write none.
+            if case .success(let basket?) = result { basket.receive?.cancel() }
+            return
+        }
 
         do {
             if let ownedBasket = try result.get() {
                 self.openedFileContents = ownedBasket
+                // The message is on screen; now its attachments (STREAMING_SPEC §5.2 step 8).
+                ownedBasket.receive?.start()
             }
         } catch ContactManager.Errors.messageHasNoData {
             self.errorMessage = "This message contains no data."
@@ -955,6 +990,11 @@ struct RootView: View {
                 GroupDecryptError.bodyDigestMismatch,
                 GroupDecryptError.missingBodyDigest {
             self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be using an older version — ask them to update, or verify them another way."
+            self.showError = true
+        // A bundle whose structure or chunks don't hold together. One string for every way that can happen:
+        // none of them depends on the depth, and none is worth telling apart to whoever holds the phone.
+        } catch OccultaBundle.BundleError.malformedBundle, is BodyStream.StreamError {
+            self.errorMessage = "This message couldn't be opened."
             self.showError = true
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
@@ -1031,6 +1071,66 @@ struct RootView: View {
         return ops
     }
 
+    /// What a group bundle's manifest asks of the app before any basket is shown: an identity challenge goes
+    /// to its coordinator, shard and custody operations to the shard manager. Returns the message bytes, or nil
+    /// when there is nothing to show (a challenge, or a shard-only bundle, whose message is empty).
+    ///
+    /// The same for both layouts: it sees only the opened manifest.
+    private func routeGroupOpening(_ opened: ContactManager.GroupOpening) -> Data? {
+        let (sealed, ownerID) = (opened.sealed, opened.ownerID)
+
+        // Identity-challenge traffic inside a group bundle, already authenticated by `openGroup`
+        // (prekey continuity §3.4). It sets `challenge` whenever the body carries one.
+        if let challenge = opened.challenge {
+            if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                _ = self.identityChallenge.handleAuthenticatedChallenge(challenge, sender: sender)
+            }
+            return nil
+        }
+
+        // Shard/custody ops. Per-recipient fields take priority; falling back
+        // to the shared sealed payload's own fields keeps the already-shipped
+        // 1:1-via-group-envelope shard path (single-recipient encryptBundle,
+        // which has no per-recipient content to pad) working unchanged.
+        if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+            _ = self.shardCustodyManager.handleInbound(
+                shardOperations:  self.filterShardOperations(
+                    opened.recipientShardOperations ?? sealed.shardOperations,
+                    from: ownerID
+                ),
+                custodyManifest:  opened.recipientCustodyManifest ?? sealed.custodyManifest,
+                senderPublicKey:  senderPublicKey,
+                senderIdentifier: ownerID,
+                vaultManager:     self.vaultManager
+            )
+            // Only a manifest can change a piece's status.
+            if (opened.recipientCustodyManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
+        }
+
+        // Shard-only bundle (empty message) — ops handled above, no basket.
+        return sealed.message.isEmpty ? nil : sealed.message
+    }
+
+    /// The streamed layout (`STREAMING_SPEC.md` §5.2), steps 1 to 7: open the manifest and return the message
+    /// with a placeholder for each streamed file. The attachments are not decrypted yet; `StreamedReceive.start`
+    /// does that, once the message is on screen.
+    ///
+    /// Nothing here depends on the depth, and a failure before step 5 has recorded no prekey as used.
+    private func buildStreamedMessage(from reader: NoCacheFile.Reader) async throws -> OwnedBasket? {
+        // 1–6. Parse, identify the sender, open our slot, check the digest and the header, open the manifest,
+        // and run every check `openGroup` runs on it.
+        let (body, opened) = try await self.contactManager.openStreamedBundle(reader)
+
+        guard let message = self.routeGroupOpening(opened) else { return nil }
+
+        // 7. The message: the inline files, and a placeholder for each streamed one.
+        let receive = try StreamedReceive.prepare(
+            message: message, opened: opened, body: body,
+            key: self.contactManager.receivedAttachmentKey(for: opened.ownerID)
+        )
+        return OwnedBasket(basket: receive.basket, owner: opened.ownerID, receive: receive)
+    }
+
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
     ///
     /// Dispatches to the correct decryption path based on the bundle version:
@@ -1077,41 +1177,11 @@ struct RootView: View {
                 // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
                 // (messages, shards, custody ops) use this path. Shard-only bundles signal
                 // "no basket" via an empty message field.
-                let (sealed, ownerID, _, recipShardOps, recipManifest, challenge) =
-                    try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
+                let opened = try self.contactManager.openGroup(bundle: bundle, body: .inline(bundle), ownerID: knownOwnerID)
                 decodedBundleVersion = bundle.version
 
-                // Identity-challenge traffic inside a group bundle, already authenticated by `openGroup`
-                // (prekey continuity §3.4). It sets `challenge` whenever the body carries one.
-                if let challenge {
-                    if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                        _ = self.identityChallenge.handleAuthenticatedChallenge(challenge, sender: sender)
-                    }
-                    return nil
-                }
-
-                // Shard/custody ops. Per-recipient fields take priority; falling back
-                // to the shared sealed payload's own fields keeps the already-shipped
-                // 1:1-via-group-envelope shard path (single-recipient encryptBundle,
-                // which has no per-recipient content to pad) working unchanged.
-                if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
-                    _ = self.shardCustodyManager.handleInbound(
-                        shardOperations:  self.filterShardOperations(
-                            recipShardOps ?? sealed.shardOperations,
-                            from: ownerID
-                        ),
-                        custodyManifest:  recipManifest ?? sealed.custodyManifest,
-                        senderPublicKey:  senderPublicKey,
-                        senderIdentifier: ownerID,
-                        vaultManager:     self.vaultManager
-                    )
-                    // Only a manifest can change a piece's status.
-                    if (recipManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
-                }
-
-                // Shard-only bundle (empty message) — ops handled above, no basket.
-                guard !sealed.message.isEmpty else { return nil }
-                decrypted = (sealed.message, ownerID)
+                guard let message = self.routeGroupOpening(opened) else { return nil }
+                decrypted = (message, opened.ownerID)
             } else {
                 // ContactManager owns sender identification, prekey resolution,
                 // consumed-key cleanup, inbound batch sync, and model persistence.
@@ -1161,6 +1231,9 @@ struct RootView: View {
             }
         case .unsupported:
             throw OccultaBundle.BundleError.unsupportedVersion
+        case .streamedBodyCapable:
+            // A streamed bundle is opened through its file handle (`buildStreamedMessage`), never from bytes in memory.
+            throw OccultaBundle.BundleError.malformedBundle
         default:
             // Legacy path — nil, v1, v2, or pre-versioned files.
             // Falls back to long-term ECDH trial decryption across all contacts.
@@ -1278,6 +1351,34 @@ struct RootView: View {
         }
     }
 
+}
+
+// MARK: - InboundFile
+
+/// A file handed to the app, as it is held until it is processed.
+enum InboundFile {
+    /// Memory-mapped bytes: every layout but the streamed one, and every other kind of file.
+    case mapped(Data)
+    /// A streamed bundle, open for positioned reads and never mapped (STREAMING_SPEC §5.1).
+    case streamed(NoCacheFile.Reader)
+
+    /// Opens `url`: as a read handle when it is a streamed bundle, which its first bytes say, otherwise mapped.
+    ///
+    /// Memory-mapped rather than eagerly read into a heap buffer: a file can legitimately be large (photo/video
+    /// attachments, vault backups), and mapping lets the OS page it in lazily and reclaim pages under memory
+    /// pressure instead of committing the whole file to RSS upfront (SecurityReview2026-07-24, finding #11 —
+    /// unbounded inbound file read).
+    nonisolated static func open(_ url: URL) throws -> InboundFile {
+        if url.pathExtension != "occbak",
+           let reader = try? NoCacheFile.reader(url),
+           reader.size >= UInt64(WireHandle.headerLength),
+           let head = try? reader.read(at: 0, count: WireHandle.headerLength), head.count == WireHandle.headerLength,
+           head.prefix(WireHandle.magic.count).elementsEqual(WireHandle.magic),
+           head[4] == WireHandle.streamedVersionByte {
+            return .streamed(reader)
+        }
+        return .mapped(try Data(contentsOf: url, options: .mappedIfSafe))
+    }
 }
 
 // MARK: - Tabs

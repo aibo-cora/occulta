@@ -13847,6 +13847,8 @@ PR #132 writes each sealed chunk straight to disk in `Encryptor.write`, removing
 
 `AttachmentWriteTests` (PR #132). `STREAMING_SPEC.md` §11 specifies the memory regression test for the full fix.
 
+**Progress on `v2.0.0/streaming-bundles`:** stage 1 (the memory guard, which refuses an inline bundle that can't fit), stage 2 (the codec) and stage 3 (the receive path: a streamed bundle is read from an open file, its message shown first, its attachments decrypted a chunk at a time) are committed. Nothing sends a streamed bundle until stage 4, so the bug stays open until then.
+
 ---
 
 ## Bug 184 — A received attachment from a sender we hold no key for is written to `tmp/` in plaintext

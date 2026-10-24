@@ -620,11 +620,12 @@ extension ContactManager {
     /// key), save with a checkpoint. Carol's batch and Bob's first batch are the ordinary receive path's, which
     /// opens this bundle next (`openGroup`) and generates after its own checks (Bug 159). An expired card is
     /// cancelled and skipped.
-    func redeemCard(for bundle: OccultaBundle, now: Date = .now) throws -> Contact.Profile? {
+    func redeemCard(for bundle: OccultaBundle, body: BundleBody? = nil, now: Date = .now) throws -> Contact.Profile? {
         guard let postQuantum = self.cardPostQuantum, let envelope = bundle.group,
               envelope.recipients.count <= Group.slotCount else { return nil }
 
         let cryptoOps = Manager.Crypto()
+        let body = body ?? .inline(bundle)
         for contact in try self.fetchAllContacts() {
             guard case .issued(let cardBytes, let agreementBlob, let signingBlob, let mlkemBlob, let expiresAt) = contact.cardState else { continue }
 
@@ -639,7 +640,7 @@ extension ContactManager {
                 guard
                     let raw = try? self.cardKeys.sharedSecret(agreementBlob: agreementBlob, peerPublicKey: ephemeral),
                     let outcome = Self.redeemSlot(
-                        entry, bundle: bundle, blind: envelope.blind, card: card, mlkemBlob: mlkemBlob,
+                        entry, bundle: bundle, body: body, blind: envelope.blind, card: card, mlkemBlob: mlkemBlob,
                         ecdhOutput: Manager.Crypto.cardECDHOutput(raw), postQuantum: postQuantum, cryptoOps: cryptoOps
                     ),
                     let encapsulation = postQuantum.encapsulate(peerPublicKeyData: outcome.introduction.mlkemEncapsulationKey)
@@ -676,6 +677,7 @@ extension ContactManager {
     private static func redeemSlot(
         _ entry: OccultaBundle.Recipient,
         bundle: OccultaBundle,
+        body: BundleBody,
         blind: Data,
         card: IntroductionCard,
         mlkemBlob: Data,
@@ -709,9 +711,9 @@ extension ContactManager {
         }
         // 4. The body: its digest, then the body itself and its proof, as the ordinary receive path will check them.
         guard
-            payload.bodyDigest == Data(SHA256.hash(data: bundle.ciphertext)),
-            let body = try? cryptoOps.openGroupCiphertext(bundle, using: SymmetricKey(data: payload.sessionKey)),
-            let decoded = try? WireHandle.decode(payload: body),
+            let digest = try? body.digest(), payload.bodyDigest == digest,
+            let opened = try? body.openManifest(sessionKey: SymmetricKey(data: payload.sessionKey)),
+            case let decoded = opened.payload,
             decoded.identityChallenge == nil,
             decoded.groupID != nil,
             let proof = decoded.senderProof,

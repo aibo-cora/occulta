@@ -252,16 +252,12 @@ final class ComposeViewModel {
 
     /// Streams `srcURL` into a sealed file at `tmp`, 64 KB at a time. Never writes plaintext.
     nonisolated static func seal(contentsOf srcURL: URL, to tmp: URL, using manager: AttachmentManager) async throws {
-        let source = try FileHandle(forReadingFrom: srcURL)
+        let source = try NoCacheFile.reader(srcURL)
+        let encryptor = try manager.streamingEncryptor(to: tmp)
 
-        defer { try? source.close() }
-        let encryptor = try await manager.streamingEncryptor(to: tmp)
+        try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
 
-        while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
-            try await encryptor.append(chunk)
-        }
-
-        try await encryptor.finalize()
+        try encryptor.finalize()
     }
 
     // MARK: Bundle encryption
@@ -519,33 +515,12 @@ final class ComposeViewModel {
 
         let encryptor = try manager.streamingEncryptor(to: url)
 
-        // Blocking I/O — run on a detached task, not the cooperative pool.
+        // Blocking I/O — run on a detached task, not the cooperative pool. `NoCacheFile` turns the page cache
+        // off and read-ahead off on the source, which keeps resident memory to one chunk.
         try await Task.detached(priority: .userInitiated) {
-            let fd = open(videoURL.path(percentEncoded: false), O_RDONLY)
-            guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-            defer { close(fd) }
-
-            _ = fcntl(fd, F_NOCACHE, 1)  // bypass unified buffer cache
-            _ = fcntl(fd, F_RDAHEAD, 0)  // disable kernel readahead (int 0, not a pointer)
-
-            let chunkSize = 65_536
-            var rawBuf: UnsafeMutableRawPointer? = nil
-            
-            guard posix_memalign(&rawBuf, Int(sysconf(_SC_PAGESIZE)), chunkSize) == 0,
-                  let buf = rawBuf else {
-                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-            }
-            defer { free(buf) }
-
-            while true {
-                let n = read(fd, buf, chunkSize)
-                if n == 0 { break }
-                if n < 0  { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-                // bytesNoCopy with .none deallocator: buf is reused each iteration;
-                // append() copies into its internal buffer before returning.
-                try await encryptor.append(Data(bytesNoCopy: buf, count: n, deallocator: .none))
-            }
-            try await encryptor.finalize()
+            let source = try NoCacheFile.reader(videoURL)
+            try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
+            try encryptor.finalize()
         }.value
     }
 
@@ -573,13 +548,9 @@ final class ComposeViewModel {
                     if let err = error { throw err }
                     guard let fileURL else { throw ImportError.noVideoResource }
                     
-                    let source = try FileHandle(forReadingFrom: fileURL)
-                    
-                    defer { try? source.close() }
-                    
-                    while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
-                        try encryptor.append(chunk)
-                    }
+                    let source = try NoCacheFile.reader(fileURL)
+
+                    try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
                     try encryptor.finalize()
                     
                     cont.resume()

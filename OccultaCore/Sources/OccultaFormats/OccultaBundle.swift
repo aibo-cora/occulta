@@ -893,6 +893,27 @@ public enum ShardPadding {
 // MARK: - WireHandle bridge
 
 extension OccultaBundle {
+    /// The envelope of a streamed bundle, read from its header and sections alone. `ciphertext` is empty:
+    /// the chunk stream is read from the file, never held (`STREAMING_SPEC.md` §5.2 step 1). A streamed
+    /// bundle without a group envelope is malformed.
+    public init(header: WireHandle.Header, sections: WireHandle.Sections) throws {
+        if header.version == WireHandle.streamedVersionByte, sections.groupEnvelope == nil {
+            throw BundleError.malformedBundle
+        }
+        try self.init(wireBundle: WireHandle.Bundle(
+            version:           header.version,
+            minReaderVersion:  header.minReaderVersion,
+            mode:              header.mode,
+            flags:             header.flags,
+            prekeyID:          header.prekeyID,
+            ephemeralKey:      header.ephemeralKey,
+            fingerprintNonce:  header.fingerprintNonce,
+            senderFingerprint: header.senderFingerprint,
+            ciphertext:        Data(),
+            groupEnvelope:     sections.groupEnvelope
+        ))
+    }
+
     /// Reconstruct an `OccultaBundle` from a parsed binary outer envelope.
     public init(wireBundle b: WireHandle.Bundle) throws {
         guard let version = WireHandle.byteToVersion(b.version) else {

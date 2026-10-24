@@ -1605,14 +1605,16 @@ extension ContactManager {
     }
 
     private func verifyConsistency(for bundle: OccultaBundle) throws {
-        guard bundle.version == .v3fs || bundle.version == .v4 else { throw Errors.unsupportedBundleVersion }
+        guard bundle.version == .v3fs || bundle.version == .v4 || bundle.version == .streamedBodyCapable else {
+            throw Errors.unsupportedBundleVersion
+        }
         // Defence-in-depth: never touch a bundle whose version or mode was
         // produced by a future build we don't understand. `Version`/`Mode` both
         // decode unknown raw values to `.unsupported` — see OccultaBundle.swift.
         guard bundle.secrecy.mode != .unsupported else { throw OccultaBundle.BundleError.unsupportedMode }
     }
     
-    private func identifyOwner(for bundle: OccultaBundle) throws -> Contact.Profile {
+    private func identifyOwner(for bundle: OccultaBundle, body: BundleBody? = nil) throws -> Contact.Profile {
         try self.verifyConsistency(for: bundle)
         
         let cryptoOps     = Manager.Crypto()
@@ -1647,7 +1649,7 @@ extension ContactManager {
         if sender == nil, !cardHolders.isEmpty { sender = self.cardHolder(among: cardHolders, of: bundle) }
 
         // No match: the bundle may redeem one of our issued cards (SPEC §6.6 step 4), at every depth.
-        if sender == nil { sender = try self.redeemCard(for: bundle) }
+        if sender == nil { sender = try self.redeemCard(for: bundle, body: body) }
 
         guard let sender else { throw Errors.noPublicKeyToEncryptWith }
         
@@ -1668,8 +1670,8 @@ extension ContactManager {
         } ?? holders[0]
     }
 
-    func identifyOwner(of bundle: OccultaBundle) throws -> String? {
-        let sender = try self.identifyOwner(for: bundle)
+    func identifyOwner(of bundle: OccultaBundle, body: BundleBody? = nil) throws -> String? {
+        let sender = try self.identifyOwner(for: bundle, body: body)
         
         return sender.identifier
     }
@@ -1917,6 +1919,43 @@ extension ContactManager {
         recipientCustodyManifest: [UUID]?,
         challenge:                IdentityChallenge.Authenticated?
     ) {
+        let opened = try self.openGroup(bundle: bundle, body: .inline(bundle), ownerID: ownerID)
+        return (opened.sealed, opened.ownerID, opened.groupID, opened.recipientShardOperations,
+                opened.recipientCustodyManifest, opened.challenge)
+    }
+
+    /// A streamed bundle's steps 1 to 6 (`STREAMING_SPEC.md` §5.2): parse the header and sections, identify the
+    /// sender, open our slot, check the digest (pass 1) and the header, and open the manifest, with every
+    /// check `openGroup` runs on it. Returns the body, whose file stays open, and the opening.
+    ///
+    /// Nothing here reads the depth. A failure before the header check has recorded no prekey as used.
+    func openStreamedBundle(_ reader: NoCacheFile.Reader) async throws -> (body: StreamedBody, opened: GroupOpening) {
+        let body = try StreamedBody(reader: reader)
+
+        // Pass 1 off the main thread: hashing the stream is the one step that reads all of it. The slot check
+        // below finds the digest already made.
+        _ = try await Task.detached(priority: .userInitiated) { try body.digest() }.value
+
+        let ownerID = try self.identifyOwner(of: body.bundle, body: .streamed(body))
+        let opened  = try self.openGroup(bundle: body.bundle, body: .streamed(body), ownerID: ownerID)
+        return (body, opened)
+    }
+
+    /// What `openGroup` returns, with the body's cursor for the streamed layout.
+    struct GroupOpening {
+        let sealed:                   OccultaBundle.SealedPayload
+        let ownerID:                  String
+        let groupID:                  UUID
+        let recipientShardOperations: [OccultaBundle.ShardOperation]?
+        let recipientCustodyManifest: [UUID]?
+        let challenge:                IdentityChallenge.Authenticated?
+        /// Where pass 2 resumes. Nil for the inline layout, whose files are in `sealed`.
+        let cursor:                   StreamCursor?
+    }
+
+    /// `openGroup` for either layout. `body` is the bundle's body: `.inline(bundle)`, or the streamed one whose
+    /// header is `bundle` (`STREAMING_SPEC.md` §5.2 steps 3–6). Every check below runs on the manifest, written once.
+    func openGroup(bundle: OccultaBundle, body: BundleBody, ownerID: String? = nil) throws -> GroupOpening {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
         }
@@ -1937,7 +1976,7 @@ extension ContactManager {
             guard let found = try self.fetchContact(by: ownerID) else { throw Errors.contactNotFound }
             sender = found
         } else {
-            sender = try self.identifyOwner(for: bundle)
+            sender = try self.identifyOwner(for: bundle, body: body)
         }
         let prekeys = try self.senderPrekeys(for: sender)
 
@@ -1955,7 +1994,8 @@ extension ContactManager {
         if let cardContext {
             senderPublicKey = cardContext.peerAgreementKey
             let opening = try cryptoOps.openCardSlot(
-                in: bundle, blind: envelope.blind, senderContactID: sender.identifier, card: cardContext, prekeys: prekeys
+                in: bundle, blind: envelope.blind, senderContactID: sender.identifier, card: cardContext, prekeys: prekeys,
+                body: body
             )
             try self.checkCardIntroduction(opening, for: sender)
             (recipientPayload, used, recipientMode, slotEphemeralKey) = (opening.payload, opening.used, opening.mode, opening.ephemeralPublicKey)
@@ -1969,7 +2009,8 @@ extension ContactManager {
                 senderContactID: sender.identifier,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
-                prekeys: prekeys
+                prekeys: prekeys,
+                body: body
             )
         }
 
@@ -2024,8 +2065,8 @@ extension ContactManager {
 
         // ── 5. Open shared ciphertext ────────────────────────────────────
         let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
-        let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
-        let decoded     = try WireHandle.decode(payload: payloadData)
+        let openedManifest = try body.openManifest(sessionKey: sessionKey)
+        let decoded        = openedManifest.payload
 
         // ── 5.1. An identity challenge or response: authenticated here, or not at all ──
         // Only a 2.0.0 sender puts one in a group body (prekey continuity §3.4), so it must carry what every such
@@ -2126,13 +2167,14 @@ extension ContactManager {
         // The shared payload too: a one-to-one bundle carries its piece operations and manifest there, not per
         // recipient, and the caller falls back to them. Stripping only the per-recipient fields left those applied
         // on a fallback slot (`bugs.md` Bug 164).
-        return (
-            isFallback ? Self.withoutShardContent(decoded) : decoded,
-            sender.identifier,
-            groupID,
-            recipOps.isEmpty ? nil : recipOps,
-            recipManifest,
-            challenge
+        return GroupOpening(
+            sealed:                   isFallback ? Self.withoutShardContent(decoded) : decoded,
+            ownerID:                  sender.identifier,
+            groupID:                  groupID,
+            recipientShardOperations: recipOps.isEmpty ? nil : recipOps,
+            recipientCustodyManifest: recipManifest,
+            challenge:                challenge,
+            cursor:                   openedManifest.cursor
         )
     }
 }
