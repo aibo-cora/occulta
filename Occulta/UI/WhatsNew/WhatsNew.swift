@@ -88,6 +88,11 @@ enum WhatsNew {
                         symbol: "video.fill",
                         title: "Share videos from Photos",
                         detail: "Occulta now appears in the share sheet for videos, up to 100 MB."
+                    ),
+                    Feature(
+                        symbol: "film",
+                        title: "Large videos and files",
+                        detail: "Messages with very large videos and files now send and open without Occulta running out of memory, once the other person has updated to 2.0.0. With older versions, Occulta tells you when a message is too large instead of crashing."
                     )
                 ],
                 fixes: [
