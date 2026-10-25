@@ -14551,8 +14551,8 @@ the full method calls the real `Manager.Key().deleteAllKeys()`. The full suite w
 
 **Status:** Fixed in [#136](https://github.com/aibo-cora/occulta/pull/136), in review, not merged (2026-10-25). Found by the
 2026-10-20 audit trial's source review. `IdentityChallengeDepthBindingTests` is the acceptance test: all four
-behaviours pass on the fix branch, and the full suite passes on the Simulator. It has not been re-run against the base
-commit, so that it fails there is still unconfirmed. The same PR also carries the persisted stage of the design, the
+behaviours pass on the fix branch, and the full suite passes on the Simulator. Run against `2763d6f7`, the base before
+the fix (the original file, which compiles there), three of its four fail and the control passes. The same PR also carries the persisted stage of the design, the
 sealed per-depth column (owner's decision D1, 2026-10-25); it opens residuals R1–R6 below, **open, needs a decision**.
 
 **Target:** `v2.0.0`. Present since Bug 140's session reset.
