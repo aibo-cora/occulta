@@ -403,6 +403,11 @@ keep the message body unread even where "a message arrived, from someone" is inf
 is not taken here, since the flow is unchanged, but it remains available and is a different
 question from this one.
 
+**Not covered by this decision (added 2026-10-23):** it covers rendering a *new* message from a hidden
+sender. Two neighbouring questions are open and need a decision; see "2026-10-23 — Two cases the
+decision does not cover" at the bottom, and Bug 173 in `Docs/Features/Secure Mode/bugs.md` for a third
+(acting on a hidden contact's identity challenge).
+
 ## 2026-08-28 — Re-filed twice as a new bug; the decision above stands
 
 The decision above was re-discovered and re-filed as a High-severity defect twice in two weeks, both
@@ -540,3 +545,88 @@ not an open bug, so that extracting them does not seed a third re-filing.
 
 **Status: both worth building, neither implemented. The residual documented on 2026-08-13 remains
 open in the meantime, and the flow described there is unchanged.**
+
+## 2026-10-23 — Two cases the 2026-08-13 decision does not cover: open, needs a decision
+
+Found by the 2026-10-20 audit trial's source review (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md`,
+leads 11 and 12), re-checked against `v2.0.0/introduction-cards` on 2026-10-23. Neither was reproduced.
+Neither is accepted. The 2026-08-13 decision reasons about a new message from a real third party
+arriving during the coercion window ("timing-bounded and not adversary-controlled") and about the
+sender's name rendering. These two are outside that reasoning, and the document's own last paragraph of
+that decision leaves content confidentiality as a separate question.
+
+### Case A — re-opening a hidden contact's retained, re-openable `.occ` files at a duress depth
+
+`identifyOwner` reads `fetchAllContacts()`, which filters on `deletionToken` only, and nothing on the
+way checks `isVisible(atDepth:)`, so a bundle from a contact hidden at the current depth opens and
+renders (the 2026-08-13 presence oracle). The difference is replay. A bundle sealed on a long-term
+fallback slot derives its wrapping key from the two long-term keys and consumes nothing; one on a
+last-resort slot keeps its key until the slot retires (Bug 82's table; Prekey Continuity D5, decided
+2026-10-07 as "messages may reopen"). Fallback carries the first message of a relationship in each
+direction and about one in sixteen after it, plus last-resort sends.
+
+A coercer holding the unlocked phone can open any retained copy of such a file from the transport
+(Messages, Mail, Files; `.occ` is a registered document type) through Open in Occulta and read content
+written long before the coercion, repeatedly and on demand. That is adversary-controlled and not
+bounded by the window, which is what the 2026-08-13 rationale relied on. Each successful open also
+saves the hidden contact's prekey record, and a replayed long-term bundle with no batch pending makes
+`replenish` install a fresh batch into it.
+
+Calibration, so this isn't overread: the re-openability is a known, documented cost (Bug 82a, D5, the
+compose indicator's "Hold back anything sensitive"), and the exposure is limited to messages sealed on
+those slots and still retained, not all history. The codebase gates one stateful action for hidden
+senders at receipt (`filterShardOperations` drops shard operations from a sender not visible at the
+current depth), so the absence of a gate on message content is a decision, not an oversight; whether it
+extends to replay is the open question. A gate would be a depth-conditional behaviour, so any answer has
+to be weighed against the observable it creates, as in the table under "Why no other option closes it
+either".
+
+Test plan, from the audit record: under `.ambientTestKeyManager`, contact A with in-person keys and
+`visibleThroughDepth = 0`; A's simulated device seals a long-term-fallback group bundle to us. Open it
+at depth 0 through `identifyOwner(of:)` and `openGroup(bundle:ownerID:)`, set `security.currentDepth = 1`,
+open the same bytes again. Assert the second open returns the plaintext with `ownerID == A`, and that
+`A.isVisible(atDepth: 1)` is false. Repeat with a last-resort slot. Read back A's prekey record after each
+open to record the write. Simulator or CI only. Owner-observed check, on a phone with no real data:
+read a first message from a contact at depth 0, hide the contact for a duress depth, unlock with the
+duress PIN, open the old attachment from Messages and see whether the message and the name appear.
+
+### Case B — inbound error text separates a hidden sender from an unknown one
+
+`processInboundFile` shows one alert when no contact matches the bundle's cleartext sender fingerprint
+("Could not find this file's owner's public key…", from `ContactManager.Errors.noPublicKeyToEncryptWith`)
+and a different one when a contact at any depth matches but nothing opens ("There was an error." plus
+the description). Matching spans every depth, so at a duress depth the alert answers "is this sender a
+live contact on this phone?" for people absent from the list, without any decryption succeeding. The
+2026-08-07 wording-parity check compared the unknown-sender text with the *rejection*
+(`passSecurityControl`) text; with that gone, the remaining pair is unknown sender against matched
+sender whose slot or key derivation fails, which that check did not cover.
+
+Three ways to supply the probe: (1) re-open an already-read forward-secret `.occ` from the phone's own
+transport history, whose prekey is spent; (2) craft a bundle whose fingerprint is
+`SHA-256(publicKey ∥ nonce)` for a suspected person's public identity key, which needs that key from
+outside the phone and depends on the unkeyed fingerprint (open item 17a); (3) craft one from the
+agreement key inside an introduction card file found in chat history, which matches a contact whose
+field is imported or a conversation, at any depth. Case (3) goes around the re-import design (Introduction
+Cards SPEC §6.3: a hidden holder "isn't matched … and shows nothing of it") and is the least covered.
+Case (1) adds less than it seems, since the transport thread already shows the person sent an `.occ`
+file, the same disclosure the 2026-08-13 decision relied on; what it adds is deniability ("I deleted
+them") for already-read files, a weak signal.
+
+A fix that needs no duress-only observable exists: make a matched sender with no openable slot show the
+same alert as an unknown sender at every depth (that alert already says the message may not have been
+addressed to the user). The cost is losing the distinct diagnostic for a real contact's unreadable file.
+Not taken; it changes what a legitimate user sees at depth 0 and belongs to the same decision.
+
+Test plan, from the audit record: under `.ambientTestKeyManager`, contact A with in-person keys, hidden
+at depth 1. Build a v4 group bundle with `fingerprintNonce` N, `senderFingerprint =
+SecrecyContext.fingerprint(for: A.publicKey, nonce: N)` and one recipient entry of random bytes; build a
+second over a random key. At depth 1 assert `identifyOwner(of:)` returns A for the first and throws
+`noPublicKeyToEncryptWith` for the second, and that `openGroup` on the first throws
+`GroupDecryptError.recipientSlotNotFound`. Repeat with a re-opened consumed forward-secret bundle from A
+and with a card holder using the card's agreement key. Then extract the alert mapping out of
+`processInboundFile` into a testable function and assert both cases map to the same message at every
+depth, with unknown-sender timing and writes unchanged. Owner-observed check, on a phone with no real
+data: hide a contact for a duress depth, unlock with the duress PIN, re-open an already-read
+forward-secret `.occ` from that contact, then one from a deleted contact, and compare the two alerts.
+
+**Status: both open, needs a decision. Neither is an accepted limitation.**
