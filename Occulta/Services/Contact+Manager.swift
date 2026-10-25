@@ -61,6 +61,11 @@ class ContactManager {
     @ObservationIgnored
     let security: Manager.Security
 
+    /// Identity-challenge state, one store per depth. Read and written only by `ContactManager+ChallengeLedger.swift`,
+    /// which picks the store from `security.currentDepth` (`bugs.md` Bug 180).
+    @ObservationIgnored
+    var challengeStores: [Int: IdentityChallenge.OutstandingChallengeStore] = [:]
+
     /// The Enclave keys and the ML-KEM provider introduction cards use (`ContactManager+Cards.swift`). Injected so
     /// tests can run with software keys; `cardPostQuantum` is nil below iOS 26, where cards are unsupported.
     @ObservationIgnored

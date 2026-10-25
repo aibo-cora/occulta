@@ -8743,6 +8743,17 @@ The `.response` branch also writes `verifiedAt[senderID]` before rendering
 (`IdentityChallenge+Coordinator.swift:194`). That is in-memory state keyed by identifier, not a
 render, and is out of scope here — but any future UI reading `verifiedAt` inherits the same question.
 
+**Update 2026-10-25 (Bug 180):** that was the question, and it had an answer worth a bug of its own. The
+verified-at time and the outstanding-challenge store lived on the `Coordinator`, which is built once before any
+PIN and outlives `endSession`, so a duress session read the owner's real-depth state. They now live in a ledger
+`ContactManager` keeps per *(depth, contact)*, picking the depth from `security.currentDepth` itself
+(`ContactManager+ChallengeLedger.swift`), and the `Coordinator` holds neither. A response opened at another depth
+finds an empty ledger and renders nothing, and the badge reads only the current depth's entry. The `.response`
+branch's write is still not a render; it is now depth-bound as well. The owner's own question, the note on an
+outstanding challenge, is held by the `Manager` in memory and reached only through that depth's entry. The
+attacker-supplied `contextNote` on an *incoming* challenge ("Also unchanged" above) is a different question and
+is untouched.
+
 ---
 
 ## Bug 105 — A duress layer can distribute shares of the real BEK, through ordinary UI

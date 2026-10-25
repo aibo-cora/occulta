@@ -89,7 +89,7 @@ private func challengeFrom(_ alice: TestKeyManager) throws -> IdentityChallengeE
         let challenge = try #require(try cm.openGroup(bundle: bundle, ownerID: "alice").challenge)
         #expect(challenge.envelope == envelope)
 
-        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+        let coordinator = IdentityChallenge.Coordinator(ledger: cm, sealer: cm)
         coordinator.handleAuthenticatedChallenge(challenge, sender: profile)
         #expect(coordinator.incomingChallenge?.pending.challengerID == "alice")
         #expect(coordinator.incomingChallenge?.pending.contextNote == "Was this you?")
@@ -106,7 +106,7 @@ private func challengeFrom(_ alice: TestKeyManager) throws -> IdentityChallengeE
         )
 
         let challenge = try #require(try cm.openGroup(bundle: bundle, ownerID: "alice").challenge)
-        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+        let coordinator = IdentityChallenge.Coordinator(ledger: cm, sealer: cm)
         coordinator.handleAuthenticatedChallenge(challenge, sender: profile)
         #expect(coordinator.incomingChallenge == nil)
         #expect(coordinator.errorMessage != nil)
@@ -130,7 +130,7 @@ private func challengeFrom(_ alice: TestKeyManager) throws -> IdentityChallengeE
     @Test("decryptChallenge(envelope:) refuses a response envelope, and verifyResponse(envelope:) a challenge")
     func kindsAreChecked() throws {
         let manager = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(keyManager: TestKeyManager()), store: IdentityChallenge.OutstandingChallengeStore()
+            crypto: Manager.Crypto(keyManager: TestKeyManager()), ledger: IdentityChallenge.OutstandingChallengeStore()
         )
         let alicePublicKey = try self.alice.retrieveIdentity()
 
@@ -232,7 +232,7 @@ private struct ForwardSecretFixture {
 
         let (sealed, ownerID) = try f.cm.decryptSealed(bundle: bundle)
         #expect(ownerID == "alice")
-        let coordinator = IdentityChallenge.Coordinator(contactManager: f.cm)
+        let coordinator = IdentityChallenge.Coordinator(ledger: f.cm, sealer: f.cm)
         coordinator.handleInboundChallenge(bundle: bundle, envelope: try #require(sealed.identityChallenge), sender: f.profile)
         #expect(coordinator.incomingChallenge == nil)
         #expect(coordinator.errorMessage != nil)
@@ -271,7 +271,7 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
     func endToEnd() throws {
         let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
-        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+        let coordinator = IdentityChallenge.Coordinator(ledger: cm, sealer: cm)
 
         try coordinator.createChallenge(for: profile, contextNote: "Was this you?")
         let file = try #require(coordinator.outboundShare?.url)
@@ -288,7 +288,7 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
         #expect(opened.sealed.shardOperations == nil && opened.sealed.custodyManifest == nil)
         let ourPublicKey = try Manager.Ambient.keyManager.retrieveIdentity()
         let alicesManager = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
+            crypto: Manager.Crypto(keyManager: self.alice), ledger: IdentityChallenge.OutstandingChallengeStore()
         )
         let pending = try alicesManager.decryptChallenge(
             envelope: try #require(opened.sealed.identityChallenge), senderKey: ourPublicKey, senderQuantum: nil,
@@ -322,7 +322,7 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
 
         // Alice challenges us, in group format.
         let alicesManager = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
+            crypto: Manager.Crypto(keyManager: self.alice), ledger: IdentityChallenge.OutstandingChallengeStore()
         )
         let challenge = try alicesManager.createChallenge(contactID: "us") { envelope in
             try groupBundle(envelope, from: self.alice, to: ourPublicKey)
@@ -330,7 +330,7 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
         let authenticated = try #require(try cm.openGroup(bundle: challenge, ownerID: "alice").challenge)
 
         // We approve and answer, as `approvePending` does after Face ID.
-        let ours = IdentityChallenge.Manager(crypto: Manager.Crypto(), store: IdentityChallenge.OutstandingChallengeStore())
+        let ours = IdentityChallenge.Manager(crypto: Manager.Crypto(), ledger: IdentityChallenge.OutstandingChallengeStore())
         let pending = try ours.decryptChallenge(
             envelope: authenticated.envelope, senderKey: try self.alice.retrieveIdentity(), senderQuantum: nil,
             senderID: "alice", senderName: "Alice"
@@ -354,7 +354,7 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
         var record = PrekeyRecord.empty
         record.inboundLastResort = PrekeyRecord.InboundKey(id: alicesLastResort.keyID, publicKey: alicesLastResort.publicKey)
         try cm.store(record, for: profile)
-        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+        let coordinator = IdentityChallenge.Coordinator(ledger: cm, sealer: cm)
 
         try coordinator.createChallenge(for: profile, contextNote: nil)
         let file = try #require(coordinator.outboundShare?.url)
@@ -369,7 +369,7 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
     func belowTierKeepsLongTerm() throws {
         let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.prefixedSenderSignatureCapable), in: cm)
-        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+        let coordinator = IdentityChallenge.Coordinator(ledger: cm, sealer: cm)
 
         try coordinator.createChallenge(for: profile, contextNote: nil)
         let file = try #require(coordinator.outboundShare?.url)
@@ -386,13 +386,13 @@ private func marker(_ tier: OccultaBundle.Version) throws -> Data {
         let cm = try TestSupport.makeContactManager()
         let profile = try insertAlice(self.alice, marker: try marker(.bodyDigestCapable), in: cm)
         let alicesManager = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
+            crypto: Manager.Crypto(keyManager: self.alice), ledger: IdentityChallenge.OutstandingChallengeStore()
         )
         let bundle = try alicesManager.createChallenge(
             recipientKey: try Manager.Ambient.keyManager.retrieveIdentity(), recipientQuantum: nil, contactID: "us"
         )
 
-        let coordinator = IdentityChallenge.Coordinator(contactManager: cm)
+        let coordinator = IdentityChallenge.Coordinator(ledger: cm, sealer: cm)
         coordinator.handleInboundChallenge(bundle: bundle, envelope: .challenge(payload: Data(), contextNote: nil), sender: profile)
         #expect(coordinator.incomingChallenge?.pending.challengerID == "alice")
     }

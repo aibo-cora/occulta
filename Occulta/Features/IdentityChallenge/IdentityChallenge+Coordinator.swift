@@ -2,16 +2,17 @@
 //  IdentityChallenge+Coordinator.swift
 //  Occulta
 //
-//  UI-facing orchestrator that owns the `IdentityChallenge.Manager` +
-//  `OutstandingChallengeStore` and exposes `@Observable` state for the sheets
-//  in `IdentityChallenge+View.swift`.
+//  UI-facing orchestrator that owns the `IdentityChallenge.Manager` and exposes
+//  `@Observable` state for the sheets in `IdentityChallenge+View.swift`.
 //
 //  Lives as `@State` on `OccultaApp` and is injected into the environment so
 //  both `Contact.Details` (outbound creation) and the app-level inbound
 //  router can drive the same state.
 //
-//  In-memory only. Verified-at timestamps and outstanding challenges vanish
-//  on app termination — deliberate, see protocol spec.
+//  It holds no challenge state of its own. Outstanding challenges and verified-at times live in the
+//  `ChallengeLedger` (`ContactManager`), per depth, because the Coordinator is built once before any PIN is
+//  entered and outlives every session (`bugs.md` Bug 180). What it keeps is presentation: the three slots
+//  below, which `RootView.endSession` clears.
 //
 
 import Foundation
@@ -58,14 +59,6 @@ extension IdentityChallenge {
 
         // MARK: - State
 
-        /// Exposed so `Contact.Details` can show "Waiting…" / disable the
-        /// Verify-Identity button while a challenge is outstanding.
-        let store: OutstandingChallengeStore
-
-        /// Transient verified-at map — keyed by `Contact.Profile.identifier`.
-        /// Cleared on app termination. Drives the "Verified N ago" badge.
-        private(set) var verifiedAt: [String: Date] = [:]
-
         /// Drives the outbound share sheet (challenge OR response).
         var outboundShare: OutboundShare?
 
@@ -81,17 +74,16 @@ extension IdentityChallenge {
         // MARK: - Private
 
         private let manager: Manager
+        private let ledger:  any ChallengeLedger
         /// Sends to a contact at `.bodyDigestCapable` in group format, as a message (prekey continuity §3.4).
-        private let contactManager: ContactManager
+        private let sealer:  any ChallengeSealer
+        private let now:     () -> Date
 
-        init(contactManager: ContactManager) {
-            let store   = OutstandingChallengeStore()
-            let crypto  = Occulta.Manager.Crypto()
-            self.store   = store
-            self.manager = Manager(crypto: crypto, store: store)
-            self.contactManager = contactManager
-            // Sweep stale entries on init — matches app-launch cleanup in the spec.
-            store.removeExpired()
+        init(ledger: any ChallengeLedger, sealer: any ChallengeSealer, now: @escaping () -> Date = Date.init) {
+            self.manager = Manager(crypto: Occulta.Manager.Crypto(), ledger: ledger, now: now)
+            self.ledger  = ledger
+            self.sealer  = sealer
+            self.now     = now
         }
 
         // MARK: - Outbound: create challenge
@@ -106,10 +98,8 @@ extension IdentityChallenge {
         ) throws {
             let crypto = Occulta.Manager.Crypto()
             let url: URL
-            if Self.takesGroupFormat(contact, using: crypto) {
-                url = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote) { envelope in
-                    try self.sealToFile(for: contact.identifier, envelope: envelope)
-                }
+            if let seal = self.sealer.groupSealer(for: contact.identifier) {
+                url = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote, seal: seal)
             } else {
                 guard
                     let keyRecord    = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
@@ -241,7 +231,6 @@ extension IdentityChallenge {
                 switch try? response(senderKey, senderQuantum, senderID) {
                 case .passed(let contextNote)?:
                     (passed, note) = (true, contextNote)
-                    self.verifiedAt[senderID] = Date()
                 case .failed(let contextNote)?:
                     (passed, note) = (false, contextNote)
                 case .notOurs?, nil:
@@ -286,11 +275,8 @@ extension IdentityChallenge {
                     guard authenticated else { return }
                     do {
                         let url: URL
-                        if let challenger = try? self.contactManager.fetchContact(by: pending.challengerID),
-                           Self.takesGroupFormat(challenger, using: Occulta.Manager.Crypto()) {
-                            url = try self.manager.respond(to: pending) { envelope in
-                                try self.sealToFile(for: pending.challengerID, envelope: envelope)
-                            }
+                        if let seal = self.sealer.groupSealer(for: pending.challengerID) {
+                            url = try self.manager.respond(to: pending, seal: seal)
                         } else {
                             url = try Self.writeOCC(try self.manager.respond(to: pending).encoded(), kind: "response")
                         }
@@ -318,7 +304,7 @@ extension IdentityChallenge {
         /// badge should not be shown.
         /// Hidden after `timestampStaleThreshold` (1 hour) per spec.
         func verifiedBadge(for contactID: String, now: Date = Date()) -> String? {
-            guard let at = self.verifiedAt[contactID] else { return nil }
+            guard let at = self.ledger.verifiedAt(for: contactID) else { return nil }
             let elapsed = now.timeIntervalSince(at)
             guard elapsed >= 0 && elapsed < IdentityChallenge.timestampStaleThreshold else {
                 return nil
@@ -329,27 +315,23 @@ extension IdentityChallenge {
             return "Verified \(minutes) minutes ago"
         }
 
+        // MARK: - Ledger
+
+        /// Whether a challenge to `contactID`, issued in this session, is still waiting for its answer. Drives
+        /// "Verification in progress" and disables the Challenge button.
+        func hasOutstanding(for contactID: String, now: Date) -> Bool {
+            self.ledger.hasOutstanding(for: contactID, now: now)
+        }
+
+        /// Drop expired challenges, verified-at times and notes, at every depth. Called at launch, at each unlock
+        /// and when the app becomes active, so an unanswered challenge frees its contact within one foreground.
+        func sweepExpired() {
+            let now = self.now()
+            self.ledger.sweepExpired(now: now)
+            self.manager.forgetExpiredNotes(now: now)
+        }
+
         // MARK: - Helpers
-
-        /// Whether `contact`'s build accepts a challenge or response in group format: recorded at
-        /// `.bodyDigestCapable`, which only rises. Below it, or with a stranded marker, the long-term format, which
-        /// every build reads (prekey continuity §3.4).
-        private static func takesGroupFormat(_ contact: Contact.Profile, using crypto: Occulta.Manager.Crypto) -> Bool {
-            ContactManager.resolveTargetVersion(for: contact, using: crypto).isAtLeast(.bodyDigestCapable)
-        }
-
-        /// A challenge or response in group format, written to a temp `.occ` for the share sheet. It travels in the
-        /// layout a message to the same contact would: streamed, with only a manifest, when the contact can read
-        /// that. A layout of its own would tell it apart from a message (STREAMING_SPEC §3).
-        private func sealToFile(for contactID: String, envelope: IdentityChallengeEnvelope) throws -> URL {
-            let name = (UUID().uuidString.components(separatedBy: "-").last ?? "unknown") + ".occ"
-            let url  = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-            try self.contactManager.encryptBundle(
-                for: contactID, identityChallenge: envelope,
-                output: .file(destination: url, attachments: nil, memoryGuard: .system)
-            )
-            return url
-        }
 
         /// Write bundle bytes to a temp `.occ` file ready for share sheet.
         private static func writeOCC(_ data: Data, kind: String) throws -> URL {

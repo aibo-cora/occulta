@@ -126,7 +126,7 @@ struct OccultaApp: App {
         self.sharedModelContainer = sharedModelContainer
         self.launchScreen         = screen
         self.contactManager       = contactManager
-        self.identityChallenge    = IdentityChallenge.Coordinator(contactManager: contactManager)
+        self.identityChallenge    = IdentityChallenge.Coordinator(ledger: contactManager, sealer: contactManager)
         self.vaultManager         = vaultManager
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
@@ -287,6 +287,7 @@ struct RootView: View {
                 // covers that case. Both may fire; the sweep is idempotent.
                 self.purgeOrphanedGroupsIfAtRealDepth()
                 self.sweepPrekeysIfUnlocked()
+                self.identityChallenge.sweepExpired()
 
                 // Unconditional, at every depth and on every launch, and deliberately not
                 // folded into the purge above: a checkpoint that fired only at depth 0 would
@@ -318,6 +319,7 @@ struct RootView: View {
                 // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
                 self.purgeOrphanedGroupsIfAtRealDepth()
                 self.sweepPrekeysIfUnlocked()
+                self.identityChallenge.sweepExpired()
 
                 // Flushes the purge's and the sweep's delete records out of the WAL (`secure_delete` zeroes
                 // them on the way), and runs on **every** unlock at every depth even though
@@ -339,6 +341,7 @@ struct RootView: View {
                 switch newPhase {
                 case .active:
                     self.contactManager.cleanupPendingSessions()
+                    self.identityChallenge.sweepExpired()
                 case .background:
                     // Every file delivered to the app has been read by now (Bug 101).
                     FileManager.default.clearInboxes()
