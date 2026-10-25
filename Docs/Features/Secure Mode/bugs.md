@@ -14628,9 +14628,15 @@ SwiftData's lightweight migration of a store from before the column cannot be te
 by hand on a throwaway Simulator, 2026-10-25: the build at `2763d6f7` (before the column) installed, two contacts
 created through the UI, then this branch's build installed over it without uninstalling. The contacts opened with no
 onboarding; the store gained `ZCHALLENGESTATEENCRYPTED`, filled on both rows at 2 156 bytes; names, identifiers,
-prekey records, card fields and encryption scheme were byte-identical before and after. Not rehearsed: a downgrade
-back to the old build, and rows of a store old enough to still be on the v1 scheme (`migrateChallengeFields` skips
-those until `migrateToV2` has converted them; that skip is tested, the fill after conversion is not).
+prekey records, card fields and encryption scheme were byte-identical before and after.
+
+The downgrade was rehearsed the same way, on a second throwaway Simulator: this branch's build, one contact, then the
+build at `2763d6f7` installed over it. The old build opened the store and showed the contact. SwiftData's inferred
+migration **dropped `ZCHALLENGESTATEENCRYPTED`** from the table, and the row's name, identifier, prekey record, card
+field and scheme were unchanged. So a rollback loses the challenge state, which is at most an hour old and rebuildable,
+and nothing else. Installing this branch's build again re-added the column, filled at 2 156 bytes, with the other
+fields unchanged. Not rehearsed: rows of a store old enough to still be on the v1 scheme (`migrateChallengeFields`
+skips those until `migrateToV2` has converted them; that skip is tested, the fill after conversion is not).
 
 ## Bug 181 — A copy of a group bundle with an altered outer header uses up the recipient's one-time prekey
 
