@@ -259,6 +259,15 @@ enum LaunchSequence {
             #endif
         }
 
+        // Identity challenge state (Bug 180): the challenge field is never nil either.
+        do {
+            try DatabaseMigration.migrateChallengeFields(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("challenge field migration error: \(error)")
+            #endif
+        }
+
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
         do {

@@ -7,9 +7,9 @@
 //  The state of a challenge (the one we issued to a contact, and when we last verified them) belongs to the
 //  depth that created it, not to the process: `bugs.md` Bug 180. A session at another depth must find an empty
 //  ledger, as if the owner had never challenged anyone, or a duress session can see the owner's real-depth
-//  activity and the owner's own question. So the depth is never an argument. `ContactManager` implements
-//  `ChallengeLedger` and reads `security.currentDepth` itself, where nothing can pass or forget it, and the
-//  `Coordinator`, which is built once before any PIN is entered, holds only these protocols.
+//  activity. So the depth is never an argument. `ContactManager` implements `ChallengeLedger` over the sealed
+//  per-depth column on the contact and reads `security.currentDepth` itself, where nothing can pass or forget it,
+//  and the `Coordinator`, which is built once before any PIN is entered, holds only these protocols.
 //
 
 import Foundation
@@ -19,8 +19,9 @@ extension IdentityChallenge {
 
     /// A challenge we issued and have not yet settled: all the challenger remembers about it.
     ///
-    /// The context note is not part of it. It is the owner's own free text and stays with the `Manager`, keyed by
-    /// `nonce`, where it is reachable only by someone who already holds the nonce of a challenge at their depth.
+    /// The context note is not part of it, and is never written to disk. It is the owner's own free text and stays
+    /// in memory with the `Manager`, keyed by the challenge, where it is reachable only by someone who already holds
+    /// a challenge at their depth.
     struct OutstandingChallenge: Hashable {
         /// The 32-byte challenge nonce.
         let nonce: Data
@@ -39,6 +40,10 @@ extension IdentityChallenge {
     enum LedgerError: Error {
         /// A challenge to this contact has been waiting, unexpired, since before this one.
         case alreadyOutstanding
+        /// There is no such contact to keep the challenge on.
+        case contactUnknown
+        /// The state could not be sealed or saved. Nothing was recorded.
+        case cannotStore
     }
 
     /// Per-contact challenge state for the session that is open now. Every method acts on the current depth's

@@ -8757,9 +8757,9 @@ does not cover".
 
 **Update 2026-10-25 (Bug 180):** that was the question, and it had an answer worth a bug of its own. The
 verified-at time and the outstanding-challenge store lived on the `Coordinator`, which is built once before any
-PIN and outlives `endSession`, so a duress session read the owner's real-depth state. They now live in a ledger
-`ContactManager` keeps per *(depth, contact)*, picking the depth from `security.currentDepth` itself
-(`ContactManager+ChallengeLedger.swift`), and the `Coordinator` holds neither. A response opened at another depth
+PIN and outlives `endSession`, so a duress session read the owner's real-depth state. They now live in a sealed
+per-depth column on the contact, which `ContactManager` reads and writes, picking the depth from `security.currentDepth`
+itself (`ContactManager+ChallengeLedger.swift`), and the `Coordinator` holds neither. A response opened at another depth
 finds an empty ledger and renders nothing, and the badge reads only the current depth's entry. The `.response`
 branch's write is still not a render; it is now depth-bound as well. The owner's own question, the note on an
 outstanding challenge, is held by the `Manager` in memory and reached only through that depth's entry. The
@@ -14552,8 +14552,8 @@ the full method calls the real `Manager.Key().deleteAllKeys()`. The full suite w
 **Status:** Fixed in [#136](https://github.com/aibo-cora/occulta/pull/136), in review, not merged (2026-10-25). Found by the
 2026-10-20 audit trial's source review. `IdentityChallengeDepthBindingTests` is the acceptance test: all four
 behaviours pass on the fix branch, and the full suite passes on the Simulator. It has not been re-run against the base
-commit, so that it fails there is still unconfirmed. This closes the bug on its own; persisting challenges across a
-kill is a separate, later stage of the design (PRs 2–3), not part of this closure.
+commit, so that it fails there is still unconfirmed. The same PR also carries the persisted stage of the design, the
+sealed per-depth column (owner's decision D1, 2026-10-25); it opens residuals R1–R6 below, **open, needs a decision**.
 
 **Target:** `v2.0.0`. Present since Bug 140's session reset.
 
@@ -14585,20 +14585,49 @@ list never named.
 
 ### Fix
 
-PR 1 of a staged design: an in-memory ledger under `ContactManager`, one outstanding-challenge store per depth, chosen
-from `self.security.currentDepth` on every call (the depth is never a parameter). Verified-at lives in the same
-per-(depth, contact) entry. A response at another depth finds no entry and shows nothing; a response at the creating
-depth after a lock still passes. `endSession` needs no change, because the state is bound to the depth rather than
-cleared. The `Coordinator` drops its store and `verifiedAt`.
+State is a property of the contact, per depth, behind a `ChallengeLedger` that `ContactManager` implements. It reads
+`self.security.currentDepth` on every call (the depth is never a parameter), so a session cannot name another depth's
+entry. A response at another depth finds no entry and shows nothing; a response at the creating depth after a lock still
+passes. `endSession` needs no change, because the state is bound to the depth rather than cleared. The `Coordinator`
+drops its store and `verifiedAt`. Verified-at lives in the same per-(depth, contact) entry. Entries older than the stale
+threshold are free to overwrite, and a sweep at launch, unlock and foreground clears them at every depth; an unswept
+expired entry still answers `.failed`. The design is in `bug-180-challenge-state-design.md` in the session notes.
 
-Nothing persists in this stage, so a challenge does not survive a kill; persistence is PRs 2–3 of the design. The
-design is in `bug-180-challenge-state-design.md` in the session notes.
+The ledger was built in memory first and then switched, in the same PR, to `Contact.Profile.challengeStateEncrypted`:
+`ChallengeStateCodec`, 33 fixed 64-byte slots (depths 0…32), 2 128 bytes of plaintext and 2 156 sealed on every row, the
+slot index being the depth. Created with the contact, filled on old rows by `DatabaseMigration.migrateChallengeFields`
+(launch and unlock), emptied at deletion, added to the Bug 171 reseal inventory. A challenge now survives the app being
+killed. The owner's question is **not** persisted: it stays in memory in the `Manager`, keyed by the challenge, so
+after a kill the reply verifies without "You asked:", at every depth alike.
+
+### Residuals — all open, needs a decision
+
+Recorded as S10 in `Occulta/Features/SecureMode/forensic-trace-avoidance.md`.
+
+- **R1** — an at-rest record: with the local DB key, a challenge to contact X is outstanding at depth d, since when; a
+  live slot at index ≥ 1 also shows a duress layer was used in the last hour. New compared with before the fix.
+- **R2** — lifetime beyond the hour, until the next foreground sweep, for a phone never reopened.
+- **R3** — verified-at at rest, "who was verified, when", for up to an hour; droppable as a one-field change.
+- **R4** — a reply drained at the wrong depth is consumed there and cannot be reopened.
+- **R5** — an inbound challenge from a contact hidden at this depth still renders, and approving it signs (Bug 173).
+- **R6** — the note stays in memory until it settles, expires or the process ends.
+
+`OPEN_LIMITATIONS.md` is gitignored and exists only in the main checkout; R1–R6 are to be entered there from it.
 
 ### Guard
 
-`IdentityChallengeDepthBindingTests` (all four behaviours), new `IdentityChallengeDepthParityTests` (one scripted
-sequence at depth 0, depth 1 and with Secure Mode off, with equal observations) and `IdentityChallengeLedgerExpiryTests`,
-on the iOS Simulator, none needing a real Enclave. Existing IdentityChallenge suites changed for the new labels only.
+`IdentityChallengeDepthBindingTests` (all four behaviours), `IdentityChallengeDepthParityTests` (one scripted sequence
+at depth 0, depth 1 and with Secure Mode off, with equal observations), `IdentityChallengeLedgerExpiryTests`, and for
+the column `ChallengeStateTests.swift`: the codec (fixed shape, every slot, malformed input), creation and deletion at
+one sealed length, the launch migration, the ledger over the column (slot isolation both ways, kill-then-reply at the
+creating and at another depth, a stray reply writes nothing, the sweep at every depth, an unreadable column reads as
+empty), a source tripwire that only the ledger and the launch pass assign the column, and two interop vectors. On the
+iOS Simulator, none needing a real Enclave. Existing IdentityChallenge suites changed for the new labels only.
+
+Not covered: SwiftData's lightweight migration of a store from before the column. A test cannot open an old-schema
+store in process; rehearse it by hand on the Simulator (install the previous release build with a few contacts, update
+in place, confirm they open and the column fills), never on a connected iPhone. Also not covered: a v1 row converted
+by `migrateToV2` being filled by the next pass of `migrateChallengeFields`; only that the pass skips v1 rows.
 
 ## Bug 181 — A copy of a group bundle with an altered outer header uses up the recipient's one-time prekey
 

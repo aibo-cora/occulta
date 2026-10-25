@@ -19,154 +19,16 @@ import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
 
-// MARK: - Harness
-
-/// A clock the test moves. The coordinator, the manager and Alice's phone all read it.
-@MainActor
-private final class Clock {
-    var seconds: TimeInterval = 1_700_000_000
-    var date: Date { Date(timeIntervalSince1970: self.seconds) }
-}
-
-/// What a person looking at the screen could tell, after one step.
-private struct Observation: Equatable {
-    var step: String
-    var outcomePassed: Bool?
-    var outcomeNote: String?
-    var badge: String?
-    var waiting: Bool
-    var createError: String?
-    var errorMessage: String?
-    var sharing: Bool
-}
-
-@MainActor
-private struct Phone {
-    let coordinator: IdentityChallenge.Coordinator
-    let contacts: ContactManager
-    let security: Manager.Security
-    let clock: Clock
-
-    /// - Parameter depth: nil is Secure Mode off; 0 is the real layer with Secure Mode on; 1 is the duress layer.
-    init(depth: Int?, clock: Clock) throws {
-        let schema = Schema([
-            AppLayerConfig.self, Group.self, Contact.Profile.self, Contact.Profile.PhoneNumber.self,
-            Contact.Profile.EmailAddress.self, Contact.Profile.PostalAddress.self,
-            Contact.Profile.URLAddress.self, Contact.Profile.Key.self, VaultEntry.self,
-        ])
-        let container = try ModelContainer(
-            for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
-        )
-        let security = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
-        let contacts = ContactManager(modelContainer: container, security: security)
-        if let depth {
-            try security.configurePIN("111111")
-            try security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
-            if depth == 1 { try Self.unlock("999999", on: security) }
-            #expect(security.currentDepth == depth)
-        } else {
-            #expect(security.currentDepth == 0)
-        }
-        self.coordinator = IdentityChallenge.Coordinator(ledger: contacts, sealer: contacts, now: { clock.date })
-        self.contacts = contacts
-        self.security = security
-        self.clock = clock
-    }
-
-    static func unlock(_ pin: String, on security: Manager.Security) throws {
-        security.applyVerifyState(for: try security.verify(pin))
-    }
-
-    func unlock(_ pin: String) throws {
-        try Self.unlock(pin, on: self.security)
-    }
-
-    /// What `RootView.endSession` clears on a lock or a depth change.
-    func endSession() {
-        self.coordinator.outboundShare       = nil
-        self.coordinator.incomingChallenge   = nil
-        self.coordinator.verificationOutcome = nil
-    }
-
-    func observe(_ step: String, createError: Error? = nil) -> Observation {
-        Observation(
-            step: step,
-            outcomePassed: self.coordinator.verificationOutcome?.passed,
-            outcomeNote: self.coordinator.verificationOutcome?.contextNote,
-            badge: self.coordinator.verifiedBadge(for: "alice", now: self.clock.date),
-            waiting: self.contacts.hasOutstanding(for: "alice", now: self.clock.date),
-            createError: createError.map { String(describing: $0) },
-            errorMessage: self.coordinator.errorMessage,
-            sharing: self.coordinator.outboundShare != nil
-        )
-    }
-}
-
-/// Alice's phone: she holds her own key, answers whatever we send her, and has no ledger entry of her own.
-@MainActor
-private struct Alice {
-    let keys = TestKeyManager()
-    let clock: Clock
-    let envelope = IdentityChallengeEnvelope.response(payload: Data())
-
-    func profile() throws -> Contact.Profile {
-        let profile = Contact.Profile(
-            identifier: "alice", givenName: "", familyName: "", middleName: "",
-            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        profile.contactPublicKeys = [Contact.Profile.Key(
-            material: try Manager.Crypto().encrypt(data: try self.keys.retrieveIdentity()),
-            owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
-        )]
-        return profile
-    }
-
-    /// Alice answers the challenge in the share sheet now.
-    func answer(_ coordinator: IdentityChallenge.Coordinator) throws -> OccultaBundle {
-        let file = try #require(coordinator.outboundShare?.url)
-        defer { try? FileManager.default.removeItem(at: file) }
-        let manager = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(keyManager: self.keys), ledger: IdentityChallenge.OutstandingChallengeStore(),
-            now: { [clock = self.clock] in clock.date }
-        )
-        let pending = try manager.decryptChallenge(
-            bundle: try OccultaBundle.decoded(from: try Data(contentsOf: file)),
-            senderKey: try Manager.Ambient.keyManager.retrieveIdentity(), senderQuantum: nil,
-            senderID: "us", senderName: "Us"
-        )
-        return try manager.respond(to: pending)
-    }
-
-    /// A response to a challenge this phone never sent: the stray reply of the sequence.
-    func strayAnswer() throws -> OccultaBundle {
-        let elsewhere = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(), ledger: IdentityChallenge.OutstandingChallengeStore(), now: { [clock = self.clock] in clock.date }
-        )
-        let challenge = try elsewhere.createChallenge(
-            recipientKey: try self.keys.retrieveIdentity(), recipientQuantum: nil, contactID: "alice"
-        )
-        let manager = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(keyManager: self.keys), ledger: IdentityChallenge.OutstandingChallengeStore(),
-            now: { [clock = self.clock] in clock.date }
-        )
-        let pending = try manager.decryptChallenge(
-            bundle: challenge, senderKey: try Manager.Ambient.keyManager.retrieveIdentity(), senderQuantum: nil,
-            senderID: "us", senderName: "Us"
-        )
-        return try manager.respond(to: pending)
-    }
-}
-
 // MARK: - Parity
 
 @Suite("Identity challenge — the same actions look the same at every depth (Bug 180)")
 @MainActor struct IdentityChallengeDepthParityTests {
 
     /// create, second create, badge, genuine reply, replay, stray reply, expired reply, swept reply.
-    private func script(_ phone: Phone, clock: Clock) throws -> [Observation] {
-        let alice = Alice(clock: clock)
-        let profile = try alice.profile()
-        var seen: [Observation] = []
+    private func script(_ phone: ChallengePhone, clock: ChallengeClock) throws -> [ChallengeObservation] {
+        let alice = ChallengeAlice(clock: clock)
+        let profile = try alice.profile(in: phone.contacts)
+        var seen: [ChallengeObservation] = []
 
         seen.append(phone.observe("open, nothing outstanding"))
 
@@ -215,10 +77,10 @@ private struct Alice {
 
     @Test("Depth 0, depth 1 and Secure Mode off give the same observations for the same sequence", .ambientTestKeyManager)
     func sameObservationsEverywhere() throws {
-        var results: [[Observation]] = []
+        var results: [[ChallengeObservation]] = []
         for depth in [0, 1, nil] as [Int?] {
-            let clock = Clock()
-            results.append(try self.script(try Phone(depth: depth, clock: clock), clock: clock))
+            let clock = ChallengeClock()
+            results.append(try self.script(try ChallengePhone(depth: depth, clock: clock), clock: clock))
         }
 
         #expect(results[0] == results[1], "depth 0 and depth 1")
@@ -244,13 +106,13 @@ private struct Alice {
 @Suite("Identity challenge ledger — expiry")
 @MainActor struct IdentityChallengeLedgerExpiryTests {
 
-    private func challenge(_ clock: Clock, byte: UInt8 = 1) -> IdentityChallenge.OutstandingChallenge {
+    private func challenge(_ clock: ChallengeClock, byte: UInt8 = 1) -> IdentityChallenge.OutstandingChallenge {
         .init(nonce: Data(repeating: byte, count: 32), issuedAt: UInt64(clock.seconds))
     }
 
     @Test("An entry is free at exactly the threshold, and a new challenge overwrites it")
     func freeAtThreshold() throws {
-        let clock = Clock()
+        let clock = ChallengeClock()
         let store = IdentityChallenge.OutstandingChallengeStore()
         try store.record(self.challenge(clock, byte: 1), for: "alice", now: clock.date)
 
@@ -270,7 +132,7 @@ private struct Alice {
 
     @Test("A future-dated entry expires by the absolute difference, so a clock set back can't keep it alive")
     func futureDatedExpires() throws {
-        let clock = Clock()
+        let clock = ChallengeClock()
         let store = IdentityChallenge.OutstandingChallengeStore()
         let future = IdentityChallenge.OutstandingChallenge(
             nonce: Data(repeating: 9, count: 32), issuedAt: UInt64(clock.seconds + IdentityChallenge.timestampStaleThreshold)
@@ -287,7 +149,7 @@ private struct Alice {
 
     @Test("The sweep clears an expired verified-at, and keeps one that hasn't")
     func sweepClearsVerifiedAt() throws {
-        let clock = Clock()
+        let clock = ChallengeClock()
         let store = IdentityChallenge.OutstandingChallengeStore()
         let issued = self.challenge(clock)
         try store.record(issued, for: "alice", now: clock.date)
@@ -302,7 +164,7 @@ private struct Alice {
 
     @Test("Settling with another nonce changes nothing", .ambientTestKeyManager)
     func settleNeedsTheNonce() throws {
-        let clock = Clock()
+        let clock = ChallengeClock()
         let store = IdentityChallenge.OutstandingChallengeStore()
         try store.record(self.challenge(clock, byte: 1), for: "alice", now: clock.date)
         store.settle(nonce: Data(repeating: 2, count: 32), for: "alice", passedAt: clock.date)
@@ -312,10 +174,10 @@ private struct Alice {
 
     @Test("The sweep clears every depth's expired entries and leaves live ones alone", .ambientTestKeyManager)
     func sweepCoversEveryDepth() throws {
-        let clock = Clock()
-        let phone = try Phone(depth: 0, clock: clock)
-        let alice = Alice(clock: clock)
-        let profile = try alice.profile()
+        let clock = ChallengeClock()
+        let phone = try ChallengePhone(depth: 0, clock: clock)
+        let alice = ChallengeAlice(clock: clock)
+        let profile = try alice.profile(in: phone.contacts)
 
         try phone.coordinator.createChallenge(for: profile, contextNote: nil)          // depth 0, at t
         phone.endSession()
@@ -336,10 +198,10 @@ private struct Alice {
 
     @Test("A late reply to an unswept entry fails, then the contact is free to challenge again", .ambientTestKeyManager)
     func unsweptEntryFailsThenFrees() throws {
-        let clock = Clock()
-        let phone = try Phone(depth: 0, clock: clock)
-        let alice = Alice(clock: clock)
-        let profile = try alice.profile()
+        let clock = ChallengeClock()
+        let phone = try ChallengePhone(depth: 0, clock: clock)
+        let alice = ChallengeAlice(clock: clock)
+        let profile = try alice.profile(in: phone.contacts)
 
         try phone.coordinator.createChallenge(for: profile, contextNote: "old question")
         let late = try alice.answer(phone.coordinator)
@@ -359,10 +221,10 @@ private struct Alice {
 
     @Test("A challenge that expires unanswered doesn't block the next one, and its question is replaced", .ambientTestKeyManager)
     func expiredChallengeIsOverwritten() throws {
-        let clock = Clock()
-        let phone = try Phone(depth: 0, clock: clock)
-        let alice = Alice(clock: clock)
-        let profile = try alice.profile()
+        let clock = ChallengeClock()
+        let phone = try ChallengePhone(depth: 0, clock: clock)
+        let alice = ChallengeAlice(clock: clock)
+        let profile = try alice.profile(in: phone.contacts)
 
         try phone.coordinator.createChallenge(for: profile, contextNote: "never answered")
         clock.seconds += IdentityChallenge.timestampStaleThreshold

@@ -212,7 +212,7 @@ extension IdentityChallenge {
             let issued = OutstandingChallenge(nonce: nonce, issuedAt: timestamp)
             do {
                 try self.ledger.record(issued, for: contactID, now: self.now())
-            } catch {
+            } catch LedgerError.alreadyOutstanding {
                 throw ManagerError.rateLimited
             }
             if let stale { self.notes.removeValue(forKey: stale) }

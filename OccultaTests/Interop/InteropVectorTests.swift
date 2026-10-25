@@ -192,6 +192,17 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     // cardField
     let cardState: String?
 
+    // challengeField
+    let challengeState: String?
+    let challengeSlot: ChallengeSlotInput?
+
+    struct ChallengeSlotInput: Decodable, Sendable {
+        let depth: Int
+        let nonce: String
+        let issuedAt: UInt64
+        let verifiedAt: UInt64
+    }
+
     /// Introduction cards (SPEC §2). `expiresAtUnix` is Unix seconds, as on the wire.
     struct CardInput: Decodable, Sendable {
         let agreementKey: String
@@ -569,6 +580,25 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                 transcript:        try Self.bytes(input.transcript),
                 signerIdentityKey: try Self.bytes(input.signerIdentityKey)
             )
+
+        case "challengeField":
+            // The challenge column's plaintext before sealing (Bug 180).
+            switch self.challengeState {
+            case "empty": return try ChallengeStateCodec().encode(.empty)
+            case "slot":
+                guard let input = self.challengeSlot else {
+                    Issue.record("\(self.name): no challengeSlot")
+                    return Data()
+                }
+                var state = ChallengeState.empty
+                state[depth: input.depth] = .init(
+                    challenge: .init(nonce: try Self.bytes(input.nonce), issuedAt: input.issuedAt), verifiedAt: input.verifiedAt
+                )
+                return try ChallengeStateCodec().encode(state)
+            default:
+                Issue.record("\(self.name): unknown challenge state \(self.challengeState ?? "nil")")
+                return Data()
+            }
 
         case "cardField":
             // The card field's plaintext before sealing. Only the empty state has a fixed encoding to pin; the others

@@ -2,25 +2,30 @@
 //  IdentityChallenge+Store.swift
 //  Occulta
 //
-//  In-memory challenge state for one depth.
+//  In-memory challenge ledger.
 //
-//  State is per depth, and in memory. `ContactManager` keeps one `OutstandingChallengeStore` for each depth
-//  and picks the one for `security.currentDepth` on every call, so a session never reaches another depth's
-//  entries (`bugs.md` Bug 180). Nothing here knows about depth, and this type must stay that way: the binding
-//  lives in one place, `ContactManager+ChallengeLedger.swift`.
+//  This is no longer where the app keeps challenges. The app's state is the sealed, per-depth
+//  `Contact.Profile.challengeStateEncrypted`, read and written by `ContactManager+ChallengeLedger.swift`, which
+//  picks the slot from `security.currentDepth` (`bugs.md` Bug 180). This type is the same `ChallengeLedger` over a
+//  dictionary: the stand-in the protocol tests give the `Manager`, and the one a responder holds, which never
+//  records a challenge.
 //
-//  ⚠️ NEVER persist this to disk in this form. If the app is terminated, outstanding challenges are lost —
-//  in this stage that is correct behaviour, and it is the property the persistence decision still has to
-//  weigh: an at-rest record of "challenge outstanding on contact X at depth d" is a new forensic trace.
-//  Open, needs a decision (`Docs/Features/Secure Mode/bugs.md`, Bug 180).
+//  ⚠️ This reverses the old header, which said "NEVER persist this to disk: if the app is terminated, outstanding
+//  challenges are lost — that is correct behaviour." The challenge now outlives the process, because a challenge
+//  that dies with a suspended app made the common flow (challenge, share sheet, the app evicted, open the reply)
+//  end in nothing. What that costs is recorded where the decision was made: a sealed record, readable with the
+//  local DB key, that a challenge to contact X is outstanding at depth d, since when, for at most an hour (and
+//  until the next sweep after that), and a live slot at depth ≥ 1 shows a duress layer was used. Open, needs a
+//  decision; see `Docs/Features/Secure Mode/forensic-trace-avoidance.md`. The owner's own question is NOT
+//  persisted: it stays in memory in the `Manager`, keyed by the challenge.
 //
 
 import Foundation
 
 extension IdentityChallenge {
 
-    /// Tracks open challenges — one per contact, in memory only. Also the ledger used by tests and by the
-    /// responder, which never records one.
+    /// Tracks open challenges — one per contact, in memory only. The ledger for tests and for the responder,
+    /// which never records one; not the app's (see the header).
     ///
     /// Keyed by contact, not by nonce: the `maxOutstandingPerContact = 1` rate limit is checked on insertion,
     /// and a reply is matched against the one entry its sender can have, in O(1), so a reply can't be matched

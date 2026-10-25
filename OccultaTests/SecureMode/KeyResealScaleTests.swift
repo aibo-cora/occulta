@@ -64,6 +64,7 @@ func seedVolumeContacts(_ count: Int, into store: LegacyStore, sealedUnder legac
     let image     = Sealing.random(9_000)
     let prekeys   = Sealing.random(PrekeyRecordCodec.capacity)
     let card      = Sealing.random(CardStateCodec.capacity)
+    let challenge = Sealing.random(ChallengeStateCodec.capacity)
 
     for index in 0..<count {
         let profile = Contact.Profile(
@@ -79,6 +80,7 @@ func seedVolumeContacts(_ count: Int, into store: LegacyStore, sealedUnder legac
         profile.birthday = sealed("1/1/90"); profile.note = sealed("A note about contact \(index)")
         profile.thumbnailImageData = seal(thumbnail); profile.imageData = seal(image)
         profile.prekeyRecordEncrypted = seal(prekeys); profile.introductionCardEncrypted = seal(card)
+        profile.challengeStateEncrypted = seal(challenge)
         profile.signedAttributes = seal(Data("attributes".utf8))
         profile.globalTrusteeDepth = seal(DepthCodec.encode(-1)); profile.maxBundleVersion = seal(Data([3]))
         profile.visibleThroughDepth = seal(DepthCodec.encode(Int.max)); profile.originDepth = seal(DepthCodec.encode(0))

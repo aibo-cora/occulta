@@ -60,7 +60,8 @@ import SwiftData
         )
     }
 
-    private func aliceProfile() throws -> Contact.Profile {
+    /// Alice, stored: the challenge state is a column on her row.
+    private func aliceProfile(in contacts: ContactManager) throws -> Contact.Profile {
         let profile = Contact.Profile(
             identifier: "alice", givenName: "", familyName: "", middleName: "",
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
@@ -69,6 +70,8 @@ import SwiftData
             material: try Manager.Crypto().encrypt(data: try self.alice.retrieveIdentity()),
             owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
         )]
+        contacts.modelContext.insert(profile)
+        try contacts.modelContext.save()
         return profile
     }
 
@@ -92,7 +95,7 @@ import SwiftData
     @Test("A response opened at another depth shows nothing, and leaves the entry for the creating depth", .ambientTestKeyManager)
     func responseAtAnotherDepthShowsNothing() throws {
         let phone = try self.phone()
-        let profile = try self.aliceProfile()
+        let profile = try self.aliceProfile(in: phone.contacts)
         let response = try self.challengeAndResponse(phone.coordinator, profile: profile)
 
         phone.endSession()
@@ -110,7 +113,7 @@ import SwiftData
     @Test("A response opened at the creating depth after a lock and a duress session still passes", .ambientTestKeyManager)
     func responseAtCreatingDepthAfterLockPasses() throws {
         let phone = try self.phone()
-        let profile = try self.aliceProfile()
+        let profile = try self.aliceProfile(in: phone.contacts)
         let response = try self.challengeAndResponse(phone.coordinator, profile: profile)
 
         phone.endSession()
@@ -127,7 +130,7 @@ import SwiftData
     @Test("\"Verified N minutes ago\" shows only at the depth that verified", .ambientTestKeyManager)
     func verifiedBadgeIsDepthBound() throws {
         let phone = try self.phone()
-        let profile = try self.aliceProfile()
+        let profile = try self.aliceProfile(in: phone.contacts)
         let response = try self.challengeAndResponse(phone.coordinator, profile: profile)
         phone.coordinator.handleInboundChallenge(bundle: response, envelope: self.envelope, sender: profile)
         #expect(phone.coordinator.verifiedBadge(for: "alice") != nil, "control: shown where it was verified")
@@ -143,7 +146,7 @@ import SwiftData
     @Test("A challenge at one depth doesn't block a challenge to the same contact at another", .ambientTestKeyManager)
     func challengesAtTwoDepthsAreIndependent() throws {
         let phone = try self.phone()
-        let profile = try self.aliceProfile()
+        let profile = try self.aliceProfile(in: phone.contacts)
         try phone.coordinator.createChallenge(for: profile, contextNote: nil)
         let atDepthZero = try #require(phone.contacts.challenge(for: "alice"))
 

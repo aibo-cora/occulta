@@ -416,6 +416,34 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
+    /// Seals the empty challenge state into every row whose `challengeStateEncrypted` is nil (`bugs.md` Bug 180).
+    ///
+    /// A copy of `migrateCardFields`, for the same reasons: one pass over every row, live, hidden and soft-deleted,
+    /// because a NULL against a fixed-size sealed field would separate the contacts the pass never reached, and
+    /// without any key; a soft-deleted row gets the same sealed empty state a deletion writes; rows still at the v1
+    /// scheme are skipped until `migrateToV2` has converted them.
+    ///
+    /// If it fails, the fields stay nil, read as empty (`Contact.Profile.challengeState`), and the pass retries at
+    /// the next launch or unlock. Touches no other field. Idempotent: a row that has the field is left
+    /// byte-identical.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateChallengeFields(modelContext: ModelContext) throws {
+        let v1 = EncryptionScheme.v1_identityDerived.rawValue
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.encryptionScheme != v1 })
+        )
+        var didChange = false
+
+        for contact in contacts where contact.challengeStateEncrypted == nil {
+            guard let sealed = try ChallengeStateCodec().encode(.empty).encrypt() else { throw MigrationError.hybridKeyUnavailable }
+            contact.challengeStateEncrypted = sealed
+            didChange = true
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
     /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
     /// list. It used to stamp `globalTrusteeDepth = encrypt(0)` on those contacts first (the
     /// shard-custody bug doc, item 3); with Global Trustees retired it stamps nothing, which

@@ -966,6 +966,7 @@ struct RootView: View {
         // unavailable, such as in the background before the first unlock, leaves rows it has yet to convert.
         try? DatabaseMigration.migratePrekeyRecords(modelContext: self.contactManager.modelContext)
         try? DatabaseMigration.migrateCardFields(modelContext: self.contactManager.modelContext)
+        try? DatabaseMigration.migrateChallengeFields(modelContext: self.contactManager.modelContext)
         try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
         // Introduction cards (SPEC §6.4): every contact at every depth, unlike the prekey sweep above.
         try? self.contactManager.sweepCards()

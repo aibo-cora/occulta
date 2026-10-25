@@ -242,6 +242,51 @@ relies on SwiftData's untested (here) automatic entity-removal inference — not
 the risk to real user data for what is otherwise a purely cosmetic cleanup. Scheduled
 for outright removal once the migration has had time to run in the wild.
 
+### S10 — Identity challenge state: a sealed, per-depth column (Bug 180)
+
+**Added 2026-10-25. This makes one thing worse than before, and says so.** Until now nothing about an identity
+challenge was on disk: the outstanding challenge and the "Verified N minutes ago" time lived in the process, and
+the temp `.occ` file is deleted when the share sheet goes. Now `Contact.Profile.challengeStateEncrypted` holds them,
+so a challenge survives the app being killed (the common flow is challenge, share sheet, app evicted, open the reply).
+
+**What is on disk.** Every row, live, hidden and soft-deleted, has the same column: `ChallengeStateCodec.capacity`
+(2 128) bytes of plaintext, 2 156 sealed under the local DB key, in 33 fixed 64-byte slots, one per depth 0…32. A slot
+holds, if used: the 32-byte nonce, the issue time, the verified time. The slot index is the depth, so a session
+reads and writes its own depth's slot and cannot name another's (`ContactManager+ChallengeLedger.swift`, which reads
+`security.currentDepth` itself). Created with the contact, filled on old rows by `migrateChallengeFields` at launch and
+unlock, overwritten with the sealed empty state at deletion. Without the key every row is the same length and random
+bytes, whether or not Secure Mode was ever used.
+
+**The owner's question is not on disk.** The context note stays in memory, keyed by the challenge. After a kill a
+reply still verifies and the sheet omits "You asked:", the same at every depth.
+
+**Lifetime.** An entry is cleared when it settles, or once `|now − issuedAt|` reaches the one-hour threshold, by a
+sweep over every row and every slot at launch, at each unlock and whenever the app becomes active. The sweep writes
+only when something expired, and checkpoints the log so the cleared slot's predecessor leaves it. The absolute
+difference is used so a clock set backwards cannot keep a record alive.
+
+**Open, needs a decision** (none is "accepted"):
+
+- **R1 — an at-rest record of a challenge.** With the local DB key, which an examiner on an unlocked or AFU device
+  derives with no biometric (S1, S5), the column shows that a challenge to contact X was outstanding, at which depth,
+  and since when. A live slot at index ≥ 1 also shows that a duress layer exists and was used in the last hour, which
+  `originDepth` and `visibleThroughDepth` already allow in kind but not in time. Not hideable: the app has no
+  per-depth secret by design, and cover traffic was rejected (it needs a key a coercer cannot derive, adds writes
+  visible in log timing, and makes the sweep touch rows for no reason).
+- **R2 — lifetime beyond the window.** A phone never opened after the hour keeps the slot until the next foreground.
+- **R3 — verified-at at rest.** "Who was verified, when", for up to an hour. Droppable as a one-field change if R1 is
+  judged too much; the badge would then be lost after a kill.
+- **R4 — a reply drained at the wrong depth is consumed.** A reply to the owner's depth-0 challenge that is drained
+  after a duress unlock is matched against an empty slot, shown as nothing, and gone; on a forward-secret slot its
+  one-time prekey is spent, so the owner must challenge again. That is the price of "nothing in a duress session
+  may react to the owner's state", and the same cost `.notOurs` already imposes on any reply with no entry.
+- **R5 — an inbound challenge from a contact hidden at this depth still renders**, and approving it signs
+  (Bug 173). Unchanged by this.
+- **R6 — the note stays in memory** until it settles, expires or the process ends. Unchanged from before.
+
+What does not change: the share sheet leaves whatever the transport keeps (a Messages thread, an AirDrop log), outside
+the app.
+
 ---
 
 ## Keychain / AppLayerConfig Forensics

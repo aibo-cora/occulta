@@ -61,11 +61,6 @@ class ContactManager {
     @ObservationIgnored
     let security: Manager.Security
 
-    /// Identity-challenge state, one store per depth. Read and written only by `ContactManager+ChallengeLedger.swift`,
-    /// which picks the store from `security.currentDepth` (`bugs.md` Bug 180).
-    @ObservationIgnored
-    var challengeStores: [Int: IdentityChallenge.OutstandingChallengeStore] = [:]
-
     /// The Enclave keys and the ML-KEM provider introduction cards use (`ContactManager+Cards.swift`). Injected so
     /// tests can run with software keys; `cardPostQuantum` is nil below iOS 26, where cards are unsupported.
     @ObservationIgnored
@@ -228,6 +223,8 @@ class ContactManager {
             try self.store(PrekeyRecord.empty, for: newContact)
             // Never nil either, for the same reason: the introduction card field, empty and the same size as any other.
             try self.store(CardState.empty, for: newContact)
+            // And the identity challenge state: empty, one slot per depth, the same size as any other (Bug 180).
+            try self.store(ChallengeState.empty, for: newContact)
             self.modelContext.insert(newContact)
         }
 
@@ -421,6 +418,8 @@ class ContactManager {
             try self.store(PrekeyRecord.empty, for: newContact)
             // Never nil either, for the same reason: the introduction card field, empty and the same size as any other.
             try self.store(CardState.empty, for: newContact)
+            // And the identity challenge state: empty, one slot per depth, the same size as any other (Bug 180).
+            try self.store(ChallengeState.empty, for: newContact)
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -534,6 +533,8 @@ class ContactManager {
         try self.store(PrekeyRecord.empty, for: contact)
         // The card field too: empty at the same size, which drops the Enclave keys a card holds.
         try self.store(CardState.empty, for: contact)
+        // And the challenge state, every depth's slot: a pending challenge to a deleted contact goes with them.
+        try self.store(ChallengeState.empty, for: contact)
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)

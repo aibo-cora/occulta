@@ -74,6 +74,16 @@ extension Contact {
         /// SwiftData lightweight migration: new optional column, no plan required.
         var introductionCardEncrypted: Data?
 
+        /// The sealed `ChallengeState` for this contact (`ChallengeStateCodec`): the identity challenge we issued
+        /// to them and when we last verified them, one slot per depth. Always `ChallengeStateCodec.capacity` bytes
+        /// of plaintext, so its length says nothing about whether a challenge was ever made or at what depth.
+        /// Written at creation and by `DatabaseMigration.migrateChallengeFields`, so it is never nil in steady
+        /// state; overwritten with the sealed empty state at deletion. Lives at most an hour (the sweep clears
+        /// what has expired). Read through `Contact.Profile.challengeState` and written by
+        /// `ContactManager.store(_:for:)` and the ledger in `ContactManager+ChallengeLedger.swift`, nowhere else
+        /// (`bugs.md` Bug 180). SwiftData lightweight migration: new optional column, no plan required.
+        var challengeStateEncrypted: Data?
+
         /// Encrypted JSON-encoded [SignedAttribute] blob (Issue #6).
         /// nil until the contact has shared at least one signed attribute.
         /// SwiftData lightweight migration: new optional column, no plan required.
