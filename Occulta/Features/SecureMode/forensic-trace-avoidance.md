@@ -293,10 +293,54 @@ difference is used so a clock set backwards cannot keep a record alive.
   contact's column on every ledger write and at every sweep, so a changed row singles nobody out. It costs one
   2 156-byte re-seal and save per contact (about 1 MB at 500 contacts) at every launch, unlock, foreground and
   challenge event, with the list re-rendering and the log growing, and it leaves the *timing* of writes. Open, needs a
-  decision.
+  decision. R7 is one instance of a class that covers every sealed per-contact column: see S11.
 
 What does not change: the share sheet leaves whatever the transport keeps (a Messages thread, an AirDrop log), outside
 the app.
+
+### S11 — Which contact's row changed, and when, is readable without the key
+
+**Added 2026-10-25, found while writing S10 (R7). A class, not a single column, and open, needs a decision.** Nothing
+here was mitigated before and nothing is mitigated now.
+
+**Mechanism.** Every sealed per-contact column is re-sealed under a fresh random AES-GCM nonce whenever it is written,
+so even a write that stores the same plaintext changes the ciphertext. SQLite then shows the change without any key:
+two copies of the database differ in that contact's row, the write-ahead log holds a record for it, and the file's
+modification time moves. The content stays sealed; what leaks is *that something happened with contact X, and about
+when*, to an examiner with two snapshots or a log. The fixed lengths (Bug 161, the card field, S10) hide what a column
+holds, not that it was written.
+
+**What writes a contact's row, from reading the code** (a survey by searching for the assignments and reading the call
+sites; not exhaustive, and not exercised):
+
+| Column | Written by |
+|---|---|
+| `prekeyRecordEncrypted` | A send that takes one of the contact's one-time prekeys (`encryptBundle`, `Contact+Manager.swift`, and the group path); a receive that uses one of ours or accepts a batch (`ContactManager.save(_:for:)`, then `saveAndFlush()`); the 30-day prune, only for a contact it changed; the card procedures |
+| `maxBundleVersion` | Every inbound bundle whose claimed version is at or above the recorded tier (`updateMaxVersion`), including one that leaves the tier unchanged, because it re-encrypts the same byte |
+| `introductionCardEncrypted` | Creating, cancelling, sharing and importing a card; the sweep, only when it clears a card; deletion |
+| `challengeStateEncrypted` | Recording, settling or sweeping a challenge (S10); deletion |
+| Name, number, address and other contact fields | Editing the contact |
+| Visibility and origin depth, `deletionToken` | Classification, deletion |
+| The legacy keychain prekeys | Not the database: `SecItemDelete` on use and on deletion, a separate trace in the keychain |
+
+Message traffic therefore already rewrites a contact's prekey record and tier marker on most sends and receives. Other
+tables (drafts, groups, vault entries, the custody and restore records) were not surveyed.
+
+**What this means for each use.** A contact one messages shows many writes anyway, so an identity challenge to them
+adds little (S10 R7). It adds more for a contact in the long-term format, whose challenge touches no prekey record.
+It also means closing R7 on its own would close nothing: the prekey record and the tier marker single the same contact
+out on the same occasions.
+
+**Precedents.** Bug 71 recorded the same correlation for the layer store file's modification time and added jitter to
+the maintenance cadence. The vault slot design considered hiding which depth was last active across snapshot diffs by
+re-sealing the whole array on every write, and dropped it for the snapshot protection (`bugs.md` Bug 105, the item 7
+decision). Neither was applied to contact rows.
+
+**The shape of a fix, not built.** Re-seal every contact's columns whenever any of them is written, and unconditionally
+at every launch, unlock and foreground, so a changed row singles nobody out. Cost: one re-seal and save per contact
+column per event (about 1 MB per column at 500 contacts for the 2.1 KB challenge column alone, and about 16 KB per
+contact for the prekey record), the contact list re-rendering, and the log growing. It still leaves the *timing* of
+writes, the keychain trace above and the file's modification time, so it narrows the leak rather than closing it.
 
 ---
 

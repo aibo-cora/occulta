@@ -14614,7 +14614,9 @@ Recorded as S10 in `Occulta/Features/SecureMode/forensic-trace-avoidance.md`.
 - **R7** — no key needed: recording, settling or sweeping a slot re-seals that contact's column with a fresh nonce, so
   two copies of the database, the log or the file's modification time show which contact's row changed, and about
   when. Re-sealing every contact's column on every ledger write and sweep would stop it singling anyone out, at about
-  1 MB of writes per event at 500 contacts and with the timing of the writes remaining. Proposed, not built.
+  1 MB of writes per event at 500 contacts and with the timing of the writes remaining. Proposed, not built. One
+  instance of a class that covers every sealed per-contact column (prekey record, tier marker, card field): S11 in
+  `forensic-trace-avoidance.md` lists what writes them. Closing R7 alone would close nothing.
 
 `OPEN_LIMITATIONS.md` is gitignored and exists only in the main checkout (`Docs/Audit/`); R1–R7 are entered there as section K.
 
