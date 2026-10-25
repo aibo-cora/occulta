@@ -10,6 +10,7 @@
 import Testing
 import Foundation
 import CryptoKit
+import SwiftData
 @testable import Occulta
 @testable import OccultaFormats
 
@@ -20,7 +21,8 @@ import CryptoKit
     let alice = TestKeyManager()
     let envelope = IdentityChallengeEnvelope.response(payload: Data())
 
-    private func aliceProfile() throws -> Contact.Profile {
+    /// Alice, stored: the challenge state is a column on her row.
+    private func aliceProfile(in contacts: ContactManager) throws -> Contact.Profile {
         let profile = Contact.Profile(
             identifier: "alice", givenName: "", familyName: "", middleName: "",
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
@@ -29,6 +31,8 @@ import CryptoKit
             material: try Manager.Crypto().encrypt(data: try self.alice.retrieveIdentity()),
             owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
         )]
+        contacts.modelContext.insert(profile)
+        try contacts.modelContext.save()
         return profile
     }
 
@@ -41,7 +45,7 @@ import CryptoKit
         defer { try? FileManager.default.removeItem(at: challengeFile) }
 
         let aliceManager = IdentityChallenge.Manager(
-            crypto: Manager.Crypto(keyManager: self.alice), store: IdentityChallenge.OutstandingChallengeStore()
+            crypto: Manager.Crypto(keyManager: self.alice), ledger: IdentityChallenge.OutstandingChallengeStore()
         )
         let pending = try aliceManager.decryptChallenge(
             bundle: try OccultaBundle.decoded(from: try Data(contentsOf: challengeFile)),
@@ -53,8 +57,9 @@ import CryptoKit
 
     @Test("Reopening a response that already passed shows no result", .ambientTestKeyManager)
     func reopenedResponseShowsNothing() throws {
-        let profile = try self.aliceProfile()
-        let coordinator = IdentityChallenge.Coordinator(contactManager: try TestSupport.makeContactManager())
+        let contacts = try TestSupport.makeContactManager()
+        let profile = try self.aliceProfile(in: contacts)
+        let coordinator = IdentityChallenge.Coordinator(ledger: contacts, sealer: contacts)
         let response = try self.challengeAndResponse(coordinator, profile: profile)
 
         coordinator.handleInboundChallenge(bundle: response, envelope: self.envelope, sender: profile)
@@ -68,8 +73,9 @@ import CryptoKit
     /// A stray response mustn't settle the challenge either: Alice's own answer still has to count.
     @Test("A response that doesn't open shows nothing, and leaves the challenge waiting", .ambientTestKeyManager)
     func unopenableResponseShowsNothing() throws {
-        let profile = try self.aliceProfile()
-        let coordinator = IdentityChallenge.Coordinator(contactManager: try TestSupport.makeContactManager())
+        let contacts = try TestSupport.makeContactManager()
+        let profile = try self.aliceProfile(in: contacts)
+        let coordinator = IdentityChallenge.Coordinator(ledger: contacts, sealer: contacts)
         let response = try self.challengeAndResponse(coordinator, profile: profile)
 
         var ciphertext = response.ciphertext
@@ -80,7 +86,7 @@ import CryptoKit
         )
         coordinator.handleInboundChallenge(bundle: damaged, envelope: self.envelope, sender: profile)
         #expect(coordinator.verificationOutcome == nil)
-        #expect(coordinator.store.hasOutstanding(for: "alice"))
+        #expect(contacts.hasOutstanding(for: "alice", now: Date()))
 
         coordinator.handleInboundChallenge(bundle: response, envelope: self.envelope, sender: profile)
         #expect(coordinator.verificationOutcome?.passed == true)
@@ -89,8 +95,9 @@ import CryptoKit
     /// What the sheet is for: a response to our challenge, from the contact, that doesn't verify.
     @Test("A response naming our challenge with a bad signature still shows \"Verification failed\"", .ambientTestKeyManager)
     func badSignatureStillFails() throws {
-        let profile = try self.aliceProfile()
-        let coordinator = IdentityChallenge.Coordinator(contactManager: try TestSupport.makeContactManager())
+        let contacts = try TestSupport.makeContactManager()
+        let profile = try self.aliceProfile(in: contacts)
+        let coordinator = IdentityChallenge.Coordinator(ledger: contacts, sealer: contacts)
         let response = try self.challengeAndResponse(coordinator, profile: profile)
 
         // Alice's response with its signature broken, resealed under the same long-term session key.
@@ -116,6 +123,6 @@ import CryptoKit
 
         coordinator.handleInboundChallenge(bundle: resealed, envelope: self.envelope, sender: profile)
         #expect(coordinator.verificationOutcome?.passed == false)
-        #expect(!coordinator.store.hasOutstanding(for: "alice"), "a failed answer settles the challenge")
+        #expect(!contacts.hasOutstanding(for: "alice", now: Date()), "a failed answer settles the challenge")
     }
 }

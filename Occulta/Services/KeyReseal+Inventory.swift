@@ -184,6 +184,8 @@ nonisolated extension KeyReseal {
               "`PrekeyRecordCodec.capacity` bytes of plaintext; an empty record for a contact without prekeys."),
         Field("Profile", "introductionCardEncrypted", .data, filler: .sealed,
               "`CardStateCodec.capacity` bytes of plaintext; the empty state for a contact without a card."),
+        Field("Profile", "challengeStateEncrypted", .data, filler: .sealed,
+              "`ChallengeStateCodec.capacity` bytes of plaintext; the empty state for a contact with no challenge at any depth."),
         Field("Profile", "forwardSecrecyEncrypted", .data, treatment: .retired,
               "`migratePrekeyRecords` carries it into `prekeyRecordEncrypted` and nils it. Private in the model; present in the schema."),
         Field("Profile", "signedAttributes", .data, treatment: .retired, "No code writes it."),

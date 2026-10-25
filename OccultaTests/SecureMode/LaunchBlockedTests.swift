@@ -319,7 +319,7 @@ struct LaunchBlockedScreenTests {
         let contacts = ContactManager(modelContainer: container, security: security)
         return Setup(
             container: container, security: security, contacts: contacts,
-            challenge: IdentityChallenge.Coordinator(contactManager: contacts),
+            challenge: IdentityChallenge.Coordinator(ledger: contacts, sealer: contacts),
             vault: VaultManager(modelContainer: container, keyManager: keys),
             custody: ShardCustodyManager(modelContainer: container, keyManager: keys),
             appScreen: AppScreen()

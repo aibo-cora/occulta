@@ -509,6 +509,7 @@ extension KeyReseal {
                 try row.data("Profile.imageData", \.imageData)
                 try row.data("Profile.prekeyRecordEncrypted", \.prekeyRecordEncrypted)
                 try row.data("Profile.introductionCardEncrypted", \.introductionCardEncrypted)
+                try row.data("Profile.challengeStateEncrypted", \.challengeStateEncrypted)
                 try row.data("Profile.forwardSecrecyEncrypted", \.retiredForwardSecrecyEncrypted)
                 try row.data("Profile.signedAttributes", \.signedAttributes)
                 try row.data("Profile.deletionToken", \.deletionToken)

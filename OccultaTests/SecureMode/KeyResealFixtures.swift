@@ -586,6 +586,7 @@ final class LegacyStore {
         self.data(profile, "Profile.imageData", \.imageData, plaintext: Sealing.random(9_000))
         self.data(profile, "Profile.prekeyRecordEncrypted", \.prekeyRecordEncrypted, plaintext: Sealing.random(PrekeyRecordCodec.capacity))
         self.data(profile, "Profile.introductionCardEncrypted", \.introductionCardEncrypted, plaintext: Sealing.random(CardStateCodec.capacity))
+        self.data(profile, "Profile.challengeStateEncrypted", \.challengeStateEncrypted, plaintext: Sealing.random(ChallengeStateCodec.capacity))
         self.data(profile, "Profile.forwardSecrecyEncrypted", \.retiredForwardSecrecyEncrypted)
         self.data(profile, "Profile.signedAttributes", \.signedAttributes)
         self.data(profile, "Profile.globalTrusteeDepth", \.globalTrusteeDepth, plaintext: DepthCodec.encode(-1))
@@ -654,6 +655,7 @@ final class LegacyStore {
     private func sealedRecordsOfADeletedContact(_ deleted: Contact.Profile) {
         self.data(deleted, "Profile.prekeyRecordEncrypted", \.prekeyRecordEncrypted, plaintext: Data(count: 64), name: "Profile.prekeyRecordEncrypted (soft-deleted)")
         self.data(deleted, "Profile.introductionCardEncrypted", \.introductionCardEncrypted, plaintext: Data(count: 64), name: "Profile.introductionCardEncrypted (soft-deleted)")
+        self.data(deleted, "Profile.challengeStateEncrypted", \.challengeStateEncrypted, plaintext: Data(count: 64), name: "Profile.challengeStateEncrypted (soft-deleted)")
     }
 
     /// Group slots hold the live contact's identifier as a value: the three arrays below, a draft's recipient and a

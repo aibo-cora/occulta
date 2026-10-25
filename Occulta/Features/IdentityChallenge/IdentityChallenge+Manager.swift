@@ -85,30 +85,41 @@ extension IdentityChallenge {
 
     /// Three-phase identity-challenge lifecycle.
     ///
-    /// Stateless except for the in-memory `OutstandingChallengeStore`.
-    /// `@MainActor` because the store is main-actor-isolated.
+    /// Stateless except for the context notes, which stay in memory, and the `ChallengeLedger`, which says
+    /// which challenges are outstanding for the session that is open now.
+    /// `@MainActor` because the ledger is main-actor-isolated.
     @MainActor
     final class Manager {
 
         private let crypto: Occulta.Manager.Crypto
-        private let store:  OutstandingChallengeStore
+        private let ledger: any ChallengeLedger
         private let now:    () -> Date
+
+        /// The question the owner asked with each outstanding challenge, until it settles or expires. In memory
+        /// only, and apart from the ledger so that the ledger holds nothing worth keeping: a note is reachable only
+        /// by holding the challenge itself, and the ledger hands out only the current depth's.
+        private var notes: [OutstandingChallenge: String] = [:]
 
         /// - Parameters:
         ///   - crypto: The crypto facade. Same instance used elsewhere; no SE
         ///     state is held here.
-        ///   - store:  The outstanding-challenge store. Shared across the app
+        ///   - ledger: The outstanding-challenge ledger. Shared across the app
         ///     so phase 3 can find the phase 1 entry.
         ///   - now:    Injectable clock. Tests pass a fixed clock to exercise
         ///     the `IdentityChallenge.timestampWindow` boundary; production passes `Date.init`.
         init(
             crypto: Occulta.Manager.Crypto,
-            store:  OutstandingChallengeStore,
+            ledger: any ChallengeLedger,
             now:    @escaping () -> Date = Date.init
         ) {
             self.crypto = crypto
-            self.store  = store
+            self.ledger = ledger
             self.now    = now
+        }
+
+        /// Forget the notes of challenges that can no longer be answered. Beside `ChallengeLedger.sweepExpired`.
+        func forgetExpiredNotes(now: Date) {
+            self.notes = self.notes.filter { !$0.key.isExpired(at: now) }
         }
 
         // MARK: Phase 1 — challenger creates the challenge
@@ -116,7 +127,7 @@ extension IdentityChallenge {
         /// Generate a fresh challenge bundle to send to a recipient.
         ///
         /// Side effects:
-        ///   - Registers an entry in `store` keyed by `contactID`.
+        ///   - Registers an entry in `ledger` for `contactID`.
         ///     Throws `.rateLimited` if one is already outstanding for this
         ///     contact.
         ///
@@ -149,7 +160,7 @@ extension IdentityChallenge {
             seal:        (IdentityChallengeEnvelope) throws -> Sealed
         ) throws -> Sealed {
             // 0. Rate limit first — avoid wasting SE work on a request we'll reject.
-            guard !self.store.hasOutstanding(for: contactID) else {
+            guard !self.ledger.hasOutstanding(for: contactID, now: self.now()) else {
                 throw ManagerError.rateLimited
             }
 
@@ -197,14 +208,15 @@ extension IdentityChallenge {
 
             // 4. Remember this challenge until the response arrives or expires.
             //    Done LAST so a seal failure doesn't leave a ghost entry.
-            try self.store.store(
-                .init(
-                    nonce:        nonce,
-                    timestamp:    timestamp,
-                    contactKeyID: contactID,
-                    contextNote:  sanitizedNote
-                )
-            )
+            let stale = self.ledger.challenge(for: contactID)
+            let issued = OutstandingChallenge(nonce: nonce, issuedAt: timestamp)
+            do {
+                try self.ledger.record(issued, for: contactID, now: self.now())
+            } catch LedgerError.alreadyOutstanding {
+                throw ManagerError.rateLimited
+            }
+            if let stale { self.notes.removeValue(forKey: stale) }
+            self.notes[issued] = sanitizedNote
 
             return sealed
         }
@@ -383,30 +395,32 @@ extension IdentityChallenge {
                 throw ManagerError.malformedBundle
             }
 
-            // Look up the outstanding challenge by nonce, and it must be the one we issued to
-            // this contact. Otherwise a different contact could respond to someone else's
-            // challenge and claim their identity. Neither case is an answer from this contact
-            // — a replay, or a challenge already settled — so it says nothing about them, and
-            // the entry stays for the response that is.
-            guard let entry = self.store.lookup(nonce: response.challengeNonce),
-                  entry.contactKeyID == senderID else {
+            // The challenge we issued to this contact, in the session that is open now, and it must be the one
+            // this response names. The ledger holds one per contact, so another contact's response to someone
+            // else's challenge can't claim their identity. Neither case is an answer from this contact — a replay,
+            // a challenge already settled, one made at another depth — so it says nothing about them, and the
+            // entry stays for the response that is.
+            guard let entry = self.ledger.challenge(for: senderID),
+                  entry.nonce == response.challengeNonce else {
                 return .notOurs
             }
+            let note = self.notes[entry]
 
             // Hard verification window — `IdentityChallenge.timestampWindow`.
-            let nowSec = UInt64(self.now().timeIntervalSince1970)
+            let now = self.now()
+            let nowSec = UInt64(now.timeIntervalSince1970)
             // Handle both directions: responder's clock ahead of us is fine
             // up to the same window.
             let delta: TimeInterval = {
-                if nowSec >= entry.timestamp {
-                    return TimeInterval(nowSec - entry.timestamp)
+                if nowSec >= entry.issuedAt {
+                    return TimeInterval(nowSec - entry.issuedAt)
                 } else {
-                    return TimeInterval(entry.timestamp - nowSec)
+                    return TimeInterval(entry.issuedAt - nowSec)
                 }
             }()
             guard delta < IdentityChallenge.timestampWindow else {
-                self.store.remove(nonce: response.challengeNonce)
-                return .failed(contextNote: entry.contextNote)
+                self.settle(entry, for: senderID, passedAt: nil)
+                return .failed(contextNote: note)
             }
 
             // Reconstruct the exact bytes that were signed. Inner fingerprint
@@ -422,7 +436,7 @@ extension IdentityChallenge {
                 for: ourPublicKey,
                 nonce: entry.nonce
             )
-            let tsBytes = IdentityChallenge.encodeTimestamp(entry.timestamp)
+            let tsBytes = IdentityChallenge.encodeTimestamp(entry.issuedAt)
             let signedData = Occulta.Manager.Crypto.buildSignedData(
                 nonce:                 entry.nonce,
                 timestamp:             tsBytes,
@@ -431,19 +445,22 @@ extension IdentityChallenge {
 
             // Construct a SecKey view over the responder's stored public key.
             guard let publicKey = Self.makePublicKey(x963: senderKey) else {
-                self.store.remove(nonce: response.challengeNonce)
-                return .failed(contextNote: entry.contextNote)
+                self.settle(entry, for: senderID, passedAt: nil)
+                return .failed(contextNote: note)
             }
 
             let ok = self.crypto.verifyChallenge(signedData, signature: response.signature, publicKey: publicKey)
 
-            // Snapshot the note BEFORE consuming the slot so the caller can
+            // One-shot: consume the slot regardless of outcome. The note was read above, so the caller can
             // render "you asked X — verified" even after removal.
-            let note = entry.contextNote
-
-            // One-shot: consume the slot regardless of outcome.
-            self.store.remove(nonce: response.challengeNonce)
+            self.settle(entry, for: senderID, passedAt: ok ? now : nil)
             return ok ? .passed(contextNote: note) : .failed(contextNote: note)
+        }
+
+        /// Consume `entry` and the note that went with it.
+        private func settle(_ entry: OutstandingChallenge, for contactID: String, passedAt: Date?) {
+            self.ledger.settle(nonce: entry.nonce, for: contactID, passedAt: passedAt)
+            self.notes.removeValue(forKey: entry)
         }
 
         // MARK: - Private helpers

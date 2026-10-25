@@ -47,7 +47,7 @@ extension IdentityChallenge {
         private let tick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
         private var hasOutstanding: Bool {
-            self.coordinator?.store.hasOutstanding(for: self.contact.identifier) ?? false
+            self.coordinator?.hasOutstanding(for: self.contact.identifier, now: self.now) ?? false
         }
 
         private var hasValidIdentity: Bool {

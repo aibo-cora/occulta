@@ -36,7 +36,7 @@ private struct Party {
         let km = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
         let store = IdentityChallenge.OutstandingChallengeStore()
-        let mgr = IdentityChallenge.Manager(crypto: crypto, store: store, now: clock)
+        let mgr = IdentityChallenge.Manager(crypto: crypto, ledger: store, now: clock)
         self.km         = km
         self.crypto     = crypto
         self.store      = store
@@ -375,12 +375,12 @@ private func parties(
 
         // Advance past the stale threshold and simulate an app launch sweep.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampStaleThreshold) + 1
-        c.store.removeExpired(now: Date(timeIntervalSince1970: TimeInterval(nowTicks)))
+        c.store.sweepExpired(now: Date(timeIntervalSince1970: TimeInterval(nowTicks)))
 
         #expect(c.store.count == 0)
 
         // Rate limit is now free again.
-        #expect(!c.store.hasOutstanding(for: r.identifier))
+        #expect(!c.store.hasOutstanding(for: r.identifier, now: Date(timeIntervalSince1970: TimeInterval(nowTicks))))
     }
 
     // MARK: Bundle metadata
