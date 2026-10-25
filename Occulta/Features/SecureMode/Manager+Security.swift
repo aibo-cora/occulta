@@ -786,6 +786,10 @@ extension Manager {
         /// rows, so an unpurged draft attached to a hidden contact was never independently
         /// discoverable there either way — this function's real job is hygiene (nothing
         /// pointing at a hidden or gone recipient lingers in the DB), not a display gate.
+        /// A group's draft is the exception (Bug 178): groups are not depth-filtered and
+        /// `GroupDetailV3` loads the draft with no depth check, so this purge is the only
+        /// thing keeping a real-depth group draft from a duress depth. Every group draft
+        /// is purged here, not only those with a hidden member.
         ///
         /// No key rotation happens anywhere any more, so this calls `Message.Draft.purgeUnsafe`
         /// — the purge-only half of what `reKeyOrPurgeAll` used to do with `oldKey == newKey`
@@ -796,12 +800,8 @@ extension Manager {
                 FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
             )) ?? []
             let safeIdentifiers = Set(profiles.filter { $0.isVisible(atDepth: self.currentDepth, usingKey: key) }.map(\.identifier))
-            let allGroupIdentifiers = Set(
-                ((try? self.modelContext.fetch(FetchDescriptor<Group>())) ?? [])
-                    .compactMap { $0.readID()?.uuidString }
-            )
             try? Message.Draft.purgeUnsafe(
-                safeContactIdentifiers: safeIdentifiers, allGroupIdentifiers: allGroupIdentifiers,
+                safeContactIdentifiers: safeIdentifiers,
                 using: key, in: self.modelContext
             )
             self.checkpointStore()
