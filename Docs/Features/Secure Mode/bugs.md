@@ -14549,9 +14549,11 @@ the full method calls the real `Manager.Key().deleteAllKeys()`. The full suite w
 
 ## Bug 180 — Outstanding identity challenges and verified-at state survive `endSession` into a duress session
 
-**Status:** Fix in review in [#136](https://github.com/aibo-cora/occulta/pull/136), not merged (2026-10-25). Found by the
-2026-10-20 audit trial's source review. `IdentityChallengeDepthBindingTests` is the acceptance test; the PR does not say
-it was re-run against the base commit to confirm it fails there, so confirmation is still pending.
+**Status:** Fixed in [#136](https://github.com/aibo-cora/occulta/pull/136), in review, not merged (2026-10-25). Found by the
+2026-10-20 audit trial's source review. `IdentityChallengeDepthBindingTests` is the acceptance test: all four
+behaviours pass on the fix branch, and the full suite passes on the Simulator. It has not been re-run against the base
+commit, so that it fails there is still unconfirmed. This closes the bug on its own; persisting challenges across a
+kill is a separate, later stage of the design (PRs 2–3), not part of this closure.
 
 **Target:** `v2.0.0`. Present since Bug 140's session reset.
 
