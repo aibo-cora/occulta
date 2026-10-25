@@ -14553,7 +14553,7 @@ the full method calls the real `Manager.Key().deleteAllKeys()`. The full suite w
 2026-10-20 audit trial's source review. `IdentityChallengeDepthBindingTests` is the acceptance test: all four
 behaviours pass on the fix branch, and the full suite passes on the Simulator. Run against `2763d6f7`, the base before
 the fix (the original file, which compiles there), three of its four fail and the control passes. The same PR also carries the persisted stage of the design, the
-sealed per-depth column (owner's decision D1, 2026-10-25); it opens residuals R1–R6 below, **open, needs a decision**.
+sealed per-depth column (owner's decision D1, 2026-10-25); it opens residuals R1–R7 below, **open, needs a decision**.
 
 **Target:** `v2.0.0`. Present since Bug 140's session reset.
 
@@ -14611,8 +14611,12 @@ Recorded as S10 in `Occulta/Features/SecureMode/forensic-trace-avoidance.md`.
 - **R4** — a reply drained at the wrong depth is consumed there and cannot be reopened.
 - **R5** — an inbound challenge from a contact hidden at this depth still renders, and approving it signs (Bug 173).
 - **R6** — the note stays in memory until it settles, expires or the process ends.
+- **R7** — no key needed: recording, settling or sweeping a slot re-seals that contact's column with a fresh nonce, so
+  two copies of the database, the log or the file's modification time show which contact's row changed, and about
+  when. Re-sealing every contact's column on every ledger write and sweep would stop it singling anyone out, at about
+  1 MB of writes per event at 500 contacts and with the timing of the writes remaining. Proposed, not built.
 
-`OPEN_LIMITATIONS.md` is gitignored and exists only in the main checkout; R1–R6 are to be entered there from it.
+`OPEN_LIMITATIONS.md` is gitignored and exists only in the main checkout (`Docs/Audit/`); R1–R7 are entered there as section K.
 
 ### Guard
 

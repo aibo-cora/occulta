@@ -312,7 +312,7 @@ any irreversible action ("verify, then wire").
   column on the contact (`Contact.Profile.challengeStateEncrypted`), for at most an hour, so a challenge survives
   the app being killed; the owner's question stays in memory. That is a deliberate reversal of "nothing persists
   across termination", with the cost recorded as S10 in `Occulta/Features/SecureMode/forensic-trace-avoidance.md`
-  (R1–R6, open, needing a decision). This amendment covers only the challenge state the identity-challenge code keeps;
+  (R1–R7, open, needing a decision). This amendment covers only the challenge state the identity-challenge code keeps;
   nothing else in this spec's design is changed by it. No verification *history* is written: a settled slot keeps only the last verified time, and the sweep
   clears that after the hour. (The original rule, kept for the history: "who checked whom, when" is itself sensitive
   metadata — and a history feature would need Travel Mode integration before it could exist at all.)

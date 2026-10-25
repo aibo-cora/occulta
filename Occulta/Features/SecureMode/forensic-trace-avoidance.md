@@ -255,7 +255,8 @@ holds, if used: the 32-byte nonce, the issue time, the verified time. The slot i
 reads and writes its own depth's slot and cannot name another's (`ContactManager+ChallengeLedger.swift`, which reads
 `security.currentDepth` itself). Created with the contact, filled on old rows by `migrateChallengeFields` at launch and
 unlock, overwritten with the sealed empty state at deletion. Without the key every row is the same length and random
-bytes, whether or not Secure Mode was ever used.
+bytes, whether or not Secure Mode was ever used; what it does not hide without the key is *which rows change, and
+when* (R7).
 
 **The owner's question is not on disk.** The context note stays in memory, keyed by the challenge. After a kill a
 reply still verifies and the sheet omits "You asked:", the same at every depth.
@@ -283,6 +284,16 @@ difference is used so a clock set backwards cannot keep a record alive.
 - **R5 — an inbound challenge from a contact hidden at this depth still renders**, and approving it signs
   (Bug 173). Unchanged by this.
 - **R6 — the note stays in memory** until it settles, expires or the process ends. Unchanged from before.
+- **R7 — the column of a contact changes when its challenge does, readable without the key.** Recording, settling or
+  sweeping a slot re-seals that contact's column with a fresh random nonce, so two copies of the database (or the
+  write-ahead log, or the file's modification time) show *which contact's row changed*, and so that something happened
+  with that contact, at about when. No key is needed, unlike R1–R3. Other writes do the same (a prekey record, a card
+  field), and a group-format challenge also consumes one of that contact's one-time prekeys, which rewrites its prekey
+  record; a challenge to an older contact in the long-term format does not. Proposed, not built: re-seal every
+  contact's column on every ledger write and at every sweep, so a changed row singles nobody out. It costs one
+  2 156-byte re-seal and save per contact (about 1 MB at 500 contacts) at every launch, unlock, foreground and
+  challenge event, with the list re-rendering and the log growing, and it leaves the *timing* of writes. Open, needs a
+  decision.
 
 What does not change: the share sheet leaves whatever the transport keeps (a Messages thread, an AirDrop log), outside
 the app.
