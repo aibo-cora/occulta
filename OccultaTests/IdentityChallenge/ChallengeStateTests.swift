@@ -14,6 +14,7 @@ import Testing
 import Foundation
 import SwiftData
 import Contacts
+import CryptoKit
 @testable import Occulta
 @testable import OccultaFormats
 
@@ -413,6 +414,52 @@ struct ChallengeFieldMigrationTests {
         try DatabaseMigration.migrateChallengeFields(modelContext: context)
 
         #expect(row.challengeStateEncrypted == nil)
+    }
+
+    /// A stand-in for the legacy and the new crypto, as `MigrateToV2ResilienceTests` uses: `migrateToV2` takes both as
+    /// parameters. Not the real keys, which only a device with an Enclave has.
+    private struct StubCrypto: LegacyCryptoProtocol {
+        let key: SymmetricKey
+        func seal(_ text: String) -> String {
+            try! AES.GCM.seal(Data(text.utf8), using: self.key, authenticating: EncryptionScheme.v2_hybridPQ.aad).combined!.base64EncodedString()
+        }
+        func encrypt(data: Data?) throws -> Data? {
+            guard let data else { return nil }
+            return try AES.GCM.seal(data, using: self.key, authenticating: EncryptionScheme.v2_hybridPQ.aad).combined
+        }
+        func decrypt(data: Data?) throws -> Data? {
+            guard let data else { return nil }
+            return try AES.GCM.open(try AES.GCM.SealedBox(combined: data), using: self.key, authenticating: EncryptionScheme.v2_hybridPQ.aad)
+        }
+        func decryptLegacy(data: Data?) throws -> Data? { try self.decrypt(data: data) }
+        func encrypt(message: Data, using material: Data?) throws -> Data? { nil }
+        func decrypt(message: Data, using material: Data?) throws -> Data? { nil }
+        func sign(data: Data?) throws -> String { "" }
+    }
+
+    @Test("A v1 row converted by migrateToV2 is filled by the next pass, and not before", .ambientTestKeyManager)
+    func filledAfterConversion() throws {
+        let context = ModelContext(try self.container())
+        let legacy = StubCrypto(key: SymmetricKey(size: .bits256))
+        let new    = StubCrypto(key: SymmetricKey(size: .bits256))
+        let row = Contact.Profile(
+            identifier: legacy.seal("old"), givenName: legacy.seal("Alice"), familyName: legacy.seal("Wonderland"),
+            middleName: "", nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        row.encryptionScheme = EncryptionScheme.v1_identityDerived.rawValue
+        context.insert(row)
+        try context.save()
+
+        try DatabaseMigration.migrateChallengeFields(modelContext: context)
+        #expect(row.challengeStateEncrypted == nil, "a v1 row waits for migrateToV2")
+
+        try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacy, newCrypto: new)
+        #expect(row.encryptionScheme == EncryptionScheme.v2_hybridPQ.rawValue, "precondition: it was converted")
+        #expect(row.challengeStateEncrypted == nil, "migrateToV2 doesn't write the column")
+
+        try DatabaseMigration.migrateChallengeFields(modelContext: context)
+        #expect(try #require(row.challengeStateEncrypted).count == (try emptySealedLength()))
+        #expect(row.challengeState == .empty)
     }
 
     @Test("A store with no rows does nothing", .ambientTestKeyManager)

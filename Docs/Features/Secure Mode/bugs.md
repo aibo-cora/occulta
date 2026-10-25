@@ -14635,8 +14635,8 @@ build at `2763d6f7` installed over it. The old build opened the store and showed
 migration **dropped `ZCHALLENGESTATEENCRYPTED`** from the table, and the row's name, identifier, prekey record, card
 field and scheme were unchanged. So a rollback loses the challenge state, which is at most an hour old and rebuildable,
 and nothing else. Installing this branch's build again re-added the column, filled at 2 156 bytes, with the other
-fields unchanged. Not rehearsed: rows of a store old enough to still be on the v1 scheme (`migrateChallengeFields`
-skips those until `migrateToV2` has converted them; that skip is tested, the fill after conversion is not).
+fields unchanged. A row of a store old enough to still be on the v1 scheme is covered by a test, not by hand: the pass
+skips it, the real `migrateToV2` (with stubbed crypto) converts it without writing the column, and the next pass fills it.
 
 ## Bug 181 — A copy of a group bundle with an altered outer header uses up the recipient's one-time prekey
 
