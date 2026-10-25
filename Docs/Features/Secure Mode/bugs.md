@@ -8661,6 +8661,11 @@ an observation, not a defect: adding the filter is what makes the `"Anonymous"` 
 which is the harm described above. If a reason ever emerges to filter soft-deleted senders, it has to
 answer that first.
 
+**See also (2026-10-23):** this closure covers rendering a new message. Two neighbouring cases it does not
+cover, re-opening a hidden contact's retained re-openable `.occ` files and inbound error text that
+separates a hidden sender from an unknown one, are recorded as open, needing a decision, in
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, section "2026-10-23 — Two cases the 2026-08-13 decision does not cover".
+
 ---
 
 ## Bug 104 — An inbound identity challenge from a contact hidden at the current depth renders that contact's name
@@ -8742,6 +8747,13 @@ document leaves available — checking visibility before decrypting — not to a
 The `.response` branch also writes `verifiedAt[senderID]` before rendering
 (`IdentityChallenge+Coordinator.swift:194`). That is in-memory state keyed by identifier, not a
 render, and is out of scope here — but any future UI reading `verifiedAt` inherits the same question.
+Bug 180 (2026-10-23) is that question: `verifiedAt` and the outstanding-challenge store survive `endSession`
+into a duress session. The fix is in review in #136 (an in-memory per-(depth, contact) ledger).
+
+**See also (2026-10-23):** this closure covers rendering the name. Approving the challenge, which signs and seals
+a response to the hidden contact, is Bug 173, open and needing a decision. Re-opening retained files and the
+error-text split are recorded as open in the oracle document's "2026-10-23 — Two cases the 2026-08-13 decision
+does not cover".
 
 ---
 
@@ -13896,6 +13908,7 @@ Taken key by key:
 
 Renaming the tags to drop "occulta" doesn't help, because the access group names the app.
 
+
 ### Guard
 
 None yet.
@@ -14105,6 +14118,294 @@ Decided, for the record: D1 and D6 (accept the downgrade loss for TestFlight and
 
 **Stage 1b, 2026-10-21: extended to the hybrid form.** Every site also asserts `!=` for the hybrid key, built from a real Enclave ML-KEM key, against an attacker who holds Q, the tier secret and the record's ciphertext c, and has no `ss`: with `ss` omitted, with a zero `ss`, and against the classical form of the same inputs. The real `Manager.Key` and `ShareStagingKeyManager` keys are asserted in whichever form this device's records are.
 
+## Bug 172 — The draft purge on duress entry never runs for a real duress PIN
+
+**Status:** Fixed in [#134](https://github.com/aibo-cora/occulta/pull/134), merged into `release/v2.0.0`. Found 2026-10-21 by tracing
+`applyVerifyState` for a security audit of `v2.0.0/introduction-cards`; confirmed by test the same day.
+
+**Target:** `v2.0.0`. Present since duress routing aliases (`activateSecureMode` writes `sealedNormalVerifiers[depth + 1]`).
+
+### Severity: Low (a draft addressed to a hidden contact outlives duress entry; no UI surface reads it)
+
+### What happens
+
+`Manager.Security.applyVerifyState` calls `purgeDraftsNotSafeAtCurrentDepth()` only for `PINVerifyResult.duress`
+(`Manager+Security.swift:751-753`). `verify()` returns `.duress` only in step 2, after step 1 found no match in
+`sealedNormalVerifiers`. But `activateSecureMode` writes the duress PIN into `sealedNormalVerifiers[depth + 1]` as a
+routing alias, so step 1 always matches first and returns `.normal(depth: 1)`. Nothing on the lock-screen path
+produces `.duress` for an activated PIN, so the purge is dead code there.
+
+A `Message.Draft` addressed to a contact classified real-only therefore survives entering the duress PIN. The
+function's own comment says this is the case it exists to prevent ("would otherwise keep that draft across any
+number of duress-PIN entries"), and `plan.md` (Removal Stage 1) records the purge as running on every duress-depth
+entry, the first included.
+
+What it does not do: expose the draft. `ContactsListV2` matches draft recipients against already depth-filtered rows,
+so the hidden contact's draft has no badge and no compose screen to open at depth 1. The cost is a row of
+ciphertext addressed to a hidden recipient staying in the store at a depth where nothing should point at it, which is
+the hygiene the purge's comment names as its job.
+
+### Verified, 2026-10-21
+
+`DuressDraftPurgeTests` (iOS Simulator, `.ambientTestKeyManager`):
+
+| Test | Result |
+|---|---|
+| `duressPINEntry_purgesDraftToContactHiddenAtDepth1` | **Fails**: `result was .normal(depth: 1)`, the draft survived |
+| `duressResult_purgesDraftToContactHiddenAtDepth1` | Passes: the same fixture is purged when `.duress` is passed in directly |
+| `activatedDuressPIN_neverRoutesAsDuress` | Passes |
+
+The first test records the failure as a known issue (`withKnownIssue`), as Bugs 165 and 166 do, so the suite stays green.
+It starts failing as "known issue not recurring" once the purge runs for the result a duress PIN actually produces,
+which is the cue to remove the wrapper.
+
+### Fix
+
+`applyVerifyState` now runs `purgeDraftsNotSafeAtCurrentDepth()` for any `.normal` whose depth is greater than
+`currentDepth`. The `.duress` case is unchanged.
+
+- **Purge-on-deeper only.** A drop to a lower depth or a same-depth entry purges nothing: a duress-layer draft to a
+  contact created there (`originDepth` 1) must not vanish when the owner returns to the master PIN and later
+  re-enters the duress layer.
+- **No new depth signal.** `checkpointStore()` already runs unconditionally on every unlock at every depth
+  (`OccultaApp.swift`, `.onChange(of: phase)`).
+- `currentDepth` is in memory and resets to 0 on a cold start, so any duress entry after a kill counts as deeper and
+  purges.
+
+Group drafts were still exempt from this purge when #134 merged; that is Bug 178.
+
+### Guard
+
+`DuressDraftPurgeTests`, all six passing on the iOS Simulator under `.ambientTestKeyManager`:
+`duressPINEntry_purgesDraftToContactHiddenAtDepth1` (the `withKnownIssue` wrapper is gone, so it passes for real),
+and new `masterPINEntry_doesNotPurge`, `sameDepthEntry_doesNotPurge` and
+`duressLayerDraft_survivesDropToRealAndReentry`, with `duressResult_purgesDraftToContactHiddenAtDepth1` and
+`activatedDuressPIN_neverRoutesAsDuress` unchanged. Only this suite was run for the PR, not the full suite.
+
+## Bug 173 — Approving an identity challenge answers a contact hidden at the current duress depth
+
+**Status:** Open — awaiting the user's decision (2026-10-25). Found 2026-10-21 in a security audit of `v2.0.0/introduction-cards`;
+confirmed by test the same day. No code change has been made; the options are under "Fix".
+
+**Target:** `v2.0.0`. Present since `passSecurityControl` was removed (`b1f9045`).
+
+### Severity: Low (same exposure as Bug 40's approval sheet; an action where Bug 40 and Bug 104 were about rendering)
+
+### What happens
+
+At a duress depth, a challenge from a contact hidden there reaches the approval sheet (Bug 104, closed as a
+duplicate of the 2026-08-13 decision). If the person holding the phone taps Approve and passes the biometric
+prompt, `approvePending` goes on to answer that contact:
+
+1. `contactManager.fetchContact(by:)` returns the hidden contact. It filters on `deletionToken` only.
+2. `Manager.respond(to:)` signs the challenge with the device identity key.
+3. `ContactManager.encryptBundle(for:identityChallenge:)` seals the response to the hidden contact's keys. It has no
+   visibility check.
+4. The response `.occ` is staged for sharing, labelled with the hidden contact's name.
+
+The 2026-08-13 decision accepts that a hidden sender's name renders, because the transport named the sender before
+Occulta ran. That argument covers what the screen shows. It does not cover the app acting on the hidden contact.
+Bug 40's gate closed this by rejecting the challenge before any processing; removing it under that decision also
+removed the only thing between a duress-depth session and a signed answer.
+
+The extra observable is on the other device: the hidden contact gets a valid "verified" result for the owner's key,
+produced while the phone was in someone else's hands. They have no way to know the phone was at a duress depth, and
+the verification is meant to tell them the owner is in control. The biometric prompt does not help against a
+coercer who can make the owner look at the phone.
+
+### Verified, 2026-10-21
+
+`IdentityChallengeHiddenContactTests` (iOS Simulator, `.ambientTestKeyManager`), both passing, which is the bug:
+Alice hidden at depth 1 (`visibleThroughDepth == 0`), device at depth 1 through the real activation and the duress PIN.
+
+- `fixtureIsHiddenAtDepth1`: the setup is what it claims.
+- `hiddenContactChallengeIsAnswered`: her group-format challenge opens through `openGroup`, reaches
+  `incomingChallenge`, `fetchContact(by:)` returns her, and `respond(to:)` through `encryptBundle` produces a group
+  bundle that opens on her side and verifies as `.passed`.
+
+Not covered: `approvePending` itself. It gates on `LAContext`, which a test cannot satisfy, so the test runs what
+`approvePending` runs after that gate, with the same calls in the same order.
+
+### Fix
+
+Not made, and not a one-line guard: a visibility check in `approvePending` is a depth-conditional behaviour on a
+path the 2026-08-13 decision left alone, and "Approve does nothing at a duress depth" is its own presence signal
+(`Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). The options are to extend that decision to cover
+acting as well as rendering, or to refuse to deliver the challenge to the sheet at all. Either one needs the
+decision's author to weigh the new observable against the one it removes.
+
+### Guard
+
+`IdentityChallengeHiddenContactTests.hiddenContactChallengeIsAnswered` pins the current behaviour and passes. Flip
+it when the decision is made. It is commit `1dcfacff` on `claude/cool-liskov-e5eeb5`, not on `release/v2.0.0`: it
+builds `Coordinator(contactManager:)`, which #136 replaces, so it goes in after that PR, updated for the new init.
+
+## Bug 174 — A crafted `.occ` file with an oversized ciphertext length crashes the app before authentication
+
+**Status:** Fixed in [#127](https://github.com/aibo-cora/occulta/pull/127), merged into `release/v2.0.0`. Found 2026-10-21 in a
+security audit of `v2.0.0/introduction-cards`; confirmed by a standalone probe the same day.
+
+**Target:** `v2.0.0`, and every build with the binary `OCCB` envelope.
+
+### Severity: Medium (anyone who can deliver a file can crash the app; no key, contact or depth needed)
+
+### What happens
+
+`WireHandle.parse` reads the ciphertext length as a `UInt64` and passes it on unchecked
+(`WireHandle.swift:57`, `try r.read(Int(ctLen))`):
+
+- `ctLen >= 2^63`: `Int(ctLen)` traps.
+- `ctLen` in `(Int.max - offset, Int.max]`: `Int(ctLen)` is fine, then `offset + count` in `Reader.read` overflows and traps
+  (`WireHandle.swift:414`).
+
+Both are `SIGTRAP` in a release build. The guard that follows (`end <= data.endIndex`) and the `try?` at
+`OccultaApp.swift:1040` never run, because the trap is not a throw. A 167-byte file does it: the 159-byte header
+(magic, version bytes, mode, flags, prekey flag, 36-byte prekey ID, 65-byte ephemeral key, nonce, fingerprint) plus
+the eight length bytes. It reaches `parse` from `OccultaBundle.decoded(from:)` as soon as the file is opened, before
+the sender is identified or anything is authenticated.
+
+Reach: any `.occ` from any holder. A file opened while the app is locked is queued and parsed on unlock, so the crash
+follows a PIN entry at any depth. `pendingFileData` is cleared before the parse (`OccultaApp.swift:401`) and lives
+only in memory, so there is no crash loop. The cost is a crash on every open of that file, and the crash report iOS
+writes: a trace that the app was opened with a hostile file, outside every duress depth.
+
+### Verified, 2026-10-21
+
+A standalone `swiftc -O` program compiled with the real `OccultaFormats` sources, one case per process, calling
+`OccultaBundle.decoded(from:)` on a 167-byte file. Source:
+`side-session-notes/…/trap-probe/main.swift`.
+
+| `ctLen` | Result |
+|---|---|
+| `1000` (control) | Throws, exit 0 |
+| `0xFFFFFFFFFFFFFFFF` | Exit 133 (`SIGTRAP`) |
+| `0x8000000000000000` | Exit 133 |
+| `0x7FFFFFFFFFFFFFFF` | Exit 133 |
+
+Run outside the Simulator because a trap kills the whole test host. No test is committed for it.
+
+### Fix
+
+`Reader.read(length: UInt64)` checks a wire-supplied length against the bytes remaining before converting it; a
+hostile value throws `unsupportedVersion`, as a short file already does. It is used at the three sites that trapped:
+the ciphertext length in `parse`, `msgLen` in `decode(payload:)`, and the file content length in `decode(basket:)`.
+The last two run only after AES-GCM authentication, so only an authenticated sender could reach them; the entry above
+named only the first. `Reader.read(_:)` now rejects a negative count and no longer computes `offset + count`. No wire
+format change; `InteropVectors.json` is untouched.
+
+### Guard
+
+`WireHandleLengthTests` (Simulator, no Secure Enclave): lengths `1000`, `0x7FFF…`, `0x8000…` and `0xFFFF…` must throw
+at all three sites; a length equal to the remaining bytes still parses and one more throws; payload and basket
+round-trips still work. `InteropVectorTests`, `OccultaBundleTests`, `SealedPayloadTests` and `VersionCompatibilityTests`
+still pass. Before the fix, a standalone `swiftc -O` probe built from the real sources exits 133 for all three sites.
+
+## Bug 175 — A negative `custodyManifestCount` in a group slot crashes the app after the prekey is spent
+
+**Status:** Fixed in [#125](https://github.com/aibo-cora/occulta/pull/125), merged into `release/v2.0.0` (branch
+`v2.0.0/bug-175-manifest-count`). Found 2026-10-21 in a security audit of `v2.0.0/introduction-cards`; confirmed by a
+standalone probe the same day.
+
+**Target:** `v2.0.0`. The field is decoded as `Int` with no range check.
+
+### Severity: Low (a paired contact, or whoever holds one's identity key, can crash the receiver; one prekey is spent each time)
+
+### What happens
+
+`RecipientPayload` decodes `custodyManifestCount` with `decodeIfPresent(Int.self, ...)`, so `-1` is accepted.
+`ContactManager.openGroup` then does
+`recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount)` (`Contact+Manager.swift:2107`),
+and `prefix(_:)` on a negative count is a precondition failure: a trap in every build.
+
+It is reached only when `shardMetadataAttempted` is true and the slot did not open on a fallback key
+(`metadataAttempted = !isFallback && ...`), so the sender needs a prekey of ours. That makes the sender a paired
+contact or someone holding their keys: a slot has to open for the payload to be read at all. Step 7 is after
+`findAndOpenRecipientSlot` consumed the prekey and after `save(prekeys, for:)` committed it, so each crash also burns
+one of that contact's prekeys.
+
+### Verified, 2026-10-21
+
+The same standalone probe: the real `RecipientPayload` decoded from JSON with `"custodyManifestCount": -1` and
+`"shardMetadataAttempted": true` decodes to `-1`, and the `openGroup` expression then exits 133. Control with a count
+inside the range exits 0. Not driven end to end through `openGroup`, which would need a signed, sealed group bundle
+carrying the payload; the trapping expression and the decoder are the shipped ones.
+
+### Fix
+
+The expression moved into `ContactManager.receivedManifest(_:isFallback:)`, which `openGroup` calls. A negative count
+returns `nil`, the same as "sender did not attempt this", so the receiver neither traps nor rejects the bundle.
+Rejecting would be a distinguishable event, and the prekey is already spent by then, so it buys nothing.
+
+`nil` rather than `max(0, count)`: a clamped count would be an empty list, which `processInboundManifest` reads as
+"the sender holds none of your pieces" (loss detection). A hostile count shouldn't be able to plant that signal.
+A sender with a slot can already send a real zero, so this closes nothing new; it just doesn't hand over a second way.
+The decoder is unchanged, so the wire format and `InteropVectors.json` are untouched.
+
+### Guard
+
+`ReceivedManifestTests` (`ShardFallbackGatingTests.swift`): a negative count (`-1`, `-3`, `Int.min`) returns `nil`
+instead of trapping; in-range, zero, past-the-end, not-attempted and fallback controls. They run through
+`receivedManifest`, not `openGroup`: this build never seals `shardMetadataAttempted: true`, so a sealed bundle can't
+carry the payload, and the test decodes it from JSON as the probe did. Not driven end to end through `openGroup`.
+
+## Bug 176 — A shard operation whose attribute has an out-of-range date crashes the app before the signature is checked
+
+**Status:** Fixed in [#128](https://github.com/aibo-cora/occulta/pull/128), merged into `release/v2.0.0`. Found 2026-10-21 in a
+security audit of `v2.0.0/introduction-cards`; confirmed by a standalone probe the same day.
+
+**Target:** `v2.0.0`. Present since signed attributes (v2 payload).
+
+### Severity: Low (needs a paired contact or their keys; crashes the receiver on every delivery of the message)
+
+### What happens
+
+`SignedAttribute.signingPayload(...)` converts both dates with `UInt64(date.timeIntervalSince1970)`
+(`SignedAttribute.swift:152` and the `expiresAt` line below it). That trap is on a negative value and on anything at or
+above `2^64`. Both dates come from the sender's JSON, which `JSONDecoder` reads as seconds since 2001
+with no bounds, so `-1e12` or `1e30` decodes fine. `verify(against:)` calls `signingPayload()` to build what it
+verifies, so the trap comes before the signature is looked at.
+
+`verify` has an expiry fast path (`exp < Date()` returns false), which catches a negative or past `expiresAt`. It
+does not catch a huge positive `expiresAt`, and `createdAt` has no check at all.
+
+Reached through `ShardCustodyManager.handleDistribute` and `handleReplace` (`ShardCustody+Manager.swift:114,148`),
+from a shard operation in a sealed payload. Those are dropped for a fallback slot, so, as for Bug 175, the sender is
+a paired contact or someone holding their keys.
+
+### Verified, 2026-10-21
+
+The same standalone probe: a `SignedAttribute` decoded from JSON, then `verify(against:)` with a valid P-256 public
+key (the key has to be valid, since `signingPayload()` is only evaluated after the key is created):
+
+| `createdAt` / `expiresAt` (seconds since 2001) | Result |
+|---|---|
+| `1e9` / none (control) | `verify` returns false, exit 0 |
+| `-1e12` / none | Exit 133 |
+| `1e30` / none | Exit 133 |
+| `1e9` / `-1e12` | `verify` returns false, exit 0 (expiry fast path) |
+| `1e9` / `1e30` | Exit 133 |
+
+### Fix
+
+`verify(against:)` returns false for a date the payload cannot encode (negative, 2^64 or more, NaN), before the key and
+payload are built. A fractional second is accepted, since the payload truncates it. `signingPayload` is unchanged and so
+are the signed bytes; no `InteropVectors.json` vector moves. Clamping in `signingPayload` was rejected: different dates
+would then sign the same bytes.
+
+Three inbound shard operations reach it, all needing a paired contact or their keys: `handleDistribute`,
+`handleReplace` and `handleHandback` (`ShardCustody+Manager.swift:114,148,271`). The third was missing from the entry
+above, and discards the result of `verify`, so it crashed for nothing. `Vault+Manager+Backup.swift:1264` also calls
+`verify` on stored shards at restore.
+
+### Guard
+
+`OccultaTests/Vault/SignedAttributeVerifyDateTests.swift`, software P-256 key, no Enclave: five unencodable dates
+(createdAt `-1e12`, `1e30`, one second before 1970 and 2^64; expiresAt `1e30`) return false; a control with a bad
+signature is rejected; a control with a real signature, round-tripped through JSON with a fractional-second expiry,
+verifies. On the unfixed code the two controls pass and the five rejected rows fail. `SignedAttributeVerifyDateTests`,
+`SignedAttributeCodecTests`, `ShardCustodyTests` and `InteropVectorTests`: 132 passed. The full suite and the
+`OccultaCore` package scheme were not run.
+
 ---
 
 ## Bug 177 — The Contacts screen shows an empty list differently when contacts are hidden
@@ -14137,6 +14438,254 @@ The rest of the file was checked for the same pattern and needs no change:
 ### Guard
 
 `ContactsEmptyStateDepthTests`: two contacts hidden at depth 1, Secure Mode active and entered at depth 1 through the duress PIN, asserts the stored list is non-empty and the screen is still in its empty state. Failed against the unfiltered logic, passes with the fix. A SwiftUI body can't be tested directly, so this covers the decision, not that the view calls it; the two call sites are the only readers.
+
+## Bug 178 — A group draft written at the real depth loads into the group's compose field at a duress depth
+
+**Status:** Fixed in [#135](https://github.com/aibo-cora/occulta/pull/135), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by `GroupDraftDepthTests`, which failed on unmodified source (four of five tests,
+at the "group draft must be gone" assertion).
+
+**Target:** `v2.0.0`. Present since drafts became persistent.
+
+### Severity: High (proposed; disclosure of real-depth message content across the coercer boundary)
+
+### What happens
+
+`Message.Draft` has no depth scope, and group drafts are exempt from both depth controls on drafts:
+
+- `ComposeViewModel.isSensitive` returns `false` for every `.group` (`ComposeViewModel.swift:73-78`; its comment
+  says group sensitivity "is not yet designed"), so `DraftStore.save`'s only gate never fires.
+- `Message.Draft.purgeUnsafe` keeps any draft whose recipient is a known group (`Message+Draft.swift`), and it does
+  not run for a real duress PIN at all (Bug 172).
+
+At depth 0 the owner types an unsent message in group G's compose. `DraftStore` persists it keyed by G's UUID string,
+sealed under the local DB key, which is the same key at every depth. Groups are deliberately not depth-filtered, so a
+coercer at a duress depth sees G by name and opens it. `GroupDetailV3`'s `.task` calls `DraftStore.load`
+(`DraftStore.swift:106-132`) with no depth check and assigns the draft text, committed thread bubbles and attachment
+references to the compose view model. The compose field renders when G has at least one member visible at the current
+depth. A duress layer's member array starts as filler, so G usually shows no members at first; the draft appears once
+the duress-layer setup gave G a member, or when the coercer adds any visible contact through Edit. The coercer can then
+read the real-depth text, edit or delete the row the owner will see, or encrypt it for the duress-depth members. The
+draft was written for G's depth-0 members, who may all be hidden at the duress depth.
+
+Likelihood is limited by needing an unsent group draft at the moment of coercion and a visible member at the duress
+depth. This is open and undecided, not accepted: `Message Persistence/FINDINGS.md` records only that a group draft
+survives the purge on purpose, and has no section on group draft sensitivity.
+
+### Fix
+
+`Message.Draft.purgeUnsafe` no longer exempts groups: a draft survives a descent only if its recipient is a contact
+visible at the depth just entered. The `allGroupIdentifiers` parameter and the group fetch in
+`purgeDraftsNotSafeAtCurrentDepth` are removed, since nothing else used them. `Message Persistence/FINDINGS.md` had
+said group drafts always survive; a dated note was added there.
+
+- Group drafts are deleted whenever the session goes deeper (a routed duress PIN returning `.normal` at a deeper depth,
+  or `.duress`). Normal login, upgrade and launch at depth 0 delete nothing. No schema or key change, nothing to
+  migrate. Existing unsent group drafts are deleted the first time a session descends into a duress layer, as drafts to
+  hidden contacts already are (Bug 172).
+- **Open, not fixed:** a draft typed into a group at a duress depth is not scoped to that depth. It stays until the
+  next descent and is visible to the owner at depth 0 meanwhile.
+
+### Guard
+
+`GroupDraftDepthTests` (5) and `DuressDraftPurgeTests` (6) pass on the iOS Simulator under `.ambientTestKeyManager`.
+The full suite was not run for the PR.
+
+## Bug 179 — Erase All Data leaves every `Message.Draft` row and the `Drafts/` attachment files
+
+**Status:** Fixed in [#126](https://github.com/aibo-cora/occulta/pull/126), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by `EraseAllDataDraftTests.wipeDeletesDrafts`, which fails without the fix.
+
+**Target:** `v2.0.0`. Present since drafts became persistent.
+
+### Severity: Medium (proposed; metadata that survives a wipe, the class Bug 128 rated Medium for backup files)
+
+### What happens
+
+Settings promises Erase All Data deletes the "entire contact database, vault, private keys and stored messages"
+(`Settings.swift:161`). `Manager.App.eraseAllData` (`Manager+App.swift:22-31`) deletes prekey keys,
+`Contact.Profile` rows (`deleteAllContacts`: a batch delete of that one model), the vault and its backup files,
+share-extension leftovers, the share staging key and the Enclave keys. It never touches `Message.Draft` rows or
+`Application Support/Drafts/<draftID>/`. `Message.Draft.delete` calls itself the only correct way to delete a draft
+because removing the row leaves the attachment files on disk; the single-contact delete path does call it
+(`Contact+Manager.swift:534`), so the bulk wipe is the odd one out. Nothing later removes the orphans:
+`DraftStore.load` treats an undecryptable draft as none and leaves it, and the only bulk purge runs on a `.duress`
+verify, which Bug 172 shows doesn't happen and which a freshly reset install doesn't have anyway. Group rows go at
+the next launch's depth-0 `purgeUnreadableGroups`, which doesn't touch `Drafts/`.
+
+What an examiner finds on a wiped device that held an unsent draft: the `Message.Draft` row count and ciphertext
+sizes, and one folder per draft with its attachment files' count, sizes, timestamps and type extensions (`.jpg`,
+`.mp4`). Contents are sealed under keys the wipe just deleted, so the leak is metadata. If attachments for card
+contacts and groups are staged in plaintext, as a separate lead in the same audit claims (not filed here), their
+content would survive too. Bug 128 set the contract that a wiped device carries no file showing what it held.
+
+### Fix
+
+`ContactManager.deleteAllDrafts()` deletes every row through `Message.Draft.delete`, saves, then removes the whole
+`Drafts/` directory (`Message.Draft.attachmentsRoot`, new), so folders whose row is already gone go too. It opens no
+draft, so it needs no key. `eraseAllData` calls it right after `deleteAllContacts()`, well before
+`Manager.Key().deleteAllKeys()`.
+
+`eraseAllData` also calls `checkpointStore()` after `vault.deleteAllData()`: `secure_delete` only zeroes the page being
+freed, older WAL frames keep the pre-deletion rows, and nothing else checkpoints before the next launch or unlock.
+
+### Guard
+
+`EraseAllDataDraftTests` (iOS Simulator): `wipeDeletesDrafts` fails without the `deleteAllDrafts()` call and passes with
+it; `wipeDeletesContactChildren` passes before and after (the `Contact.Profile` batch delete cascades to its child
+rows). The tests run the data half only: the calls inside `eraseAllData` and the checkpoint are not under test, because
+the full method calls the real `Manager.Key().deleteAllKeys()`. The full suite was not run for the PR.
+
+## Bug 180 — Outstanding identity challenges and verified-at state survive `endSession` into a duress session
+
+**Status:** Fix in review in [#136](https://github.com/aibo-cora/occulta/pull/136), not merged (2026-10-25). Found by the
+2026-10-20 audit trial's source review. `IdentityChallengeDepthBindingTests` is the acceptance test; the PR does not say
+it was re-run against the base commit to confirm it fails there, so confirmation is still pending.
+
+**Target:** `v2.0.0`. Present since Bug 140's session reset.
+
+### Severity: Medium (proposed; the owner's own hidden-depth text and evidence of an action on a hidden contact)
+
+### What happens
+
+The owner, at the real depth, challenges contact H (visible there, hidden at a duress depth) and types a question into
+the context note. The challenge is recorded in the coordinator's in-memory `OutstandingChallengeStore` (contact
+identifier, nonce, timestamp, note). The app locks past the grace period, or the depth changes in place, and
+`RootView.endSession` runs. That is Bug 140's session boundary, but it clears only `outboundShare`,
+`incomingChallenge` and `verificationOutcome`. The store and `verifiedAt` live on: the coordinator is created once per
+process (`OccultaApp.swift:98`) and the store is swept only in `Coordinator.init` (`IdentityChallenge+Coordinator.swift:94`).
+
+A coercer then unlocks with the duress PIN. If H's response is opened, or drained from the queue, it resolves to H with
+no depth filter (the accepted presence oracle), matches the owner's real-depth entry by nonce and contact identifier
+(`IdentityChallenge+Manager.swift:391`), and the coordinator presents "Identity verified" with "You asked: <the owner's
+question>". A response after the one-hour window yields "Verification failed" with the same name and note. Without the
+carried entry the same response returns `.notOurs` and shows nothing (Bug 166's fix). So what is disclosed is the
+owner's own hidden-depth text, and evidence that the previous session acted on a contact the coercer can't see, beyond
+the inbound-name render Bug 104 accepted; Bug 104's note on `.response` puts `verifiedAt` out of scope. The same
+carried state also shows "Verification in progress" and "Verified N minutes ago" on contacts visible at both depths, a
+weaker signal.
+
+Calibration: it needs H's response to arrive or be opened after the handover, with the process still alive, so it is
+the timing-bounded, third-party-dependent class of the accepted passive case, plus the owner-authored content. It
+applies Bug 140's own invariant, that state created at one depth must end when the session changes, to state the fix
+list never named.
+
+### Fix
+
+PR 1 of a staged design: an in-memory ledger under `ContactManager`, one outstanding-challenge store per depth, chosen
+from `self.security.currentDepth` on every call (the depth is never a parameter). Verified-at lives in the same
+per-(depth, contact) entry. A response at another depth finds no entry and shows nothing; a response at the creating
+depth after a lock still passes. `endSession` needs no change, because the state is bound to the depth rather than
+cleared. The `Coordinator` drops its store and `verifiedAt`.
+
+Nothing persists in this stage, so a challenge does not survive a kill; persistence is PRs 2–3 of the design. The
+design is in `bug-180-challenge-state-design.md` in the session notes.
+
+### Guard
+
+`IdentityChallengeDepthBindingTests` (all four behaviours), new `IdentityChallengeDepthParityTests` (one scripted
+sequence at depth 0, depth 1 and with Secure Mode off, with equal observations) and `IdentityChallengeLedgerExpiryTests`,
+on the iOS Simulator, none needing a real Enclave. Existing IdentityChallenge suites changed for the new labels only.
+
+## Bug 181 — A copy of a group bundle with an altered outer header uses up the recipient's one-time prekey
+
+**Status:** Fixed in [#129](https://github.com/aibo-cora/occulta/pull/129), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by `GroupBodyBindingTests.headerTamperKeepsTheOneTimeKey`, which failed on
+`release/v2.0.0` before the fix.
+
+**Target:** `v2.0.0`. Present since group bundles.
+
+### Severity: Medium (proposed; availability only, one message per tampered copy, no key needed)
+
+### What happens
+
+`findAndOpenRecipientSlot` sets `usedPrekey` once the slot opens and its `bodyDigest` matches, and a `defer` consumes
+it, which `SenderPrekeys.consume` persists at once (`Crypto+Manager+GroupDecrypt.swift:140-195`,
+`Contact+Manager+Prekeys.swift`). The slot AEAD authenticates only `blind`, and the digest covers only
+`bundle.ciphertext`. The outer header, `secrecy.ephemeralPublicKey` (65 cleartext bytes) and `secrecy.prekeyID` (a flag
+and 36 bytes), is authenticated only later, in the AAD of `openGroupCiphertext` (`Contact+Manager.swift:2008`). A
+group bundle's header is always the same constant (mode `.group`, empty key, nil prekey ID), yet the parser accepts any
+value.
+
+Anyone holding a copy of the `.occ` file can change one byte of the ephemeral field, or set the prekey ID flag with 36
+valid UTF-8 bytes, keep the sender fingerprint and deliver that copy first. The slot opens, the digest matches, the
+prekey is consumed and saved, and then `openGroupCiphertext` fails. The genuine copy arrives to find no key
+(`recipientSlotNotFound`). The attacker needs no key: a group member who has the same file (Bug 165 says that is usual),
+or whoever holds a transport copy. The project fixed the same outcome for a rewritten body (the Bug 165 amendment to
+`SECURITY_CHECKLIST.md` §2.2) and stated the rule: delivering first must not make the genuine message unopenable. The
+"prekey burn" cost accepted at `SECURITY_CHECKLIST.md:91` is framed around someone holding the batch we published, who can
+burn keys with bundles that open and fail; it doesn't cover a keyless copy-holder destroying one specific genuine
+message. The single-recipient path (`decryptSealed`) isn't affected: it opens under the full AAD before consuming.
+
+### Fix
+
+`openRecipientSlot` and `openCardSlot` now open the outer ciphertext under the slot's session key after the digest check
+and before the prekey is recorded as used, so a copy with an altered header throws before anything is consumed.
+`openCardSlot` had the same ordering and is fixed too. The outer open is now done twice (here and in `openGroup`);
+return types are unchanged to keep the diff small. A tampered bundle now fails during slot opening, before the
+tier-dependent checks in `openGroup`. No wire format, vector or UI change.
+
+### Guard
+
+`GroupBodyBindingTests.headerTamperKeepsTheOneTimeKey` (any host; changed ephemeral key and set prekey ID) failed on
+`release/v2.0.0` before the fix and passes after. `PrekeyRecordWiringTests.headerTamperKeepsThePrekey` needs a Secure
+Enclave (the Simulator on Apple Silicon provides one) and passes; it was not run against unfixed source. The PR ran
+the full `OccultaTests` on the Simulator: 1414 passed, 0 failed, 6 skipped (the expected `KeychainMigrationSETests`).
+Not covered by a new test: the card path (existing card suites pass) and a changed `version` byte.
+
+## Bug 182 — Shard state from before a contact became a card contact makes every card send throw `hardBlocked`
+
+**Status:** Fixed in [#130](https://github.com/aibo-cora/occulta/pull/130), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by the custodian-side and owner-side repros in
+`CardSendWithInheritedShardStateTests`, which threw `hardBlocked` before the fix.
+
+**Target:** `v2.0.0`. Present since introduction cards.
+
+### Severity: Medium (proposed; lasting denial of outgoing messages in one card conversation; nothing leaks)
+
+### What happens
+
+Introduction Cards SPEC §8 makes trustee and shard content a hard block for card contacts. `encryptCardBundle` enforces
+it by refusing the whole send when any shard operation or a non-empty custody manifest is attached
+(`ContactManager+Cards.swift:404`). Compose and the share-extension send attach `buildShardOperations` and
+`buildCustodyManifest` for every one-to-one recipient, and neither builder checks the card field. Nothing clears shard
+state when a contact becomes a card contact.
+
+A contact carries that state into a card conversation through the revoke-then-card flow (`reset(identity:)` keeps the
+row and identifier; the Pending row is offered a card). The durable form is on the custodian side: Bob holds
+`CustodyShard` rows whose `ownerContactIdentifier` is that contact, because the contact chose Bob as a trustee.
+`buildCustodyManifest` (`ShardCustody+Manager.swift:387`) then returns their IDs on every message, `encryptCardBundle`
+throws `CardError.hardBlocked`, compose retries without shard content only for `trusteeLacksQuantumMaterial`
+(`ComposeViewModel.swift:294`), and the share path has no catch. The only code that removes those rows is `purgeCustody`,
+called from `deleteContact`; a handback or replace needs shard content, which is blocked. The owner-side form (a queued
+`PendingShardDistribute`, re-queued by `reconcileBackupPieces` for a live trustee) is recoverable from the vault setup
+screen, which lists no card contacts and whose re-split deletes the queued rows.
+
+Confidentiality holds: the block stops shard content reaching the card contact. The effect is every outgoing message in
+that conversation failing until Bob meets the contact in person (which clears the card field) or deletes and re-imports,
+in a state `FINDINGS.md` says can't exist ("Card contacts are blocked by construction", about trustee eligibility).
+Nobody lower-trust causes it; it follows from a legitimate revoke of a trustee relationship.
+
+### Fix
+
+`buildShardOperations` and `buildCustodyManifest` take a required `isCardContact` and return nothing for a card
+contact; the rows are not read or changed. New `ContactManager.isCardContact(identifier:)` supplies the flag, and
+compose and the share-extension send pass it. The group send passes `false`: it already throws for card members before
+reaching the builders. `encryptCardBundle` is unchanged and still refuses shard content, as a backstop.
+
+Existing users: code only, no schema change and no data rewrite, so no migration. Existing rows are left as they are
+and flow again if the contact is verified in person; a conversation already stuck recovers on its first send after the
+update.
+
+**Open, needs a decision:** while the contact stays a card contact, the owner is not told a queued piece was not
+delivered, and the stale rows remain.
+
+### Guard
+
+`CardSendWithInheritedShardStateTests` (7 tests, Enclave-gated because importing a card makes a prekey batch). Before
+the fix the custodian-side and owner-side repros threw `hardBlocked`. They also cover both sides of a conversation,
+rows untouched and returning once the flag is false, an ordinary contact unaffected, the `hardBlocked` backstop and the
+`isCardContact` states. The PR ran the full `OccultaTests` on the Simulator: 1420 passed, 6 skipped, 0 failed.
 
 ---
 
