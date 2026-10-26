@@ -71,9 +71,18 @@ final class VaultManager {
         let store = self.modelContext.container.configurations.first(where: { !$0.isStoredInMemoryOnly })?.url
         let locations = self.rewrapLocations ?? .production(store: store)
 
-        guard let report = try? KeyReseal.rewrapVault(
-            context: self.modelContext, keyManager: self.keyManager, authContext: authContext, locations: locations
-        ) else { return }
+        let attempt = Result {
+            try KeyReseal.rewrapVault(
+                context: self.modelContext, keyManager: self.keyManager, authContext: authContext, locations: locations
+            )
+        }
+        #if DEBUG
+        switch attempt {
+        case .success(let report): print("[VaultDiag] rewrap outcome: \(report.outcome), entry keys \(report.entryKeys), backup rows \(report.backupPayloads)")
+        case .failure(let error):  print("[VaultDiag] rewrap threw: \(error)")
+        }
+        #endif
+        guard case .success(let report) = attempt else { return }
 
         switch report.outcome {
         case .rewrapped: Manager.Ambient.setVaultKeys(.enclaveBound)
@@ -261,6 +270,10 @@ final class VaultManager {
             break
         }
 
+        #if DEBUG
+        self.printVaultKeyDiagnostic(authContext: context)
+        #endif
+
         // Migrate real content out of the old 32-slot array and/or the original
         // single-row legacy BackupEncryptionKey, into the current per-depth row
         // model, if either still needs it. Idempotent — see
@@ -283,9 +296,16 @@ final class VaultManager {
         // Then the rewrap, at the first unlock after the upgrade (epoch 1), or at the first after a device below iOS 26 reached it
         // (epoch 2 in the classical form; the pass itself checks that the tier B record has become hybrid). It leaves the vault
         // where it was if it fails.
+        #if DEBUG
+        print("[VaultDiag] migration finished without error: \(migrated), will rewrap: \(migrated && epoch != nil && (epoch!.number == 1 || epoch!.form == .classical))")
+        #endif
         if migrated, let epoch, epoch.number == 1 || epoch.form == .classical {
             self.rewrapVault(authContext: context)
         }
+        #if DEBUG
+        let after = KeyReseal.vaultEpoch(in: self.modelContext)
+        print("[VaultDiag] after rewrap: epoch \(after.map { "\($0.number) \($0.form)" } ?? "unreadable"), vault key mode \(Manager.Ambient.vaultKeys)")
+        #endif
         // Migrate any leftover ReconstructShard rows into PendingShamirSecretRestore,
         // if any still exist. Idempotent — see migrateReconstructShardsIfNeeded's own
         // doc comment. Needs only the restore vault key, not the vault key, so this
