@@ -613,6 +613,20 @@ extension VaultManager {
         try self.migrateLegacyBackupRowIfNeeded(vaultKey: vaultKey)
     }
 
+    /// Whether `currentDepth` already has a live backup-key row, readable under `vaultKey` or not.
+    ///
+    /// A row that doesn't open is still a row: the vault is under the Enclave-bound key while this runs under the legacy
+    /// one, when the rewrap committed its rows and the epoch still reads 1. `fetchDecoded` throws there, which made the
+    /// whole migration fail, held the rewrap back (`unlock`'s `migrated`) and left the vault unreadable on every unlock.
+    /// A row that can't be read is never a slot to migrate into: nothing is written over it.
+    private func hasLiveBackupRow(vaultKey: SymmetricKey, currentDepth: Int) throws -> Bool {
+        do {
+            return try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext) != nil
+        } catch BackupError.decryptionFailed {
+            return true
+        }
+    }
+
     /// AAD the old array sealed each slot under (`Backup.SlotAAD`, deleted along with
     /// the array itself) — kept here, read-only, purely so this one-time migration
     /// can still open slots that were sealed under it before the type existed to
@@ -656,7 +670,7 @@ extension VaultManager {
                   let payload   = Backup.PayloadCodec.decode(plaintext)
             else { continue }   // filler slot, or unreadable under this key — nothing to migrate
 
-            guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: slotIndex, modelContext: self.modelContext) == nil else {
+            guard try !self.hasLiveBackupRow(vaultKey: vaultKey, currentDepth: slotIndex) else {
                 continue   // already migrated, or independently claimed since — idempotent
             }
             try self.backup.persist(payload, vaultKey: vaultKey, currentDepth: slotIndex, modelContext: self.modelContext)
@@ -685,7 +699,7 @@ extension VaultManager {
     /// already replaced its content, and it must not be folded; either way no row is left
     /// in the distinguishable nil/nil legacy state.
     private func migrateLegacyBackupRowIfNeeded(vaultKey: SymmetricKey) throws {
-        guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext) == nil else {
+        guard try !self.hasLiveBackupRow(vaultKey: vaultKey, currentDepth: 0) else {
             return
         }
         let rows = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())

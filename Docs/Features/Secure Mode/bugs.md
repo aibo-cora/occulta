@@ -14795,3 +14795,27 @@ Refusing the whole message rather than only the attachment is how this reads `ST
 ### Guard
 
 `ReceivedFilesSealedTests`: a key-less sender's attachment is sealed on disk, no plaintext marker is found in the directory, and it opens through the key the sheet resolves; with no key nothing is written; text needs no key; a hostile extension stays inside the directory. `ReceivedAttachmentKeyTests` covers the resolver's three outcomes. The tests drive `sealReceivedFiles`, which carries the writer's logic; that `OccultaApp` calls it, and that the sheet calls the resolver, is by inspection, since `OccultaApp` can't be built in a test.
+
+---
+
+## Bug 185 — A vault whose rows moved but whose epoch still reads 1 stays unreadable: the legacy-storage migration throws and holds the rewrap back
+
+**Status:** Fixed in the working tree on `release/v2.0.0`, not yet merged. Found 2026-10-26 from a device: a vault entry opened empty and the backup custody screen showed nothing. Debug output (`[VaultDiag]`, below) showed the entry key and the two real backup-key rows opening under the Enclave-bound key, `vaultKeyEpoch` reading `1 classical`, and the process on the legacy key.
+
+**Target:** `v2.0.0`.
+
+### Severity: High (the vault reads as empty and backup custody as absent, on every unlock, until fixed; no data is deleted)
+
+### What happens
+
+`VaultManager.unlock` runs `migrateLegacyBackupStorageIfNeeded` under the *legacy* vault key before the rewrap, and skips the rewrap when it throws (`migrated = false`). Both migration steps asked `Backup.fetchDecoded(...)` whether depth N already had a row, and `fetchDecoded` throws `decryptionFailed` for a live row that doesn't open under the key it is given. With the rows already under the new key and the epoch at 1, the legacy key can't open them, so the migration threw on every unlock, the rewrap that would have set the epoch to 2 never ran, and the process stayed on the legacy key. The entry's label and content, the backup key, and the custody metadata all read as unreadable.
+
+How the rows came to be under the new key with the epoch at 1 is **not established**. The rewrap writes both in one `save()`. Nothing that writes `vaultKeyEpoch` was found that could set it back (the bootstrap writes `1 classical` only while the column is nil). Open, needs a decision: find the writer, or the path that left the column nil or the row replaced.
+
+### Fix
+
+`VaultManager.hasLiveBackupRow(vaultKey:currentDepth:)` treats a live row that doesn't open as a claimed row, in both migration steps, so the migration passes, the rewrap finds the entry keys already under the new key, rewrites the rows, sets the epoch to 2 and switches the process. Nothing is written over a row that can't be read.
+
+### Guard
+
+`VaultRewrapUnlockTests.rowsOnNewKeyWithEpochOneAreRepaired`: a vault rewrapped, its epoch reset to `1 classical`, then unlocked: the epoch becomes 2, the process derives the Enclave-bound key, and every label and every real backup key reads back. It failed before the change.

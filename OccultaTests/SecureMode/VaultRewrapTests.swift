@@ -905,6 +905,40 @@ struct VaultRewrapUnlockTests {
         #expect(bek.withUnsafeBytes { Data($0) } == payload.bekBytes, "depth 0's key came through the migration and the rewrap")
     }
 
+    @Test("Rows already under the new key with the epoch still 1: the migration does not throw on the live row it can't open, and the unlock finishes the rewrap",
+          arguments: KeyForm.allCases)
+    func rowsOnNewKeyWithEpochOneAreRepaired(form: KeyForm) throws {
+        let (_, store) = try prepareVault(form)
+        try store.rewrap()
+        #expect(store.epoch() == 2)
+
+        // The state found on a device: the data moved, the epoch reads 1.
+        let context = store.newContext()
+        let config = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        config.vaultKeyEpoch = try KeyReseal.Epoch(number: 1, form: .classical).sealed(using: Frozen.newKey(.local, form: store.localForm))
+        try context.save()
+        #expect(store.epoch() == 1)
+        #expect(Set(store.backupStates().values).contains(.new))
+
+        let vault = store.vaultManager()
+        vault.unlock(context: LAContext())
+
+        #expect(store.epoch() == 2)
+        #expect(Manager.Ambient.vaultKeys == .enclaveBound)
+        #expect(Set(store.entryKeyStates().values) == [.new])
+        for item in store.entries {
+            let entry = try #require(try vault.fetchEntry(by: item.uuid))
+            #expect(try vault.decryptLabel(for: entry) == item.label)
+        }
+        for row in store.backupRows where row.depth != nil && !row.orphaned {
+            let depth    = try #require(row.depth)
+            let plain    = try #require(row.payload)
+            let expected = try #require(VaultManager.Backup.PayloadCodec.decode(plain))
+            let bek      = try vault.currentBackupKey(currentDepth: depth)
+            #expect(bek.withUnsafeBytes { Data($0) } == expected.bekBytes)
+        }
+    }
+
     @Test("A fresh vault: no entries, filler only. The first unlock sets the epoch, and everything made afterwards is under the new key",
           arguments: KeyForm.allCases)
     func freshVault(form: KeyForm) throws {
