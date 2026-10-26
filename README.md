@@ -58,9 +58,9 @@ When you do meet, the exchange also checks that the person in front of you is th
 
 ### Encrypt Anything
 
-Once you have someone's key, tap their name in Occulta and attach any file — a photo, document, video, voice note. Occulta encrypts it into an `.occ` bundle that only they can open. Share the bundle however you want. The channel doesn't matter: the encryption is independent of the delivery method.
+Once you have someone's key, tap their name in Occulta and attach any file — a photo, document, video, voice note. Occulta encrypts it into an `.occ` bundle that only they can open. Share the bundle however you want. The channel doesn't matter: the encryption is independent of the delivery method. Very large videos and files are streamed, so they send and open without exhausting memory once both phones are on 2.0.
 
-Each message uses a fresh key that is thrown away after use, so a future device compromise cannot expose past messages.
+Each message is sealed to a one-time key your contact's phone gave you, and that key is thrown away once they open it, so a future device compromise cannot expose past messages. Occulta refills these keys as you exchange messages. If you run out, for example before your contact has replied, it falls back to a temporary key that expires, or to their long-term key, which gives no forward secrecy. Before you send, Occulta shows which one applies.
 
 → [How encryption works technically](https://github.com/aibo-cora/occulta/wiki/Encryption-Flow) · [Forward secrecy](https://github.com/aibo-cora/occulta/wiki/Forward-Secrecy)
 
