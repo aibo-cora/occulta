@@ -418,6 +418,13 @@ decided; see item 9 for what's still open before that's settled.
    owner's own business, tracked in their own `shardMetadata`. The trustee's device only ever holds an
    opaque blob; the only depth that matters to the trustee's own protection is theirs.
 
+   **What this doesn't cover — noted 2026-10-12.** The *owner's* depths still show, as a count: each owner
+   depth with a backup sends the trustee one piece, so the trustee holds one row per such depth, stamped with
+   the trustee's depth or not, and until 2026-10-16 its Vault tab displayed the number and its custody manifest's
+   size carried it (`bugs.md` Bug 162; the rows still do). Item 7 protects the
+   trustee's depths, not the owner's. As of 2026-10-12 item 7 itself is decided but not built: `CustodyShard`
+   has no depth stamp and no filler rows; v2.0.0 rollout stage 4 takes it.
+
    **Per-depth capacity — sized 2026-09-06.** Fixed-width shape for the stored `SignedAttribute`
    payload, one caught correction along the way: `signature` is documented as **DER-encoded**
    ECDSA-P256 (`SignedAttribute.swift`) — variable-length by construction (ASN.1 `INTEGER` encoding

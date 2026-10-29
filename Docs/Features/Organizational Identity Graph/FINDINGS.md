@@ -5,6 +5,8 @@
 
 **Problem statement:** Expansion A's May 2026 ruling narrowed the addressable market to three thin segments (gov-adjacent orgs, small high-trust organizations, a premium add-on to existing passkey deployments) but never specified *how* an org's login backend would actually verify an Occulta identity — the integration mechanism was left as "an enterprise SDK," undesigned. Separately, the June 2026 addendum tied Expansion A's strongest wedge (helpdesk/wire-transfer verification) to Presence Verification (`#15`), which was itself delayed in July over an unresolved relay attack. This doc treats the two as separable: the base auth mechanism only needs Identity Challenge (shipped, v1.8.x) — it doesn't require live Presence Verification, so it isn't blocked by that delay.
 
+**Related:** `Docs/Features/Occulta for Organizations/DESIGN.md` — encrypted delivery between an organization and its clients, a separate feature. It cites F-01, D-05 and D-06 here for rejecting an organization root key.
+
 ---
 
 ## Confirmed / Verified

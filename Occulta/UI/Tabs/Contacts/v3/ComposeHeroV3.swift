@@ -6,6 +6,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import OccultaFormats
 
 // MARK: - Compose Hero
 
@@ -17,7 +18,9 @@ struct ComposeHeroV3: View {
     /// path (a prekey is available) or fall back to the long-term key.
     /// `nil` hides the indicator — used for group compose, where the answer
     /// is per-recipient rather than a single yes/no.
-    var isForwardSecret: Bool? = nil
+    var secrecy: NextSendSecrecy? = nil
+    /// The recipient's name, for the secrecy description.
+    var recipientName = ""
     let onEncrypt:        () async -> Void
 
     @State private var showMediaPicker = false
@@ -58,6 +61,7 @@ struct ComposeHeroV3: View {
                 .lineLimit(4...)
                 .frame(minHeight: self.vm.messages.isEmpty ? 100 : 60, alignment: .topLeading)
                 .tint(.occultaAccent)
+                .autocorrectionDisabled()
 
             let fileItems = self.vm.messages
                 .filter { if case .file = $0.format { return true }; return false }
@@ -106,9 +110,6 @@ struct ComposeHeroV3: View {
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
 
-                    if let isForwardSecret = self.isForwardSecret {
-                        SecrecyIndicator(isForwardSecret: isForwardSecret)
-                    }
                 }
                 Spacer()
                 Button {
@@ -126,6 +127,12 @@ struct ComposeHeroV3: View {
                 .buttonStyle(.plain)
             }
             .padding(.top, 10)
+
+            // Its own line, below the size and the Encrypt button, with its description (D2).
+            if let secrecy = self.secrecy {
+                SecrecyIndicator(secrecy: secrecy, name: self.recipientName)
+                    .padding(.top, 10)
+            }
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
@@ -151,17 +158,72 @@ struct ComposeHeroV3: View {
 /// Mirrors `OccultaBundle.securityLabel`'s wording so the pre-send tag and any
 /// post-send label agree. A prediction, not a guarantee — the actual mode is
 /// still decided inside `ContactManager.encryptBundle` at send time.
+/// How the next message will be sealed, with what that means always shown under it, so the user can hold back
+/// sensitive material before sending (prekey continuity D2; wording signed off 2026-10-07, names in place of
+/// "they" 2026-10-17). The wording assumes received messages aren't stored after they're closed: if message
+/// history ships, "Single View" must change.
 struct SecrecyIndicator: View {
-    let isForwardSecret: Bool
+    let secrecy: NextSendSecrecy
+    /// The recipient's name, said in the description in place of "they".
+    let name: String
+    /// A card contact's messages sealed to the card key (SPEC §4.3): labelled Standard Encryption, and otherwise
+    /// shown as the long-term key, whatever `secrecy` says. The card key stays until the meeting or a discard.
+    var standard = false
+    /// A Not verified contact: the forward-secret state drops its green, keeping its label and description (Q-09).
+    var isNotVerified = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(self.isForwardSecret ? Color.occultaVerified : Color.occultaWarn)
-                .frame(width: 6, height: 6)
-            Text(self.isForwardSecret ? "Forward Secret" : "Standard Encryption")
-                .font(.system(size: 10, weight: .regular, design: .monospaced))
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(self.colour)
+                    .frame(width: 6, height: 6)
+                Text(self.label)
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Text(self.description)
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var shown: NextSendSecrecy { self.standard ? .longTerm : self.secrecy }
+
+    private var colour: Color {
+        switch self.shown {
+        case .forwardSecret: return self.isNotVerified ? Color.secondary : Color.occultaVerified
+        case .temporaryKey:  return Color.occultaTemporary
+        case .longTerm:      return Color.occultaWarn
+        }
+    }
+
+    private var label: String {
+        if self.standard { return IntroCardCopy.standardEncryptionLabel }
+        switch self.secrecy {
+        case .forwardSecret: return "Single View · Forward Secret"
+        case .temporaryKey:  return "Multiple Views · Temporary Key"
+        case .longTerm:      return "Multiple Views · Long-Term Key"
+        }
+    }
+
+    private var description: String {
+        Self.description(self.shown, name: self.name)
+    }
+
+    /// What `secrecy` means for a message to `name`. "The recipient" stands in for a contact with no given name.
+    static func description(_ secrecy: NextSendSecrecy, name: String) -> String {
+        let name = name.isEmpty ? "the recipient" : name
+        switch secrecy {
+        case .forwardSecret:
+            return "Once \(name) opens it, \(name)'s phone can no longer open saved copies."
+        case .temporaryKey:
+            return "This message can be opened by anyone who gets into \(name)'s device for 30 days or more, until the temporary key expires. Wait for \(name)'s reply before sending anything sensitive."
+        case .longTerm:
+            return "This message can be opened by anyone who gets into either device, yours or \(name)'s, with no time limit. Hold back anything sensitive."
         }
     }
 }
@@ -169,7 +231,7 @@ struct SecrecyIndicator: View {
 // MARK: - Attachment Chip
 
 private struct AttachmentChipV3: View {
-    let file:     Occulta.File
+    let file:     OccultaFormats.File
     let onRemove: () -> Void
 
     private var isText: Bool {

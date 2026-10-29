@@ -5,9 +5,16 @@
 //  Share extension entry point: file intake → manifest write → handoff.
 //  Extension only — never linked by the main app.
 //
-//  Security boundary: this process NEVER links Manager.Key, Manager.Crypto,
-//  ContactManager, PrekeyManager, PQProvider, or OccultaBundle. The only crypto
-//  it performs is ShareIndexKeyManager's AES-GCM for the staged files and manifest.
+//  Security boundary: this process NEVER links Manager.Key, Manager.Crypto, ContactManager,
+//  PrekeyManager, PostQuantumProvider, or any code that reads or writes a bundle. The only
+//  crypto it performs is with ShareStagingKeyManager's key: the staged files are sealed as
+//  `.eatt` by `StreamingEncryptor` (STREAMING_SPEC §8.4), the manifest as one AES-GCM blob.
+//
+//  It does link the `OccultaFormats` package, because `StreamingEncryptor`'s chunk buffer
+//  lives there, and that package also holds the bundle formats. They are pure data layout:
+//  no key, no I/O, and nothing in this process calls into a bundle type. What the rule
+//  protects, key material and the bundle pipeline, stays out. If this file ever uses a
+//  bundle type, the rule has been broken and this comment is wrong.
 //
 //  It does not choose the recipient. Picking one here meant the app received what looked
 //  like a finished instruction and executed it — the reason the outbound pipeline ran with
@@ -21,8 +28,12 @@ import UniformTypeIdentifiers
 
 class ShareViewController: UIViewController {
 
-    private let shareKeyManager = ShareIndexKeyManager()
+    private let shareKeyManager = ShareStagingKeyManager()
     private var sessionID: String?
+
+    /// Per-file ceiling for `copyFileRepresentation`. Staging streams now, so memory no longer grows with it;
+    /// the cap stays until the extension's peak memory has been measured on a device (STREAMING_SPEC §8.4).
+    private static let maxFileBytes = 100_000_000
 
     // MARK: - Lifecycle
 
@@ -173,12 +184,11 @@ class ShareViewController: UIViewController {
         }
     }
 
-    /// Copy via `loadFileRepresentation`, encrypt with the share key, write ciphertext.
+    /// Copy via `loadFileRepresentation`, sealing it as `.eatt` under the share key, 64 KB at a time.
     /// Returns false if this provider doesn't support file representation for the given UTI.
     ///
-    /// Note: reading the source into Data for encryption reintroduces memory pressure for
-    /// large files. This is an accepted tradeoff — the alternative (streaming AES-GCM) would
-    /// require custom framing not available in CryptoKit.
+    /// The source is never read whole: each piece goes through `StreamingEncryptor` to the staged file,
+    /// which has complete protection, stays out of the page cache, and is removed if the sealing fails.
     private func copyFileRepresentation(
         from provider: NSItemProvider, uti: String, to destination: URL
     ) async throws -> Bool {
@@ -197,11 +207,16 @@ class ShareViewController: UIViewController {
                     return
                 }
                 do {
-                    var plaintext = try Data(contentsOf: sourceURL)
-                    let ciphertext = try self.shareKeyManager.encrypt(data: plaintext)
-                    _ = plaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                    plaintext = Data()
-                    try ciphertext.write(to: destination, options: .completeFileProtection)
+                    // Refuse early, before the read, so the user gets a clean cancel.
+                    let size = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    guard size <= Self.maxFileBytes else { throw ShareError.fileTooLarge }
+
+                    let source = try NoCacheFile.reader(sourceURL)
+                    let encryptor = try StreamingEncryptor(
+                        url: destination, contactKey: try self.shareKeyManager.deriveStreamSealingKey()
+                    )
+                    try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
+                    try encryptor.finalize()
                     continuation.resume(returning: true)
                 } catch {
                     continuation.resume(throwing: error)
@@ -210,7 +225,7 @@ class ShareViewController: UIViewController {
         }
     }
 
-    /// Fallback: load into memory with a 10 MB size guard, encrypt before writing.
+    /// Fallback: load into memory with a 10 MB size guard, sealed as `.eatt` before it is written.
     private func copyDataRepresentation(
         from provider: NSItemProvider, uti: String, to destination: URL
     ) async throws {
@@ -232,10 +247,11 @@ class ShareViewController: UIViewController {
             throw ShareError.fileTooLarge
         }
 
-        let ciphertext = try self.shareKeyManager.encrypt(data: data)
+        let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.shareKeyManager.deriveStreamSealingKey())
+        try encryptor.append(data)
+        try encryptor.finalize()
         _ = data.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
         data = Data()
-        try ciphertext.write(to: destination, options: .completeFileProtection)
     }
 
     // MARK: - Phase 3: Handoff

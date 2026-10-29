@@ -27,6 +27,8 @@
 import Foundation
 import SwiftData
 import CryptoKit
+import OccultaCore
+import OccultaFormats
 
 extension VaultManager {
 
@@ -225,7 +227,7 @@ extension VaultManager {
     /// forwards its caller's live `currentDepth`, whatever that is). A single fixed value
     /// can't get both right — see Bug 113's identical reasoning on the display side.
     private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw VaultError.keyDerivationFailed
         }
         return try self.fetchAllEntries().filter {
@@ -357,8 +359,9 @@ extension VaultManager {
     /// working recovery for a marginal one. Tests assert on reading the value back rather than on
     /// this not throwing.
     ///
-    /// What this does and does not buy: the payloads are already sealed and device-bound, so a
-    /// backup copy was never readable off-device. What travelled with it was existence, length and
+    /// What this does and does not buy: the payloads are already sealed under keys that need this device's Enclave and
+    /// Keychain secrets (the vault's after its first unlock on 2.0.0, `bugs.md` Bug 171; before that its key was a
+    /// function of a public point), so a backup copy is not readable off-device. What travelled with it was existence, length and
     /// timestamps — and a backup is a far softer target than the device, obtainable without the
     /// passcode prompt `.completeFileProtection` depends on. See Bug 101 for the same content in a
     /// worse place; this remedy is incomplete without it.
@@ -610,6 +613,20 @@ extension VaultManager {
         try self.migrateLegacyBackupRowIfNeeded(vaultKey: vaultKey)
     }
 
+    /// Whether `currentDepth` already has a live backup-key row, readable under `vaultKey` or not.
+    ///
+    /// A row that doesn't open is still a row: the vault is under the Enclave-bound key while this runs under the legacy
+    /// one, when the rewrap committed its rows and the epoch still reads 1. `fetchDecoded` throws there, which made the
+    /// whole migration fail, held the rewrap back (`unlock`'s `migrated`) and left the vault unreadable on every unlock.
+    /// A row that can't be read is never a slot to migrate into: nothing is written over it.
+    private func hasLiveBackupRow(vaultKey: SymmetricKey, currentDepth: Int) throws -> Bool {
+        do {
+            return try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext) != nil
+        } catch BackupError.decryptionFailed {
+            return true
+        }
+    }
+
     /// AAD the old array sealed each slot under (`Backup.SlotAAD`, deleted along with
     /// the array itself) — kept here, read-only, purely so this one-time migration
     /// can still open slots that were sealed under it before the type existed to
@@ -653,7 +670,7 @@ extension VaultManager {
                   let payload   = Backup.PayloadCodec.decode(plaintext)
             else { continue }   // filler slot, or unreadable under this key — nothing to migrate
 
-            guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: slotIndex, modelContext: self.modelContext) == nil else {
+            guard try !self.hasLiveBackupRow(vaultKey: vaultKey, currentDepth: slotIndex) else {
                 continue   // already migrated, or independently claimed since — idempotent
             }
             try self.backup.persist(payload, vaultKey: vaultKey, currentDepth: slotIndex, modelContext: self.modelContext)
@@ -682,7 +699,7 @@ extension VaultManager {
     /// already replaced its content, and it must not be folded; either way no row is left
     /// in the distinguishable nil/nil legacy state.
     private func migrateLegacyBackupRowIfNeeded(vaultKey: SymmetricKey) throws {
-        guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext) == nil else {
+        guard try !self.hasLiveBackupRow(vaultKey: vaultKey, currentDepth: 0) else {
             return
         }
         let rows = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
@@ -836,6 +853,8 @@ extension VaultManager {
     /// Removes the export metadata file. Only the wipe calls this (`bugs.md` Bug 128).
     func deleteBackupExportMetadata() {
         try? FileManager.default.removeItem(at: Self.backupExportMetaURL)
+        // A vault rewrap (Bug 171, Stage 4) that was killed between the file and its commit leaves its temp file.
+        try? FileManager.default.removeItem(at: KeyReseal.exportMetadataTemporaryURL(in: Self.backupExportMetaURL.deletingLastPathComponent()))
     }
 
     /// Recompute `backupStaleness` for `currentDepth` by comparing that depth's sealed
@@ -952,7 +971,7 @@ extension VaultManager {
     ///
     /// **Local-key derivation trap, worth restating on every method that hits it**:
     /// `depth`/`deletionToken` are sealed under the local DB key, ambiently derived via
-    /// `Manager.Key().createHybridLocalEncryptionKey()` — never via `self.keyManager`.
+    /// `Manager.Ambient.keyManager.createHybridLocalEncryptionKey()` — never via `self.keyManager`.
     /// `Manager.Security.orphanBackupKeys` (the deactivation-time orphaning this design
     /// exists to enable) derives its local key the same ambient way, un-injected. If
     /// this class instead read `self.keyManager` for local-key derivation, its writes
@@ -980,7 +999,7 @@ extension VaultManager {
         /// Derives the local DB key ambiently — see the class doc comment for why this
         /// must never go through `self.keyManager`.
         private func localKey() throws -> SymmetricKey {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else {
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
                 throw BackupError.decryptionFailed
             }
             return key
@@ -1230,6 +1249,10 @@ extension VaultManager {
         ///   5. If the full set fails, retry with shards left out, fewest first, until a
         ///      candidate opens the file or `maxReconstructionAttempts` is reached.
         ///
+        /// Steps 3 to 5 are `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)`,
+        /// with step 4 as its check. The file is the owner's own, so a trustee can't shape the
+        /// ciphertext, which is what makes the GCM tag a sound check here.
+        ///
         /// Step 5 is `bugs.md` Bug 95. On the new-device path no shard can be checked on its
         /// own (the key that signed them is gone), so one well-formed but wrong shard from a
         /// hostile trustee made every attempt fail, even with k honest shards present. Extra
@@ -1264,50 +1287,25 @@ extension VaultManager {
             let box = try AES.GCM.SealedBox(combined: backupData.dropFirst(4))
 
             let rawShares = shards.map { Array($0.value) }
-            var attempts  = 0
-            for leftOutCount in 0...max(0, rawShares.count - 2) {
-                var leftOut = Array(0..<leftOutCount)
-                repeat {
-                    guard attempts < Self.maxReconstructionAttempts else { throw BackupError.bekReconstructionFailed }
-                    attempts += 1
-
-                    let subset = rawShares.indices.filter { !leftOut.contains($0) }.map { rawShares[$0] }
-                    if let bekData = Self.keyOpening(box, from: subset) {
-                        return (bekData, distributionID)
-                    }
-                } while Self.advance(&leftOut, below: rawShares.count)
+            do {
+                let bekData = try ShamirSecretSharing.reconstruct(
+                    shares: rawShares, maxAttempts: Self.maxReconstructionAttempts
+                ) { candidate in
+                    guard var plaintext = try? AES.GCM.open(box, using: SymmetricKey(data: candidate), authenticating: VaultManager.backupFileAAD)
+                    else { return false }
+                    plaintext.resetBytes(in: plaintext.indices)
+                    return true
+                }
+                return (bekData, distributionID)
+            } catch {
+                throw BackupError.bekReconstructionFailed
             }
-            throw BackupError.bekReconstructionFailed
         }
 
         /// The most reconstructions `verifiedKey` tries for one distribution. One bad shard
         /// needs at most n + 1 tries (n ≤ 255), so this only binds with several bad shards at
         /// once: two among up to 44 shards, three among up to 18, always fit.
         static let maxReconstructionAttempts = 1024
-
-        /// The key `shares` reconstruct, if it opens `box`; nil otherwise, with the wrong
-        /// candidate zeroed.
-        private static func keyOpening(_ box: AES.GCM.SealedBox, from shares: [[UInt8]]) -> Data? {
-            guard var bekData = try? ShamirSecretSharing.reconstruct(shares: shares) else { return nil }
-            if bekData.count == 32,
-               var plaintext = try? AES.GCM.open(box, using: SymmetricKey(data: bekData), authenticating: VaultManager.backupFileAAD) {
-                plaintext.resetBytes(in: plaintext.indices)
-                return bekData
-            }
-            bekData.resetBytes(in: bekData.indices)
-            return nil
-        }
-
-        /// Steps `indices`, a strictly increasing set of positions below `count`, to the next
-        /// such set in lexicographic order. False once there is none, so an empty set runs once.
-        private static func advance(_ indices: inout [Int], below count: Int) -> Bool {
-            var i = indices.count - 1
-            while i >= 0 && indices[i] == count - indices.count + i { i -= 1 }
-            guard i >= 0 else { return false }
-            indices[i] += 1
-            for j in (i + 1)..<indices.count { indices[j] = indices[j - 1] + 1 }
-            return true
-        }
 
         // MARK: - Rotation
 

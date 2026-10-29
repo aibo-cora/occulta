@@ -1,6 +1,6 @@
 # Streaming Large Attachments Through the Bundle Format — Problem Statement
 
-**Status:** Proposal — not scoped for implementation, not started
+**Status:** Superseded 2026-10-23 by `STREAMING_SPEC.md`, the design that came out of this problem statement. Kept for its background.
 **Origin:** `Docs/Audit/SecurityReview2026-07-24/README.md`, finding #11 (unbounded inbound file read, SEC-5) — this document captures a follow-on question raised while fixing that finding, not the fix itself
 **Related:** `Docs/Features/Bundle/SPEC.md` (v4 wire format — fixes size bloat, not memory), `Docs/Features/Import/Large Video Import — OOM Investigation.md` (proven streaming-encryption techniques, different layer), `Occulta/Services/Attachment+Manager.swift` (existing chunked at-rest format)
 
@@ -25,7 +25,7 @@ Steps 2–3 are the actual bottleneck, and the mmap fix has no effect on them.
 
 ### The send side has the same shape of problem
 
-Composing a message with a few 1 GB attachments almost certainly has the mirror-image issue: `Occulta.File.content` is a plain in-memory `Data` throughout `ComposableMessage.swift`'s compose pipeline, so the attachments are likely fully materialized before `seal()` ever runs. Not confirmed by code reading for this document — noted because a real fix has to be symmetric, not receive-side-only.
+Composing a message with a few 1 GB attachments almost certainly has the mirror-image issue: `OccultaFormats.File.content` is a plain in-memory `Data` throughout `ComposableMessage.swift`'s compose pipeline, so the attachments are likely fully materialized before `seal()` ever runs. Not confirmed by code reading for this document — noted because a real fix has to be symmetric, not receive-side-only.
 
 ---
 

@@ -23,6 +23,7 @@ import Foundation
 import CryptoKit
 import SwiftData
 @testable import Occulta
+@testable import OccultaFormats
 
 /// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
 /// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
@@ -46,7 +47,7 @@ private func makeContactManager() throws -> ContactManager {
         Contact.Profile.Key.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
     return ContactManager(modelContainer: container, security: security)
 }
 
@@ -79,8 +80,9 @@ private func syntheticQuantumMaterial() -> QuantumKeyMaterial {
 /// A contact profile whose public key belongs to a live `TestKeyManager` we keep
 /// around, so the test can decrypt `encryptBundle`'s output exactly as the real
 /// recipient device would. `encryptBundle` always seals via the app's own
-/// default `Manager.Crypto()` (the real device identity, `Manager.Key()`), so
-/// only the recipient side needs a controllable key manager here.
+/// default `Manager.Crypto()` (the device identity, from `Manager.Ambient`), so
+/// only the recipient side needs a controllable key manager here. Tests that read
+/// "our" identity take it from `Manager.Ambient` too, so it matches what sealed.
 @MainActor
 private func makeRecipient(
     identifier: String,
@@ -116,12 +118,9 @@ private func makeRecipient(
         // Fake EC point (not a real SE keypair) -- only its *presence* matters for
         // the gating logic under test, matching GroupShardGatingTests' own approach.
         let prekeyPublicKey = try TestKeyManager().retrieveIdentity()
-        let prekey  = Prekey(id: UUID().uuidString, contactID: identifier, publicKey: prekeyPublicKey)
-        let encoded = try JSONEncoder().encode(prekey)
-        var secrecy = ForwardSecrecy()
-        secrecy.encodedPrekeys = [encoded]
-        let encodedSecrecy = try JSONEncoder().encode(secrecy)
-        profile.forwardSecrecyEncrypted = try encodedSecrecy.encrypt()
+        var record = PrekeyRecord.empty
+        record.inboundBatches = [.init(id: nil, keys: [.init(id: UUID().uuidString, publicKey: prekeyPublicKey)])]
+        profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
     }
 
     try contactManager.insertProfile(profile)
@@ -154,12 +153,12 @@ private enum TestSetupError: Error { case seUnavailable }
 @Suite("encryptBundle — shard-protocol fallback gate")
 @MainActor struct EncryptBundleShardFallbackTests {
 
-    @Test("no prekey available: custodyManifest is dropped even with no real shardOperations")
+    @Test("no prekey available: custodyManifest is dropped even with no real shardOperations", .ambientTestKeyManager)
     func fallbackDropsManifestWithoutShardOps() throws {
         let cm = try makeContactManager()
-        guard let (_, recipientKM) = try makeRecipient(
+        let (_, recipientKM) = try #require(try makeRecipient(
             identifier: "alice", contactManager: cm, capability: .groupCapable, hasPrekey: false
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
 
         let encoded = try cm.encryptBundle(
             basket: Basket(files: []),
@@ -171,12 +170,12 @@ private enum TestSetupError: Error { case seUnavailable }
         let bundle = try OccultaBundle.decoded(from: encoded)
         #expect(bundle.group != nil, "1.9.0+ contact must still use the group-envelope format")
 
-        let senderPub        = try Manager.Key().retrieveIdentity()
+        let senderPub        = try Manager.Ambient.keyManager.retrieveIdentity()
         let recipientCrypto  = Manager.Crypto(keyManager: recipientKM)
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
             senderContactID: "self", senderPublicKey: senderPub,
-            quantumMaterial: nil, prekeyManager: Manager.PrekeyManager()
+            quantumMaterial: nil, prekeys: Manager.PrekeySecretsManager()
         )
         #expect(mode == .longTermFallback || mode == .longTermNoPQ, "no prekey available -> must use fallback mode")
 
@@ -187,7 +186,7 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(sealed.custodyManifest == nil, "custodyManifest must not ride the fallback (non-FS) path")
     }
 
-    @Test("no prekey available: shardOperations and custodyManifest are dropped together")
+    @Test("no prekey available: shardOperations and custodyManifest are dropped together", .ambientTestKeyManager)
     func fallbackDropsBothShardFields() throws {
         let cm = try makeContactManager()
         // A real .distribute attribute sets isCarryingShard, which sends encryptBundle
@@ -197,10 +196,10 @@ private enum TestSetupError: Error { case seUnavailable }
         // here with syntheticQuantumMaterial() (unlike the FS path, whose one-time
         // prekey private half this fixture does not hold -- see
         // forwardSecretPathPreservesManifest).
-        guard let (_, recipientKM) = try makeRecipient(
+        let (_, recipientKM) = try #require(try makeRecipient(
             identifier: "bob", contactManager: cm, capability: .groupCapable,
             hasPrekey: false, hasQuantumMaterial: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
 
         let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
 
@@ -214,12 +213,12 @@ private enum TestSetupError: Error { case seUnavailable }
         let bundle = try OccultaBundle.decoded(from: encoded)
         #expect(bundle.group != nil, "1.9.0+ contact must still use the group-envelope format")
 
-        let senderPub       = try Manager.Key().retrieveIdentity()
+        let senderPub       = try Manager.Ambient.keyManager.retrieveIdentity()
         let recipientCrypto = Manager.Crypto(keyManager: recipientKM)
         let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
             in: bundle, blind: bundle.group!.blind,
             senderContactID: "self", senderPublicKey: senderPub,
-            quantumMaterial: syntheticQuantumMaterial(), prekeyManager: Manager.PrekeyManager()
+            quantumMaterial: syntheticQuantumMaterial(), prekeys: Manager.PrekeySecretsManager()
         )
         #expect(mode == .longTermFallback, "no prekey available, ML-KEM on file -> hybrid fallback mode")
 
@@ -231,17 +230,17 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(sealed.custodyManifest == nil, "custodyManifest must not ride the fallback (non-FS) path")
     }
 
-    @Test("prekey available: custodyManifest is NOT stripped (control — fix isn't over-broad)")
+    @Test("prekey available: custodyManifest is NOT stripped (control — fix isn't over-broad)", .ambientTestKeyManager)
     func forwardSecretPathPreservesManifest() throws {
         let cmWithPrekey    = try makeContactManager()
         let cmWithoutPrekey = try makeContactManager()
 
-        guard let (_, _) = try makeRecipient(
+        let (_, _) = try #require(try makeRecipient(
             identifier: "carol", contactManager: cmWithPrekey, capability: .groupCapable, hasPrekey: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
-        guard let (_, _) = try makeRecipient(
+        ))
+        let (_, _) = try #require(try makeRecipient(
             identifier: "carol", contactManager: cmWithoutPrekey, capability: .groupCapable, hasPrekey: false
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
 
         let manifest = [UUID(), UUID(), UUID()]
 
@@ -267,8 +266,49 @@ private enum TestSetupError: Error { case seUnavailable }
     }
 }
 
+/// Bug 162: a trustee's manifest lists every piece it holds for the owner, one per owner depth
+/// with a backup, and the ciphertext length is in the clear. Measured on the encoded bundle,
+/// as `forwardSecretPathPreservesManifest` does: this fixture can't open the forward-secret slot.
+@Suite("encryptBundle — custody manifest padding (Bug 162)")
+@MainActor struct EncryptBundleManifestPaddingTests {
+
+    /// One encoded ID's worth: a UUID string, its quotes and a comma in the payload's JSON.
+    private let encodedIDSize = 39
+
+    private func encodedSize(manifestCount: Int) throws -> Int {
+        let cm = try makeContactManager()
+        _ = try #require(try makeRecipient(
+            identifier: "dave", contactManager: cm, capability: .groupCapable, hasPrekey: true
+        ))
+        return try cm.encryptBundle(
+            basket: Basket(files: []), for: "dave",
+            shardOperations: nil, custodyManifest: (0..<manifestCount).map { _ in UUID() }
+        ).count
+    }
+
+    @Test("A trustee holding nothing, one piece or three for the owner sends bundles of the same size", .ambientTestKeyManager)
+    func sizeIndependentOfPieceCount() throws {
+        let none  = try self.encodedSize(manifestCount: 0)
+        let one   = try self.encodedSize(manifestCount: 1)
+        let three = try self.encodedSize(manifestCount: 3)
+        // Within less than one ID: the signatures' DER encoding varies by a byte or two.
+        #expect(abs(one - none) < self.encodedIDSize)
+        #expect(abs(three - none) < self.encodedIDSize)
+    }
+
+    @Test("Above the floor the manifest steps up a tier (control: the measurement sees the manifest)", .ambientTestKeyManager)
+    func aboveFloorStepsUp() throws {
+        let floor = try self.encodedSize(manifestCount: ContactManager.custodyManifestFloor)
+        let above = try self.encodedSize(manifestCount: ContactManager.custodyManifestFloor + 1)
+        #expect(above - floor > ContactManager.custodyManifestFloor * self.encodedIDSize / 2)
+    }
+}
+
 // MARK: - 2. Receiver side — ContactManager.openGroup / decryptSealed
 
+// Gated on a real Enclave, not `.ambientTestKeyManager`: receiving a fallback message
+// with no pending batch makes the receive path generate a fresh prekey batch through
+// `PrekeySecretsManager`, whose private keys are created in the Enclave.
 @Suite("openGroup / decryptSealed — receiver strips shard content on fallback slot")
 @MainActor struct ReceiverShardFallbackTests {
 
@@ -298,6 +338,31 @@ private enum TestSetupError: Error { case seUnavailable }
 
         #expect(result.recipientShardOperations == nil, "shard ops must be dropped when this recipient's slot used the fallback path")
         #expect(result.recipientCustodyManifest == nil, "custody manifest must be dropped when this recipient's slot used the fallback path")
+    }
+
+    /// Bug 164: a one-to-one bundle carries its piece operations and manifest in the shared payload, which the caller
+    /// falls back to when the per-recipient fields are empty. They must go on a fallback slot too.
+    @Test("openGroup drops a one-to-one bundle's shared piece operations and manifest on a fallback slot", .enabled(if: secureEnclaveAvailable()))
+    func openGroupStripsSharedOnFallbackSlot() throws {
+        let cm       = try makeContactManager()
+        let senderKM = TestKeyManager()
+        try registerSender(senderKM, identifier: "sender", in: cm)
+        let selfPub  = try Manager.Key().retrieveIdentity()
+
+        let realOp = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: senderKM))
+        let bundle = try Manager.Crypto(keyManager: senderKM).seal(
+            sealedPayload: OccultaBundle.SealedPayload(
+                message: Data("hi".utf8), shardOperations: [realOp], custodyManifest: [UUID()]
+            ),
+            groupID:    UUID(),
+            recipients: [GroupRecipient(publicKey: selfPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)]
+        )
+
+        let result = try cm.openGroup(bundle: bundle, ownerID: "sender")
+
+        #expect(result.sealed.shardOperations == nil)
+        #expect(result.sealed.custodyManifest == nil)
+        #expect(result.sealed.message == Data("hi".utf8), "the message itself still opens")
     }
 
     @Test("decryptSealed drops shard content on the legacy single-recipient path when the bundle used fallback", .enabled(if: secureEnclaveAvailable()))
@@ -331,6 +396,53 @@ private enum TestSetupError: Error { case seUnavailable }
     }
 }
 
+/// Bug 175: `custodyManifestCount` comes off the wire as an unchecked `Int`, and `prefix(_:)` traps on a negative one.
+///
+/// Through `ContactManager.receivedManifest`, the function `openGroup` calls, not through `openGroup`: the payload
+/// is decoded from JSON, because this build never seals `shardMetadataAttempted: true` and so no sealed bundle can
+/// carry it. The count a paired contact controls is the one that matters, and it enters here.
+@Suite("openGroup — a hostile custodyManifestCount (Bug 175)")
+@MainActor struct ReceivedManifestTests {
+
+    private let ids = [UUID(), UUID(), UUID()]
+
+    private func payload(count: Int, attempted: Bool = true) throws -> OccultaBundle.RecipientPayload {
+        let json = """
+        {"sessionKey":"aGVsbG8=","custodyManifest":[\(self.ids.map { "\"\($0.uuidString)\"" }.joined(separator: ","))],
+         "custodyManifestCount":\(count),"shardMetadataAttempted":\(attempted)}
+        """
+        return try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: Data(json.utf8))
+    }
+
+    @Test("A negative count is dropped instead of trapping", arguments: [-1, -3, Int.min])
+    func negativeCountIsNil(count: Int) throws {
+        let payload = try self.payload(count: count)
+        #expect(payload.custodyManifestCount == count, "the decoder still accepts it; the receiver is what must cope")
+        #expect(ContactManager.receivedManifest(payload, isFallback: false) == nil)
+    }
+
+    @Test("A count inside the manifest returns that many IDs (control)")
+    func inRangeCount() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 2), isFallback: false) == Array(self.ids.prefix(2)))
+    }
+
+    @Test("A zero count is still an empty list, the loss-detection signal, not nil")
+    func zeroCountIsEmptyList() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 0), isFallback: false) == [])
+    }
+
+    @Test("A count past the end returns the whole manifest")
+    func oversizedCount() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 1_000), isFallback: false) == self.ids)
+    }
+
+    @Test("Not attempted, or a fallback slot, returns nil whatever the count")
+    func notAttemptedOrFallbackIsNil() throws {
+        #expect(ContactManager.receivedManifest(try self.payload(count: 2, attempted: false), isFallback: false) == nil)
+        #expect(ContactManager.receivedManifest(try self.payload(count: 2), isFallback: true) == nil)
+    }
+}
+
 // MARK: - 3. Prekey batch rides with a piece (Bug 152)
 //
 // A queued piece goes with every direct message until the trustee confirms it, and the
@@ -340,15 +452,22 @@ private enum TestSetupError: Error { case seUnavailable }
 // piece stayed queued forever.
 
 /// A pending outbound batch of `count` prekeys, stored on `profile` as `encryptBundle` finds it.
+///
+/// Its keys carry stored public keys and no blobs, the shape of a batch carried over from before stage 1, so
+/// sending needs no Enclave: a blob's public key would be derived through one, which these tests run without.
 @MainActor
-private func storePendingBatch(count: Int, on profile: Contact.Profile) throws -> OccultaBundle.SealedPayload.PrekeySyncBatch {
-    try profile.configureForwardSecrecy()
-    let prekeys = try (0..<count).map { _ in
-        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: try TestKeyManager().retrieveIdentity())
+private func storePendingBatch(count: Int, on profile: Contact.Profile) throws -> PrekeyBookkeeper.OutboundBatch {
+    let keys = try (0..<count).map { _ in
+        PrekeyRecord.OwnKey(id: withUnsafeBytes(of: UUID().uuid) { Data($0) }, blob: nil,
+                            publicKey: try TestKeyManager().retrieveIdentity())
     }
-    let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeys)
-    try profile.store(batch: batch)
-    return batch
+    var record = PrekeyRecord.empty
+    record.ownBatches = [PrekeyRecord.OwnBatch(
+        id: Data((0..<16).map { _ in .random(in: .min ... .max) }), createdAt: Date(), retiredAt: nil,
+        isPending: true, keys: keys
+    )]
+    profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
+    return try #require(PrekeyBookkeeper().pendingBatch(in: record) { _ in nil })
 }
 
 /// A 1.9.0+ contact whose key material is `publicKey`, with the synthetic ML-KEM material,
@@ -378,7 +497,7 @@ private func insertContact(
 @Suite("encryptBundle — the pending prekey batch rides with a piece (Bug 152)")
 @MainActor struct PieceCarriesPrekeyBatchTests {
 
-    @Test("A message carrying a piece also carries the pending batch", .enabled(if: secureEnclaveAvailable()))
+    @Test("A message carrying a piece also carries the pending batch", .ambientTestKeyManager)
     func pieceCarriesBatch() throws {
         let cm = try makeContactManager()
         let recipientKM = TestKeyManager()
@@ -392,15 +511,18 @@ private func insertContact(
         let bundle = try OccultaBundle.decoded(from: encoded)
         let (recipientPayload, _, _) = try Manager.Crypto(keyManager: recipientKM).findAndOpenRecipientSlot(
             in: bundle, blind: try #require(bundle.group).blind,
-            senderContactID: "self", senderPublicKey: try Manager.Key().retrieveIdentity(),
-            quantumMaterial: syntheticQuantumMaterial(), prekeyManager: Manager.PrekeyManager()
+            senderContactID: "self", senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(),
+            quantumMaterial: syntheticQuantumMaterial(), prekeys: Manager.PrekeySecretsManager()
         )
 
         let delivered = try #require(recipientPayload.prekeyBatch)
         #expect(delivered.prekeys == batch.prekeys)
         #expect(delivered.generatedAt == batch.generatedAt)
+        #expect(delivered.id == batch.id)
     }
 
+    /// Gated on a real Enclave: `openGroup` on the trustee side generates a fresh prekey batch
+    /// through `PrekeySecretsManager`, as `ReceiverShardFallbackTests` explains.
     @Test("The trustee's device stores the batch that came with the piece", .enabled(if: secureEnclaveAvailable()))
     func trusteeStoresBatch() throws {
         // Both ends are this device's own identity: the owner seals to it, and a second
@@ -413,15 +535,112 @@ private func insertContact(
 
         let trusteeSide = try makeContactManager()
         let owner       = try insertContact(identifier: "owner", publicKey: selfPub, in: trusteeSide)
-        try owner.configureForwardSecrecy()
-        #expect(owner.availableInboundPrekeyCount == 0, "precondition: the trustee has used up the owner's prekeys")
+        let inboundCount = { try trusteeSide.prekeyRecord(for: owner).inboundBatches.reduce(0) { $0 + $1.keys.count } }
+        #expect(try inboundCount() == 0, "precondition: the trustee has used up the owner's prekeys")
 
         let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
         let encoded = try ownerSide.encryptBundle(basket: Basket(files: []), for: "trustee", shardOperations: [op])
 
         _ = try trusteeSide.openGroup(bundle: try OccultaBundle.decoded(from: encoded), ownerID: "owner")
 
-        #expect(owner.availableInboundPrekeyCount == batch.prekeys.count,
+        #expect(try inboundCount() == batch.prekeys.count,
                 "the trustee can now reply forward-secret, so its manifest is no longer dropped")
     }
 }
+
+// MARK: - 4. Out of one-time keys: the contact's last-resort key (prekey continuity stage 2)
+
+@Suite("encryptBundle — out of one-time keys, the contact's last-resort key (stage 2)")
+@MainActor struct SendToLastResortTests {
+
+    /// A 1.9.0+ trustee holding none of our one-time keys from them, only their last-resort key.
+    private func trusteeWithOnlyLastResort(in cm: ContactManager) throws -> (TestKeyManager, SoftwareLastResort) {
+        let recipientKM = TestKeyManager()
+        let trustee = try insertContact(identifier: "trustee", publicKey: try recipientKM.retrieveIdentity(), in: cm)
+        let lastResort = try SoftwareLastResort()
+        var record = PrekeyRecord.empty
+        record.inboundLastResort = PrekeyRecord.InboundKey(id: lastResort.keyID, publicKey: lastResort.publicKey)
+        trustee.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
+        return (recipientKM, lastResort)
+    }
+
+    private func open(
+        _ encoded: Data, as recipientKM: TestKeyManager, with lastResort: SoftwareLastResort
+    ) throws -> (bundle: OccultaBundle, used: InboundPrekeyUse, mode: OccultaBundle.Mode, sealed: OccultaBundle.SealedPayload) {
+        let bundle = try OccultaBundle.decoded(from: encoded)
+        let recipientCrypto = Manager.Crypto(keyManager: recipientKM)
+        let (payload, used, mode) = try recipientCrypto.findAndOpenRecipientSlot(
+            in: bundle, blind: try #require(bundle.group).blind,
+            senderContactID: "self", senderPublicKey: try Manager.Ambient.keyManager.retrieveIdentity(),
+            quantumMaterial: syntheticQuantumMaterial(), prekeys: lastResort
+        )
+        let sealed = try WireHandle.decode(
+            payload: try recipientCrypto.openGroupCiphertext(bundle, using: SymmetricKey(data: payload.sessionKey))
+        )
+        return (bundle, used, mode, sealed)
+    }
+
+    @Test("Sealed forward-secret to the last-resort key, under a derived prekey ID, which stays held", .ambientTestKeyManager)
+    func sealsToLastResort() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+
+        let opened = try self.open(
+            try cm.encryptBundle(basket: Basket(files: []), for: "trustee"), as: recipientKM, with: lastResort
+        )
+
+        #expect(opened.used == .lastResort(keyID: lastResort.keyID))
+        #expect(opened.mode == .forwardSecret, "not the long-term path")
+        let prekeyID = try #require(opened.bundle.group?.recipients.first?.secrecyContext.prekeyID)
+        #expect(prekeyID != lastResort.keyID, "the key's own ID never goes in the clear")
+        let held = try #require(try cm.fetchContact(by: "trustee"))
+        #expect(try cm.prekeyRecord(for: held).inboundLastResort?.id == lastResort.keyID, "not removed by use")
+    }
+
+    @Test("Two messages to the same last-resort key carry different prekey IDs", .ambientTestKeyManager)
+    func prekeyIDsDiffer() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+
+        let ids = try (0..<2).map { _ in
+            try #require(try self.open(
+                try cm.encryptBundle(basket: Basket(files: []), for: "trustee"), as: recipientKM, with: lastResort
+            ).bundle.group?.recipients.first?.secrecyContext.prekeyID)
+        }
+        #expect(ids[0] != ids[1])
+    }
+
+    @Test("A group message to a member out of one-time keys goes to their last-resort key", .ambientTestKeyManager)
+    func groupSendUsesLastResort() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+        let group = try cm.createGroup(name: "G")
+        try group.addMember("trustee", atDepth: 0)
+
+        let opened = try self.open(
+            try cm.encryptGroupBundle(basket: Basket(files: []), groupID: try #require(group.readID())),
+            as: recipientKM, with: lastResort
+        )
+
+        #expect(opened.used == .lastResort(keyID: lastResort.keyID))
+        #expect(opened.bundle.group?.recipients.first?.secrecyContext.prekeyID != lastResort.keyID)
+    }
+
+    /// D5: a last-resort bundle opens again on every redelivery, so a piece operation riding one could be replayed.
+    @Test("A piece and a manifest don't ride a last-resort key", .ambientTestKeyManager)
+    func noShardContentOnLastResort() throws {
+        let cm = try makeContactManager()
+        let (recipientKM, lastResort) = try self.trusteeWithOnlyLastResort(in: cm)
+        let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
+
+        let opened = try self.open(
+            try cm.encryptBundle(basket: Basket(files: []), for: "trustee", shardOperations: [op], custodyManifest: [UUID()]),
+            as: recipientKM, with: lastResort
+        )
+
+        #expect(opened.used == .lastResort(keyID: lastResort.keyID))
+        #expect(opened.sealed.shardOperations == nil)
+        #expect(opened.sealed.custodyManifest == nil)
+    }
+}
+

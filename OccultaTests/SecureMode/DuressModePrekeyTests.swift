@@ -25,6 +25,7 @@ import Foundation
 import Security
 import SwiftData
 @testable import Occulta
+@testable import OccultaFormats
 
 /// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
 /// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
@@ -80,7 +81,7 @@ private func makeSecurityContainer() throws -> ModelContainer {
 @Suite("Secure Mode — duress prekey protection")
 @MainActor struct DuressModePrekeyTests {
 
-    let pm     = Manager.PrekeyManager()
+    let pm     = Manager.PrekeySecretsManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
     // MARK: identifyOwner prekey safety

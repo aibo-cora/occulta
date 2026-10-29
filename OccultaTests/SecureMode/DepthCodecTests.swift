@@ -23,6 +23,7 @@ import Foundation
 import CryptoKit
 import SwiftData
 @testable import Occulta
+@testable import OccultaFormats
 
 @Suite("DepthCodec — Bug 85 plaintext format")
 struct DepthCodecTests {
@@ -47,7 +48,7 @@ struct DepthCodecTests {
     func plaintextLengthIsUniform() throws {
         var lengthsByValue: [Int: Int] = [:]
         for value in Self.allWrittenValues {
-            lengthsByValue[value] = try DepthCodec.encode(value).count
+            lengthsByValue[value] = DepthCodec.encode(value).count
         }
         let distinct = Set(lengthsByValue.values)
         #expect(distinct.count == 1, """
@@ -66,7 +67,7 @@ struct DepthCodecTests {
     func sealedLengthTracksPlaintextByAConstant() throws {
         let key = SymmetricKey(size: .bits256)
         for value in Self.allWrittenValues {
-            let plain  = try DepthCodec.encode(value)
+            let plain  = DepthCodec.encode(value)
             let sealed = try AES.GCM.seal(plain, using: key).combined
             #expect(sealed?.count == plain.count + 28,
                     "AES-GCM .combined is nonce(12) + ciphertext + tag(16) for value \(value)")
@@ -81,7 +82,7 @@ struct DepthCodecTests {
     @Test("Every written value survives encode → decode unchanged")
     func everyWrittenValueRoundTrips() throws {
         for value in Self.allWrittenValues {
-            let decoded = DepthCodec.decode(try DepthCodec.encode(value))
+            let decoded = DepthCodec.decode(DepthCodec.encode(value))
             #expect(decoded == value, "\(value) did not survive the round-trip (got \(String(describing: decoded)))")
         }
     }
@@ -162,10 +163,6 @@ struct DepthCodecTests {
 
 // MARK: - Migration
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 private func makeContainer() throws -> ModelContainer {
     let schema = Schema([
@@ -201,7 +198,7 @@ private func insertContact(
     return profile
 }
 
-@Suite("Depth fields — fixed-width normalisation", .enabled(if: secureEnclaveAvailable()))
+@Suite("Depth fields — fixed-width normalisation", .ambientTestKeyManager)
 @MainActor
 struct DepthFixedWidthMigrationTests {
 
@@ -327,9 +324,10 @@ struct DepthFixedWidthMigrationTests {
     /// on the format change would not error: it would quietly show the real address book
     /// to someone who should be seeing a duress layer.
     ///
-    /// `Manager.Security` is also constructed before `migrate()` runs in `App.init()`, so
-    /// this read genuinely happens against un-migrated bytes on the first launch after
-    /// upgrade. It is not a hypothetical ordering.
+    /// `Manager.Security` was constructed before the migration passes ran in `App.init()`, so
+    /// this read happened against un-migrated bytes on the first launch after upgrade. The
+    /// launch sequence now runs first (Bug 171, Stage 2), but a pass that fails leaves the
+    /// old bytes in place, so the read still has to cope with them.
     @Test("A legacy persistedDepth still reads — the fallback on failure is the real depth")
     func legacyScalarsStillRead() throws {
         let config = AppLayerConfig()

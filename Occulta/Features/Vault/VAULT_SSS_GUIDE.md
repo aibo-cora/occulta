@@ -28,7 +28,7 @@ This means:
 ## Encryption model (target)
 
 ```
-vault key (SE-derived)
+vault key (HKDF(ECDH(vault SE key, P) ‖ [ML-KEM secret ‖] r_B) since Bug 171; see below)
   └── encryptedEntryKey  →  per-entry key (PEK, 32 random bytes)
         │                    AAD = entry.aad(for: .entryKey)
         ├── encryptedLabel    (AES-GCM, AAD = entry.aad(for: .label))
@@ -47,7 +47,14 @@ SwiftData column. Cold-disk forensics cannot determine entry categories
 without the vault key.
 
 Normal access path:
-1. Unlock vault → derive vault key from SE via ECDH.
+1. Unlock vault → derive the vault key: `HKDF(ECDH(vault SE key, P) ‖ [ss ‖] r_B)`, with P a compiled-in point nobody knows the
+   discrete log of, `r_B` a Keychain secret under the vault's access control, and on iOS 26+ `ss` the Enclave's ML-KEM
+   secret from the tier B record. So the key needs the Enclave key, `r_B` and, on iOS 26+, the ML-KEM key; the key's public
+   point alone gives none of them. The first unlock after upgrading rewraps every per-entry key and backup key onto it in
+   one transaction (`VaultManager.unlock`, `KeyReseal.rewrapVault`, `bugs.md` Bug 171, Stage 4). **Before that rewrap, and
+   in the legacy form, the key was `HKDF(ECDH(vault SE key, G))`: a function of the vault Enclave key's public point, so
+   anyone holding that point could rebuild it with no Enclave and no biometric.** A device that was below iOS 26 at the
+   rewrap holds the classical form (no ML-KEM term) and moves to the hybrid one at its first unlock on iOS 26 (Stage 6).
 2. Unwrap PEK: AES-GCM open(encryptedEntryKey, using: vaultKey, authenticating: aad(for: .entryKey)).
 3. Decrypt label/content with PEK, passing the matching field discriminator.
 
@@ -229,7 +236,7 @@ shardMode = data == nil || shardOperations.contains { $0.attribute != nil }
 - `data` defaults to a human-readable fallback for old builds.
 
 **Message mode** (no `attribute`-carrying ops, `data` non-nil):
-- Normal v3fs path: `configureForwardSecrecy`, prekey pop (→ `.forwardSecret`
+- Normal v3fs path: prekey record load, prekey pop (→ `.forwardSecret`
   when a prekey is available, `.longTermFallback` when exhausted), pending
   prekey sync batch attached, prekey state saved.
 
@@ -509,12 +516,15 @@ on receipt. If the shard custody key required Face ID per operation, Bob would n
 open the app and interact each time a contact requests a shard back. Full automation
 (zero UI involvement for Bob) is the design goal.
 
-Two distinct symmetric keys are HKDF-derived from this single SE key:
+Two distinct symmetric keys are HKDF-derived from this single SE key. Since Bug 171 they are Enclave-bound, and the strings
+below are the *legacy* forms, kept to open what the launch reseal has not moved and what a downgraded build writes:
 
-| Symmetric key            | HKDF info                          | Seals          |
-|--------------------------|------------------------------------|----------------|
-| Shard custody key        | `Occulta-v1-shard-custody-2026`    | CustodyShard   |
-| Recovery buffer key      | `Occulta-v1-recovery-buffer-2026`  | ReconstructShard |
+| Symmetric key            | Legacy HKDF info (ECDH against G) | Current HKDF info (ECDH against P, `‖ r_U`) | Seals          |
+|--------------------------|------------------------------------|---------------------------------------------|----------------|
+| Shard custody key        | `Occulta-v1-shard-custody-2026`    | `Occulta-v2-shard-custody-2026`             | CustodyShard   |
+| Recovery buffer key      | `Occulta-v1-recovery-buffer-2026`  | `Occulta-v2-restore-buffer-2026`            | ReconstructShard, PendingShamirSecretRestore |
+
+On iOS 26+ the current forms also mix in the Enclave's ML-KEM secret and use the `-pq-2026` strings.
 
 Domain separation guarantees that a CustodyShard blob and a ReconstructShard
 blob are never decryptable with the same symmetric key, even though they share
@@ -525,7 +535,10 @@ derived and cannot be changed without invalidating all existing sealed rows for
 existing users. Treat these strings as opaque immutable constants — the year
 carries no operational meaning.
 
-Derivation: `ECDH(shardCustodySEKey, G) → HKDF-SHA256(salt: custodyPubKey, info: <info>)`
+Legacy derivation: `ECDH(shardCustodySEKey, G) → HKDF-SHA256(salt: custodyPubKey, info: <info>)`. ECDH against G is the key's own
+public point, so this form needs no Enclave (`bugs.md` Bug 171).
+Current derivation: `HKDF-SHA256(ikm: ECDH(shardCustodySEKey, P) ‖ [ss ‖] r_U, salt: custodyPubKey, info: <info>)`, which does.
+The launch sequence reseals every `CustodyShard` and `PendingShamirSecretRestore` row onto it, once (Stage 2).
 
 ---
 

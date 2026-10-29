@@ -29,6 +29,7 @@
 
 import Foundation
 import SwiftData
+import OccultaFormats
 
 @Model
 final class ReconstructShard {

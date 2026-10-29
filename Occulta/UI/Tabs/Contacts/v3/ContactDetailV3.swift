@@ -23,6 +23,7 @@ struct ContactDetailV3: View {
     @State private var useThreadCompose = false
     @State private var composeVM: ComposeViewModel
     @State private var draftStore = DraftStore()
+    @State private var secrecy: NextSendSecrecy?
 
     init(identifier: String) {
         self.identifier = identifier
@@ -98,15 +99,10 @@ struct ContactDetailV3: View {
                             vm:              self.composeVM,
                             headerRight:     "→ TO \(self.givenName.uppercased())",
                             encryptLabel:    "Encrypt",
-                            isForwardSecret: self.profile?.hasPrekeyAvailable,
+                            secrecy:         self.secrecy,
+                            recipientName:   self.givenName,
                             onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm) }
                         )
-                        #if DEBUG
-                        .onAppear { self.profile?.debugLogPrekeyStateAtCompose("V3 onAppear") }
-                        .onChange(of: self.profile?.availableInboundPrekeyCount) { old, new in
-                            debugPrint("[FS badge/V3 onChange] \(self.identifier): live availableInboundPrekeyCount \(String(describing: old)) -> \(String(describing: new))")
-                        }
-                        #endif
                     }
 
                     Text(self.encryptionSchemeLabel)
@@ -135,12 +131,16 @@ struct ContactDetailV3: View {
                 modelContext:      self.contactManager.modelContext
             ) {
                 self.composeVM.draftText = loaded.text
-                self.composeVM.messages  = loaded.messages
+                await self.composeVM.adopt(draftMessages: loaded.messages)
                 self.useThreadCompose    = loaded.wasThreadMode
             }
         }
         .onChange(of: self.composeVM.draftText) { _, _ in self.scheduleDraftSave() }
         .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
+        // Decrypts the 16 KB prekey record, so only when what it reads changes, not on every keystroke.
+        .onChange(of: [self.profile?.prekeyRecordEncrypted, self.profile?.maxBundleVersion], initial: true) {
+            self.secrecy = self.profile.map(self.contactManager.nextSendSecrecy)
+        }
         .onDisappear {
             Task {
                 await self.draftStore.flush(

@@ -47,7 +47,7 @@ extension IdentityChallenge {
         private let tick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
         private var hasOutstanding: Bool {
-            self.coordinator?.store.hasOutstanding(for: self.contact.identifier) ?? false
+            self.coordinator?.hasOutstanding(for: self.contact.identifier, now: self.now) ?? false
         }
 
         private var hasValidIdentity: Bool {
@@ -173,6 +173,7 @@ extension IdentityChallenge {
                             axis: .vertical
                         )
                         .lineLimit(4...10)
+                        .autocorrectionDisabled()
                     } header: {
                         Text("Your question")
                     } footer: {
@@ -233,7 +234,6 @@ extension IdentityChallenge {
                             Text(verbatim: note)
                                 .font(.callout)
                                 .italic()
-                                .textSelection(.enabled)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()

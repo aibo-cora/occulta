@@ -7,7 +7,7 @@
 //  pinned to the first peer, so a second peer joining the MCSession mid-exchange could
 //  hijack the "MITM guard" outright — not just slip past the phases that never checked
 //  it. Ciphertext-phase coverage is intentionally omitted here: ExchangeManager's
-//  PQProvider isn't injectable, so exercising that branch would require real Secure
+//  PostQuantumProvider isn't injectable, so exercising that branch would require real Secure
 //  Enclave hardware.
 //
 

@@ -8,6 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		DE1C8BEA2F8EC10D00F0E248 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		DEC0DE032F90000000A1B2C3 /* OccultaCore in Frameworks */ = {isa = PBXBuildFile; productRef = DEC0DE022F90000000A1B2C3 /* OccultaCore */; };
+		DEC0DE052F90000000A1B2C3 /* OccultaFormats in Frameworks */ = {isa = PBXBuildFile; productRef = DEC0DE042F90000000A1B2C3 /* OccultaFormats */; };
+		DEC0DE062F90000000A1B2C3 /* OccultaFormats in Frameworks */ = {isa = PBXBuildFile; productRef = DEC0DE072F90000000A1B2C3 /* OccultaFormats */; };
 		DEC7D75F2EEF1B9000764947 /* QuickLook.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DEC7D75E2EEF1B9000764947 /* QuickLook.framework */; };
 		DEC7D76B2EEF1B9000764947 /* OccultaPreview.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -79,8 +82,12 @@
 		DE1C8BF02F8EC17200F0E248 /* Exceptions for "Occulta" folder in "ShareExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Features/ShareExtension/ShareIndexKeyManager.swift,
+				Extensions/Data.swift,
 				Features/ShareExtension/ShareManifest.swift,
+				Features/ShareExtension/ShareStagingKeyManager.swift,
+				"Services/Attachment+Manager.swift",
+				Services/AttachmentKeyInfo.swift,
+				Services/NoCacheFile.swift,
 			);
 			target = DE1C8BDF2F8EC10C00F0E248 /* ShareExtension */;
 		};
@@ -97,17 +104,21 @@
 				"Features/contact-backup-analysis.md",
 				"Features/Forward+Secrecy/forward_secrecy_flow.md",
 				"Features/Forward+Secrecy/FORWARD_SECRECY_GUIDE.md",
-				"Features/SecureMode/classification-mockup.html",
+				Features/SecureMode/AT_REST_LAYERING.md,
 				"Features/SecureMode/forensic-trace-avoidance.md",
 				Features/SecureMode/LayerStore.md,
+				Features/SecureMode/PASSPHRASE_LAYER_KEYS.md,
 				Features/SecureMode/plan.md,
 				Features/SecureMode/scenarios.md,
 				Features/SecureMode/SECURE_MODE_DECRYPT_CONTRACT.md,
-				"Features/SecureMode/secure-mode-architecture.html",
 				"Features/SecureMode/SecureMode+RotationContract.md",
 				"Features/ShareExtension/SHARE_EXTENSION_PLAN 16.32.42.md",
+				Features/Vault/BEK_LAYERING_REFACTOR.md,
+				Features/Vault/RECOVERY_BUFFER_LAYERING.md,
 				Features/Vault/SHARD_PROTOCOL_CASES.md,
+				Features/Vault/STORAGE_LAYERING.md,
 				Features/Vault/VAULT_BACKUP_GUIDE.md,
+				Features/Vault/VAULT_KEY_LAYERING.md,
 				Features/Vault/VAULT_SSS_GUIDE.md,
 				Info.plist,
 			);
@@ -173,6 +184,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DEC0DE062F90000000A1B2C3 /* OccultaFormats in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -188,6 +200,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DEC0DE032F90000000A1B2C3 /* OccultaCore in Frameworks */,
+				DEC0DE052F90000000A1B2C3 /* OccultaFormats in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -263,6 +277,7 @@
 			);
 			name = ShareExtension;
 			packageProductDependencies = (
+				DEC0DE072F90000000A1B2C3 /* OccultaFormats */,
 			);
 			productName = ShareExtension;
 			productReference = DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */;
@@ -310,6 +325,10 @@
 				DEFFD8812E9D349700CA60F9 /* Assets */,
 			);
 			name = Occulta;
+			packageProductDependencies = (
+				DEC0DE022F90000000A1B2C3 /* OccultaCore */,
+				DEC0DE042F90000000A1B2C3 /* OccultaFormats */,
+			);
 			productName = Occulta;
 			productReference = DEFFD8552E9D293500CA60F9 /* Occulta.app */;
 			productType = "com.apple.product-type.application";
@@ -398,6 +417,9 @@
 			);
 			mainGroup = DEFFD84C2E9D293500CA60F9;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				DEC0DE012F90000000A1B2C3 /* XCLocalSwiftPackageReference "OccultaCore" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DEFFD8562E9D293500CA60F9 /* Products */;
 			projectDirPath = "";
@@ -518,7 +540,7 @@
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
@@ -530,7 +552,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.ShareExtension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -550,7 +572,7 @@
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
@@ -562,7 +584,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.ShareExtension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -581,7 +603,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OccultaPreview/Info.plist;
@@ -595,7 +617,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.OccultaPreview";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -615,7 +637,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OccultaPreview/Info.plist;
@@ -629,7 +651,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.OccultaPreview";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -774,7 +796,7 @@
 				CODE_SIGN_ENTITLEMENTS = Occulta/Occulta.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				ENABLE_APP_SANDBOX = YES;
@@ -799,12 +821,11 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportsDocumentBrowser = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.11.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -831,7 +852,7 @@
 				CODE_SIGN_ENTITLEMENTS = Occulta/Occulta.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				ENABLE_APP_SANDBOX = YES;
@@ -856,12 +877,11 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportsDocumentBrowser = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.11.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -1048,6 +1068,28 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		DEC0DE012F90000000A1B2C3 /* XCLocalSwiftPackageReference "OccultaCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = OccultaCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DEC0DE022F90000000A1B2C3 /* OccultaCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OccultaCore;
+		};
+		DEC0DE042F90000000A1B2C3 /* OccultaFormats */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OccultaFormats;
+		};
+		DEC0DE072F90000000A1B2C3 /* OccultaFormats */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OccultaFormats;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = DEFFD84D2E9D293500CA60F9 /* Project object */;
 }

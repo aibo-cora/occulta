@@ -159,7 +159,7 @@ final class Group {
     /// Used by the no-key convenience overloads below (single-edit paths) and by
     /// `setMembers`, which derives its own key once per call rather than per slot.
     private static func requireKey() throws -> SymmetricKey {
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw GroupError.keyUnavailable
         }
         return key
@@ -235,6 +235,16 @@ final class Group {
     /// depth instead of deriving one per slot.
     func refreshCiphertext(usingKey key: SymmetricKey) throws {
         try self.reencryptAllDepths(usingKey: key) { self.members(atDepth: $0, usingKey: key) }
+    }
+
+    /// Writes the three slot arrays as given, slot for slot. For the key reseal (`KeyReseal`), which moves each slot
+    /// onto the new key in place and leaves its position and length alone; every other writer rebuilds and
+    /// reshuffles. A group not yet edited since 1.9.1 keeps its empty `deeperMemberSlots`: padding it here would be
+    /// the forensic tell `ensureDeeperSlotsPadded()` explains.
+    func replaceSlots(real: [Data], duress: [Data], deeper: [[Data]]) {
+        self.realMemberSlots   = real
+        self.duressMemberSlots = duress
+        self.deeperMemberSlots = deeper
     }
 
     /// Removes `identifier` from every depth's membership (0...depthCount-1), including

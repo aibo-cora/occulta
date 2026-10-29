@@ -82,7 +82,7 @@ New optional sibling field on `OccultaBundle.SealedPayload`:
 let presence: PresenceEnvelope?
 ```
 
-Per the guidance documented in `IdentityChallenge+Envelope.swift`, per-feature envelopes
+Per the guidance documented in `IdentityChallengeEnvelope.swift`, per-feature envelopes
 are separate optional fields, **not** new `Kind` cases on `IdentityChallengeEnvelope` —
 an unknown enum raw value would fail the whole `SealedPayload` decode on old builds,
 killing the fallback-message degradation path. With a sibling field, old builds ignore
@@ -307,11 +307,15 @@ any irreversible action ("verify, then wire").
 
 ## 7. Privacy and forensic cleanliness
 
-- Outstanding challenges and presence outcomes live in the existing **in-memory** store
-  pattern; nothing persists across termination. No verification history is written
-  anywhere by default. (Deliberate: "who checked whom, when" is itself sensitive
-  metadata — and a history feature would need Travel Mode integration before it could
-  exist at all.)
+- **Amended 2026-10-25 (Bug 180).** The identity-challenge state this feature rides on is no longer
+  in-memory only. An outstanding challenge and the time a contact was last verified are kept per depth in a sealed
+  column on the contact (`Contact.Profile.challengeStateEncrypted`), for at most an hour, so a challenge survives
+  the app being killed; the owner's question stays in memory. That is a deliberate reversal of "nothing persists
+  across termination", with the cost recorded as S10 in `Occulta/Features/SecureMode/forensic-trace-avoidance.md`
+  (R1–R7, open, needing a decision). This amendment covers only the challenge state the identity-challenge code keeps;
+  nothing else in this spec's design is changed by it. No verification *history* is written: a settled slot keeps only the last verified time, and the sweep
+  clears that after the hour. (The original rule, kept for the history: "who checked whom, when" is itself sensitive
+  metadata — and a history feature would need Travel Mode integration before it could exist at all.)
 - M1 temp `.occ` files: same handling as identity challenges today (`writeOCC` to
   `temporaryDirectory`). The M2 QR path writes no files at all.
 - No network calls, no analytics, no new entitlements, no background execution.

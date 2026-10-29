@@ -454,6 +454,8 @@ one: under a second at 20 trustees in the measurements. Past the cap (three or m
 larger groups), a restore still fails as before. Repeating the reconstruction slightly helps an
 on-device timing observer, which is filed as Bug 131.
 
+**Moved 2026-10-13** (modularization Phase 3, step 4): the search is now `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)` in `OccultaCore`, and `verifiedKey` passes it the GCM check. Same order, cap and zeroing; the Bug 95 suite in `VaultRestoreTrustTests` passes unchanged.
+
 **Full reasoning:** `bugs.md` Bug 95.
 
 ---
@@ -731,7 +733,8 @@ its own row, and the per-entry paths were the remaining reads across depths.
 **Consequences:**
 - Per-entry watch rows (`PotentiallyLostShard`) confirmed since the last unlock before the upgrade can't be
   told apart without opening every entry's record, so they stay; nothing reads them.
-- A trustee's "held for this contact" count still includes old per-entry pieces.
+- A trustee's "held for this contact" count still includes old per-entry pieces. (The Vault tab stopped showing
+  the count on 2026-10-16, `bugs.md` Bug 162; the stored rows still include them.)
 - Bugs 115 and 116 (per-entry health screens) are moot.
 
 **Full reasoning:** this conversation, 2026-09-26/27; `bugs.md` Bug 141 (which unblocked it).
@@ -823,3 +826,495 @@ depth; a locked screen that can't be mistaken for an empty one.
 **Consequences:** no pre-selected trustees; a duress layer has no separate suggestion list either. Not unit-tested:
 the locked state and the Vault tab hint are view code, on the device-check list.
 
+---
+
+## Onboarding redesign: the key exchange's look, a Secure Mode page, nothing stored
+
+**Status:** Decided and built 2026-10-01 (`v2.0.0/onboarding-redesign`). The owner chose the direction (the
+"Instrument" mockup, one of three), asked for a Secure Mode page, and approved the result after a walkthrough in the
+Simulator.
+
+**Context:** The old onboarding used colours outside the app's tokens and one card layout on all five screens, and
+its copy was wrong in places. It said Apache 2.0 (the licence is AGPL-3.0). It showed "Quantum Protection" on iOS
+18.6–25, where ML-KEM doesn't run. It claimed "No metadata exposed", though the carrying app sees who sent a file to
+whom, and when. It said keys go "via UWB", but UWB only measures distance and MultipeerConnectivity carries the keys.
+It also named a legal process twice ("subpoena"; "No legal process can retrieve what was never stored"), the class
+`LanguageRiskReview2026-08-01` covers, in strings it never read: its scope was Markdown.
+
+**Decision:**
+- Five dark pages over `ParticleFieldView`, in the exchange screen's language: Welcome, Meet, Send anywhere, Secure
+  Mode, Vault. Continue on each, Get started on the last.
+- No Skip, as before (`USER_ENGAGEMENT_FRICTION.md` M3). The Vault page stays, last: it is the no-contacts signpost
+  (C1) and carries the Restore pointer ("Restore discoverability").
+- The Secure Mode page shows only with the `secureMode` flag on, since it points to Settings › Security.
+- The page explains and points to Settings; it doesn't start setup.
+- It states the limit, in the README's own terms: "It stops someone using the app, not someone copying data off the
+  phone."
+- The post-quantum line names its condition (both phones on iOS 26 or later) and shows on every iOS version, instead
+  of being hidden below 26.
+
+**Why:**
+- Nothing new is stored: `hasCompletedOnboarding` is still the only write, and no choice made in the flow is
+  recorded.
+- Naming Secure Mode is safe here, unlike in What's New, which can show at any depth. The onboarding shows only
+  before `hasCompletedOnboarding` is set, before any PIN or depth exists, and nothing resets the flag. Settings and
+  the README already name the feature; deniability rests on which PIN was entered, not on the feature being unknown.
+- Starting setup from the page would need a PIN first, then a contact classification step with no contacts to
+  classify. It would also put a second modal in the unlocked tree, where `RootView` keeps its own sheets (an inbound
+  file can present at first launch).
+
+**Consequences:** setting up Secure Mode at first launch takes a trip to Settings. The onboarding is dark in light
+mode too, like the exchange screen. If it is ever made replayable from Settings, the What's New rule applies to it.
+The limit sentence needs revisiting if per-layer keys ship (`Docs/v2.0.0`). Reusing `ParticleCanvas` exposed a leak on
+every key exchange, fixed here (`bugs.md` Bug 153).
+
+**Full reasoning:** this entry. `OnboardingTests` pins the page order, the Restore pointer, and a tripwire on
+authority names and overclaiming words; the drawing is view code, on the device-check list.
+
+## Accept the prekey loss on downgrade; the prekey refactor doesn't wait for the passphrase work
+
+**Status:** Decided 2026-10-16 by the owner, after the downgrade was measured on a simulator the same day.
+
+**Context:** Prekey Continuity D6 tied the prekey refactor to the passphrase migration's release. The premise was
+that an older build can't read a migrated database at all, so a downgrade could never meet a last-resort key or a
+blob prekey. That premise is false (`bugs.md` Bug 168). Core Data keeps the newer model in the store's
+`Z_MODELCACHE` table, so an older build migrates the store back and drops what it doesn't know. A downgrade from
+the refactor deletes every contact's prekey record. Messages sealed to those keys can never be opened, even after
+upgrading again. Only TestFlight and sideloaded builds can downgrade on iOS.
+
+**Decision:**
+- Accept the loss for TestFlight and sideload users, and say so in the TestFlight notes.
+- The prekey refactor doesn't wait for the passphrase work. It is merged into `release/v2.0.0` (PR #110) and
+  ships in 2.0.0.
+
+**Why:**
+- Release order protected nothing, so the pairing decided on 2026-10-14 had no reason left.
+- Making a downgrade lose nothing would mean moving the store for the refactor, which is new work, for a failure
+  only testers can reach.
+
+**Consequences:**
+- The acceptance covers the refactor's prekey records only. For the passphrase migration, `ROLLOUT_PLAN.md` still
+  proposes that a downgrade lose nothing, with a new store file, because there a downgrade would delete everything
+  resealed. That is not decided. *2026-10-19:* decided for the passphrase migration; see "The passphrase
+  migration writes a new store file" below.
+- Which release carries the passphrase work is open.
+
+**Full reasoning:** Prekey Continuity `DESIGN.md` §5 (D6); `bugs.md` Bug 168; `Docs/v2.0.0/ROLLOUT_PLAN.md`,
+release mechanics.
+
+
+## Depth keys come directly from the phrase; no key slots
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** The passphrase rollout plan (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1) compared two ways to key a
+depth. In the spec's way, rows are sealed under `layerKey_D`, derived from the phrase and the install's Enclave
+key. In the other, each depth gets a random key held in a slot that `layerKey_D` opens. Slots would let a later
+change to the derivation rewrap one slot instead of resealing, and would let every install reseal before any
+phrase exists.
+
+**Decision:** Direct derivation, as `PASSPHRASE_LAYER_KEYS.md` §1 has it. No key slots.
+
+**Why:**
+- A key once wrapped under a device key stays unwrappable from older images, because nothing documents that
+  deleting an Enclave key revokes an older copy (Prekey Continuity D9). So a silent reseal ahead of phrase setup
+  needs a second reseal at graduation, which is what Rule 1 exists to avoid. So does raising a lowered gate, or
+  replacing an exposed phrase.
+- What remains is a cheaper change to the derivation later, which should be rare and can ride a planned reseal.
+  It doesn't justify another key layer.
+
+**Consequences:**
+- Release order B in the plan (§7.1), a silent reseal first, drops out. The reseal runs at phrase setup.
+- Changing the derivation later (the PBKDF2 count, the KDF, the Enclave step) reseals every row.
+- `ROLLOUT_PLAN.md` Rule 1 stands as written.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1; `PASSPHRASE_LAYER_KEYS.md` §1.
+
+## The passphrase work ships in the release after 2.0.0
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** Since 2026-10-16 the prekey refactor ships in 2.0.0 without waiting for the passphrase work, so
+nothing tied that work to 2.0.0 any more. Bug 165's capability tier needs only the 2.0.0 version number. The
+passphrase work is about 3–5 months of build (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §7).
+
+**Decision:**
+- The passphrase work ships in the release after 2.0.0.
+- 2.0.0 ships what is merged into `release/v2.0.0` without it.
+- Stage 0's groundwork and stage 1's phrase keyboard may go into 2.0.0 if they're ready. The keyboard would go
+  through Bug 92's export passphrase.
+
+**Why:**
+- The prekey records and the reseal are each a large migration.
+- The app sends no telemetry, so problems arrive only as user reports. In separate releases, a failure points at
+  one migration.
+- Holding 2.0.0 back would also hold back everything already merged for it.
+
+**Consequences:**
+- 2.0.0 adds no protection against the device-seizure case. Bug 119 stays open through it.
+- Whether the passphrase work's data slices ship together in that release is still open (the owner's
+  2026-10-15 lean, `ROLLOUT_PLAN.md`, release mechanics).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §7.1; `Docs/v2.0.0/ROLLOUT_PLAN.md`, release mechanics.
+
+## The passphrase migration writes a new store file; the old store is Rule 4's way back
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- Rule 4 of `ROLLOUT_PLAN.md` keeps a way back until every phrase has been entered correctly a few times over
+  about a week.
+- Bug 168 showed that an older build migrates a newer store back to its own schema, dropping what it doesn't
+  know. In the same store file, a downgrade would delete everything resealed.
+- Keeping the way back by wrapping the new depth keys under a device key would leave older images able to open
+  them for good. That is the reasoning that ruled out key slots the same day.
+
+**Decision:**
+- **A new store file.** The reseal writes the migrated data to it, under phrase-derived keys only.
+- **The old store stays until graduation,** with its keys (the local DB Enclave key and the keychain random; see the
+  2026-10-24 note below) and
+  the PIN verifiers inside it.
+- **The way back.** A phrase forgotten during the week can be bypassed with the old PIN, which opens the old
+  store as it was at setup. Changes made since are lost, and the screen says so.
+- **Graduation** deletes the old store, its keys and the Secure Mode PIN key together.
+
+**Why:**
+- No new key is ever stored where the passcode alone can reach it.
+- An image taken during the week shows the old store, which is exactly as exposed as all data is today, and
+  a new store that needs the phrases.
+- The same file also makes a downgrade lose nothing. During the week an older build finds the old store as
+  it was at setup.
+
+**Consequences:**
+- A phrase forgotten during the week loses that week's changes.
+- Two stores sit on disk for the week.
+- Still open: what a newer build does with a store an older build wrote to in the meantime.
+- *2026-10-24, after Bug 171's fix (#123):* the keychain random is tier U's `r_U`, which shard custody, the restore
+  buffer, the PIN-verifier wrap and compose staging also use. Graduation deletes the local DB Enclave key, which
+  leaves the old store unreadable, and `r_U` only once nothing else uses tier U.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.2; `ROLLOUT_PLAN.md` Rule 4 and "A downgrade loses
+nothing"; `bugs.md` Bug 168.
+
+## Installs with no lock migrate too, with an empty phrase for depth 0
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** The 2026-10-15 storage design (`PASSPHRASE_LAYER_KEYS.md` §2) didn't say what an install with no
+app lock does. Such an install has only depth 0, since Secure Mode needs a lock. It could stay on today's store
+until a lock is turned on, or migrate with everyone else.
+
+**Decision:**
+- **Every install migrates in the passphrase release.** Depth 0's key on an install with no lock is derived
+  from an empty phrase, with the install's salt and Enclave key.
+- **No probation week for these installs.** With no phrase to forget, the old store and its keys are deleted
+  once the reseal checks out.
+- **Turning a lock on later** reseals depth 0 under the new phrase, through the same path.
+
+**Why:**
+- Staying behind would keep two data layers in the code, old per-field encryption and new padded blobs,
+  possibly for good, with every contact feature written for both.
+- One format means the old one's code can eventually be deleted.
+- A depth-0-only install is the reseal's simplest case.
+
+**Consequences:**
+- Every install goes through the reseal, including those that never set a lock. It is the riskiest operation in
+  the app (Bugs 75–78, 138).
+- An install with no lock keeps today's protection: the empty phrase opens it for anyone with the passcode.
+- Every install eventually loses the old keys, so their absence says nothing about a lock (`PASSPHRASE_ROLLOUT.md`
+  §3.2).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.4.
+
+## Depths a coercer created are dropped at phrase setup, with the contacts they created
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** `reEnablePIN`'s Bug 37 path turns an unknown PIN entered at a lowered gate into a new layer. So some
+installs reach the passphrase release with depths whose PINs only a coercer knows. Phrase setup needs every
+depth's phrase in one sitting (`ROLLOUT_PLAN.md` Rule 2), and the real user can't give these.
+
+**Decision:**
+- **Drop those depths at phrase setup,** as `forceDeactivateForRecovery` drops every layer today.
+- **Delete the contacts they created with them,** orphan-in-place.
+
+**Why:**
+- They hold only what a coercer created.
+- After the release no PIN works for anyone, so a returning coercer's dead PIN shows nothing.
+- The contacts have to go too. Under the 2026-10-15 storage, a contact created at a duress depth is hidden from
+  the depths above only through that depth's origin list. Without the list it would appear in the real user's
+  contact list, which `Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md` rules out.
+
+**Consequences:**
+- During the probation week the old store still opens with that PIN, as it was at setup (Rule 4's way back).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.3 and §3.1.
+
+## Lock off and lock on behave identically at every depth and on every install
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** Under coercion, Secure Mode lets the user turn the lock off at a duress depth (`disablePIN`). The app
+then opens straight into the decoy, as it would for an ordinary user who turned their lock off. Turning it back on
+with an unknown PIN makes a new layer (`reEnablePIN`, Bug 37). A PIN never locked any data, so these were screen
+changes. A phrase does lock the data. So lock off has to keep the depth's key where the app can reach it without
+the phrase, and a new phrase means a new key.
+
+**Decision:**
+- **The rule.** Lock off and lock on must behave identically at every depth and on every install, Secure Mode or
+  not: the same screens, the same time, the same Settings afterwards, the same changes on disk.
+- **Lock off is kept, built one way for everyone.** It stores the current depth's key under a device-only key.
+  The container for that key exists on every install, filled with random bytes when unused.
+- **At the real depth, while duress depths exist, lock off is refused.** The user removes Secure Mode first.
+- **Lock on in a decoy creates a new depth below it.** It must take the same steps and time, and show the same
+  contacts, as an ordinary install's lock-on. How is open.
+
+**Why:**
+- Any difference a coercer can observe identifies duress.
+- Lock off at the real depth would leave the real data open to anyone with the passcode. A coercer is never at the
+  real depth without its phrase, so refusing there is never observed.
+- With keys derived directly from the phrase, the parent depth's chain copy can't follow a changed key. So a new
+  phrase has to be a new depth.
+
+**Consequences:**
+- Images taken while a depth's lock is off can open that depth until it is resealed.
+- Each lock-on in a decoy adds a depth. Removing unwanted ones is decision 9 of the rollout plan, open.
+- Making a decoy's lock-on match an ordinary lock-on is open design work.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.3.
+
+## Phrase setup in a decoy is real for that decoy; a decoy with its lock off migrates like an install with no lock
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- Every lock user is asked to set up a phrase (`ROLLOUT_PLAN.md` Rule 3), and the prompt must behave the same at
+  every depth.
+- A coercer at a decoy can demand that setup finish.
+- Rule 2 wants every depth's phrase in one sitting, which only the real user at the real depth can give.
+- A decoy whose lock was turned off looks to a coercer like an install with no lock.
+
+**Decision:**
+- **Setup started in a decoy sets up that decoy for real:** its phrase, and the data it can see, in the new store.
+  The real user finishes the other depths later from the real depth, typing the decoy's phrase again. This is an
+  exception to Rule 2.
+- **A decoy with its lock off migrates silently, like an install with no lock,** and its key stays under a
+  device-only key. The real user gets back by turning the lock on and using the lock screen, then finishes
+  setup.
+
+**Why:**
+- A setup a coercer can't complete, or one that leaves the install looking unset in an image taken right after,
+  identifies the decoy.
+- Until the real user finishes, the old store opens with the passcode, as all data does today, so the window
+  loses nothing.
+
+**Consequences:**
+- Comparing images over time shows that more was set up later. That is the repeated-images leak the spec already
+  lists as open (Bug 120).
+- The real user has to learn a phrase that was shown under coercion.
+- The depth created by turning the lock on in 8b's path has to be removed later (removing a depth, open).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §3.1.
+
+## Any depth can remove the depths below it; their data becomes unopenable
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- Today "Deactivate Protection" removes a layer and every layer below it, and orphans their vault entries.
+- It is offered only at the real depth or at a coercer's home depth (`coercerBaseDepth`).
+- The 2026-10-15 storage drops absolute depth numbers (requirement 1), and each depth holds the keys of the
+  depths below it.
+- Phrase setup and the lock-on path (7c) can leave depths the real user wants gone.
+
+**Decision:**
+- **9a.** Any depth can remove the depths below it, and removing one removes everything below it. No depth removes
+  itself or anything above it.
+- **9b.** The removed depths' header slots go back to filler, and the depth above drops their key. Rows sealed only
+  under those keys become unopenable and read as deletions. The contacts those depths created are deleted.
+
+**Why:**
+- The option behaves the same at every depth, so it shows a coercer nothing. A decoy with nothing below it looks
+  like an install without Secure Mode.
+- Deleting the created contacts follows from origin lists: without the removed depth's list they would surface at
+  the depths above.
+
+**Consequences:**
+- Removing a depth erases what was reachable only through it, for good.
+- It still shows across images, as creating a depth does (spec §2, 2026-10-15, open).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §5.
+
+## Phrase setup is required at the first unlock after the update
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- After the passphrase release, a lock user who hasn't set up a phrase stays on the old store with the PIN, at
+  today's protection.
+- `ROLLOUT_PLAN.md` Rule 3 allows an opt-in period only if it is short, because early adopters mark themselves.
+- Options considered: about two weeks of "Later" and then required; required at once; no deadline.
+
+**Decision:** Setup is required at the first unlock after the update, with no "Later".
+
+**Why:**
+- No opt-in period means nothing marks an early adopter.
+- No install keeps the PIN path beyond the probation week, so the old lock path can leave the code.
+- Images taken over time show no difference between users who set up early and those who set up late.
+
+**Consequences:**
+- After the update, a lock user can't use the app until setup and its learning steps are done, even at a bad
+  moment. The learning steps have to be quick enough for that.
+- A decoy behaves the same way (setup in a decoy, decided the same day).
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §3.2.
+
+## Phrases are 7 words from the full EFF list
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** Phrases are typed on an in-app letter keyboard (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2). Three lists
+were compared:
+- the full EFF list (7,776 words): 7 words, about 34 taps, with a suggestion bar;
+- one word per 4-letter prefix (3,745 words without the hyphenated ones): 8 words, 4 letters each, blind entry;
+- one word per 3-letter prefix (1,373 words): 9 words, 3 letters each, blind entry.
+
+**Decision:** The full list, 7 words, as `PASSPHRASE_LAYER_KEYS.md` §4 assumes. The 4 hyphenated words are skipped
+when generating.
+
+**Why:** Memorising is the larger burden, at 7 words per depth. The full list asks for the fewest. All three
+options are far beyond guessing once every guess needs the Enclave. *Correction 2026-10-24:* Bug 171 showed the
+  spec's construction doesn't put the Enclave in every guess (`PASSPHRASE_LAYER_KEYS.md` §1, D2, open). The comparison
+  still holds: spec §4 sizes 7 words with PBKDF2 to stand without the Enclave.
+
+**Consequences:**
+- Typing needs a suggestion bar from the third letter, because a prefix can match up to 85 words. The bar shows
+  candidate words on screen, so a camera in view can see what is typed. Whether the bar can be hidden is decision
+  13 of the rollout plan, open. *2026-10-19:* decision 13 dropped the bar; see the next entry.
+- Bug 92's 6-word export passphrase keeps its 77.5 bits.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2.1–§2.4.
+
+## The phrase keyboard has no suggestion bar; VoiceOver behaves as in iOS password fields
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** With the full EFF list, a 3-letter prefix still matches a median of 12 words, and up to 85. A
+suggestion bar from the third letter would let the user tap the word. The keyboard is the app's own, so iOS's
+behaviour for password fields doesn't apply on its own.
+
+**Decision:**
+- **No suggestion bar.** A word completes itself once its prefix is unique, and letters that can't continue a list
+  word are disabled.
+- **No visual feedback on a tap,** haptics only. Committed words show as dots.
+- **VoiceOver** behaves as it does in iOS's own password fields. The setup screen suggests headphones to VoiceOver
+  users.
+- **The setup screen tells the user to shield the screen** while typing.
+
+**Why:**
+- The bar saves about 3 taps a phrase (34 against 37).
+- It puts whole words on screen, which are readable from further away and on poorer video than taps on keys.
+- No keyboard stops a camera that can see the keys, so shielding is the user's part.
+
+**Consequences:**
+- About 37 taps per 7-word phrase.
+- VoiceOver users hear keys read aloud unless they use headphones.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2.1–§2.2.
+
+## Duress phrases are rehearsed through a monthly in-app prompt and a Settings entry
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:**
+- The real phrase is typed at every unlock. Duress phrases may go unused for months, and an unused phrase is
+  forgotten.
+- A forgotten duress phrase leaves the decoy unreachable when it is needed.
+- Notifications are forbidden (`OSTraceTests`), so any reminder has to appear inside the app.
+
+**Decision:**
+- **A prompt about monthly at unlock,** with "Later": "Rehearse your other phrases."
+- **A "Rehearse phrases" entry in Settings.**
+- **The check.** Each depth rehearses the phrases of the depths below it, without changing depth.
+- **What it stores.** The last-rehearsed date is one ordinary row in the general pool, sealed under that depth's key.
+
+**Why:**
+- The prompt keeps duress phrases usable without relying on the user to remember to practise.
+- It behaves the same at every depth. A depth with nothing below it never prompts, like an install without
+  Secure Mode.
+
+**Consequences:**
+- One more stored row per depth that has depths below it, written about monthly.
+- The user types duress phrases in front of whoever is present when they choose to rehearse.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §2.5.
+
+## Per-install keys stay in the keychain; Erase All Data deletes the share staging key
+
+**Status:** Decided 2026-10-19 by the owner.
+
+**Context:** iOS keeps an app's keychain items after the app is deleted, so Occulta's keys and their creation dates
+outlive an uninstall (`bugs.md` Bug 170). CryptoKit Enclave blobs in files inside the app's container would be
+deleted with the app, as prekeys' blobs are under Prekey Continuity D9. Separately, Erase All Data doesn't delete
+the share staging key.
+
+**Decision:**
+- **15a.** The passphrase work's new per-install Enclave key is a keychain item.
+- **15b.** The identity key stays in the keychain.
+- **15c.** The keys graduation retires (the local DB key and its random component, which is shared with other
+  tier U keys since Bug 171's fix, 2026-10-24; the Secure Mode PIN key; the
+  vault key) aren't moved first.
+- **15d.** Erase All Data deletes the share staging key, which stays a keychain item.
+
+**Why:**
+- Moving the identity key means a new identity, which strands every contact (Bug 82). Keeping it in the keychain
+  also lets a reinstall keep the identity.
+- Moving the retired keys would need a migration of its own, for keys about to be deleted.
+- The new key follows the others.
+- The share key's survival of an erase is a plain defect, and fixing it doesn't depend on the passphrase work.
+
+**Consequences:**
+- Deleting the app still leaves per-install keys and their creation dates, which show the app was set up and when.
+- Still open in Bug 170: the legacy keychain prekeys, whose tags name contacts, and the shard custody key (stage 5).
+- The erase fix can ship in 2.0.0. *2026-10-19:* built and merged in PR #118, with #119's sweep of unread
+  `inbound/` handoffs.
+
+**Full reasoning:** `bugs.md` Bug 170; `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §6.
+
+## Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+
+
+**Status:** Plan adopted 2026-10-21. D1, D6 and the `identifier` question are the user's. Everything else here is recommended; open, needs a decision. Stages 1, 1b, 2, 3, 4, 5, 6, 7 and 8 are built, and the bug is fixed on the Simulator with the items under "What stays open" in `bugs.md` Bug 171 not decided or not done; after Stage 2 an upgraded install's local DB, shard custody and restore buffer data are under the Enclave-bound keys, after Stage 3 its PIN verifiers are wrapped under a key that needs `r_U`, and after the first vault unlock following Stage 4 the vault's per-entry keys and backup keys are under a key that needs `r_B`. After Stage 5 a share session is staged under a key that needs `r_S`, and, on iOS 26+, the Enclave's ML-KEM secret. After Stage 6 a device that was below iOS 26 at the first reseal is upgraded to the hybrid form at its first launch on iOS 26+.
+
+**Context:** Seven symmetric keys are `HKDF(ECDH(enclave_priv, G) …)`. ECDH against the generator G is d·G = Q, the key's own public point, so each is a function of Q and the Enclave never takes part (`bugs.md` Bug 171, `EnclaveGeneratorECDHTests`). The fix gives each key an input that needs the Enclave and a post-quantum-safe secret of its own access tier, and moves existing data over with no loss, no new forensic tell, and nothing a coercer can use. Ciphertext already copied with Q stays readable; no option changes that.
+
+**Decision (the user's, 2026-10-21):** D1, the quantum question.
+- Every iOS version gets the same fix: term 1, ECDH against a compiled-in nothing-up-my-sleeve point P, and term 2, a 32-byte Keychain secret per access tier. No OS-version split in them.
+- iOS 26+ also gets term 3, an Enclave ML-KEM secret, for all three tiers (device unlock, biometry or passcode, share staging).
+- Below 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer, stays open, needs a decision, until the device reaches 26 or the passphrase ships.
+
+**Recommended, not decided** (the plan's numbering; each stays open until the user decides it, and any can be overridden at a stage review):
+- **D2. The layer-key "Enclave in every guess" requirement.** Drop it and keep the ECDH(d, P) device-binding term. The spec already sizes 7 words with PBKDF2 to hold with the Secure Enclave broken, and the alternative (a hash-to-curve peer) is bespoke crypto with no independent review. Update `PASSPHRASE_LAYER_KEYS.md` and `HARDENING_STEPS.md` step 2.
+- **D3. One root per tier.** Keep today's Enclave keys, with one Keychain secret per tier (tier U reuses the existing `local.db.random.key.occulta`). Consolidating Enclave keys buys nothing measurable and adds keychain churn.
+- **D4. Whether an image alone yields Q.** Run it on the Simulator, done (`bugs.md` Bug 171, "Where Q sits at rest"): no cleartext column holds Q, only SHA-1(Q). A device answer needs extraction tooling we don't have, so it stays open.
+- **D5. P as a compiled-in NUMS constant, or a stored per-install point.** The constant: it needs no storage, no integrity protection and no scalar.
+- **D6. Downgrade.** Decided by the user, 2026-10-21: accept it for TestFlight and sideload, as Bug 168 did, and say so in the TestFlight notes. A new store file would keep an old-key copy that any Q-holder can read for as long as it exists.
+- **D7. Sequencing.** Fix all seven keys in 2.0.0. The passphrase release isn't built, and its storage design (spec §2) isn't decided. Key slots were decided against on 2026-10-19.
+- **D8. Vault rewrap timing.** At the first vault unlock. The window until then, with the per-entry keys still under the legacy vault key, is open, needs a decision.
+- **D9. Removing the v1 read path.** Keep it, migration-only: App Store updates jump straight to the newest version, so removing it loses data for installs that skipped versions.
+
+**Also decided by the user, 2026-10-21:** `Contact.Profile.identifier` stays byte-identical on every row, along with every record that stores it as a value. For contacts imported from the address book its plaintext is the iOS Contacts entry ID, so a holder of Q can still link each imported contact to its address-book entry until the passphrase migration reseals each contact as one record. Open, needs a decision.
+
+**Stage 2 rule (the plan, at the Stage 2a review; recommended; open, needs a decision): the keys follow the epoch.** The three tier U accessors return the Enclave-bound derivation only once `AppLayerConfig.keyEpoch` exists, and the legacy one before, decided once per process by the launch sequence after the reseal. The alternative, switching the keys as soon as the code ships, writes over data it can't read whenever the pass aborts (a background launch with the device locked, a missing secret, a failed read-back): prekey records, restore slots and `ReconstructShard` rows are the known cases. The cost is that an aborted pass leaves the session on the legacy keys until the next launch.
+
+**Decided by the user, 2026-10-22 (Stage 2c): a launch whose reseal stopped partway is blocked.** When the tier U pass committed at least one batch and ended without its epoch (a failed save, a read-back that fails partway, an abort partway), the store is a mix of both keys while the process is on the legacy ones, and the session would read what it can and write over what it can't. The launch reports `blocked`, runs nothing after the pass, and the app shows a neutral storage-error screen in place of the PIN prompt ("Occulta couldn't finish updating its data. Make sure the iPhone has free storage, then reopen the app."), with no retry button. The next launch finishes the pass. Not blocked: a pass that stopped before it wrote anything (a locked device, a missing secret), where the store isn't mixed and the app runs on the legacy keys; and a kill, which never reports. The screen comes before any PIN, so it is the same at every depth, it writes nothing, and its words name no keys, encryption, PIN or Secure Mode. This replaces the earlier recommendation, which let the session run with the committed fields reading as empty.
+
+**Decided by the user, 2026-10-23 (Stage 8): the compose staging key.** PR #122 added an eighth affected key, `ShareStagingKeyManager.deriveComposeStagingKey()`: ECDH against G on the share staging key, with its own HKDF info, which seals the attachments staged for a group or a key-less contact in the app's `tmp/` and `Drafts/`. (1) **No reseal and no legacy fallback:** the key was only ever in dev builds, so files sealed under release's derivation are not carried over. (2) **It moves to the app-only tier, tier U, not to share staging:** compose runs only in the app and its files live in the app's own container, and tier U already has Stage 6's pending-record upgrade. The key is the local DB Enclave key and `r_U` with its own info string, in the form of tier U's record, and it exists only in a process whose tier U keys are Enclave-bound: otherwise imports are refused, never staged in plaintext. The Stage 6 upgrade reseals the draft attachments sealed under the classical compose key to the hybrid one before it commits.
+
+**Why:** The tier secrets are symmetric, so a quantum computer gets only Grover's speed-up against them, and ECDH against P is the same Enclave call as today with a different peer, so no Enclave key is added or replaced. ML-KEM on 26+ closes the keychain-dump case there with an Enclave blob a dump can't use.
+
+**Consequences:**
+- Every affected key needs a one-way reseal of what is sealed under it, with the migration plan and tests each stage carries.
+- Devices below iOS 26 reseal once into the classical form, and once more into the hybrid form if they reach 26 later.
+- The tier secrets are never created by a read. A missing one is nil, a loud failure, once data is sealed under it.
+
+**Full reasoning:** `bugs.md` Bug 171 (Fix, with the stages; Guard).

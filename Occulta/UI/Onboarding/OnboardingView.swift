@@ -2,521 +2,475 @@
 //  OnboardingView.swift
 //  Occulta
 //
+//  First-launch introduction, in the key exchange's visual language: black, the particle field, mono
+//  step labels. Shown once, before any PIN or depth exists, and it writes nothing but
+//  `hasCompletedOnboarding`, a flag every install carries.
+//
 
 import SwiftUI
 
 struct OnboardingView: View {
-    @State private var pageIndex = 0
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let pages = Page.pages(secureModeEnabled: FeatureFlags.isEnabled(.secureMode))
+    @State private var current: Page = .welcome
+
+    private var currentIndex: Int {
+        self.pages.firstIndex(of: self.current) ?? 0
+    }
+
+    private var isLastPage: Bool {
+        self.currentIndex == self.pages.count - 1
+    }
 
     var body: some View {
         ZStack {
-            Color(.systemBackground)
+            Color.black
                 .ignoresSafeArea()
 
-            TabView(selection: self.$pageIndex) {
-                TwoFatesScreen()
-                    .tag(0)
-
-                HowItWorksScreen()
-                    .tag(1)
-
-                TrustScreen()
-                    .tag(2)
-
-                VaultScreen()
-                    .tag(3)
-
-                CommitmentScreen {
-                    withAnimation {
-                        self.hasCompleted = true
+            // The exchange screen's backdrop, so a first real exchange looks familiar. Left out under
+            // Reduce Motion, since the field never stops moving.
+            if !self.reduceMotion {
+                ParticleFieldView(phase: self.current.particlePhase, directionXY: nil, distance: nil)
+                    // Faded where the text sits.
+                    .mask {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .white, location: 0),
+                                .init(color: .white, location: 0.45),
+                                .init(color: .white.opacity(0.12), location: 0.7)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
                     }
+                    .opacity(0.6)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+
+            // Continue only, no Skip: Skip let people past the 25 cm requirement without seeing it
+            // (`Friction/USER_ENGAGEMENT_FRICTION.md`, M3).
+            TabView(selection: self.$current) {
+                ForEach(Array(self.pages.enumerated()), id: \.element) { index, page in
+                    PageView(page: page, number: index + 1, isCurrent: page == self.current)
+                        .tag(page)
                 }
-                .tag(4)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .animation(.easeInOut, value: self.pageIndex)
+        }
+        .safeAreaInset(edge: .bottom) {
+            self.controls
+        }
+        .preferredColorScheme(.dark)
+    }
 
-            VStack {
-                Spacer()
+    private var controls: some View {
+        VStack(spacing: 20) {
+            StepPills(count: self.pages.count, current: self.currentIndex)
 
-                HStack(spacing: 8) {
-                    ForEach(0..<5, id: \.self) { index in
-                        Circle()
-                            .frame(width: 8, height: 8)
-                            .foregroundStyle(self.pageIndex == index ? .primary : .secondary)
-                            .scaleEffect(self.pageIndex == index ? 1.2 : 1)
-                            .animation(.spring(response: 0.3), value: self.pageIndex)
+            Button {
+                self.advance()
+            } label: {
+                Text(self.isLastPage ? "Get started" : "Continue")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+            .prominentButtonStyle()
+            .tint(.occultaAccent)
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+
+    private func advance() {
+        guard !self.isLastPage else {
+            withAnimation {
+                self.hasCompleted = true
+            }
+            return
+        }
+
+        withAnimation(self.reduceMotion ? nil : .easeInOut) {
+            self.current = self.pages[self.currentIndex + 1]
+        }
+    }
+}
+
+// MARK: - Pages
+
+extension OnboardingView {
+
+    /// One screen. The copy is kept here, apart from the drawing, so tests can hold the flow to what
+    /// other documents require of it.
+    enum Page: CaseIterable, Identifiable {
+        case welcome, meet, sendAnywhere, secureMode, vault
+
+        var id: Self { self }
+
+        /// The pages this build shows, in order.
+        ///
+        /// Secure Mode appears only with the feature on, because its page sends people to
+        /// Settings › Security, which exists only then. Vault stays last: it ends on something usable
+        /// with no contacts at all (`USER_ENGAGEMENT_FRICTION.md`, C1), and it carries the pointer to
+        /// Restore from Backup that `decisions.md` requires ("Restore discoverability").
+        static func pages(secureModeEnabled: Bool) -> [Page] {
+            self.allCases.filter { $0 != .secureMode || secureModeEnabled }
+        }
+
+        /// Shown upper-cased after the step number; VoiceOver reads it as written.
+        var label: String {
+            switch self {
+            case .welcome:      "Occulta"
+            case .meet:         "Meet"
+            case .sendAnywhere: "Send anywhere"
+            case .secureMode:   "Secure Mode"
+            case .vault:        "Vault"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .welcome:      "Contacts you've actually met."
+            case .meet:         "Hold your phones together."
+            case .sendAnywhere: "Any app can carry it. None can read it."
+            case .secureMode:   "If someone makes you unlock it."
+            case .vault:        "Some things are just for you."
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .welcome:
+                "Your identity is a key that lives in this iPhone's Secure Enclave and never leaves it."
+            case .meet:
+                "Within 25 cm, they trade keys directly, with no server in between."
+            case .sendAnywhere:
+                "Seal a photo, file, or note for someone, then send it with Messages, Mail, or AirDrop. Only their phone can open it."
+            case .secureMode:
+                "Set a second PIN. It opens Occulta with the contacts you choose, and your vault, hidden."
+            case .vault:
+                "The Vault keeps notes, seed phrases, and keys sealed on this iPhone. You don't need any contacts to use it."
+            }
+        }
+
+        var footnote: String {
+            switch self {
+            case .welcome:
+                "Open source, so anyone can check how it works."
+            case .meet:
+                "Both phones need ultra-wideband."
+            case .sendAnywhere:
+                "Post-quantum protection when both phones run iOS 26 or later."
+            case .secureMode:
+                // The limit is stated because the protection is the app's filtering, not separate
+                // keys (README, Secure Mode).
+                "Set it up in Settings › Security. It stops someone using the app, not someone copying data off the phone."
+            case .vault:
+                "Back it up by splitting a key among people you trust. On a new phone, restore it from the + menu in the Vault tab."
+            }
+        }
+
+        /// `ParticleCanvas` mode behind the page: scattered (0), lattice (3) or settled (5). Only the
+        /// modes that spread across the screen; converging, orbit and rings gather at its centre,
+        /// under the page's drawing, and settled keeps whatever clump the previous page left.
+        var particlePhase: Int {
+            switch self {
+            case .welcome:      0
+            case .meet:         5
+            case .sendAnywhere: 3
+            case .secureMode:   0
+            case .vault:        5
+            }
+        }
+    }
+}
+
+// MARK: - Page
+
+private struct PageView: View {
+    let page: OnboardingView.Page
+    let number: Int
+    let isCurrent: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(String(format: "%02d · %@", self.number, self.page.label))
+                        .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                        .kerning(2)
+                        .textCase(.uppercase)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .accessibilityLabel(self.page.label)
+
+                    Spacer(minLength: 32)
+
+                    PageVisual(page: self.page, isCurrent: self.isCurrent)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityHidden(true)
+
+                    Spacer(minLength: 32)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(self.page.title)
+                            .font(.title.weight(.semibold))
+                            .foregroundStyle(.white)
+
+                        Text(self.page.message)
+                            .foregroundStyle(.white.opacity(0.7))
+
+                        Text(self.page.footnote)
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.5))
+                            .padding(.top, 4)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.bottom, 50)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 20)
+                // Fills the page when the text fits; scrolls at large text sizes instead of clipping.
+                .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
+                .accessibilityElement(children: .combine)
             }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.hidden)
         }
     }
 }
 
-// MARK: - Screen 1: Same photo, two fates
-
-private struct TwoFatesScreen: View {
-    @State private var showContent = false
+private struct PageVisual: View {
+    let page: OnboardingView.Page
+    let isCurrent: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            Text("You send a photo to a friend.")
-                .font(.title3)
-                .fontWeight(.medium)
-                .multilineTextAlignment(.center)
-                .padding(.bottom, 28)
-                .opacity(self.showContent ? 1 : 0)
-                .offset(y: self.showContent ? 0 : 12)
-
-            HStack(alignment: .top, spacing: 16) {
-                OtherAppsColumn()
-                OccultaColumn()
-            }
-            .padding(.horizontal, 24)
-            .opacity(self.showContent ? 1 : 0)
-            .offset(y: self.showContent ? 0 : 20)
-
-            Text("Same photo. Very different story.")
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .padding(.top, 24)
-                .opacity(self.showContent ? 1 : 0)
-
-            Spacer()
-        }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.6).delay(0.3)) {
-                self.showContent = true
-            }
+        switch self.page {
+        case .welcome:      ZeroCounts()
+        case .meet:         ProximityDemo(isCurrent: self.isCurrent)
+        case .sendAnywhere: SealedInTransit()
+        case .secureMode:   TwoPINs()
+        case .vault:        SealedEntries()
         }
     }
 }
 
-private struct OtherAppsColumn: View {
-    private let violations = [
-        "Facial recognition",
-        "Location extracted",
-        "Content classified",
-        "Stored indefinitely",
-        "Used for ad targeting"
-    ]
+// MARK: - Visuals
 
+private struct ZeroCounts: View {
     var body: some View {
-        VStack(spacing: 0) {
-            Text("OTHER APPS")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-                .tracking(1)
-                .padding(.bottom, 10)
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(["servers", "accounts", "phone numbers"], id: \.self) { noun in
+                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                    Text("0")
+                        .font(.system(.largeTitle, design: .monospaced, weight: .bold))
+                        .foregroundStyle(Color.occultaAccent)
 
-            VStack(alignment: .leading, spacing: 10) {
-                // Visible photo representation
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.quaternary)
-                    .frame(height: 56)
-                    .overlay {
-                        Text("visible")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                ForEach(self.violations, id: \.self) { violation in
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(.red.opacity(0.8))
-                            .frame(width: 5, height: 5)
-
-                        Text(violation)
-                            .font(.caption2)
-                            .foregroundStyle(.red.opacity(0.7))
-                    }
+                    Text(noun)
+                        .font(.title3)
+                        .foregroundStyle(.white)
                 }
             }
-            .padding(12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Counts down to the 25 cm the exchange requires, each time the page comes into view.
+private struct ProximityDemo: View {
+    let isCurrent: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var distance = ProximityRing.startDistance
+
+    var body: some View {
+        ProximityRing(distance: self.distance)
+            .onChange(of: self.isCurrent, initial: true) { _, isCurrent in
+                guard isCurrent else {
+                    self.distance = ProximityRing.startDistance
+                    return
+                }
+
+                withAnimation(self.reduceMotion ? nil : .easeInOut(duration: 2.4).delay(0.4)) {
+                    self.distance = ProximityRing.exchangeDistance
+                }
+            }
+    }
+}
+
+/// The exchange screen's distance ring. `Animatable`, so the readout counts through every
+/// centimetre rather than jumping to the end.
+private struct ProximityRing: View, Animatable {
+    static let startDistance    = 0.80
+    static let exchangeDistance = 0.25
+
+    var distance: Double
+
+    var animatableData: Double {
+        get { self.distance }
+        set { self.distance = newValue }
+    }
+
+    private var progress: Double {
+        let span = Self.startDistance - Self.exchangeDistance
+        return min(1, max(0, (Self.startDistance - self.distance) / span))
+    }
+
+    var body: some View {
+        let isClose = self.distance <= Self.exchangeDistance + 0.005
+        let tint: Color = isClose ? .occultaVerified : .occultaAccent
+
+        ZStack {
+            Circle()
+                .stroke(.white.opacity(0.08), lineWidth: 8)
+
+            Circle()
+                .trim(from: 0, to: self.progress)
+                .stroke(tint, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+
+            VStack(spacing: 2) {
+                Text("\(Int((self.distance * 100).rounded()))")
+                    .font(.system(size: 34, weight: .bold, design: .monospaced))
+                    .foregroundStyle(isClose ? Color.occultaVerified : .white)
+
+                Text("cm")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .frame(width: 150, height: 150)
+    }
+}
+
+private struct SealedInTransit: View {
+    var body: some View {
+        VStack(spacing: 22) {
+            HStack(spacing: 30) {
+                ForEach(["message.fill", "envelope.fill", "square.and.arrow.up.fill"], id: \.self) { symbol in
+                    Image(systemName: symbol)
+                }
+            }
+            .font(.title2)
+            .foregroundStyle(.white.opacity(0.4))
+
+            HStack(spacing: 10) {
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(Color.occultaAccent)
+
+                Text("A7F3 9C1E 04BD 5E82")
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(Color.occultaVerified)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .overlay {
+                Capsule()
+                    .strokeBorder(.white.opacity(0.15), lineWidth: 1)
+            }
         }
     }
 }
 
-private struct OccultaColumn: View {
-    private let protections = [
-        "Encrypted on device",
-        "No metadata exposed",
-        "Only recipient can open"
-    ]
+/// Same app, two PINs. The second view just has fewer rows: a hidden contact leaves no gap in the
+/// real list, so the drawing doesn't show one either.
+private struct TwoPINs: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 36) {
+            MiniPhone(rows: 4, caption: "PIN", captionColor: .white.opacity(0.5))
+            MiniPhone(rows: 2, caption: "SECOND PIN", captionColor: .occultaAccent)
+        }
+    }
+}
+
+private struct MiniPhone: View {
+    let rows: Int
+    let caption: String
+    let captionColor: Color
 
     var body: some View {
-        VStack(spacing: 0) {
-            Text("OCCULTA")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .foregroundStyle(.teal)
-                .tracking(1)
-                .padding(.bottom, 10)
+        VStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(.white.opacity(0.25), lineWidth: 1)
+                .frame(width: 80, height: 140)
+                .overlay(alignment: .top) {
+                    VStack(spacing: 10) {
+                        ForEach(0..<self.rows, id: \.self) { _ in
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .frame(width: 10, height: 10)
 
-            VStack(alignment: .leading, spacing: 10) {
-                // Encrypted photo representation
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.teal.opacity(0.1))
-                    .frame(height: 56)
-                    .overlay {
-                        HStack(spacing: 3) {
-                            ForEach(Array([0.3, 0.5, 0.2, 0.6, 0.4].enumerated()), id: \.offset) { _, opacity in
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(.teal.opacity(opacity))
-                                    .frame(width: 6, height: 6)
+                                Capsule()
+                                    .frame(height: 6)
                             }
                         }
                     }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(.teal.opacity(0.3), lineWidth: 1)
-                    }
-
-                ForEach(self.protections, id: \.self) { protection in
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(.teal)
-                            .frame(width: 5, height: 5)
-
-                        Text(protection)
-                            .font(.caption2)
-                            .foregroundStyle(.teal)
-                    }
-                }
-            }
-            .padding(12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        }
-    }
-}
-
-// MARK: - Screen 2: How it works
-
-private struct HowItWorksScreen: View {
-    @State private var visibleStep = -1
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            Text("How it works")
-                .font(.title2)
-                .fontWeight(.medium)
-                .padding(.bottom, 28)
-
-            VStack(spacing: 14) {
-                StepCard(
-                    number: "1",
-                    title: "Collect keys in person",
-                    description: "Walk up to someone. Phones exchange cryptographic keys via UWB — 25 cm range. No server involved.",
-                    accentColor: .purple,
-                    isVisible: self.visibleStep >= 0
-                )
-
-                StepCard(
-                    number: "2",
-                    title: "Encrypt anything for them",
-                    description: "Photos, files, documents — sealed with a key derived from their public key. Only their device can open it.",
-                    accentColor: .teal,
-                    isVisible: self.visibleStep >= 1
-                )
-
-                StepCard(
-                    number: "3",
-                    title: "Send it however you want",
-                    description: "Email, AirDrop, iMessage, anything. Security lives in the key, not the channel.",
-                    accentColor: .orange,
-                    isVisible: self.visibleStep >= 2
-                )
-            }
-            .padding(.horizontal, 28)
-
-            Spacer()
-            Spacer()
-        }
-        .onAppear {
-            for i in 0...2 {
-                withAnimation(.spring(response: 0.5, dampingFraction: 0.8).delay(Double(i) * 0.3 + 0.2)) {
-                    self.visibleStep = i
-                }
-            }
-        }
-    }
-}
-
-private struct StepCard: View {
-    let number: String
-    let title: String
-    let description: String
-    let accentColor: Color
-    let isVisible: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                Circle()
-                    .strokeBorder(self.accentColor, lineWidth: 1.5)
-                    .frame(width: 26, height: 26)
-
-                Text(self.number)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(self.accentColor)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(self.title)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-
-                Text(self.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(self.accentColor)
-                .frame(width: 3)
-        }
-        .opacity(self.isVisible ? 1 : 0)
-        .offset(x: self.isVisible ? 0 : 40)
-    }
-}
-
-// MARK: - Screen 3: Trust
-
-private struct TrustScreen: View {
-    @State private var showContent = false
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            VStack(spacing: 6) {
-                Text("Why you can trust this")
-                    .font(.title2)
-                    .fontWeight(.medium)
-
-                Text("Not promises — architecture.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.bottom, 28)
-            .opacity(self.showContent ? 1 : 0)
-
-            VStack(spacing: 14) {
-                TrustRow(
-                    icon: "cpu.fill",
-                    title: "Secure Enclave",
-                    description: "Your private key lives in hardware. It never leaves the chip — not in memory, not on disk, not in backups.",
-                    accentColor: .teal
-                )
-
-                TrustRow(
-                    icon: "network.slash",
-                    title: "No network. Ever.",
-                    description: "Zero servers. Zero accounts. Zero phone numbers. Nothing to hack, subpoena, or shut down.",
-                    accentColor: .orange
-                )
-
-                TrustRow(
-                    icon: "curlybraces",
-                    title: "Fully open source",
-                    description: "Apache 2.0. Every line of cryptographic code is public. Don't take our word for it — read it.",
-                    accentColor: .purple
-                )
-                
-                TrustRow(icon: "envelope.badge.shield.half.filled.fill", title: "Quantum Protection", description: "ML-KEM1024 algorithm protecting your messages from quantum attacks.", accentColor: .blue)
-            }
-            .padding(.horizontal, 28)
-            .opacity(self.showContent ? 1 : 0)
-            .offset(y: self.showContent ? 0 : 16)
-
-            Spacer()
-            Spacer()
-        }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.5).delay(0.2)) {
-                self.showContent = true
-            }
-        }
-    }
-}
-
-private struct TrustRow: View {
-    let icon: String
-    let title: String
-    let description: String
-    let accentColor: Color
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Image(systemName: self.icon)
-                .font(.title3)
-                .foregroundStyle(self.accentColor)
-                .frame(width: 40, height: 40)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(self.title)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-
-                Text(self.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-    }
-}
-
-// MARK: - Screen 4: Vault
-
-private struct VaultScreen: View {
-    @State private var showContent = false
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            VStack(spacing: 6) {
-                Text("A private vault, too")
-                    .font(.title2)
-                    .fontWeight(.medium)
-
-                Text("Not everything needs a contact.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.bottom, 28)
-            .opacity(self.showContent ? 1 : 0)
-
-            VStack(spacing: 14) {
-                TrustRow(
-                    icon: "note.text",
-                    title: "Encrypted notes",
-                    description: "Store notes, seed phrases, or keys — sealed with your Secure Enclave key. Just for you, on this device.",
-                    accentColor: .purple
-                )
-
-                TrustRow(
-                    icon: "person.3.fill",
-                    title: "Recoverable, your way",
-                    description: "Split a backup key among trusted contacts later — no single one of them can recover it alone. On a new phone, restore from the + menu in the Vault tab.",
-                    accentColor: .teal
-                )
-            }
-            .padding(.horizontal, 28)
-            .opacity(self.showContent ? 1 : 0)
-            .offset(y: self.showContent ? 0 : 16)
-
-            Text("Find it anytime in the Vault tab.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(.top, 20)
-                .opacity(self.showContent ? 1 : 0)
-
-            Spacer()
-            Spacer()
-        }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.5).delay(0.2)) {
-                self.showContent = true
-            }
-        }
-    }
-}
-
-// MARK: - Screen 5: Commitment
-
-private struct CommitmentScreen: View {
-    let onComplete: () -> Void
-
-    @State private var showContent = false
-    @State private var ringRotation = 0.0
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            // Concentric rings
-            ZStack {
-                ForEach(0..<3, id: \.self) { i in
-                    Circle()
-                        .strokeBorder(.primary.opacity(0.06 + Double(i) * 0.04), lineWidth: 1)
-                        .frame(width: CGFloat(80 - i * 14), height: CGFloat(80 - i * 14))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.horizontal, 12)
+                    .padding(.top, 20)
                 }
 
-                Circle()
-                    .strokeBorder(.teal, lineWidth: 1.5)
-                    .frame(width: 28, height: 28)
-                    .overlay {
-                        Circle()
-                            .fill(.teal)
-                            .frame(width: 8, height: 8)
-                    }
-            }
-            .rotationEffect(.degrees(self.ringRotation))
-            .padding(.bottom, 36)
-            .opacity(self.showContent ? 1 : 0)
-
-            VStack(spacing: 10) {
-                Text("Meet someone.\nOwn the connection.")
-                    .font(.title)
-                    .fontWeight(.semibold)
-                    .multilineTextAlignment(.center)
-
-                Text("No company holds a copy.\nNo legal process can retrieve\nwhat was never stored.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, 40)
-            .opacity(self.showContent ? 1 : 0)
-            .offset(y: self.showContent ? 0 : 12)
-
-            Spacer()
-
-            Button {
-                self.onComplete()
-            } label: {
-                Text("I'm ready")
-                    .fontWeight(.medium)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.primary)
-            .foregroundStyle(Color(.systemBackground))
-            .padding(.horizontal, 40)
-            .padding(.bottom, 100)
-            .opacity(self.showContent ? 1 : 0)
+            Text(self.caption)
+                .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                .kerning(1.5)
+                .foregroundStyle(self.captionColor)
         }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.6).delay(0.2)) {
-                self.showContent = true
-            }
-            withAnimation(.linear(duration: 30).repeatForever(autoreverses: false)) {
-                self.ringRotation = 360
+    }
+}
+
+private struct SealedEntries: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            ForEach(["Seed phrase", "Backup codes", "Notes"], id: \.self) { label in
+                HStack(spacing: 12) {
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(Color.occultaAccent)
+
+                    Text(label)
+                        .foregroundStyle(.white)
+
+                    Spacer()
+
+                    Text("••••••")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+                .font(.subheadline)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
             }
         }
+    }
+}
+
+// MARK: - Step pills
+
+/// The exchange screen's step indicator.
+private struct StepPills: View {
+    let count: Int
+    let current: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<self.count, id: \.self) { index in
+                Capsule()
+                    .fill(self.color(for: index))
+                    .frame(width: index == self.current ? 40 : 24, height: 4)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: self.current)
+        .accessibilityElement()
+        .accessibilityLabel("Page \(self.current + 1) of \(self.count)")
+    }
+
+    private func color(for index: Int) -> Color {
+        if index == self.current { return .occultaAccent }
+
+        return .white.opacity(index < self.current ? 0.45 : 0.15)
     }
 }
 

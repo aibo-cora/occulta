@@ -71,7 +71,7 @@ extension Contact {
                         .keyboardType(.URL)
                         .textContentType(.URL)
                         .autocapitalization(.none)
-                        .disableAutocorrection(true)
+                        .autocorrectionDisabled()
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
                         .background(Color(.secondarySystemBackground))

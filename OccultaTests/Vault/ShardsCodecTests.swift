@@ -11,6 +11,7 @@
 import Testing
 import Foundation
 @testable import Occulta
+@testable import OccultaFormats
 
 @MainActor
 @Suite("ShardsCodec — fixed-width PendingRestoreShardSlot wire format")

@@ -20,6 +20,7 @@ import SwiftData
 import CryptoKit
 import UIKit
 import LocalAuthentication
+import OccultaFormats
 
 // MARK: - VaultManager
 
@@ -55,6 +56,42 @@ final class VaultManager {
     /// `true` when a pre-evaluated `LAContext` is held in memory (vault unlocked).
     /// Becomes `false` as soon as `lock()` clears `authContext`.
     var isUnlocked: Bool { self.authContext != nil }
+
+    // MARK: - Vault rewrap (Bug 171, Stage 4)
+
+    /// Where the vault rewrap looks for `backup-export-meta.dat`, and which store it checkpoints. nil is production's.
+    /// Only a test sets it, to a directory of its own.
+    @ObservationIgnored
+    var rewrapLocations: KeyReseal.Locations?
+
+    /// Moves the vault onto the Enclave-bound key (`KeyReseal.rewrapVault`) and, if that worked or was already done,
+    /// switches this process's vault key to match. A failure of any kind stays on the legacy key, with the data where it
+    /// was, and the next unlock tries again.
+    private func rewrapVault(authContext: LAContext) {
+        let store = self.modelContext.container.configurations.first(where: { !$0.isStoredInMemoryOnly })?.url
+        let locations = self.rewrapLocations ?? .production(store: store)
+
+        let attempt = Result {
+            try KeyReseal.rewrapVault(
+                context: self.modelContext, keyManager: self.keyManager, authContext: authContext, locations: locations
+            )
+        }
+        #if DEBUG
+        switch attempt {
+        case .success(let report): print("[VaultDiag] rewrap outcome: \(report.outcome), entry keys \(report.entryKeys), backup rows \(report.backupPayloads)")
+        case .failure(let error):  print("[VaultDiag] rewrap threw: \(error)")
+        }
+        #endif
+        guard case .success(let report) = attempt else { return }
+
+        switch report.outcome {
+        case .rewrapped: Manager.Ambient.setVaultKeys(.enclaveBound)
+        case .alreadyDone:
+            // At epoch 1 this is the only way the process gets onto the new key; at epoch 2 the state set by `unlock` stands.
+            if Manager.Ambient.vaultKeys == .legacy { Manager.Ambient.setVaultKeys(.enclaveBound) }
+        default: break
+        }
+    }
 
     // MARK: - Recovery health
 
@@ -128,7 +165,7 @@ final class VaultManager {
 
     init(
         modelContainer: ModelContainer,
-        keyManager: any KeyManagerProtocol = Manager.Key(),
+        keyManager: any KeyManagerProtocol = Manager.Ambient.keyManager,
         inactivityTimeout: TimeInterval = 5 * 60
     ) {
         self.modelExecutor     = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
@@ -211,18 +248,64 @@ final class VaultManager {
     /// the context reference — no key material is held.
     ///
     /// Takes no depth: nothing done on unlock depends on which layer is showing.
-    func unlock(context: LAContext) {
+    ///
+    /// - Parameter legacyArrayBackend: Where the old 32-slot backup-key array lives. Only a test passes one.
+    func unlock(context: LAContext, legacyArrayBackend: any LayerStoreBackend = AppGroupLayerStoreBackend(directory: "cache")) {
         self.authContext = context
         self.resetInactivityTimer()
+
+        // Which vault key this process derives follows the vault's epoch (Bug 171, Stage 4): the Enclave-bound one once the
+        // data has been moved onto it, the legacy one before. Decided here, before anything below derives a key, and not
+        // changed again except by the rewrap's own switch. An epoch that can't be read leaves the state as it was.
+        //
+        // From epoch 2 the key follows the epoch's *form*, not the tier B record: a vault rewrapped onto the classical form is
+        // still under it after the record has become hybrid (Stage 6), until the rewrap below has moved it.
+        let epoch = KeyReseal.vaultEpoch(in: self.modelContext)
+        switch epoch?.number {
+        case 2?:
+            Manager.Ambient.setVaultKeys(epoch?.form == .classical ? .enclaveBoundClassical : .enclaveBound)
+        case 1?:
+            Manager.Ambient.setVaultKeys(.legacy)
+        default:
+            break
+        }
+
+        #if DEBUG
+        self.printVaultKeyDiagnostic(authContext: context)
+        #endif
+
         // Migrate real content out of the old 32-slot array and/or the original
         // single-row legacy BackupEncryptionKey, into the current per-depth row
         // model, if either still needs it. Idempotent — see
         // migrateLegacyBackupStorageIfNeeded's own doc comment. try? is deliberate:
         // a migration decode failure becomes "stays un-migrated, retried next
         // unlock" rather than a throwing unlock() across every caller.
+        //
+        // First, and under the legacy vault key while the epoch is 1: the old array file is sealed under it and nothing
+        // else moves it, so a rewrap before this would strand what it holds. A migration that failed holds the rewrap
+        // back to the next unlock.
+        var migrated = true
         if let vaultKey = try? self.currentKey() {
-            try? self.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey)
+            do {
+                try self.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey, legacyArrayBackend: legacyArrayBackend)
+            } catch {
+                migrated = false
+            }
         }
+
+        // Then the rewrap, at the first unlock after the upgrade (epoch 1), or at the first after a device below iOS 26 reached it
+        // (epoch 2 in the classical form; the pass itself checks that the tier B record has become hybrid). It leaves the vault
+        // where it was if it fails.
+        #if DEBUG
+        print("[VaultDiag] migration finished without error: \(migrated), will rewrap: \(migrated && epoch != nil && (epoch!.number == 1 || epoch!.form == .classical))")
+        #endif
+        if migrated, let epoch, epoch.number == 1 || epoch.form == .classical {
+            self.rewrapVault(authContext: context)
+        }
+        #if DEBUG
+        let after = KeyReseal.vaultEpoch(in: self.modelContext)
+        print("[VaultDiag] after rewrap: epoch \(after.map { "\($0.number) \($0.form)" } ?? "unreadable"), vault key mode \(Manager.Ambient.vaultKeys)")
+        #endif
         // Migrate any leftover ReconstructShard rows into PendingShamirSecretRestore,
         // if any still exist. Idempotent — see migrateReconstructShardsIfNeeded's own
         // doc comment. Needs only the restore vault key, not the vault key, so this
@@ -339,7 +422,7 @@ final class VaultManager {
     func fetchAllEntries() throws -> [VaultEntry] {
         let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
         let all = try self.modelContext.fetch(descriptor)
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw VaultError.keyDerivationFailed
         }
         return all.filter { !$0.isOrphaned(usingKey: key) }

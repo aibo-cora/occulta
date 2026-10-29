@@ -19,10 +19,6 @@ import CryptoKit
 
 // MARK: - Helpers
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 /// `Contact.Profile`'s initialiser stores its name arguments verbatim, and every read goes
 /// through `String.decrypt()` — so a fixture has to hand it ciphertext, base64-encoded, the
 /// way the real insert path does. Passing plaintext yields "" from every accessor, which
@@ -57,7 +53,7 @@ private func makeProfile(
 // MARK: - Depth filtering
 
 @MainActor
-@Suite("ContactListFilter — depth", .enabled(if: secureEnclaveAvailable()), .serialized)
+@Suite("ContactListFilter — depth", .ambientTestKeyManager, .serialized)
 struct ContactListFilterDepthTests {
 
     /// The case the picker exists for: a contact classified as real-only is absent from the
@@ -88,7 +84,7 @@ struct ContactListFilterDepthTests {
 // MARK: - Search and sort
 
 @MainActor
-@Suite("ContactListFilter — search and sort", .enabled(if: secureEnclaveAvailable()), .serialized)
+@Suite("ContactListFilter — search and sort", .ambientTestKeyManager, .serialized)
 struct ContactListFilterSortTests {
 
     @Test func sortedContacts_ordersByFamilyName() throws {
@@ -128,7 +124,7 @@ struct ContactListFilterSortTests {
 // MARK: - Group eligibility
 
 @MainActor
-@Suite("ContactListFilter — group eligibility", .enabled(if: secureEnclaveAvailable()), .serialized)
+@Suite("ContactListFilter — group eligibility", .ambientTestKeyManager, .serialized)
 struct ContactListFilterGroupTests {
 
     @Test func groupWithMembersAtDepth_isOffered() throws {

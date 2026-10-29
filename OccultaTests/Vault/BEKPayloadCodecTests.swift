@@ -173,7 +173,7 @@ struct BEKPayloadCodecTests {
 
     /// v1.10.3 stored records as JSON with `contactIdentifier`; migration reads them (Bug 146).
     @Test("A v1.10.3 JSON record decodes, tagging its contactIdentifier")
-    func legacyJSONRecordDecodes() throws {
+    @MainActor func legacyJSONRecordDecodes() throws {
         let identifier = realFormatContactIdentifier()
         let json = #"{"contactIdentifier":"\#(identifier)","attributeID":"\#(UUID().uuidString)","status":"confirmed"}"#
 

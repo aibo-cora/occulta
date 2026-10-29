@@ -19,12 +19,9 @@ import SwiftData
 import Foundation
 import LocalAuthentication
 @testable import Occulta
+@testable import OccultaFormats
 
 // MARK: - Helpers
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeAlice(
@@ -273,9 +270,8 @@ private func reconstructShardCount(vault: VaultManager, entryIDs: [UUID]) throws
         let rows = try ctx.fetch(FetchDescriptor<CustodyShard>())
         #expect(rows.count == 2)
 
-        let byOwner = Dictionary(uniqueKeysWithValues: custody.heldShards(from: rows).map { ($0.ownerContactIdentifier, $0.count) })
-        #expect(byOwner["alice"] == 1)
-        #expect(byOwner["mallory"] == 1)
+        // Two rows, two owners: one each.
+        #expect(Set(custody.heldShardOwners(from: rows)) == ["alice", "mallory"])
     }
 }
 
@@ -382,14 +378,56 @@ private func distribute(
     }
 }
 
+// MARK: - Trustee display (Bug 162)
+
+/// Bug 162: each of an owner's depths with a backup sends the trustee its own piece, so a count
+/// per owner tells how many of the owner's depths have one. The display lists owners, never a
+/// number, and an owner with several pieces shows exactly as one with a single piece.
+@Suite("ShardCustodyManager — held-for-others display (Bug 162)")
+@MainActor struct HeldShardOwnersTests {
+
+    /// A trustee holding `aliceDepths` pieces from Alice, one per depth's own split, and one
+    /// from Carol. Returns what the Vault tab would list.
+    private func owners(aliceDepths: Int) throws -> [String?] {
+        let (custody, _, container) = try makeBob()
+        let vault = try makeAlice().vault
+        let alice = TestKeyManager()
+        let carol = TestKeyManager()
+
+        for _ in 0..<aliceDepths {
+            try distribute(try makeShardAttr(signer: alice), from: alice, as: "alice", into: custody, vault: vault)
+        }
+        try distribute(try makeShardAttr(signer: carol), from: carol, as: "carol", into: custody, vault: vault)
+
+        let rows = try ModelContext(container).fetch(FetchDescriptor<CustodyShard>())
+        #expect(rows.count == aliceDepths + 1)
+        return custody.heldShardOwners(from: rows)
+    }
+
+    @Test("An owner with pieces from several depths is listed once")
+    func severalPiecesListedOnce() throws {
+        let listed = try self.owners(aliceDepths: 3)
+        #expect(listed.count == 2)
+        #expect(Set(listed) == ["alice", "carol"])
+    }
+
+    @Test("The list is the same whether the owner has one depth with a backup or several")
+    func sameForOneOrSeveralDepths() throws {
+        // Sorted arrays, not sets: a set would hide an owner listed once per piece.
+        let one     = try self.owners(aliceDepths: 1).map { $0 ?? "" }.sorted()
+        let several = try self.owners(aliceDepths: 3).map { $0 ?? "" }.sorted()
+        #expect(one == several)
+    }
+}
+
 // MARK: - Handback and the restore buffer
 
-// Needs a real Secure Enclave: PendingShamirSecretRestore.attributeID/.deletionToken are
-// sealed under the ambient Manager.Key() local key (never the injected key manager) —
+// Runs under .ambientTestKeyManager: PendingShamirSecretRestore.attributeID/.deletionToken
+// are sealed under the ambient local key (Manager.Ambient, never the injected key manager) —
 // the same forced split BackupEncryptionKey.depth/.deletionToken already uses, and every
-// test here goes through acceptReturnedShard, which touches that field. No seam reaches
-// it, so unlike this file's other suites this one cannot run on TestKeyManager alone.
-@Suite("Restore buffer — handed-back pieces", .enabled(if: secureEnclaveAvailable()))
+// test here goes through acceptReturnedShard, which touches that field. So unlike this
+// file's other suites, the injected TestKeyManager alone doesn't cover it.
+@Suite("Restore buffer — handed-back pieces", .ambientTestKeyManager)
 @MainActor struct ReconstructionBufferTests {
 
     @Test("acceptReturnedShard banks a backup-key piece in a row that decrypts under the restore vault key")
@@ -404,7 +442,7 @@ private func distribute(
 
         // The row's attributeID decrypts (under the ambient local key) to the piece's
         // distribution ID, and its shards decode to the one banked piece.
-        let localKey = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let localKey = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
         let row = try #require(ModelContext(container).fetch(FetchDescriptor<PendingShamirSecretRestore>()).first)
         let idBytes = try #require(row.attributeID?.decrypt(using: localKey))
         #expect(idBytes == withUnsafeBytes(of: distributionID.uuid) { Data($0) })

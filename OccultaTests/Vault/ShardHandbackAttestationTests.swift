@@ -26,10 +26,7 @@ import SwiftData
 import Foundation
 import LocalAuthentication
 @testable import Occulta
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
+@testable import OccultaFormats
 
 // MARK: - Helpers
 
@@ -98,11 +95,11 @@ private func reconstructShardCount(vault: VaultManager, entryID: UUID) throws ->
 // MARK: - Tests
 
 @MainActor
-// Needs a real Secure Enclave: absorbShard (via acceptReturnedShard) seals
-// PendingShamirSecretRestore.attributeID/.deletionToken under the ambient Manager.Key()
-// local key, never the injected key manager — see ShardCustodyTests.swift's
+// Runs under .ambientTestKeyManager: absorbShard (via acceptReturnedShard) seals
+// PendingShamirSecretRestore.attributeID/.deletionToken under the ambient local key
+// (Manager.Ambient), never the injected key manager — see ShardCustodyTests.swift's
 // ReconstructionBufferTests for the fuller trap explanation.
-@Suite("Bug 94 remedy 2 — shard handback acceptance", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Bug 94 remedy 2 — shard handback acceptance", .serialized, .ambientTestKeyManager)
 struct ShardHandbackAttestationTests {
 
     @Test("Branch A: a shard signed by the owner's own current identity is accepted")
@@ -249,7 +246,7 @@ struct ShardHandbackAttestationTests {
         // The owner's device has since rotated — the trustee sees a different current key
         // for them now, which is what triggers the mismatch-handback.
         let ownerNewPub = try TestKeyManager().retrieveIdentity()
-        let ops = try trusteeCustody.buildShardOperations(for: "owner", currentContactPublicKey: ownerNewPub)
+        let ops = try trusteeCustody.buildShardOperations(for: "owner", currentContactPublicKey: ownerNewPub, isCardContact: false)
         let handback = try #require(ops.first { $0.kind == .handback })
 
         #expect(handback.attribute?.id == distributedAttr.id,

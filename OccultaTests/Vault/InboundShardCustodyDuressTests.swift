@@ -19,12 +19,9 @@ import SwiftData
 import Foundation
 import LocalAuthentication
 @testable import Occulta
+@testable import OccultaFormats
 
 // MARK: - Helpers
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeRig() throws -> (
@@ -52,7 +49,7 @@ private func makeRig() throws -> (
         AppLayerConfig.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: km)
+    let security  = Manager.Security(modelContainer: container, keyManager: km)
     let contacts  = ContactManager(modelContainer: container, security: security)
     let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
     let vault     = VaultManager(modelContainer: container, keyManager: km)
@@ -105,8 +102,7 @@ private func custodyShardCount(in container: ModelContainer) throws -> Int {
 @Suite("Inbound shard custody at a duress depth", .serialized)
 struct InboundShardCustodyDuressTests {
 
-    @Test func safeContactDistribute_atDuressDepth_storesAndStaysVisibleDownToDepthZero() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func safeContactDistribute_atDuressDepth_storesAndStaysVisibleDownToDepthZero() throws {
 
         let (contacts, custody, security, vault, container) = try makeRig()
 
@@ -151,8 +147,7 @@ struct InboundShardCustodyDuressTests {
                 "a safe contact's shard must remain visible back at the real depth 0 too")
     }
 
-    @Test func sensitiveContactDistribute_atDuressDepth_storesButIsHiddenFromDisplay() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func sensitiveContactDistribute_atDuressDepth_storesButIsHiddenFromDisplay() throws {
 
         let (contacts, custody, security, vault, container) = try makeRig()
 

@@ -71,6 +71,7 @@ extension Contact {
                     TextField("Phone number", text: self.$phone.value)
                         .keyboardType(.phonePad)
                         .textContentType(.telephoneNumber)
+                        .autocorrectionDisabled()
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
                         .background(Color(.secondarySystemBackground))

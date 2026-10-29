@@ -51,9 +51,11 @@ struct ShareRecipientPicker: View {
             List {
                 let groups     = self.selectableGroups
                 let contacts   = self.selectableContacts
-                let verified   = contacts.filter { $0.verificationStatus == .verified }
-                let unverified = contacts.filter { $0.verificationStatus == .unverified }
-                let pending    = contacts.filter { $0.verificationStatus == .pending }
+                // Once per contact: the status opens the key owner hash and, with no keys, the card field.
+                let statuses   = Dictionary(contacts.map { ($0.identifier, $0.verificationStatus) }, uniquingKeysWith: { first, _ in first })
+                let verified   = contacts.filter { statuses[$0.identifier] == .verified }
+                let unverified = contacts.filter { statuses[$0.identifier] == .unverified }
+                let pending    = contacts.filter { statuses[$0.identifier] == .pending }
 
                 if !groups.isEmpty {
                     Section {
@@ -73,13 +75,19 @@ struct ShareRecipientPicker: View {
                 }
 
                 if !verified.isEmpty {
-                    Section { self.rows(verified) } header: { SectionHeaderV2(status: .verified) }
+                    Section { self.rows(verified, statuses: statuses) } header: { SectionHeaderV2(status: .verified) }
                 }
                 if !unverified.isEmpty {
-                    Section { self.rows(unverified) } header: { SectionHeaderV2(status: .unverified) }
+                    Section {
+                        self.rows(unverified, statuses: statuses)
+                    } header: {
+                        SectionHeaderV2(status: .unverified)
+                    } footer: {
+                        Text(IntroCardCopy.notVerifiedListFooter)
+                    }
                 }
                 if !pending.isEmpty {
-                    Section { self.rows(pending) } header: { SectionHeaderV2(status: .pending) }
+                    Section { self.rows(pending, statuses: statuses) } header: { SectionHeaderV2(status: .pending) }
                 }
 
                 if groups.isEmpty && contacts.isEmpty {
@@ -105,6 +113,7 @@ struct ShareRecipientPicker: View {
             .scrollIndicators(.hidden)
             .listStyle(.insetGrouped)
             .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a recipient…")
+            .autocorrectionDisabled()
             .navigationTitle("Encrypt for")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -116,12 +125,12 @@ struct ShareRecipientPicker: View {
     }
 
     @ViewBuilder
-    private func rows(_ items: [Contact.Profile]) -> some View {
+    private func rows(_ items: [Contact.Profile], statuses: [String: VerificationStatus]) -> some View {
         ForEach(items) { contact in
             Button {
                 self.onSelect(.contact(contact.identifier))
             } label: {
-                ContactRowV2(contact: contact, showFingerprint: self.showFingerprints)
+                ContactRowV2(contact: contact, status: statuses[contact.identifier] ?? .pending, showFingerprint: self.showFingerprints)
             }
             .buttonStyle(.plain)
         }

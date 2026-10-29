@@ -14,6 +14,7 @@
 import Testing
 import Foundation
 @testable import Occulta
+@testable import OccultaFormats
 
 // MARK: - Fixtures
 
@@ -225,7 +226,7 @@ private struct _Party {
         let crypto = Manager.Crypto(keyManager: km)
         let store = IdentityChallenge.OutstandingChallengeStore()
         self.km         = km
-        self.mgr        = IdentityChallenge.Manager(crypto: crypto, store: store)
+        self.mgr        = IdentityChallenge.Manager(crypto: crypto, ledger: store)
         self.identifier = name
         self.publicKey  = try! km.retrieveIdentity()
     }

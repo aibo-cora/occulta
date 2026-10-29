@@ -13,8 +13,11 @@ extension Contact {
         
         var body: some View {
             TextField("Company", text: self.$contact.organizationName)
+                .autocorrectionDisabled()
             TextField("Department", text: self.$contact.departmentName)
+                .autocorrectionDisabled()
             TextField("Job title", text: self.$contact.jobTitle)
+                .autocorrectionDisabled()
         }
     }
 }

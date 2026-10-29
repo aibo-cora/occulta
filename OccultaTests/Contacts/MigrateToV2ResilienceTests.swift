@@ -20,7 +20,7 @@ import SwiftData
 /// Legacy crypto that decrypts with a fixed key, and *throws* on anything it cannot
 /// authenticate — which is the real behaviour: `authenticationFailure` comes out of
 /// AES-GCM, it is not a nil return. That distinction is the whole of Bug 90's diagnostic.
-private struct StubCrypto: CryptoProtocol {
+private struct StubCrypto: LegacyCryptoProtocol {
     let key: SymmetricKey
     static let aad = EncryptionScheme.v2_hybridPQ.aad
 

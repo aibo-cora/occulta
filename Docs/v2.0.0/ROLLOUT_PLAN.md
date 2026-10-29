@@ -1,0 +1,212 @@
+# v2.0.0 — Rollout Plan
+
+**Status:** Proposed, 2026-09-30. Not decided. Step numbers refer to
+[HARDENING_STEPS.md](HARDENING_STEPS.md). If this plan is adopted, it replaces the single-migration
+assumption in [`PASSPHRASE_LAYER_KEYS.md`](../../Occulta/Features/SecureMode/PASSPHRASE_LAYER_KEYS.md)
+§5.
+
+**Passphrase rollout, 2026-10-19 — [PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md). Proposed, not
+decided.** It covers how stages 2–4 would ship the phrase on top of the 2026-10-15 storage proposal: entry,
+migration from the PIN and the local DB key, Rule 4's way back, depths, and effort. It proposed a narrower
+Rule 1 through key slots, not adopted on 2026-10-19, so Rule 1 stands. This plan stands until its other
+proposals are decided.
+
+**Summary.** Steps 6–16 and 17a don't depend on each other and can ship one at a time, in any order.
+Steps 1–5 can be split by data (vault first, then contacts), but not step by step. 17b ships with the
+contacts slice. (Since 2026-10-06, 17b for prekeys means moving their Enclave blobs into the contact record,
+Prekey Continuity D9.) The rules below stay fixed
+however the stages are cut.
+
+## Rules that can't be staged
+
+1. **Split steps 1–5 by data, not by step.** Steps 1 and 2 are one key derivation. Adding 2 later
+   changes the key and forces a second full reseal. Shipping 1 without 3 is still better than today,
+   but it also costs a second full reseal. That is the riskiest operation in the app, and this
+   codebase's data-loss bugs have clustered there (Bugs 75–78, 138). Each slice of data gets all five
+   steps at once.
+   *Proposed narrowing, 2026-10-19, not adopted the same day; Rule 1 stands as written
+   ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §1.1):*
+   - With key slots, adding or changing step 2 later rewraps a slot instead of resealing. Older images keep
+     the slot as it was.
+   - Steps 3 and 5 still need the reseal.
+   - So does a key leaving device-only protection.
+2. **All depths on a device switch together.** If each depth switched on its next unlock, the everyday
+   depth would switch first and the duress depths would stay on PIN verifiers for weeks. That
+   difference points straight at the real depth. The user sets up every depth's phrase in one sitting.
+   *Exception, decided 2026-10-19 ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §3.1, 8a):* a setup started
+   in a decoy, which a coercer can demand, is real for that decoy. The real user finishes the other depths later
+   from the real depth. One image doesn't show which went first; images compared over time do (Bug 120, open).
+3. **The phrase replaces the PIN for everyone who uses an app lock.** Today the PIN is an optional
+   lock that any user can turn on (`AppScreen`: `.covered → .unlocked` when there is no PIN). If only
+   users with duress depths got a phrase screen, the screen itself would announce hidden depths. An
+   opt-in period is acceptable only if every lock user is offered it. Keep it short, because whoever
+   opts in early marks themselves as security-conscious.
+   *Decided 2026-10-19 ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §3.2, decision 10):* no opt-in period.
+   Setup is required at the first unlock after the update.
+4. **Keep the old keys until the user proves they remember.** Keep the old device keys until every
+   phrase has been entered correctly a few times over about a week. Then delete the old keys for all
+   depths at once. Until the deletion nothing is safer, but a forgotten phrase can't cause data loss.
+   The deletion is also what makes any leftover old ciphertext on disk unreadable.
+   *Decided 2026-10-19 by the owner ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §1.2):* the reseal writes
+   a new store file. The way back is the old store, with its keys and the PIN, as it was at setup. A phrase
+   forgotten during the week loses that week's changes. Graduation deletes the old store and its keys together.
+
+## Release mechanics
+
+- **There is no remote kill switch.** `features.plist` is compiled into the build and the app has no
+  network. Every stage must be safe for everyone who installs it.
+- **TestFlight first**, on real devices with several depths configured. The Simulator can't unlock the
+  vault.
+- **App Store phased release** spreads a migration release over 7 days for automatic-update users. It
+  only limits damage if users report problems, because the app sends no telemetry.
+- ~~**Migrations are one-way.** An older build can't read resealed data.~~ **Wrong, verified 2026-10-16**
+  (`bugs.md` Bug 168). An older build opens a newer store. Core Data keeps the newer model in the store's
+  `Z_MODELCACHE` table, migrates the store back to the older schema, and drops whatever that schema lacks. A
+  downgrade doesn't stop the app; it deletes data, and upgrading again doesn't bring it back. On iOS only
+  TestFlight and sideloaded builds can downgrade.
+- **Last-resort prekeys ship no earlier than the one-way migration** (stage 3 below; [Prekey
+  Continuity](../Features/Prekey%20Continuity/DESIGN.md) D6, 2026-10-07). An older build can't open a
+  message sealed to one. This rule means any build that issues one has already migrated, so no working
+  build can be downgraded below it. *2026-10-16:* the rule rests on the line above, so it protects nothing. A
+  downgrade deletes the record holding the last-resort keys whichever release they ship in. **Decided
+  2026-10-16:** the loss is accepted for TestFlight and sideload users, and the TestFlight notes say so
+  (Bug 168). The rule no longer constrains release order.
+- **The prekey refactor ships in 2.0.0, together with the contacts slice (stage 3)** (decided 2026-10-14), so
+  the rule above holds within one release. Nothing numbered 2.0.0 or later goes out without the refactor,
+  TestFlight included. Bug 165's capability tier, `bodyDigestCapable`, is keyed on app version
+  2.0.0: a contact recorded at 2.0.0 must send the body digest, and a body claiming 2.0.0 without one is
+  refused. A build numbered 2.0.0 that predates the digest would have its group and one-to-one messages
+  refused by every build that has it. So `v2.0.0/prekey-refactor` merges into the release branch before the
+  version number reaches 2.0.0, and any earlier stage ships under a 1.x number. *2026-10-16:* the pairing with
+  the contacts slice existed only to satisfy the rule above, which protects nothing. **Decided 2026-10-16:**
+  the refactor doesn't wait for the passphrase work. It is merged into `release/v2.0.0` (PR #110) and ships in
+  2.0.0. The 2.0.0 numbering that Bug 165's tier needs is unaffected. Which release carries the passphrase work
+  is not decided. The owner leans towards shipping all its data slices together in one release (2026-10-15),
+  also not decided.
+  *2026-10-19:* **decided by the owner:** the passphrase work ships in the release after 2.0.0, not in 2.0.0.
+  Whether its data slices ship together is still open ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §7.1).
+- **Streamed bundle bodies ship in 2.0.0** (decided 2026-10-23, [`STREAMING_SPEC.md`](../Features/Bundle/STREAMING_SPEC.md)
+  §12). Their tier, `streamedBodyCapable`, is also keyed on app version 2.0.0, so the same rule applies: nothing
+  numbered 2.0.0 or later goes out without the streamed reader and writer, TestFlight included. Such a build would
+  be recorded at the tier and sent bundles it can't open. The release branch was at 1.11.1 on 2026-10-23.
+
+## Stages
+
+| Stage | Ships | What someone holding the phone and passcode gets afterwards |
+|---|---|---|
+| **0 — nothing users see** | 9 CI trace check, 12 fuzzing, 13 drop keys on background, 10 advertising only in foreground, 14 signing checks, 15 account hardening | Same as today. This stage closes supply-chain risk and stops known leak types from coming back. |
+| **1 — additions old versions tolerate** | ~~6 prekeys in the exchange~~ (deferred 2026-10-07), 7a post-quantum status shown, 8 mandatory comparison, 11 wording pass, 17a per-contact secret for classical-only pairs and keyed sender fingerprint | Same on the phone. The exchange can't be intercepted. Messages to a new contact before their first reply still use the long-term key (step 6 deferred; open). |
+| **2 — vault slice** | Steps 1–5 applied to vault entries; the phrase replaces the PIN | Vault content stays sealed without the phrase, and the PIN verifiers are gone. Contacts' depth stamps are still readable, so the number of depths still leaks. |
+| **3 — contacts slice** | Steps 1–5 applied to contacts, 17b (since D9: new prekeys as Enclave blobs in the contact record, legacy keychain prekeys retiring), then the old local-DB key is deleted | Only what the surrendered phrase opens, apart from the items step 17 lists as open. Legacy keychain prekeys stay countable until they retire. |
+| **4 — the rest** | Steps 1–5 for backup-key, custody-shard and restore records; 7b refuse classical-only sends; 16 in-app guidance | The remaining records close. |
+
+### Stage 0
+
+Each step is its own PR. Step 14 is a gate before any App Store submission, not a feature.
+
+**Done when:** the CI check (9) fails on a planted violation of each kind it covers, the fuzz targets
+(12) run in CI, and the signing results (14) are recorded in `SECURITY_CHECKLIST.md`.
+
+### Stage 1
+
+- ~~**6** is a wire-format addition. A new client sends prekeys, an old client ignores them, and anything
+  from an old client still arrives as fallback. The payload's size must not depend on Secure Mode state.~~
+  **Deferred out of v2.0.0, 2026-10-07** (step 6 in `HARDENING_STEPS.md`). Stage 1 ships without it.
+- **7a** only displays status. **7b**, refusing classical-only sends, waits for Stage 4. It needs enough
+  of the contact population on iOS 26 or it just blocks messaging.
+- **8** is a UX change: no contact saves without the comparison.
+- **11** goes through counsel in one pass, as register §E asks. Step 16's copy depends on it.
+- **17a** is a protocol addition negotiated through `maxBundleVersion`: a pair uses it only when both
+  sides support it. The per-contact secret protects nothing until Stage 3 seals the contact records. It
+  ships here anyway so the population upgrades early, which shrinks the "senders on old versions" open
+  item by the time Stage 3 lands. The keyed sender fingerprint helps from the day a pair upgrades. It
+  doesn't depend on Stage 3.
+
+**Done when:** the exchange is tested old→new, new→old and new↔new; ~~a first message after an exchange
+is shown to use a prekey~~ (step 6 deferred); saving without a comparison is shown to be impossible; and a classical-only
+pair is shown to open in the new mode only with the per-contact secret, both for a pair set up at the
+exchange and for one upgraded in band; and an upgraded file is shown not to match
+`SHA-256(senderPublicKey ‖ nonce)` for any nonce it carries, in single, group and identity-challenge
+bundles.
+
+### Stage 2 — vault
+
+**Blocked on the spec's §2**: how one row opens under every depth's key. It is unresolved. Design it
+for vault and contacts together, even though the vault ships first. Otherwise contacts, where one
+contact can be visible at several depths, may force the vault to be migrated a second time.
+
+**2026-10-15:** a design for §2 is proposed, not decided (spec §2, "Proposed 2026-10-15: storage for
+per-depth keys"). It covers vault and contacts together. Step 4 drops out of the slices: it can't be met
+against a surrendered phrase and is open, needs a decision.
+
+**Why the vault first:** it holds the most sensitive content (seed phrases, keys, passwords), and it
+already has fixed-count rows (`deletionToken` orphan-in-place, Bugs 110–114).
+
+**Known gap until Stage 3:** contacts stay under the device key, so their depth stamps still reveal how
+many depths exist.
+
+### Stage 3 — contacts
+
+The hardest slice (see Stage 2). It ends with deleting the old local-DB Secure Enclave key, which is
+what turns every leftover old-key ciphertext into noise.
+
+**17b** ships in this slice because the prekey-tag map lives in the contact record. Every dummy key must
+exist before any old `prekey.<contactID>.*` tag is retagged. Whether an Enclave key's tag can be updated in place has to be
+checked on a device first, because the Simulator is unreliable for that kind of update.
+
+**Changed by D9, 2026-10-06** ([Prekey Continuity §9](../Features/Prekey%20Continuity/DESIGN.md)). There are
+no dummy keys and no retagging. New prekeys are CryptoKit Enclave keys whose blobs live in the contact record,
+so they still ship in this slice. Existing keychain prekeys aren't moved: they stay until consumed or retired
+(30 days), and until then they remain countable in the keychain. The slice's protection for prekeys is
+complete only after that.
+
+### Stage 4 — the rest
+
+The remaining depth-stamped records: `BackupEncryptionKey`, custody shards, and pending and completed
+restore records. Then 7b and 16.
+
+**Also the owner's queue and watch rows, added 2026-10-12:** `PendingShardDistribute` (pieces queued for a
+trustee) and `PotentiallyLostShard` (pieces watched for loss). They are sealed under the device-wide custody key
+and are depth-blind by design (`bugs.md` Bug 141): a manifest from a trustee, processed at whatever depth is
+current, updates every depth's rows, and an outbound message to a trustee carries pieces queued at any depth.
+So at a duress depth, code on the phone can read which trustees the real depth's backup uses, possibly contacts
+hidden there. Sealing them per depth means a manifest arriving at depth M can no longer update depth N's rows,
+so each depth would have to process its own, as it already does for statuses: **open, needs a decision.**
+`PendingShardStatusUpdate` leaves the schema instead (`decisions.md`, 2026-09-26/27).
+
+**And the trustee's piece count (`bugs.md` Bug 162):** a trustee holds one piece per owner depth with a backup,
+which tells the trustee, and anyone with their phone, how many of the owner's depths have one. Stamping custody
+rows with the trustee's depth doesn't change that. The Vault tab no longer shows the count and the custody
+manifest is padded (2026-10-16); the stored rows and the pieces' dates still carry it. Open, needs a decision; the bug
+lists what's left and why owner-side padding was dropped.
+
+## Required before Stages 2 and 3 count as done
+
+Each needs tests and a no-data-loss migration plan before it counts as done. The plan must cover:
+
+- **An end-to-end "data survives" test for the reseal.** None exists today (register C3, "TEST-2"). It
+  needs the `Manager.Crypto()`/`Manager.Key()` injection seam that C3 describes, which also makes the
+  test runnable off-Enclave.
+- **Never destroy the only copy before the replacement is saved and verified** (Bug 138). Every row
+  must decrypt under the new keys before anything old is deleted.
+- **Interruption at any point is recoverable and leaves nothing behind** (Bug 139: an interrupted
+  rotation left keys that nothing deleted).
+- **Rule 2 and Rule 4 enforced in code, not in the UI flow.** Every depth migrates in one step, and the
+  old keys are deleted for all depths in one step.
+- **Prekeys survive the retagging** (Stage 3). A message sent to a prekey before the migration still
+  opens after it, and no `prekey.<contactID>.*` tag remains.
+- **The in-progress state leaks nothing about depths.** Being mid-migration may be visible. Which depth
+  is ahead of which must not be.
+- **Schema change through a migration plan.** The project has no `VersionedSchema`/`SchemaMigrationPlan`
+  (register §G), and a change of this size shouldn't rely on SwiftData's inference.
+- **A downgrade loses nothing** (added 2026-10-16, `bugs.md` Bug 168). An older build migrates a newer store
+  back to its own schema and drops what it doesn't know. Resealed rows in new tables of the same store would
+  therefore be deleted by any downgrade. Proposed, not decided:
+  - **Write the migrated data to a new store file,** with the same file protection, and remove the old store
+    only after the switch. An older build then finds no store and starts empty without touching the new file,
+    and upgrading again brings everything back.
+  - **The new file's name says nothing** about what it holds.
+  - **Still to decide:** what a newer build does with a store an older build created in the meantime.
+  - *Decided 2026-10-19 for the passphrase migration:* a new store file, kept with the old store until
+    graduation (Rule 4 above). During that week an older build finds the old store as it was at setup, not an
+    empty one. The item above is still open.

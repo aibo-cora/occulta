@@ -569,6 +569,8 @@ Re-prioritisations folded from this pass: #21 promoted from opportunistic to sch
 - **Standalone personal C2PA / media-provenance suite:** platform momentum (C2PA in cameras and OS pipelines) will out-deliver app-level implementations for general media; only the in-circle capture-attestation slice survives scrutiny — ship **signed voice notes** as a small affordance inside the Presence Verification narrative (SE signature over media hash + timestamp at in-app capture, `"occulta-attested-capture-v1"`, same honest-app boundary as #24), not as a standalone feature.
 - **Scam-detection AI / content classifiers:** on-device models flagging message content bring false-positive liability and scope creep; network services are excluded. The Second Opinion flow (#27) achieves the useful subset with a human the user trusts.
 - **Verified introductions (transitive trust / vouching):** re-affirmed as off-limits — every entry in the graph is physically verified or the graph's core claim dies; #22's corroboration remains the ceiling.
+  - *Addendum (2026-10-14):* this entry disagrees with `Friction/USER_ENGAGEMENT_FRICTION.md` (Sweep 4 item 4) and `CONSUMER_OPENING_AND_CEREMONY.md` §7, which both list introductions as open (D1). [Introduction Cards](Introduction%20Cards/FINDINGS.md) proposes something narrower than a verified introduction. The owner issues a single-use card with its own key. One or more contacts may pass it on, asserting nothing and leaving no record of the route, and the contact stays Not verified until a UWB exchange. The owner's identity key never leaves the phone except in person, so #22's premise holds.
+  - *Addendum (2026-10-15):* D1 decided: carried cards are allowed (Introduction Cards Q-01). They are outside this ruling, not an exception to it. Nothing is signed, no trust is granted, and every entry in the verified graph is still physically verified. Verified introductions, where a mutual contact vouches for a key, stay off-limits.
 
 ---
 
@@ -786,6 +788,12 @@ RFID/NFC keycards — the current standard — are trivially cloned, frequently 
 > Additionally, you cannot make a phone the sole key to a building. Batteries die, phones are forgotten. Physical access control cannot fail open — RFID fallback stays in the system regardless, which means Occulta is always an add-on, never a replacement.
 >
 > Remove from the independent expansion list. Viable only as a downstream feature inside organisations already on Expansion A.
+
+> **Addendum (October 11, 2026) — one claim corrected; the disposition stands.** The ruling says UWB "adds nothing for door access specifically: you have to be within NFC/BLE range to open the door anyway, so the proximity constraint is already enforced by physics." That holds for NFC, not for BLE. BLE reaches tens of metres, and a relay carries it further: NCC Group's 2022 link-layer relay opened a Tesla Model 3 and Kwikset/Weiser Kevo smart locks, and the Bluetooth SIG's response was that relay attacks are a known limitation. The defence is a distance measurement the lock makes itself — UWB secure ranging — so UWB does add value at a door, as relay protection.
+>
+> This does not change the disposition, for two reasons. First, what helps is UWB *ranging* at the moment of entry, not the UWB *key-exchange ceremony* Occulta uses today; the ruling's point that the bootstrap adds nothing at a door stands. Second, the relay defence is already standardised: Aliro 1.0 (Connectivity Standards Alliance, released 26 February 2026) specifies NFC, BLE, and BLE plus UWB, with Apple, Google, and Samsung committed to wallet support. UWB ranging is a baseline requirement for any BLE door reader, not an Occulta differentiator.
+>
+> Unverified, and the first thing to check if this is revisited: whether Apple's Nearby Interaction accessory mode gives a third-party door device a distance it can trust on its own (secure ranging with STS), rather than one reported by the phone. The Nearby Interaction Accessory Protocol Specification R4 should answer it.
 
 ---
 

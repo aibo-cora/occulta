@@ -22,6 +22,10 @@ struct Exchange: Codable {
     let nonce: Data?
     let encapsulationKey: Data?
     let ciphertext: Data?
+    /// The meeting-check proof (`Docs/Features/Introduction Cards/SPEC.md` §7): 64 bytes, a signature or random
+    /// filler, with an empty `token` and nothing else. An older build's decoder ignores the key and reads this as a
+    /// discovery message, whose empty token fails to unarchive, so the message is dropped harmlessly.
+    let cardProof: Data?
 
     init(
         id: String,
@@ -30,7 +34,8 @@ struct Exchange: Codable {
         identity: Data? = nil,
         nonce: Data? = nil,
         encapsulationKey: Data? = nil,
-        ciphertext: Data? = nil
+        ciphertext: Data? = nil,
+        cardProof: Data? = nil
     ) {
         self.id = id
         self.token = token
@@ -39,6 +44,7 @@ struct Exchange: Codable {
         self.nonce = nonce
         self.encapsulationKey = encapsulationKey
         self.ciphertext = ciphertext
+        self.cardProof = cardProof
     }
 
     enum Version: Int8, Codable {
@@ -47,7 +53,9 @@ struct Exchange: Codable {
         case v2pq = 2
     }
 
-    var isDiscovery: Bool { identity == nil && ciphertext == nil }
+    /// Checked before `isDiscovery` in routing: a proof has no identity and no ciphertext either.
+    var isCardProof: Bool { cardProof != nil }
+    var isDiscovery: Bool { identity == nil && ciphertext == nil && cardProof == nil }
     var isIdentity: Bool { identity != nil && ciphertext == nil }
     var isCiphertext: Bool { ciphertext != nil }
     var supportsPQ: Bool { encapsulationKey != nil }

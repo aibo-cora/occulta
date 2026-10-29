@@ -40,6 +40,24 @@ struct LayerArrayUniformityTests {
         }
     }
 
+    /// Bug 171, Stage 3: the verifier arrays are uniform in size in each form. A verifier is 53 bytes, or 81 once wrapped;
+    /// a slot that held a different size than its neighbours would give away which ones are real. The size follows the
+    /// process (`Manager.Ambient.pinVerifiers`), and filler follows the same rule, so a row made in either form is one size.
+    @Test("Both verifier arrays are one size, plain and wrapped", .ambientTestKeyManager, arguments: [
+        (Manager.Ambient.PINVerifiers.plain, 53), (.wrapped, 81),
+    ])
+    @MainActor
+    func verifierArraysAreUniform(form: Manager.Ambient.PINVerifiers, size: Int) {
+        Manager.Ambient.setPINVerifiers(form)
+
+        let config = AppLayerConfig()
+
+        #expect(Set(config.sealedNormalVerifiers.map(\.count)) == [size])
+        #expect(Set(config.sealedDuressVerifiers.map(\.count)) == [size])
+        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxDepthCount)
+        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
+    }
+
     /// **Fixed** — Bug 86's amendment, now a regression guard rather than a reproduction.
     ///
     /// The legacy-upgrade path in `Manager.Security.init` used to hand-roll
@@ -55,7 +73,7 @@ struct LayerArrayUniformityTests {
     /// Needs the Enclave: this path and the array's filler both go through ambient
     /// `encrypt()`.
     @Test("The legacy PIN-gate upgrade writes a readable, correctly-sized entry",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     @MainActor
     func legacyPinGateUpgradeIsUniformAndReadable() throws {
         let schema = Schema([AppLayerConfig.self])
@@ -91,6 +109,3 @@ struct LayerArrayUniformityTests {
     }
 }
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}

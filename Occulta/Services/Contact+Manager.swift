@@ -13,6 +13,8 @@ import Combine
 import CoreData
 import Foundation
 import CryptoKit
+import OccultaFormats
+import OccultaCore
 
 @Observable
 class ContactManager {
@@ -59,10 +61,24 @@ class ContactManager {
     @ObservationIgnored
     let security: Manager.Security
 
-    init(modelContainer: ModelContainer, security: Manager.Security) {
+    /// The Enclave keys and the ML-KEM provider introduction cards use (`ContactManager+Cards.swift`). Injected so
+    /// tests can run with software keys; `cardPostQuantum` is nil below iOS 26, where cards are unsupported.
+    @ObservationIgnored
+    let cardKeys: any CardKeyProviding
+    @ObservationIgnored
+    let cardPostQuantum: (any PostQuantumProvider)?
+
+    init(
+        modelContainer: ModelContainer,
+        security: Manager.Security,
+        cardKeys: any CardKeyProviding = EnclaveCardKeys(),
+        cardPostQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.create()
+    ) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
         self.security = security
+        self.cardKeys = cardKeys
+        self.cardPostQuantum = cardPostQuantum
     }
     
     var dateFormatter: DateFormatter {
@@ -202,6 +218,13 @@ class ContactManager {
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
             newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
+            // The prekey record is never nil either: an empty one, the same size as any other, so the field
+            // doesn't tell contacts who've exchanged messages from those who haven't (Bug 161).
+            try self.store(PrekeyRecord.empty, for: newContact)
+            // Never nil either, for the same reason: the introduction card field, empty and the same size as any other.
+            try self.store(CardState.empty, for: newContact)
+            // And the identity challenge state: empty, one slot per depth, the same size as any other (Bug 180).
+            try self.store(ChallengeState.empty, for: newContact)
             self.modelContext.insert(newContact)
         }
 
@@ -390,6 +413,13 @@ class ContactManager {
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
             newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
+            // The prekey record is never nil either: an empty one, the same size as any other, so the field
+            // doesn't tell contacts who've exchanged messages from those who haven't (Bug 161).
+            try self.store(PrekeyRecord.empty, for: newContact)
+            // Never nil either, for the same reason: the introduction card field, empty and the same size as any other.
+            try self.store(CardState.empty, for: newContact)
+            // And the identity challenge state: empty, one slot per depth, the same size as any other (Bug 180).
+            try self.store(ChallengeState.empty, for: newContact)
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -417,7 +447,7 @@ class ContactManager {
     /// inbound bundle's sender resolves to. `VaultManager.restoreBackup` counts only banked
     /// shards whose sender is in this set (`RECOVERY_BUFFER_LAYERING.md` §9.4).
     func visibleContactIdentifiers(atDepth depth: Int) -> Set<String> {
-        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
         return Set(((try? self.fetchAllContacts()) ?? [])
             .filter { $0.isVisible(atDepth: depth, usingKey: key) }
             .map(\.identifier))
@@ -498,16 +528,23 @@ class ContactManager {
         contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
         contact.globalTrusteeDepth  = try DepthCodec.encode(-1).encrypt()
         contact.originDepth         = try DepthCodec.encode(0).encrypt()
+        // The prekey record, for the same reason: an empty record, the same size as any other, drops our private
+        // keys for this contact while reading as an ordinary row.
+        try self.store(PrekeyRecord.empty, for: contact)
+        // The card field too: empty at the same size, which drops the Enclave keys a card holds.
+        try self.store(CardState.empty, for: contact)
+        // And the challenge state, every depth's slot: a pending challenge to a deleted contact goes with them.
+        try self.store(ChallengeState.empty, for: contact)
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
-        Manager.PrekeyManager().deleteAllKeys(for: identifier)
+        Manager.PrekeySecretsManager().deleteAllKeys(for: identifier)
         try self.modelContext.save()
 
         // Derived once and reused across every group in the pass below, instead of once
         // per group — see `ContactManager.cleanUpGroupDuressMembership`, which applies
         // the same fix for the identical cost on the classification path.
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw GroupError.keyUnavailable
         }
         try self.forEachGroup { try $0.purgeMember(identifier, usingKey: key) }
@@ -532,6 +569,16 @@ class ContactManager {
     func deleteAllContacts() throws {
         try self.modelContext.delete(model: Contact.Profile.self)
         try self.modelContext.save()
+    }
+
+    /// Deletes every `Message.Draft` row and the whole `Drafts/` directory, including folders whose
+    /// row is already gone. Part of Erase All Data (bugs.md Bug 179). Needs no key: it never opens a draft.
+    func deleteAllDrafts() throws {
+        for draft in try self.modelContext.fetch(FetchDescriptor<Message.Draft>()) {
+            Message.Draft.delete(draft, in: self.modelContext)
+        }
+        try self.modelContext.save()
+        try? FileManager.default.removeItem(at: Message.Draft.attachmentsRoot)
     }
 
     private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
@@ -580,6 +627,9 @@ extension ContactManager {
             keyRotated = SHA256.hash(data: storedMaterial) != SHA256.hash(data: newMaterial)
         }
 
+        // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
+        let clearedCard = try self.clearCard(afterMeetingOf: contact)
+
         contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
         
         #if DEBUG
@@ -587,6 +637,7 @@ extension ContactManager {
         #endif
 
         try self.modelContext.save()
+        if clearedCard { self.security.checkpointStore() }
 
         self.contactKeyUpdated.send(identifier)
         if keyRotated { self.contactKeyRotated.send(identifier) }
@@ -722,6 +773,12 @@ extension ContactManager {
         case trusteeLacksQuantumMaterial
         case groupIDMissing
         case groupHasNoMembers
+        /// An identity challenge or response travels alone: no basket, piece operations or manifest with it
+        /// (prekey continuity §3.4, D5).
+        case identityChallengeNotAlone
+        /// An identity challenge or response in group format, to a contact below `.bodyDigestCapable`, whose build
+        /// would refuse it. Those get the long-term format (prekey continuity §3.4).
+        case identityChallengeBelowTier
     }
 }
 
@@ -1002,21 +1059,74 @@ extension ContactManager {
     ///
     /// **< 1.9.0 → single-recipient legacy format (`seal(message:contactPrekey:...)`)**
     ///   - Shard ops on this path skip prekey pop and use longTermFallback (no FS mandate).
-    ///   - Identity challenge sends are always on this path regardless of version.
+    ///
+    /// ## Identity challenges (prekey continuity §3.4)
+    /// `identityChallenge` sends a challenge or response like a message, to a contact at `.bodyDigestCapable`
+    /// only: below it, `IdentityChallenge.Manager` seals the long-term format itself. It travels alone.
     ///
     /// ## Pending batch delivery guarantee (message mode)
-    /// A `pendingOutboundBatch` is attached to every message until the contact sends back
+    /// A pending batch is attached to every message until the contact sends back
     /// a `.forwardSecret` bundle using one of our prekeys — cryptographic proof they stored
     /// it. Only then is the batch cleared.
     func encryptBundle(
         basket: Basket? = nil,
         for identifier: String,
         shardOperations: [OccultaBundle.ShardOperation]? = nil,
-        custodyManifest: [UUID]? = nil
+        custodyManifest: [UUID]? = nil,
+        identityChallenge: IdentityChallengeEnvelope? = nil
     ) throws -> Data {
-        guard basket != nil || shardOperations != nil || custodyManifest != nil else { throw Errors.messageHasNoData }
+        let sent = try self.sendBundle(
+            basket: basket, for: identifier, shardOperations: shardOperations,
+            custodyManifest: custodyManifest, identityChallenge: identityChallenge, output: .memory
+        )
+        guard let data = sent.data else { throw Errors.messageHasNoData }
+        return data
+    }
+
+    /// `encryptBundle`, written to a file: the destination of `output`.
+    ///
+    /// The layout is chosen here, once, from the recipient's recorded tier (§10.2): streamed when they can read
+    /// it, otherwise inline under the memory guard. Either way the file is ciphertext. A refusal by the guard
+    /// happens before any prekey is taken or any file written.
+    @discardableResult
+    func encryptBundle(
+        basket: Basket? = nil,
+        for identifier: String,
+        shardOperations: [OccultaBundle.ShardOperation]? = nil,
+        custodyManifest: [UUID]? = nil,
+        identityChallenge: IdentityChallengeEnvelope? = nil,
+        output: BundleOutput
+    ) throws -> BundleLayout {
+        try self.sendBundle(
+            basket: basket, for: identifier, shardOperations: shardOperations,
+            custodyManifest: custodyManifest, identityChallenge: identityChallenge, output: output
+        ).layout
+    }
+
+    private func sendBundle(
+        basket: Basket?,
+        for identifier: String,
+        shardOperations: [OccultaBundle.ShardOperation]?,
+        custodyManifest: [UUID]?,
+        identityChallenge: IdentityChallengeEnvelope?,
+        output: BundleOutput
+    ) throws -> SentBundle {
+        guard basket != nil || shardOperations != nil || custodyManifest != nil || identityChallenge != nil else {
+            throw Errors.messageHasNoData
+        }
+        guard identityChallenge == nil || (basket == nil && shardOperations == nil && custodyManifest == nil) else {
+            throw Errors.identityChallengeNotAlone
+        }
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
+
+        // A card conversation seals under the card keys, never the identity key (introduction cards, SPEC §3).
+        if contact.cardState.isCardContact {
+            return try self.sendCardBundle(
+                basket: basket, for: contact, shardOperations: shardOperations,
+                custodyManifest: custodyManifest, identityChallenge: identityChallenge, output: output
+            )
+        }
 
         // Shard ops carry private key material — ML-KEM is always required so a
         // quantum adversary cannot retroactively break the wrapping key.
@@ -1038,6 +1148,9 @@ extension ContactManager {
         //               attach pending batch too (Bug 152).
         // Shard mode (old path, <1.9.0): skip prekey — keep longTermFallback.
         var contactPrekey: Prekey? = nil
+        // The contact's last-resort key, when they have no one-time key of ours left (prekey continuity §3.1).
+        // Kept apart from `contactPrekey`, so everything that requires a one-time key still sees none.
+        var lastResortPrekey: Prekey? = nil
         var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
 
         // ── 3. Resolve target wire format for this contact ────────────────
@@ -1049,37 +1162,71 @@ extension ContactManager {
         // capability case to seal() would embed its own raw value in the AAD while
         // the receiver reconstructs "v4" → authentication failure.
         let wireVersion   = targetVersion.supportsGroups ? OccultaBundle.Version.v4 : targetVersion
+        // Before any prekey is taken below.
+        if identityChallenge != nil, !targetVersion.isAtLeast(.bodyDigestCapable) {
+            throw Errors.identityChallengeBelowTier
+        }
+
+        // The layout, chosen before anything is taken (§10.2): streamed when the recipient can read it, which
+        // implies the group format. Otherwise inline, and then a staged file is read into memory here, if it fits.
+        let streams = output.destination != nil && targetVersion.isAtLeast(.streamedBodyCapable)
+        let basket  = streams ? basket : try output.inlineBasket(basket)
 
         // Pop a prekey for forward secrecy.
         // Message sends always attempt FS; shard sends on the group path require it.
         // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
         let needsPrekey = !isCarryingShard || targetVersion.supportsGroups
         if needsPrekey {
-            try contact.configureForwardSecrecy()
+            var record = try self.prekeyRecord(for: contact)
 
             #if DEBUG
-            debugPrint("Encrypting \(isCarryingShard ? "shard" : "message") bundle for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
+            debugPrint("Encrypting \(isCarryingShard ? "shard" : "message") bundle for contact. Inbound prekeys: \(record.inboundBatches.reduce(0) { $0 + $1.keys.count }), pending batch: \(PrekeyBookkeeper().hasPendingBatch(record))")
             #endif
 
-            if let blob = try contact.popOldestPrekeyData() {
-                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+            contactPrekey = PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: contact.identifier)
+            if contactPrekey != nil {
+                try self.store(record, for: contact)
+            } else if targetVersion.supportsGroups {
+                // Group format only: there the sender's ephemeral signature authenticates the slot.
+                lastResortPrekey = PrekeyBookkeeper().lastResortPrekey(in: record, contactID: contact.identifier)
             }
             // Attached whether or not a piece rides along: a queued piece goes with every
             // message until the trustee confirms it, and the trustee can only confirm in a
             // forward-secret reply, which needs this batch once our prekeys run out
             // (`bugs.md` Bug 152).
-            outboundBatch = try contact.loadPendingBatch()
+            outboundBatch = self.pendingBatchForWire(in: record)
         }
 
         // ── 4. Build and seal payload ─────────────────────────────────────
+        // Padded so the bundle's length doesn't say how many pieces we hold for this contact (`bugs.md` Bug 162).
+        let custodyManifest = custodyManifest.map { Self.paddedCustodyManifest($0) }
+
         let messageData: Data
+        var streamedFiles: StreamedFiles?
         if let basket {
-            messageData = wireVersion == .v4
-                ? try WireHandle.encode(basket: basket)
-                : try JSONEncoder().encode(basket)
+            if streams {
+                let parts = try output.streamedParts(basket)
+                guard let message = parts.message else { throw Errors.messageHasNoData }
+                streamedFiles = parts.files
+                messageData   = message
+            } else {
+                messageData = wireVersion == .v4
+                    ? try WireHandle.encode(basket: basket)
+                    : try JSONEncoder().encode(basket)
+            }
+        } else if let identityChallenge {
+            // The same text the long-term format carries, for the same size. Nothing at this tier shows it: the
+            // receiver routes on the envelope (`bugs.md` Bug 167 holds the size question).
+            messageData = Data((identityChallenge.kind == .challenge
+                ? IdentityChallenge.challengeFallbackMessage
+                : IdentityChallenge.responseFallbackMessage).utf8)
         } else {
             messageData = Data("Occulta vault operation. Please update your app.".utf8)
         }
+
+        // A bundle with no basket (a challenge, a shard operation) streams nothing but its manifest. It takes the
+        // same layout as a message to the same recipient: one that didn't would be told apart by it (§3).
+        if streams, streamedFiles == nil { streamedFiles = try output.streamedParts(nil).files }
 
         // 1.9.0+ contacts: all sends use the group bundle format with an ephemeral
         // single-recipient envelope. Shard ops require forward secrecy — the FS
@@ -1094,27 +1241,34 @@ extension ContactManager {
             let onFallback       = hasShardContent && contactPrekey == nil
             // Shard-only bundles (basket == nil) use Data() as a sentinel so the
             // receiver can detect "no basket" without trying to parse the payload.
-            let groupMessage = basket != nil ? messageData : Data()
+            let groupMessage = basket != nil || identityChallenge != nil ? messageData : Data()
             let sealedPayload = OccultaBundle.SealedPayload(
-                message:         groupMessage,
-                shardOperations: onFallback ? nil : shardOperations,
-                custodyManifest: onFallback ? nil : custodyManifest,
-                appVersion:      Bundle.main.appVersion
+                message:           groupMessage,
+                identityChallenge: identityChallenge,
+                shardOperations:   onFallback ? nil : shardOperations,
+                custodyManifest:   onFallback ? nil : custodyManifest,
+                appVersion:        Bundle.main.appVersion
             )
-            let bundle = try Manager.Crypto().seal(
-                sealedPayload: sealedPayload,
-                groupID:       UUID(),
-                recipients:    [GroupRecipient(
-                    publicKey:       recipientMaterial,
-                    quantumMaterial: quantumMaterial,
-                    contactPrekey:   contactPrekey,
-                    pendingBatch:    outboundBatch,
-                    prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
-                )]
-            )
-            let encodedBundle = try bundle.encoded(version: .v4)
+            let recipients = [GroupRecipient(
+                publicKey:       recipientMaterial,
+                quantumMaterial: quantumMaterial,
+                contactPrekey:   contactPrekey ?? lastResortPrekey,
+                contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
+                pendingBatch:    outboundBatch,
+                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
+            )]
+            let sent: SentBundle
+            if let streamedFiles {
+                try Manager.Crypto().sealStreamed(
+                    sealedPayload: sealedPayload, groupID: UUID(), recipients: recipients, files: streamedFiles
+                )
+                sent = SentBundle(data: nil, layout: .streamed)
+            } else {
+                let bundle = try Manager.Crypto().seal(sealedPayload: sealedPayload, groupID: UUID(), recipients: recipients)
+                sent = try output.deliver(try bundle.encoded(version: .v4))
+            }
             if contactPrekey != nil { try self.modelContext.save() }
-            return encodedBundle
+            return sent
         }
 
         let sealedPayload = OccultaBundle.SealedPayload(
@@ -1136,14 +1290,14 @@ extension ContactManager {
             quantumMaterial:   quantumMaterial,
             version:           wireVersion
         )
-        let encodedBundle = try bundle.encoded(version: wireVersion)
+        let sent = try output.deliver(try bundle.encoded(version: wireVersion))
         
         if contactPrekey != nil {
             // Persist prekey state only when it was mutated (message mode).
             try self.modelContext.save()
         }
 
-        return encodedBundle
+        return sent
     }
 }
 
@@ -1156,6 +1310,7 @@ private struct PendingGroupRecipient {
     let publicKey: Data
     let quantumMaterial: QuantumKeyMaterial?
     let contactPrekey: Prekey?
+    let contactPrekeyIsLastResort: Bool
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
     let realShardOperations: [OccultaBundle.ShardOperation]
     /// Whether this member's build verifies the domain-separated ephemeral signature.
@@ -1167,10 +1322,11 @@ extension ContactManager {
 
     /// Encrypt a basket for all members of a group in the given layer.
     ///
-    /// Each member gets an independent wrapping key (FS or fallback) and a
-    /// per-recipient prekey sync batch if their stock for this sender is below
-    /// the replenishment threshold. The shared ciphertext is sealed once with a
-    /// random session key bound to the group UUID.
+    /// Each member gets an independent wrapping key (FS or fallback) and, in their
+    /// own slot, the prekey batch pending for them, if one is waiting. A batch is
+    /// pending from when that member's long-term message arrives until they use a
+    /// key from it. The shared ciphertext is sealed once with a random session key
+    /// bound to the group UUID.
     ///
     /// Shard distribution (`shardCustodyManager`) is per-member: a member only
     /// receives real shard ops if their build is `.groupShardCapable`, they have
@@ -1185,8 +1341,35 @@ extension ContactManager {
         groupID: UUID,
         shardCustodyManager: ShardCustodyManager? = nil
     ) throws -> Data {
+        let sent = try self.sendGroupBundle(
+            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, output: .memory
+        )
+        guard let data = sent.data else { throw Errors.messageHasNoData }
+        return data
+    }
+
+    /// `encryptGroupBundle`, written to a file. Streamed only when **every** member's recorded tier can read it, and
+    /// inline, under the memory guard, when any one cannot (§10.2).
+    @discardableResult
+    func encryptGroupBundle(
+        basket: Basket,
+        groupID: UUID,
+        shardCustodyManager: ShardCustodyManager? = nil,
+        output: BundleOutput
+    ) throws -> BundleLayout {
+        try self.sendGroupBundle(
+            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, output: output
+        ).layout
+    }
+
+    private func sendGroupBundle(
+        basket: Basket,
+        groupID: UUID,
+        shardCustodyManager: ShardCustodyManager?,
+        output: BundleOutput
+    ) throws -> SentBundle {
         // Pass 1 below pops each member's oldest prekey (mutating
-        // contact.forwardSecrecyEncrypted in memory) before any of the fallible work
+        // contact.prekeyRecordEncrypted in memory) before any of the fallible work
         // that follows — the per-member `buildShardOperations` call still inside pass 1,
         // and `seal`/`WireHandle.encode`/`bundle.encoded` in pass 2. If any of that
         // throws, the explicit `self.modelContext.save()` near the bottom of this
@@ -1223,20 +1406,31 @@ extension ContactManager {
         var prekeyConsumed = false
         let cryptoOps = Manager.Crypto()
 
+        // The layout, before any member's prekey is taken (§10.2): streamed only when every member can read it. A
+        // card contact in the list is refused below, in pass 1, whichever layout this would have been.
+        let streams = output.destination != nil
+            && members.allSatisfy { Self.resolveTargetVersion(for: $0, using: cryptoOps).isAtLeast(.streamedBodyCapable) }
+        let basket = streams ? basket : (try output.inlineBasket(basket) ?? basket)
+
         // ── Pass 1: resolve per-member key material + real (unpadded) shard content ──
         let pending: [PendingGroupRecipient] = try members.map { contact in
+            // Groups refuse a card contact (SPEC §8), whatever the form let through.
+            guard !contact.cardState.isCardContact else { throw CardError.hardBlocked }
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
 
-            try contact.configureForwardSecrecy()
-
-            var contactPrekey: Prekey? = nil
-
-            if let blob = try contact.popOldestPrekeyData() {
-                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+            var record = try self.prekeyRecord(for: contact)
+            let contactPrekey = PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: contact.identifier)
+            if contactPrekey != nil {
+                try self.store(record, for: contact)
                 prekeyConsumed = true
             }
+            // Out of one-time keys: their last-resort key (prekey continuity §3.1), never removed by use. Shard
+            // content below still requires a one-time key, so a last-resort slot carries none (D5).
+            let lastResortPrekey = contactPrekey == nil
+                ? PrekeyBookkeeper().lastResortPrekey(in: record, contactID: contact.identifier)
+                : nil
 
-            let pendingBatch = try contact.loadPendingBatch()
+            let pendingBatch = self.pendingBatchForWire(in: record)
 
             // `isAtLeast`, not `==`. Equality asks "is this contact exactly at the shard tier",
             // which stops being the right question the moment a tier is added above it — and
@@ -1249,7 +1443,7 @@ extension ContactManager {
 
             var realOps: [OccultaBundle.ShardOperation] = []
             if canReceiveShardContent, let shardCustodyManager {
-                realOps = try shardCustodyManager.buildShardOperations(for: contact.identifier, currentContactPublicKey: recipientMaterial)
+                realOps = try shardCustodyManager.buildShardOperations(for: contact.identifier, currentContactPublicKey: recipientMaterial, isCardContact: false)
             }
             // No custody manifest in group bundles: it travels only under
             // `shardMetadataAttempted`, which a v1.10.3 member reads as "an
@@ -1259,7 +1453,8 @@ extension ContactManager {
             return PendingGroupRecipient(
                 publicKey:              recipientMaterial,
                 quantumMaterial:        quantumMaterial,
-                contactPrekey:          contactPrekey,
+                contactPrekey:          contactPrekey ?? lastResortPrekey,
+                contactPrekeyIsLastResort: lastResortPrekey != nil,
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
                 prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
@@ -1275,24 +1470,36 @@ extension ContactManager {
                 publicKey:              p.publicKey,
                 quantumMaterial:        p.quantumMaterial,
                 contactPrekey:          p.contactPrekey,
+                contactPrekeyIsLastResort: p.contactPrekeyIsLastResort,
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
                 prefixesEphemeralSignature: p.prefixesEphemeralSignature
             )
         }
 
-        let bundle = try Manager.Crypto().seal(
-            message:    try WireHandle.encode(basket: basket),
-            groupID:    groupID,
-            recipients: recipients
-        )
-        let encodedBundle = try bundle.encoded(version: .v4)
+        let sent: SentBundle
+        if streams {
+            let parts = try output.streamedParts(basket)
+            guard let message = parts.message else { throw Errors.messageHasNoData }
+            try Manager.Crypto().sealStreamed(
+                sealedPayload: OccultaBundle.SealedPayload(message: message, appVersion: Bundle.main.appVersion),
+                groupID: groupID, recipients: recipients, files: parts.files
+            )
+            sent = SentBundle(data: nil, layout: .streamed)
+        } else {
+            let bundle = try Manager.Crypto().seal(
+                message:    try WireHandle.encode(basket: basket),
+                groupID:    groupID,
+                recipients: recipients
+            )
+            sent = try output.deliver(try bundle.encoded(version: .v4))
+        }
 
         if prekeyConsumed {
             try self.modelContext.save()
         }
 
-        return encodedBundle
+        return sent
     }
 
     /// Pad `real` with filler `ShardOperation`s (`kind: .unsupported`, already
@@ -1317,6 +1524,24 @@ extension ContactManager {
         while padded.count < tier { padded.append(Self.fillerShardOperation()) }
         return padded
     }
+
+    /// Pads a custody manifest with random IDs to at least `custodyManifestFloor` entries, then to
+    /// the next doubling tier. Each of an owner's depths with a backup sends us its own piece, so
+    /// the number of IDs, which the ciphertext length shows, would tell how many of the owner's
+    /// depths have one (`bugs.md` Bug 162). It would also tell apart a contact we hold nothing for.
+    ///
+    /// The receiver needs nothing to strip them: every owner build since manifests began (1.7.0)
+    /// only looks up the IDs it queued or watches, so an ID it never sent is ignored. A random
+    /// UUID encodes to the same size as a real one.
+    ///
+    /// Not `private`: `CustodyManifestPaddingTests` checks the sizes.
+    static func paddedCustodyManifest(_ real: [UUID]) -> [UUID] {
+        let target = max(Self.custodyManifestFloor, ShardPadding.tier(for: real.count))
+        return real + (0..<(target - real.count)).map { _ in UUID() }
+    }
+
+    /// One ID per possible depth, so every owner's backup-key pieces fit under it.
+    static let custodyManifestFloor = AppLayerConfig.maxDepthCount
 
     /// Not `private`: `ShardOperationPaddingTests` encodes this against a real handback op
     /// to catch the next field that gets added to one and not the other.
@@ -1488,41 +1713,73 @@ extension ContactManager {
     }
 
     private func verifyConsistency(for bundle: OccultaBundle) throws {
-        guard bundle.version == .v3fs || bundle.version == .v4 else { throw Errors.unsupportedBundleVersion }
+        guard bundle.version == .v3fs || bundle.version == .v4 || bundle.version == .streamedBodyCapable else {
+            throw Errors.unsupportedBundleVersion
+        }
         // Defence-in-depth: never touch a bundle whose version or mode was
         // produced by a future build we don't understand. `Version`/`Mode` both
         // decode unknown raw values to `.unsupported` — see OccultaBundle.swift.
         guard bundle.secrecy.mode != .unsupported else { throw OccultaBundle.BundleError.unsupportedMode }
     }
     
-    private func identifyOwner(for bundle: OccultaBundle) throws -> Contact.Profile {
+    private func identifyOwner(for bundle: OccultaBundle, body: BundleBody? = nil) throws -> Contact.Profile {
         try self.verifyConsistency(for: bundle)
         
         let cryptoOps     = Manager.Crypto()
         
         let contacts = try self.fetchAllContacts()
         var sender: Contact.Profile?
+        var cardHolders: [Contact.Profile] = []
  
+        let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+
         for contact in contacts {
-            guard
+            if
                 let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
-                let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material)
-            else { continue }
- 
-            if contact.isLikelySender(of: bundle, contactPublicKey: pubKey) {
+                let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material),
+                contact.isLikelySender(of: bundle, contactPublicKey: pubKey)
+            {
                 sender = contact
                 
                 break
             }
+
+            // A card conversation's sender is the peer's card agreement key (SPEC §6.6 step 2).
+            if
+                let localKey,
+                let cardKey = self.cardPeerAgreementKey(of: contact, using: localKey),
+                contact.isLikelySender(of: bundle, contactPublicKey: cardKey)
+            {
+                cardHolders.append(contact)
+            }
         }
-        
+
+        if sender == nil, !cardHolders.isEmpty { sender = self.cardHolder(among: cardHolders, of: bundle) }
+
+        // No match: the bundle may redeem one of our issued cards (SPEC §6.6 step 4), at every depth.
+        if sender == nil { sender = try self.redeemCard(for: bundle, body: body) }
+
         guard let sender else { throw Errors.noPublicKeyToEncryptWith }
         
         return sender
     }
     
-    func identifyOwner(of bundle: OccultaBundle) throws -> String? {
-        let sender = try self.identifyOwner(for: bundle)
+    /// The contact a card conversation's bundle is for, when more than one holds the same peer card key: the same
+    /// card imported at two depths (the same-card check skips a contact hidden at the current depth, SPEC §6.3).
+    /// Only one of them holds the keys the peer seals to, so the one a slot's `prekeyID` names is it. Read from the
+    /// record, so nothing is consumed. A long-term slot names no prekey: then the first.
+    private func cardHolder(among holders: [Contact.Profile], of bundle: OccultaBundle) -> Contact.Profile {
+        guard holders.count > 1 else { return holders[0] }
+        let prekeyIDs = (bundle.group?.recipients ?? []).compactMap(\.secrecyContext.prekeyID)
+        let bookkeeper = PrekeyBookkeeper()
+        return holders.first { holder in
+            guard let record = try? self.prekeyRecord(for: holder) else { return false }
+            return prekeyIDs.contains { bookkeeper.blob(forPrekeyID: $0, in: record) != nil }
+        } ?? holders[0]
+    }
+
+    func identifyOwner(of bundle: OccultaBundle, body: BundleBody? = nil) throws -> String? {
+        let sender = try self.identifyOwner(for: bundle, body: body)
         
         return sender.identifier
     }
@@ -1546,11 +1803,10 @@ extension ContactManager {
         guard bundle.secrecy.mode != .group else { throw OccultaBundle.BundleError.unsupportedMode }
 
         let cryptoOps     = Manager.Crypto()
-        let prekeyManager = Manager.PrekeyManager()
 
         // ── 1. Identify sender by fingerprint ───────────────────────────
-        let sender = try self.identifyOwner(for: bundle)
-        try sender.configureForwardSecrecy()
+        let sender  = try self.identifyOwner(for: bundle)
+        let prekeys = try self.senderPrekeys(for: sender)
 
         // ── 2. Key derivation + open ─────────────────────────────────────
         #if DEBUG
@@ -1560,27 +1816,26 @@ extension ContactManager {
         let quantumMaterial = try self.resolveQuantumMaterial(mode: bundle.secrecy.mode, for: sender, using: cryptoOps)
         let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
 
-        let (sessionKey, consumable) = try cryptoOps.deriveInboundKey(
+        let (sessionKey, used) = try cryptoOps.deriveInboundKey(
             secrecy: bundle.secrecy,
             senderContactID: sender.identifier,
             senderPublicKey: senderPublicKey,
             quantumMaterial: quantumMaterial,
-            prekeyManager: prekeyManager
+            prekeys: prekeys
         )
+        // A last-resort key is only ever sealed to in group format, where the sender's ephemeral signature
+        // authenticates it (prekey continuity §3.1). A single-recipient bundle naming one is no bundle of a sender's.
+        if case .lastResort = used { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
         let payloadData = try cryptoOps.open(bundle, using: sessionKey)
 
-        // ── 3. Prekey management ─────────────────────────────────────────
-        if let consumable {
+        // ── 3. Consume the prekey ────────────────────────────────────────
+        // Now, before anything below can reject the bundle: the key has done its work, and a
+        // rejection must not leave it alive (§2.2). `SenderPrekeys` saves the record at once.
+        if let consumable = used.consumable {
             #if DEBUG
             debugPrint("Opened bundle using prekey = \(consumable), consuming key...")
             #endif
-            prekeyManager.consume(prekey: consumable)
-            try sender.clearPendingBatch()
-            #if DEBUG
-            debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
-            #endif
-        } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+            prekeys.consume(prekeyID: consumable.id, contactID: consumable.contactID)
         }
 
         // ── 4. Decode, update capability, store inbound batch ────────────
@@ -1592,31 +1847,37 @@ extension ContactManager {
         #if DEBUG
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         #endif
-        try self.storeInboundBatch(decodedPayload.prekeyBatch, for: sender)
+        try self.acceptInboundBatch(decodedPayload.prekeyBatch, openedWith: used, into: prekeys)
 
         // Shard-protocol content requires forward secrecy. If this bundle used the
         // long-term-key fallback path, treat any shard-protocol fields as
         // untrusted/unexpected and drop them here — regardless of what the sender
         // claims — rather than relying on the sender to have gated correctly.
         if bundle.secrecy.mode == .longTermFallback || bundle.secrecy.mode == .longTermNoPQ {
-            decodedPayload = OccultaBundle.SealedPayload(
-                message:           decodedPayload.message,
-                prekeyBatch:       decodedPayload.prekeyBatch,
-                identityChallenge: decodedPayload.identityChallenge,
-                appVersion:        decodedPayload.appVersion,
-                senderProof:       decodedPayload.senderProof,
-                groupID:           decodedPayload.groupID
-            )
+            decodedPayload = Self.withoutShardContent(decodedPayload)
         }
 
-        // ── 5. Persist ───────────────────────────────────────────────────
-        try self.modelContext.save()
+        // ── 5. A new batch if the sender is out of our keys ──────────────
+        // After every check that can throw (`bugs.md` Bug 159). Clearing the pending batch is no
+        // longer here: using a key from it already did, at consumption (Bug 157).
+        //
+        // Not for an identity challenge or response. An older contact seals those with the long-term key
+        // whatever keys of ours they hold, so it says nothing about their stock, and the batch would replace
+        // keys they haven't used (`bugs.md` Bug 155). A contact at `.bodyDigestCapable` sends them in group
+        // format, where a long-term slot does mean they're out, and `openGroup` makes the batch.
+        if decodedPayload.identityChallenge == nil {
+            try self.replenish(after: used, into: prekeys)
+        }
+
+        // ── 6. Persist ───────────────────────────────────────────────────
+        // Also the sweep on receipt, now that the bundle has passed every check, and a consume-time save that failed.
+        try self.save(prekeys, for: sender)
 
         #if DEBUG
         // Identifier prefix, not the decrypted name. Enough to correlate lines about the same
         // contact across a session, without putting a plaintext name in the console — the
         // identifier is already ciphertext and is never decrypted here.
-        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
+        debugPrint("Saved after decrypt. Inbound prekeys now: \(prekeys.record.inboundBatches.reduce(0) { $0 + $1.keys.count }), sender: \(sender.identifier.prefix(12))…, pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
         #endif
 
         return (decodedPayload, sender.identifier)
@@ -1626,6 +1887,27 @@ extension ContactManager {
 // MARK: - Decrypt helpers (private)
 
 extension ContactManager {
+
+    /// `payload` without its piece operations and custody manifest, for a bundle that mustn't carry them.
+    static func withoutShardContent(_ payload: OccultaBundle.SealedPayload) -> OccultaBundle.SealedPayload {
+        OccultaBundle.SealedPayload(
+            message:           payload.message,
+            prekeyBatch:       payload.prekeyBatch,
+            identityChallenge: payload.identityChallenge,
+            appVersion:        payload.appVersion,
+            senderProof:       payload.senderProof,
+            groupID:           payload.groupID
+        )
+    }
+
+    /// The custody manifest `payload` carries for this recipient, or `nil` for "skip verification" (see the comment
+    /// where `openGroup` calls this). `custodyManifestCount` is the sender's number, decoded as an `Int` with no range
+    /// check, and `prefix(_:)` traps on a negative one (`bugs.md` Bug 175). A negative count is treated as not
+    /// attempted, not as an empty list: an empty one is the "sender holds none of yours" signal.
+    static func receivedManifest(_ payload: OccultaBundle.RecipientPayload, isFallback: Bool) -> [UUID]? {
+        guard !isFallback, payload.shardMetadataAttempted, payload.custodyManifestCount >= 0 else { return nil }
+        return Array(payload.custodyManifest.prefix(payload.custodyManifestCount))
+    }
 
     private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
         guard
@@ -1646,19 +1928,6 @@ extension ContactManager {
         default:
             return nil
         }
-    }
-
-    private func generateAndStoreFreshBatch(for sender: Contact.Profile, using prekeyManager: Manager.PrekeyManager) throws {
-        #if DEBUG
-        debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
-        #endif
-        let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
-        let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-        let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeysSuitableForTransport)
-        try sender.store(batch: batch)
-        #if DEBUG
-        debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
-        #endif
     }
 
     private func decodePayload(_ data: Data, version: OccultaBundle.Version) throws -> OccultaBundle.SealedPayload {
@@ -1724,27 +1993,6 @@ extension ContactManager {
 
         sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
     }
-
-    private func storeInboundBatch(_ batch: OccultaBundle.SealedPayload.PrekeySyncBatch?, for sender: Contact.Profile) throws {
-        guard let batch else { return }
-        #if DEBUG
-        debugPrint("Decrypting bundle containing inbound prekey sync batch...")
-        #endif
-        guard batch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
-            throw Errors.invalidPrekeySyncBatch
-        }
-        guard batch.prekeys.allSatisfy({ $0.publicKey.count == 65 }) else {
-            throw Errors.invalidBundleFormat
-        }
-        let blobs: [Data] = batch.prekeys.compactMap { wired in
-            let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
-            return try? JSONEncoder().encode(prekey)
-        }
-        #if DEBUG
-        debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
-        #endif
-        try sender.syncInboundPrekeys(blobs, date: batch.generatedAt)
-    }
 }
 
 // MARK: - Group bundle decryption
@@ -1776,8 +2024,46 @@ extension ContactManager {
         ownerID:                  String,
         groupID:                  UUID,
         recipientShardOperations: [OccultaBundle.ShardOperation]?,
-        recipientCustodyManifest: [UUID]?
+        recipientCustodyManifest: [UUID]?,
+        challenge:                IdentityChallenge.Authenticated?
     ) {
+        let opened = try self.openGroup(bundle: bundle, body: .inline(bundle), ownerID: ownerID)
+        return (opened.sealed, opened.ownerID, opened.groupID, opened.recipientShardOperations,
+                opened.recipientCustodyManifest, opened.challenge)
+    }
+
+    /// A streamed bundle's steps 1 to 6 (`STREAMING_SPEC.md` §5.2): parse the header and sections, identify the
+    /// sender, open our slot, check the digest (pass 1) and the header, and open the manifest, with every
+    /// check `openGroup` runs on it. Returns the body, whose file stays open, and the opening.
+    ///
+    /// Nothing here reads the depth. A failure before the header check has recorded no prekey as used.
+    func openStreamedBundle(_ reader: NoCacheFile.Reader) async throws -> (body: StreamedBody, opened: GroupOpening) {
+        let body = try StreamedBody(reader: reader)
+
+        // Pass 1 off the main thread: hashing the stream is the one step that reads all of it. The slot check
+        // below finds the digest already made.
+        _ = try await Task.detached(priority: .userInitiated) { try body.digest() }.value
+
+        let ownerID = try self.identifyOwner(of: body.bundle, body: .streamed(body))
+        let opened  = try self.openGroup(bundle: body.bundle, body: .streamed(body), ownerID: ownerID)
+        return (body, opened)
+    }
+
+    /// What `openGroup` returns, with the body's cursor for the streamed layout.
+    struct GroupOpening {
+        let sealed:                   OccultaBundle.SealedPayload
+        let ownerID:                  String
+        let groupID:                  UUID
+        let recipientShardOperations: [OccultaBundle.ShardOperation]?
+        let recipientCustodyManifest: [UUID]?
+        let challenge:                IdentityChallenge.Authenticated?
+        /// Where pass 2 resumes. Nil for the inline layout, whose files are in `sealed`.
+        let cursor:                   StreamCursor?
+    }
+
+    /// `openGroup` for either layout. `body` is the bundle's body: `.inline(bundle)`, or the streamed one whose
+    /// header is `bundle` (`STREAMING_SPEC.md` §5.2 steps 3–6). Every check below runs on the manifest, written once.
+    func openGroup(bundle: OccultaBundle, body: BundleBody, ownerID: String? = nil) throws -> GroupOpening {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
         }
@@ -1790,7 +2076,6 @@ extension ContactManager {
         }
 
         let cryptoOps     = Manager.Crypto()
-        let prekeyManager = Manager.PrekeyManager()
 
         // ── 1. Identify sender ──────────────────────────────────────────
         // Skip the fingerprint scan when the caller already identified the sender.
@@ -1799,23 +2084,43 @@ extension ContactManager {
             guard let found = try self.fetchContact(by: ownerID) else { throw Errors.contactNotFound }
             sender = found
         } else {
-            sender = try self.identifyOwner(for: bundle)
+            sender = try self.identifyOwner(for: bundle, body: body)
         }
-        try sender.configureForwardSecrecy()
+        let prekeys = try self.senderPrekeys(for: sender)
 
         // ── 2. Resolve sender key material ─────────────────────────────
-        let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
-        let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+        // A card conversation's sender has the peer's card keys in place of an identity key (SPEC §3).
+        let cardContext = try self.cardReceiveContext(for: sender)
+        let senderPublicKey: Data
+        let recipientPayload: OccultaBundle.RecipientPayload
+        let used: InboundPrekeyUse
+        let recipientMode: OccultaBundle.Mode
+        let slotEphemeralKey: Data
+        var cardOpening: CardSlotOpening?
 
         // ── 3. Trial-decrypt: find our slot and open it ─────────────────
-        let (recipientPayload, consumable, recipientMode) = try cryptoOps.findAndOpenRecipientSlot(
-            in: bundle,
-            blind: envelope.blind,
-            senderContactID: sender.identifier,
-            senderPublicKey: senderPublicKey,
-            quantumMaterial: quantumMaterial,
-            prekeyManager: prekeyManager
-        )
+        if let cardContext {
+            senderPublicKey = cardContext.peerAgreementKey
+            let opening = try cryptoOps.openCardSlot(
+                in: bundle, blind: envelope.blind, senderContactID: sender.identifier, card: cardContext, prekeys: prekeys,
+                body: body
+            )
+            try self.checkCardIntroduction(opening, for: sender)
+            (recipientPayload, used, recipientMode, slotEphemeralKey) = (opening.payload, opening.used, opening.mode, opening.ephemeralPublicKey)
+            cardOpening = opening
+        } else {
+            senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
+            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+            (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
+                in: bundle,
+                blind: envelope.blind,
+                senderContactID: sender.identifier,
+                senderPublicKey: senderPublicKey,
+                quantumMaterial: quantumMaterial,
+                prekeys: prekeys,
+                body: body
+            )
+        }
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
         // FS mode's session key never involves the sender's long-term identity (finding
@@ -1849,27 +2154,62 @@ extension ContactManager {
             }
         }
 
-        // ── 4. Prekey bookkeeping ────────────────────────────────────────
-        // The prekey itself is already gone — `findAndOpenRecipientSlot` consumes it the moment
-        // the slot opens, so that a rejection between there and here cannot leave it alive in
-        // the Enclave (§2.2). `consumable` reports what was consumed; what remains for this
-        // block is the model-side bookkeeping, which deliberately stays behind the gates above
-        // so a rejected bundle cannot drive it.
-        #if DEBUG
-        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumed: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
-        #endif
-        if consumable != nil {
-            // They used one of our prekeys, which is cryptographic proof they received the
-            // batch we have been attaching to every outbound message.
-            try sender.clearPendingBatch()
-        } else if !sender.hasPendingBatch {
-            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+        // ── 3.6. Require the body digest once the sender is known to send it ──
+        // Every recipient holds the session key, so without the digest the body could be another
+        // recipient's (`bugs.md` Bug 165); a matching one was checked as the slot opened. Required only from a
+        // sender recorded at the tier, which only rises, so a claim can't switch it off. A stranded marker
+        // accepts, unlike the signature gate above: refusing would block 1.10.2–1.11.x contacts whose marker
+        // was stranded, and refusing only there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their
+        // first bundle from the tier repairs the marker.
+        if recipientPayload.bodyDigest == nil,
+           case .readable(let version) = Self.bundleVersionState(for: sender, using: cryptoOps),
+           version.isAtLeast(.bodyDigestCapable) {
+            throw GroupDecryptError.missingBodyDigest
         }
+
+        #if DEBUG
+        debugPrint("Opening group bundle, recipient mode: \(recipientMode), used: \(used), sender pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
+        #endif
 
         // ── 5. Open shared ciphertext ────────────────────────────────────
         let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
-        let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
-        let decoded     = try WireHandle.decode(payload: payloadData)
+        let openedManifest = try body.openManifest(sessionKey: sessionKey)
+        let decoded        = openedManifest.payload
+
+        // ── 5.1. An identity challenge or response: authenticated here, or not at all ──
+        // Only a 2.0.0 sender puts one in a group body (prekey continuity §3.4), so it must carry what every such
+        // sender sends: the body digest, since an older sender's group bundle is exactly what a recipient would
+        // rewrite (`bugs.md` Bug 165); and on a forward-secret slot, the sender's signature over its ephemeral key
+        // in the prefixed form, whatever tier is recorded. Unsigned is refused here even from a contact with no tier
+        // recorded, which the gate in 3.5 lets through for messages. `IdentityChallenge.Authenticated` can only be
+        // built in this file, so nothing else can hand the coordinator an envelope as if it had passed these checks.
+        // A card contact is refused identity challenges (SPEC §8): reject as an unrecognised sender.
+        if cardOpening != nil, decoded.identityChallenge != nil { throw Errors.noPublicKeyToEncryptWith }
+        let challenge: IdentityChallenge.Authenticated?
+        if let identityChallenge = decoded.identityChallenge {
+            guard recipientPayload.bodyDigest != nil else { throw GroupDecryptError.missingBodyDigest }
+            if isFSMode {
+                // The signature verified in `openRecipientSlot` against our slot's ephemeral key, in either form.
+                // Once more against that key, in the prefixed form only.
+                guard let signature = recipientPayload.senderEphemeralSignature,
+                      cryptoOps.verifySenderEphemeralSignature(
+                          signature, ephemeralPublicKey: slotEphemeralKey,
+                          senderPublicKey: senderPublicKey, acceptsBareForm: false
+                      )
+                else { throw GroupDecryptError.missingSenderEphemeralSignature }
+            }
+            challenge = IdentityChallenge.Authenticated(identityChallenge)
+        } else {
+            challenge = nil
+        }
+
+        // A body claiming a build that always sends the digest, without one, isn't from that build: it's a rewrite
+        // of an older bundle. Refused before `updateMaxVersion` below reads the claim, which would otherwise let the
+        // rewriter raise the sender's recorded tier and change how we send to them.
+        if recipientPayload.bodyDigest == nil, let appVersion = decoded.appVersion,
+           OccultaBundle.Version.max(forAppVersion: appVersion).isAtLeast(.bodyDigestCapable) {
+            throw GroupDecryptError.missingBodyDigest
+        }
 
         // ── 5.5. Verify sender proof ─────────────────────────────────────
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
@@ -1889,12 +2229,21 @@ extension ContactManager {
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
-        try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
-        try self.modelContext.save()
+        try self.acceptInboundBatch(recipientPayload.prekeyBatch, openedWith: used, into: prekeys)
+        // The card field's step, stored with the record below (SPEC §6.6 step 3).
+        if let cardOpening { try self.applyCardOpening(cardOpening, to: sender) }
+
+        // ── 6.5. A new batch if the sender is out of our keys ────────────
+        // A one-time prekey is already gone — `findAndOpenRecipientSlot` consumes it the moment
+        // the slot opens, and `SenderPrekeys` saves that and its bookkeeping at once (§2.2;
+        // delivery of the pending batch, Bug 157). Generating stays behind every check above that
+        // can throw (`bugs.md` Bug 159), so a rejected bundle can't make us issue keys.
+        try self.replenish(after: used, into: prekeys)
+        try self.save(prekeys, for: sender)
 
         #if DEBUG
         // Identifier prefix, not the decrypted name — see the same log on the direct path.
-        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
+        debugPrint("Saved after group decrypt. Inbound prekeys now: \(prekeys.record.inboundBatches.reduce(0) { $0 + $1.keys.count }), sender: \(sender.identifier.prefix(12))…, pending batch: \(PrekeyBookkeeper().hasPendingBatch(prekeys.record))")
         #endif
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }
@@ -1904,7 +2253,10 @@ extension ContactManager {
         // slot used the long-term-key fallback path, treat any shard-protocol fields
         // as untrusted/unexpected and drop them here — regardless of what the sender
         // claims — rather than relying on the sender to have gated correctly.
-        let isFallback = recipientMode == .longTermFallback || recipientMode == .longTermNoPQ
+        // A last-resort slot is treated the same: its key stays, so the bundle opens again
+        // on every redelivery, and a replayed piece operation could undo a newer one (D5).
+        let isFallback = recipientMode == .longTermFallback || recipientMode == .longTermNoPQ || used.isLastResort
+                      || cardOpening != nil // shard content needs a verified contact (SPEC §8)
         let recipOps = isFallback ? [] : recipientPayload.shardOperations.filter { $0.kind != .unsupported }
 
         // custodyManifest: `custodyManifestCount == 0` is genuinely ambiguous on its
@@ -1918,17 +2270,34 @@ extension ContactManager {
         // above. Returning `nil` means "skip verification"; a real, possibly-empty
         // array means "process it" — silently converting a real empty array to `nil`
         // here would drop that signal exactly the way this fix closes.
-        let metadataAttempted = !isFallback && recipientPayload.shardMetadataAttempted
-        let recipManifest: [UUID]? = metadataAttempted
-            ? Array(recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount))
-            : nil
+        let recipManifest = Self.receivedManifest(recipientPayload, isFallback: isFallback)
 
-        return (
-            decoded,
-            sender.identifier,
-            groupID,
-            recipOps.isEmpty ? nil : recipOps,
-            recipManifest
+        // The shared payload too: a one-to-one bundle carries its piece operations and manifest there, not per
+        // recipient, and the caller falls back to them. Stripping only the per-recipient fields left those applied
+        // on a fallback slot (`bugs.md` Bug 164).
+        return GroupOpening(
+            sealed:                   isFallback ? Self.withoutShardContent(decoded) : decoded,
+            ownerID:                  sender.identifier,
+            groupID:                  groupID,
+            recipientShardOperations: recipOps.isEmpty ? nil : recipOps,
+            recipientCustodyManifest: recipManifest,
+            challenge:                challenge,
+            cursor:                   openedManifest.cursor
         )
+    }
+}
+
+extension IdentityChallenge {
+    /// An identity challenge or response that arrived in a group body and passed `openGroup`'s checks: its slot
+    /// opened, the body matches the slot's digest, and a forward-secret slot carries the sender's signature in the
+    /// prefixed form. `Coordinator.handleAuthenticatedChallenge` trusts it without reopening the bundle with the
+    /// long-term key, so it's built nowhere but `openGroup`: the initializer is private to this file
+    /// (prekey continuity §3.4).
+    struct Authenticated {
+        let envelope: IdentityChallengeEnvelope
+
+        fileprivate init(_ envelope: IdentityChallengeEnvelope) {
+            self.envelope = envelope
+        }
     }
 }

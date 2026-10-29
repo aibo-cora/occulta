@@ -12,9 +12,23 @@ Occulta is a contact book where every entry is a cryptographic key you collected
 
 **Professionals with legally sensitive information** — doctors, lawyers, accountants, journalists. When sensitive files move through a messaging platform, they travel through infrastructure someone else controls. Occulta removes that infrastructure: files are encrypted to a key that lives only on your contact's device, so there is nothing for a platform or a subpoena to reach.
 
-**Travelers and activists** operating in high-risk environments. Your cryptographic identity in Occulta is locked to a hardware chip on your specific iPhone. No one can impersonate you remotely or take over your identity by compromising an account.
+**Travelers and activists** operating in high-risk environments. Your cryptographic identity in Occulta is locked to a hardware chip on your specific iPhone. No one can impersonate you remotely to a contact who verified you in person, or take over your identity by compromising an account.
 
 **Anyone who wants their private files to stay private.** You don't need a specific adversary to want your information to be yours.
+
+---
+
+## What It Doesn't Do
+
+Know these limits before you rely on Occulta:
+
+- **It is not a messaging app.** It has no chat interface and doesn't replace Signal or iMessage. It encrypts files and lets you verify identity — delivery is up to you.
+- **It doesn't hide metadata.** The contents of a bundle are protected, but whoever carries it — your email provider, a messaging service, a network observer — can see that you sent something, to whom, when, and roughly how large. That exposure is decided by the channel you choose, not by Occulta.
+- **It can't protect a compromised phone.** If someone controls your unlocked iPhone or has installed spyware on it, they can see what you see in Occulta.
+- **Losing your phone loses your contacts.** Cross-device sync is intentionally absent, and keys live on one device. If you lose your iPhone, your identity and contact keys are gone and you re-exchange in person. Backup Recovery restores only your Vault, and only from a backup file you exported beforehand.
+- **It is iPhone-only.** Android is not supported.
+
+→ [Full threat model](https://github.com/aibo-cora/occulta/wiki/Threat-Model) · [Security properties](https://github.com/aibo-cora/occulta/wiki/Security-Properties)
 
 ---
 
@@ -26,15 +40,27 @@ To add a contact, both of you open Occulta and bring your phones within 25 cm of
 
 The result: a contact whose identity is guaranteed by physics, not by a server or a username.
 
+Apple's Contact Key Verification brings a similar in-person check to iMessage. It requires an Apple Account on both sides and covers iMessage conversations only. Occulta needs no account of any kind, and the key you collect works for any file you send over any channel.
+
 → [How the exchange works technically](https://github.com/aibo-cora/occulta/wiki/Key-Exchange-Flow)
+
+---
+
+### Introduction Cards
+
+When you can't meet someone yet, you can give them an introduction card: a small file you send over any channel. It lets that one person write to you before you meet. They have 24 hours to send their first message, and after that there is no time limit.
+
+Until you meet and exchange keys in person, the contact is marked **Not verified** everywhere in the app. Whoever carried the card could have swapped it, so you can't be sure who is writing. A Not verified contact can't join a group, hold a piece of your Vault backup, or take part in identity checks. Their first messages, before you reply, don't have forward secrecy and are labelled Standard Encryption.
+
+When you do meet, the exchange also checks that the person in front of you is the one you were writing to, and tells you if they aren't. Cards need iOS 26 on both phones.
 
 ---
 
 ### Encrypt Anything
 
-Once you have someone's key, tap their name in Occulta and attach any file — a photo, document, video, voice note. Occulta encrypts it into an `.occ` bundle that only they can open. Share the bundle however you want. The channel doesn't matter: the encryption is independent of the delivery method.
+Once you have someone's key, tap their name in Occulta and attach any file — a photo, document, video, voice note. Occulta encrypts it into an `.occ` bundle that only they can open. Share the bundle however you want. The channel doesn't matter: the encryption is independent of the delivery method. Very large videos and files are streamed, so they send and open without exhausting memory once both phones are on 2.0.
 
-Each message uses a fresh key that is thrown away after use, so a future device compromise cannot expose past messages.
+Each message is sealed to a one-time key your contact's phone gave you, and that key is thrown away once they open it, so a future device compromise cannot expose past messages. Occulta refills these keys as you exchange messages. If you run out, for example before your contact has replied, it falls back to a temporary key that expires, or to their long-term key, which gives no forward secrecy. Before you send, Occulta shows which one applies.
 
 → [How encryption works technically](https://github.com/aibo-cora/occulta/wiki/Encryption-Flow) · [Forward secrecy](https://github.com/aibo-cora/occulta/wiki/Forward-Secrecy)
 
@@ -44,13 +70,15 @@ Each message uses a fresh key that is thrown away after use, so a future device 
 
 On iOS 26 and later, Occulta adds a second layer of encryption on top of the standard key exchange using ML-KEM-1024 — a quantum-resistant algorithm standardized by NIST. This protects against adversaries who record your encrypted traffic today hoping to decrypt it years from now when quantum computers become powerful enough to break standard encryption.
 
+Messaging apps that offer post-quantum encryption protect their own transport: it covers a message only while it travels through that app. Occulta's protection is part of the file itself. The same `.occ` bundle stays protected whether it goes by email, AirDrop, a messaging app, or a USB drive, and in a group every recipient's copy of the key is protected separately.
+
 → [How post-quantum protection works](https://github.com/aibo-cora/occulta/wiki/Post-Quantum-Protection)
 
 ---
 
 ### Vault
 
-Vault is a secure place to store sensitive notes, credentials, and documents — encrypted the same way your messages are. Each entry can be split among trusted contacts using secret sharing: you choose a threshold (e.g. any 2 of 3 contacts), and Occulta splits the entry's encryption key into shards. If you lose your device, your trustees can return their shards and you recover your vault. No shard holder can read your data alone.
+Vault is a secure place to store sensitive notes, credentials, and documents — encrypted the same way your messages are. Backup Recovery protects against losing your phone: you export an encrypted backup file and choose trustees among your contacts and a threshold (e.g. any 2 of 3). Occulta splits the backup's encryption key into pieces using secret sharing, one per trustee. If you lose your device, your trustees return their pieces when you re-pair in person, and opening the backup file on your new phone restores your vault. The file is useless without the key, and no single trustee holds enough of it.
 
 → [How the Vault and secret sharing work](https://github.com/aibo-cora/occulta/wiki/Vault-and-Secret-Sharing)
 
@@ -62,7 +90,7 @@ Encrypt a file or message for multiple contacts at once and share it as a single
 
 Groups are local: a named list of contacts on your device. No server, no membership notifications. Deliver the bundle over any channel, same as individual messages.
 
-Forward secrecy and post-quantum protection apply per recipient. Occulta's full multi-layer duress model extends to groups — each duress depth shows its own independent member list, with no trace of the real one or of any other depth. Group sends can also distribute Vault recovery shards to eligible trustees alongside the message.
+Forward secrecy and post-quantum protection apply per recipient. Occulta's full multi-layer duress model extends to groups — each duress depth shows its own independent member list, with no trace of the real one or of any other depth. Group sends can also carry Vault backup-recovery pieces to eligible trustees alongside the message.
 
 → [How group messaging works](https://github.com/aibo-cora/occulta/wiki/Group-Messaging)
 
@@ -74,8 +102,8 @@ Secure Mode protects against someone forcing you to unlock your phone. You set t
 
 Additional protections:
 - The "Disable PIN" toggle leaves depth filtering active — disabling the lock doesn't reveal hidden contacts.
-- The app leaves no forensic trace that Secure Mode is in use; the configuration file is written from first launch on every install.
-- Up to 32 nested duress layers are supported.
+- The configuration file is written from first launch on every install, so its presence doesn't reveal Secure Mode. Depth filtering is applied by the app, not by separate keys: it stops someone using the app, not an attacker who extracts data from an unlocked device.
+- Up to 32 layers are supported in total: the real one plus 31 nested duress layers.
 
 → [How Secure Mode works technically](https://github.com/aibo-cora/occulta/wiki/Secure-Mode)
 
@@ -85,19 +113,7 @@ Additional protections:
 
 Occulta has no account. Your identity is a key that lives in your iPhone's Secure Enclave — a dedicated hardware chip that never lets the key leave. There is no password to phish, no phone number to SIM-swap, no cloud account to compromise, and no server to subpoena.
 
-If someone takes over your Signal account or iCloud, they cannot read your Occulta messages or impersonate you in Occulta. Your contacts will simply stop receiving valid bundles from "you" — and that silence is the signal.
-
----
-
-## What It Doesn't Do
-
-Occulta is not a messaging app and doesn't replace Signal or iMessage. It has no chat interface. It encrypts files and lets you verify identity — delivery is up to you.
-
-Cross-device sync is intentional absent. Keys live on one device. If you lose your iPhone without vault recovery configured, you lose your keys.
-
-Android is not supported.
-
-→ [Full threat model](https://github.com/aibo-cora/occulta/wiki/Threat-Model) · [Security properties](https://github.com/aibo-cora/occulta/wiki/Security-Properties)
+If someone takes over your Signal account or iCloud, they cannot read your Occulta messages or impersonate you to contacts who verified you in person. They could send an introduction card in your name, but whoever imports it sees a Not verified contact until the two of you meet. Your contacts will simply stop receiving valid bundles from "you" — and that silence is the signal.
 
 ---
 
@@ -115,7 +131,7 @@ Android is not supported.
 - [Architecture](https://github.com/aibo-cora/occulta/wiki/Architecture)
 - [Group Messaging](https://github.com/aibo-cora/occulta/wiki/Group-Messaging)
 - [Group Messaging — Technical](https://github.com/aibo-cora/occulta/wiki/Group-Messaging-Technical)
-- [Security Analysis (PDF)](https://github.com/user-attachments/files/25865710/occulta_crypto_protocol.docx)
+- [Security Analysis (DOCX)](https://github.com/user-attachments/files/25865710/occulta_crypto_protocol.docx)
 
 ---
 
@@ -123,7 +139,7 @@ Android is not supported.
 
 - iOS 18.6+
 - iPhone with U1 or U2 chip (required for UWB key exchange)
-- iOS 26+ for post-quantum hybrid key exchange
+- iOS 26+ for post-quantum hybrid key exchange and introduction cards
 
 ---
 
@@ -135,7 +151,7 @@ cd Occulta
 open Occulta.xcodeproj
 ```
 
-Build and run on a physical device. The Secure Enclave and UWB are not available in the Simulator.
+Build and run on a physical device. UWB is not available in the Simulator, and the Vault can't be unlocked there because its Face ID-protected key isn't supported. The unit tests run in the Simulator (`OccultaTests` scheme).
 
 ---
 

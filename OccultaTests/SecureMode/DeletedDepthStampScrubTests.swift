@@ -15,6 +15,7 @@ import Testing
 import Foundation
 import SwiftData
 @testable import Occulta
+@testable import OccultaFormats
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {
@@ -198,12 +199,12 @@ struct DeletedRowBackfillExclusionTests {
 
     /// The defect, and its fix.
     ///
-    /// Gated despite asserting nil, which a keyless host produces anyway: without an Enclave
-    /// the backfill's seal returns nil and the stamps stay nil for the wrong reason, so the
-    /// test passes without observing the filter it exists to pin. An honest skip beats a
-    /// green result that proves nothing.
+    /// Needs a working local key despite asserting nil, which a keyless host produces anyway:
+    /// without one the backfill's seal returns nil and the stamps stay nil for the wrong
+    /// reason, so the test would pass without observing the filter it exists to pin.
+    /// `.ambientTestKeyManager` supplies that key.
     @Test("A soft-deleted row's nil stamps are left for the scrub, not backfilled",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func deletedRowIsExcludedFromBackfill() throws {
         let context = ModelContext(try makeContainer())
         insert("deleted", deleted: true, stamps: nil, in: context)
@@ -225,11 +226,11 @@ struct DeletedRowBackfillExclusionTests {
     /// The constraint that keeps this from over-scoping: a live row's nil stamp is
     /// exactly the case the backfill exists to fix, and must still be stamped.
     ///
-    /// Needs a real Enclave — the backfill seals through `Data.encrypt()`, which builds its
-    /// own `Manager.Key()`, so with none available the stamp stays nil and this fails on the
-    /// count rather than skipping.
+    /// Needs a working local key — the backfill seals through `Data.encrypt()`, so with none
+    /// available the stamp stays nil and this fails on the count. `.ambientTestKeyManager`
+    /// supplies it.
     @Test("A live row's nil stamps are still backfilled normally",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func liveRowIsStillBackfilled() throws {
         let context = ModelContext(try makeContainer())
         insert("live", deleted: false, stamps: nil, in: context)
@@ -262,10 +263,6 @@ struct DeletedRowBackfillExclusionTests {
 }
 
 // MARK: - Bug 89 remedy — the scrub matches the row it sits on
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeGroupCapableContainer() throws -> ModelContainer {
@@ -320,10 +317,10 @@ struct ScrubMatchesRowReadabilityTests {
     /// hidden from every duress layer) and born at depth 2 leaves both facts readable on its
     /// soft-deleted row — direct evidence that a layer at depth 2 exists and was in use.
     @Test("A readable deleted row's stamps are replaced with benign values",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func readableRowGetsBenignValues() throws {
         let context = ModelContext(try makeContainer())
-        try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
+        _ = try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -345,10 +342,10 @@ struct ScrubMatchesRowReadabilityTests {
     /// The stamps must stay *readable* on a readable row. Random bytes would be a tamper tell:
     /// three unreadable fields sitting on a row whose names still decrypt.
     @Test("A readable deleted row's stamps still decrypt after the scrub",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func readableRowStaysReadable() throws {
         let context = ModelContext(try makeContainer())
-        try self.insertReadableDeleted(visibleThrough: 0, trustee: -1, origin: 3, in: context)
+        _ = try self.insertReadableDeleted(visibleThrough: 0, trustee: -1, origin: 3, in: context)
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -364,10 +361,10 @@ struct ScrubMatchesRowReadabilityTests {
     /// It runs on every launch. Re-sealing draws a fresh nonce, so an unconditional rewrite
     /// would churn the bytes — and the row's mtime — at every start for no gain.
     @Test("A second run over a readable row changes nothing",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func readableScrubIsIdempotent() throws {
         let context = ModelContext(try makeContainer())
-        try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
+        _ = try self.insertReadableDeleted(visibleThrough: 0, trustee: 2, origin: 2, in: context)
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -387,14 +384,12 @@ struct ScrubMatchesRowReadabilityTests {
     /// through its length, and the fixed-width pass no longer visits deleted rows — so value
     /// alone cannot be the idempotency test.
     @Test("A readable legacy-width stamp is rewritten even when its value is already benign",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func readableLegacyWidthIsStillRewritten() throws {
         let context = ModelContext(try makeContainer())
         let row = try self.insertReadableDeleted(visibleThrough: 0, trustee: -1, origin: 0, in: context)
         // Int.max in the legacy JSON format: benign in value, 19 plaintext bytes in length.
-        row.visibleThroughDepth = try #require(
-            try JSONEncoder().encode(Int.max).encrypt()
-        )
+        row.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
         try context.save()
 
         try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
@@ -408,7 +403,7 @@ struct ScrubMatchesRowReadabilityTests {
     /// The other half of the rule. A stranded row's names do not decrypt, so a stamp that did
     /// would be the outlier — the mirror image of the readable case.
     @Test("A stranded row's stamps are not sealed into readability",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func strandedRowIsNotMadeReadable() throws {
         let context = ModelContext(try makeContainer())
         // deletionToken that will not decrypt = the row is stranded under a superseded key.
@@ -437,7 +432,7 @@ struct ScrubMatchesRowReadabilityTests {
 struct FixedWidthPassExcludesDeletedRowsTests {
 
     @Test("A deleted row's readable legacy stamp is not normalised by the fixed-width pass",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func deletedRowIsSkipped() throws {
         let context = ModelContext(try makeContainer())
         let profile = Contact.Profile(
@@ -461,14 +456,14 @@ struct FixedWidthPassExcludesDeletedRowsTests {
 
     /// The constraint: live rows are the whole point of that pass and must still convert.
     @Test("A live row's legacy stamp is still normalised",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func liveRowIsStillNormalised() throws {
         let context = ModelContext(try makeContainer())
         let profile = Contact.Profile(
             identifier: UUID().uuidString, givenName: "", familyName: "", middleName: "",
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
         )
-        profile.visibleThroughDepth = try #require(try JSONEncoder().encode(2).encrypt())
+        profile.visibleThroughDepth = try JSONEncoder().encode(2).encrypt()
         context.insert(profile)
         try context.save()
 
@@ -488,10 +483,10 @@ struct FixedWidthPassExcludesDeletedRowsTests {
 struct DeleteContactScrubsStampsTests {
 
     @Test("Deleting a contact replaces its depth stamps with benign values",
-          .enabled(if: secureEnclaveAvailable()))
+          .ambientTestKeyManager)
     func deleteContactScrubsDepthStamps() throws {
         let container = try makeGroupCapableContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let contacts  = ContactManager(modelContainer: container, security: security)
 
         let identifier = UUID().uuidString
@@ -499,8 +494,8 @@ struct DeleteContactScrubsStampsTests {
             identifier: identifier, givenName: "", familyName: "", middleName: "",
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
         )
-        profile.visibleThroughDepth = try #require(try DepthCodec.encode(0).encrypt())
-        profile.originDepth         = try #require(try DepthCodec.encode(2).encrypt())
+        profile.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
+        profile.originDepth         = try DepthCodec.encode(2).encrypt()
         try contacts.insertProfile(profile)
 
         try contacts.deleteContact(identifier: identifier)

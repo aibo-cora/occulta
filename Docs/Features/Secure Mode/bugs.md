@@ -4223,6 +4223,13 @@ Cheaper alternative if the extra field is unwelcome: drop the tier entirely and 
 unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare arm in
 `verifySenderEphemeralSignature` at the same time. That is the end state either way.
 
+**Note, 2026-10-07.** The last-claimed marker was considered for a second use and rejected for that use only:
+deciding whether to seal to a contact's last-resort prekey (`Docs/Features/Prekey Continuity/DESIGN.md` §5,
+D6). There, a planted "old version" from someone with temporary use of the contact's identity key would move
+everything we send them onto the long-term key, openable from either phone indefinitely. This remedy is
+unaffected: a forced downgrade of the *prefix choice* only means signing bare, which exposes nothing, as
+argued above. Don't reuse a last-claimed marker for any decision that weakens confidentiality.
+
 ---
 
 ## Bug 84 — Share-extension handoff runs the whole outbound encryption before the PIN, and its transport sheet presents over the PIN gate
@@ -5737,7 +5744,7 @@ So `Draft`'s omissions are load-bearing. The first version of this entry recomme
 
 Checked 2026-08-20: **nothing in production writes a `.contacts` file.** `format: .contacts` is
 constructed only inside `#Preview` blocks. The app can receive shared-contacts files and never sends
-one — the read side, the `Format` case in `Transfers.swift` and the whole import UI exist, but the
+one — the read side, the `Format` case in `Transfers.swift` (now `OccultaCore`'s `Basket.swift`) and the whole import UI exist, but the
 write side was never implemented.
 
 That is why this is filed rather than fixed, and why it is worth filing at all: the rule needs to be
@@ -7183,6 +7190,8 @@ The one way out before the fix was blind: deleting the hostile trustee's contact
 
 ### Fix, as built (2026-09-23)
 
+**Moved 2026-10-13** (modularization Phase 3, step 4): the search is now `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)` in `OccultaCore`, and `verifiedKey` passes it the GCM check. Same order, cap and zeroing; the Bug 95 suite in `VaultRestoreTrustTests` passes unchanged.
+
 - **Subset search** (`VaultManager.Backup.verifiedKey`). It tries every shard first. If that fails, it
   retries with shards left out, fewest first, and stops at the first candidate that opens the file.
   Extra honest shards never change the result, so the first subset that works is the full set minus the
@@ -7400,7 +7409,8 @@ be:** `JSONEncoder`/`JSONDecoder` internals, labels while they pass through Swif
 
 **Follow-up, 2026-09-26 (branch code review):** per-entry key reconstruction had the same gap.
 `reconstructEntry` (`Vault+Manager+Reconstruction.swift`) opened the entry's content to check the GCM tag
-and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` does. Not
+and dropped the decrypted secret unzeroed. It now zeroes it at once, as `Backup.keyOpening` did (since 2026-10-13, the check `verifiedKey`
+passes to `ShamirSecretSharing.reconstruct(shares:maxAttempts:isCorrect:)`). Not
 covered by a test, like the other zeroing points: a leftover copy in freed memory isn't observable from one.
 
 ### 4 — Minor, recorded so they are not rediscovered
@@ -8651,6 +8661,11 @@ an observation, not a defect: adding the filter is what makes the `"Anonymous"` 
 which is the harm described above. If a reason ever emerges to filter soft-deleted senders, it has to
 answer that first.
 
+**See also (2026-10-23):** this closure covers rendering a new message. Two neighbouring cases it does not
+cover, re-opening a hidden contact's retained re-openable `.occ` files and inbound error text that
+separates a hidden sender from an unknown one, are recorded as open, needing a decision, in
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, section "2026-10-23 — Two cases the 2026-08-13 decision does not cover".
+
 ---
 
 ## Bug 104 — An inbound identity challenge from a contact hidden at the current depth renders that contact's name
@@ -8732,6 +8747,24 @@ document leaves available — checking visibility before decrypting — not to a
 The `.response` branch also writes `verifiedAt[senderID]` before rendering
 (`IdentityChallenge+Coordinator.swift:194`). That is in-memory state keyed by identifier, not a
 render, and is out of scope here — but any future UI reading `verifiedAt` inherits the same question.
+Bug 180 (2026-10-23) is that question: `verifiedAt` and the outstanding-challenge store survive `endSession`
+into a duress session. The fix is in review in #136 (an in-memory per-(depth, contact) ledger).
+
+**See also (2026-10-23):** this closure covers rendering the name. Approving the challenge, which signs and seals
+a response to the hidden contact, is Bug 173, open and needing a decision. Re-opening retained files and the
+error-text split are recorded as open in the oracle document's "2026-10-23 — Two cases the 2026-08-13 decision
+does not cover".
+
+**Update 2026-10-25 (Bug 180):** that was the question, and it had an answer worth a bug of its own. The
+verified-at time and the outstanding-challenge store lived on the `Coordinator`, which is built once before any
+PIN and outlives `endSession`, so a duress session read the owner's real-depth state. They now live in a sealed
+per-depth column on the contact, which `ContactManager` reads and writes, picking the depth from `security.currentDepth`
+itself (`ContactManager+ChallengeLedger.swift`), and the `Coordinator` holds neither. A response opened at another depth
+finds an empty ledger and renders nothing, and the badge reads only the current depth's entry. The `.response`
+branch's write is still not a render; it is now depth-bound as well. The owner's own question, the note on an
+outstanding challenge, is held by the `Manager` in memory and reached only through that depth's entry. The
+attacker-supplied `contextNote` on an *incoming* challenge ("Also unchanged" above) is a different question and
+is untouched.
 
 ---
 
@@ -10361,6 +10394,21 @@ entry's remedy re-seals these fields under layer keys, the same migration must b
 field** (an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)` already does for the
 content fields). Recorded as a requirement in `PASSPHRASE_LAYER_KEYS.md` §2.
 
+### Threat review, 2026-09-29
+
+Sizing the remedy against a state-level attacker added four requirements to `PASSPHRASE_LAYER_KEYS.md`:
+- **§1:** as drafted, the SE half is a constant (`ECDH(SE_priv, G)`), so AFU extracts it once and guessing
+  moves off-device. The stretched phrase has to go into the SE operation, so every guess needs this phone's SE.
+- **§3:** every depth's phrase is the same length, and phrases are app-generated, not editable. Shorter duress
+  phrases can be cracked offline, and the one that survives is the real one.
+- **§4:** 7 words with PBKDF2, or 6 words with Argon2id. 6 words with PBKDF2 falls within years to
+  SHA-256 hardware on the scale of the Bitcoin network.
+- **§4:** entry must not go through the ordinary keyboard. The keyboard's learned-words cache is a forensic
+  artifact that would hold the phrase and show that something is hidden.
+
+This also records how exposed the current PIN is: `deriveSecureModeKey()` is a constant under AFU, so the
+6-digit verifiers fall in under a second and reveal how many depths exist, whatever the lockout says.
+
 ### Guard
 
 None — not built. Tracked as `PASSPHRASE_LAYER_KEYS.md`'s own §2, unresolved. This entry's job is
@@ -10374,6 +10422,8 @@ design work.
 
 **Status:** Open. Filed 2026-09-12, found while designing `RECOVERY_BUFFER_LAYERING.md` Stage 4's
 shard-buffer cap and generalizing the question to the rest of the app's per-depth storage.
+**Re-examined 2026-10-15: can't be closed with per-depth keys against a surrendered phrase.** Open, needs
+a decision. See "Re-examined 2026-10-15" below.
 
 **Target:** None — cross-cutting, affects every per-depth container currently shipped, not a single
 release's scope.
@@ -10445,6 +10495,27 @@ whatever storage-churn cost that implies — worse for containers written to oft
 than for ones written rarely, like BEK), or (b) some other mechanism that hides write-frequency-by-depth
 without paying that cost everywhere. Not resolved by anything currently in this file or in either design
 document.
+
+### Re-examined 2026-10-15: per-depth keys close the keyless case and can't close the other
+
+Found in a design discussion of `PASSPHRASE_LAYER_KEYS.md` §2 for v2.0.0. The full reasoning is that
+document's "Finding, 2026-10-15".
+
+- **With no phrase, per-depth keys close it on their own.** Today a row's depth is readable from array
+  slot positions without any key, and from depth stamps by code on the phone. Under the storage proposed in
+  the spec, a row carries no depth that can be read without its depth's phrase, so comparing images shows
+  which rows changed but not whose they were.
+- **With a surrendered duress phrase, it can't be closed.** That phrase sorts the changed rows into those
+  it opens and those it doesn't. During real use, rows it doesn't open change, and nothing the surrendered
+  depth does could have changed them. A duress session can't rewrite rows it can't read without destroying
+  them, so its writes can never look like the real depth's. Closing this needs ciphertexts that can be
+  re-randomised without the key, which CryptoKit doesn't offer, or the spec's append-only design, which
+  replaces SwiftData and lets a coercer wipe the real depth by keeping a duress session open.
+- **Option (a) above, resealing every depth's rows on every write,** fixes only the surrendered depth's
+  own rows never changing. That reveals the same fact, so it isn't proposed for v2.0.0.
+
+`Docs/v2.0.0` step 4 is marked not achievable as written, the assessment's repeated-images row is
+corrected, and step 16's guidance has to tell at-risk users.
 
 ---
 
@@ -10905,7 +10976,7 @@ once you check the surrounding transport:
    (`attestation.verify(against: senderPublicKey)`) ever proved. Checked whether the transport layer
    already proves the same thing, rather than assuming: `shardOperations` (carrying both `attribute` and
    `attestation`) is a field inside `OccultaBundle.SealedPayload`
-   ([OccultaBundle.swift:394-424](Occulta/Features/Forward+Secrecy/OccultaBundle.swift:394)), sealed as one
+   ([OccultaBundle.swift:395-428](OccultaCore/Sources/OccultaFormats/OccultaBundle.swift:395)), sealed as one
    GCM-authenticated blob. `senderProof`'s own doc comment states plainly what that buys: *"only the
    actual sender can produce this value."* For a 1:1 exchange — which handback always is, trustee to
    owner, never a group — the session key itself is derivable only by the two parties involved, so a
@@ -10973,7 +11044,7 @@ repeated the claim, is corrected to match.
   attestation-signature/hash mismatch rejection — and kept/reworked the ones that don't: Branch A
   acceptance, unconditional acceptance on Branch A failure, and distinct-sender enforcement, which is the
   property actually doing security work now. `Vault+Manager+ReturnBuffer.swift`, `ReconstructShard+Model
-  .swift`, `SignedAttribute.swift`'s `AttestedShard`, and `Contact+Manager.swift`'s
+  .swift`, `SignedAttribute.swift`'s `AttestedShard` (now in its own `AttestedShard.swift`), and `Contact+Manager.swift`'s
   `fillerShardOperation`/tier-padding all lost their `attestation` parameter or field to match.
   `GroupShardGatingTests.swift`'s padding-parity suite (`ShardOperationPaddingTests`) updated to compare a
   filler op against a plain `.handback` instead of an attested one — see Bug 94a's own moot-as-of-today
@@ -12784,3 +12855,1967 @@ prekeys has the full batch after opening a piece-carrying bundle. Both fail with
 Still to do on a device: the stalled owner sends one more message; the trustee's next reply should show forward
 secrecy and the piece should confirm.
 
+## Bug 153 — Every key exchange leaves its particle canvas running at 60 Hz after the screen closes
+
+**Status:** Fixed 2026-10-01. Found reusing `ParticleCanvas` behind the redesigned onboarding (`decisions.md`,
+"Onboarding redesign").
+
+**Target:** `v2.0.0`.
+
+### Severity: Low (CPU and battery; nothing exposed)
+
+### What happens
+
+`ParticleCanvas` created its `CADisplayLink` in `init` and invalidated it only in `deinit`. A display link retains
+its target, so `deinit` never ran: each key exchange left its canvas alive, updating 80 particles every frame, until
+the app was terminated. Each exchange added one more.
+
+### Fix
+
+The link runs only while the canvas is in a window (`didMoveToWindow`): created on entering one, invalidated on
+leaving it, which releases the canvas. The `deinit` is gone, having nothing left to do.
+
+### Guard
+
+`ParticleCanvasTests`: a canvas removed from its window, and one never put in a window, are both released. Both fail
+with the old `init` and `deinit` restored.
+
+## Bug 154 — Six internal design docs ship inside `Occulta.app`, regressing the 1.10.2 bundle-contents fix
+
+**Status:** Fixed 2026-10-01, the day it was found, in a Release archive of `develop` at `3319fd7`. Full record:
+`Docs/Bugs/v1.11.1/Internal-Design-Docs-Shipped-In-App-Bundle.md`. Audit: `Docs/Audit/SECURITY_CHECKLIST.md` §6.
+
+**Target:** `v2.0.0`.
+
+**Shipped in:** `v1.11.1` and `v1.11.0` (all six); `v1.10.3` (`BEK_LAYERING_REFACTOR.md` only, then the full 26 KB
+design).
+
+### Severity: High (forensic: the app hands an examiner its at-rest layering and duress-depth key design)
+
+### What happens
+
+`Occulta/` is a file-system-synchronized root group, so every non-source file under it is copied into the bundle
+unless it is listed in the Occulta target's `membershipExceptions`. Six docs added between 2026-08-28 and
+2026-09-10 were never listed: `SecureMode/AT_REST_LAYERING.md` and `SecureMode/PASSPHRASE_LAYER_KEYS.md`, plus
+`Vault/BEK_LAYERING_REFACTOR.md`, `Vault/RECOVERY_BUFFER_LAYERING.md`, `Vault/STORAGE_LAYERING.md` and
+`Vault/VAULT_KEY_LAYERING.md`. The bundle is the same on every install, so the files reveal nothing about this
+user's configuration. They do reveal the design.
+
+### Fix
+
+All six are added to the exception set. A sweep found no other `.md`/`.html` under `Occulta/` missing from it.
+
+### Guard
+
+`BundleContentsTests` (`OccultaTests/BundleContentsTests.swift`, no Enclave needed). It runs hosted in `Occulta.app`,
+fails on any `.md` or `.html` in the bundle or its appexes, and checks that the host is the app with both appexes
+embedded. With the exclusions reverted it fails and names exactly the six.
+
+## Bug 155 — An identity challenge makes each side generate a fresh prekey batch while the other still has keys
+
+**Status:** Fixed 2026-10-15 on `v2.0.0/prekey-stage-3` (prekey continuity stage 3), not yet merged; ships in 2.0.0.
+The old-path shard case below stays open. Found 2026-10-06 reviewing the prekey batch lifecycle (Bugs 155–160 come
+from that review).
+
+**Target:** `v2.0.0`. Present since the identity challenge shipped (`b63b5daa`, 2026-04-15).
+
+### Severity: Medium (the main source of Bug 156's leftover Enclave keys)
+
+### What happens
+
+1. A batch is requested implicitly: when a bundle opens on the long-term path, `decryptSealed` and `openGroup`
+   read that as "the sender has used up my prekeys" and, if no batch is pending, call
+   `generateAndStoreFreshBatch` (15 new Enclave keys).
+2. `IdentityChallenge.Manager.sealIdentityBundle` always seals with `.longTermFallback`, whatever prekeys the
+   challenger holds, and `OccultaApp` opens it through `decryptSealed`. The challenge and the response each
+   trigger step 1 on the receiving side.
+3. The new batch rides the receiver's next message. `syncInboundPrekeys` accepts it (newer `generatedAt`) and
+   **replaces** the stored keys, discarding the unused part of the previous batch.
+4. The private halves of the discarded keys stay in the Enclave with nothing left to consume them (Bug 156).
+   Up to 15 per side, per challenge.
+
+Old-path shard sends to contacts below 1.9.0 do the same: `encryptBundle` skips the prekey pop when a piece is
+carried (`needsPrekey`), so those bundles are long-term even with prekeys available.
+
+### Fix — decided 2026-10-07
+
+Both candidates, by contact version (`Docs/Features/Prekey Continuity/DESIGN.md` §3.4, decision D3):
+- **Contacts at the new tier:** challenges go in group format, sealed like a message, so they no longer look
+  like an exhausted sender and request no batch.
+- **Contacts below it:** challenges stay long-term, and `decryptSealed` skips batch generation when the payload
+  carries `identityChallenge`. It is decoded after generation today, so Bug 159's reordering comes first.
+
+The old-path shard case (contacts below 1.9.0) is not covered by either and stays open.
+
+Built 2026-10-15 as decided: `decryptSealed` skips `replenish` when the payload carries `identityChallenge`, and
+challenges to contacts at `.bodyDigestCapable` go in group format, where `openGroup` still makes a batch for a
+long-term slot, since there it does mean the contact is out of our keys.
+
+### Guard
+
+`IdentityChallengeMakesNoBatchTests`: a long-term challenge and a long-term response through `decryptSealed`, from a
+sender with no pending batch, create none. Both fail with the skip removed.
+
+## Bug 156 — Unused prekeys are never removed from the Secure Enclave
+
+**Status:** Fixed 2026-10-10 (prekey continuity stage 1, PR #94), merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch; ships with
+the contacts slice. Retired keys, and legacy keychain keys once retired, are deleted 30 days after retirement.
+**Residual — open, needs a decision:** the clock starts at retirement, and a batch retires only when the contact
+uses a newer one. In the batch a contact is still using, a key whose message was lost stays until they move on to
+the next batch, so for a contact who goes quiet it has no time limit; the same holds for legacy keys of a contact
+who never uses a record-held batch. Those are the "contact who goes quiet" this fix chose a time limit for. It
+exposes a file only to someone who kept a copy of it from transit and later has the unlocked phone; an unread file
+that did arrive is readable by design, as in any messenger. Two ways to narrow it were weighed on 2026-10-11 and
+not taken (design §8, stage 1): retiring a batch's skipped keys when a later key is used costs a record entry per
+skip, which the contact controls; and a lifetime both sides honour costs messages from contacts on older builds
+who return after it. Signal accepts the second trade (libsignal's 30-day `MAX_UNACKNOWLEDGED_SESSION_AGE`).
+
+**Target:** `v2.0.0`. Pruning existed (`d16ec10c`, 2026-03-18) and was removed in `efb0b199` (2026-03-29);
+every release with forward secrecy is affected.
+
+### Severity: Medium (open-ended forward-secrecy window for unopened messages; key count grows with history)
+
+### What happens
+
+A prekey private key leaves the Enclave in only two ways: `PrekeyManager.consume` when a message using it is
+opened, and `deleteAllKeys(for:)` when the contact is removed. Keys the contact will never use stay for good.
+They come from:
+
+- a batch replaced before it was used up (Bugs 155 and 157);
+- messages sealed to a key and never opened — lost in transit, or deleted unread;
+- batches generated and never saved (Bug 159).
+
+Two consequences:
+
+- **Forward secrecy.** A message sealed to a key that is never consumed can be opened by anyone who later has the
+  `.occ` file and the unlocked device, with no time limit. The rest of the design assumes that window closes.
+- **Forensic.** The number of `prekey.<contactID>.*` keys per contact only grows. It reflects how many batches
+  were replaced and how many messages were lost, which is more history than the design needs to keep.
+
+`remainingCount(for:)` counts these keys too, so it overstates how many prekeys the contact really holds. It
+has no production caller today, nor does `needsReplenishment`, which is built on it; wiring either up as-is
+would misfire. (`needsReplenishment` was removed in prekey continuity stage 4, 2026-10-15; the refill rule is now
+`PrekeyBookkeeper.needsRefill`, counting from the record.)
+
+The comment in `PrekeyManager.generateBatch` ("A partial batch would prune old SE keys and increment the
+sequence") still describes the removed mechanism.
+
+### Fix — decided 2026-10-06
+
+The retirement rule in `Docs/Features/Prekey Continuity/DESIGN.md` §3.1 (its decision D1). A batch retires when
+the contact first uses a key from a newer batch; its remaining keys are deleted **30 days after retirement**.
+
+By time rather than by message count: a count leaves a contact who goes quiet holding old keys indefinitely,
+and their unopened files are where the risk is. The two options considered were:
+
+- **On the next generation, keeping one older batch** for in-flight messages. Bounded storage, but no bound
+  in time for a quiet contact. Not chosen.
+- **After a fixed age.** Bounds the forward-secrecy window in time; fails messages delivered late. Chosen.
+
+A leftover key at retirement always belongs to a message that was sealed and not opened here, so a file opened
+more than 30 days after its batch retired can't be opened. It fails with the generic error. The rule needs the
+batch a key belongs to recorded at generation, and a migration that treats the keys existing installs already
+hold as one retired-on-first-use batch (design §8, stage 1).
+
+### Guard
+
+`PrekeyBookkeeperTests` (retirement, the sweep, eviction), `PrekeyLifecycleTests` (`PrekeySweepTests`: deleted
+after 30 days and not before; legacy keys marked gone once; the unlock sweep covers visible contacts only) and
+`PrekeyRecordWiringTests.receiptSweepsBeforeRejection` (the sweep on receipt deletes legacy keychain keys and is
+saved even when the bundle is rejected).
+
+## Bug 157 — Using any of our prekeys clears the pending batch, even one from an older batch
+
+**Status:** Fixed 2026-10-09 (prekey continuity stage 1, PR #94), merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch: the pending
+batch stops being pending only when the key used belongs to it (`PrekeyBookkeeper.consume`).
+
+**Target:** `v2.0.0`. Present since the pending batch was introduced (`8ec81d8a`, 2026-03-23).
+
+### Severity: Low (one extra fallback round; adds to Bug 156)
+
+### What happens
+
+`decryptSealed` and `openGroup` call `clearPendingBatch()` whenever a bundle opens with a prekey, as "proof the
+contact received our batch". It proves they received *a* batch, not the pending one. With messages arriving out
+of order:
+
+1. The contact seals m15 with our last key from batch 1, then m16 on the long-term path.
+2. m16 arrives first; we generate batch 2 and store it as pending.
+3. m15 arrives; its batch-1 key clears batch 2 before batch 2 has gone anywhere.
+
+The contact stays on the long-term path, the next fallback generates batch 3, and batch 2's keys stay in the
+Enclave (Bug 156).
+
+### Fix (proposed)
+
+Clear only when the consumed prekey's id is in the pending batch. The pending batch is stored with its ids, so
+no format change is needed.
+
+### Guard
+
+`PrekeyBookkeeperTests`: out-of-order arrival keeps the pending batch. Through `decryptSealed` and `openGroup`,
+`PrekeyReplenishmentTriggerTests` checks that a key from the pending batch delivers it.
+
+## Bug 158 — A sender whose clock moves backwards can lose forward secrecy with a contact indefinitely
+
+**Status:** Fixed 2026-10-09 (prekey continuity stage 1, PR #94), merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch: a batch
+carries a 16-byte ID and is deduplicated by it, whatever its date (the first option below). A batch without an ID,
+from a sender on an older build, keeps the date rule, so that sender keeps the bug until they update.
+
+Found in review of PR #110, fixed 2026-10-15: only the last 8 IDs are kept, so an old batch replayed on a slot that
+opens again (the long-term keys or a last-resort key) after its ID aged out would have been accepted again. On such
+a slot a batch with a new ID must also be no older than the newest accepted from that contact
+(`latestInboundGeneratedAt`, never lowered); on a one-time key a new ID is enough. The clock-back corner therefore
+remains, but only on a slot that opens again: such a sender's new batch is refused until one dated later than the
+newest arrives. Open, needs a decision.
+
+**Target:** `v2.0.0`. Present since `latestPrekeysGeneratedAt` was introduced (`efb0b199`, 2026-03-29).
+
+### Severity: Medium (forward secrecy silently off for a pair; neither side can restore it)
+
+### What happens
+
+`syncInboundPrekeys` accepts a batch only if its `generatedAt` is later than the last one accepted. That date
+comes from the **sender's** clock. If the sender's clock moves back past their previous batch's date (manual
+time setting, or a device restored with a wrong clock):
+
+1. Their new batch is older than the stored date, so we drop it without saying anything.
+2. We never use a key from it, so the sender never clears it (`clearPendingBatch` needs a used key).
+3. While a batch is pending, the sender doesn't generate another (`!hasPendingBatch`).
+
+Every message from us to that contact goes out on the long-term path until the sender's clock passes the old
+date. Nothing on either side shows why.
+
+### Fix — open, needs a decision
+
+`Docs/Features/Prekey Continuity/DESIGN.md` §3.3 proposes the first option below, with a batch `id` added as an
+optional field and the date rule kept for batches without one.
+
+The date check exists for a real reason: an old copy of the current batch can arrive after we have used some of
+its keys, and accepting it would bring back keys the contact has already deleted, making the messages sealed to
+them unopenable. Any replacement has to keep rejecting that copy. Options:
+
+- Dedupe on batch identity (its prekey ids) instead of time: reject a batch we have already accepted, accept any
+  other. Needs the ids of past batches kept, or a batch id added to `PrekeySyncBatch` (a wire change, which the
+  interop vectors pin).
+- Keep the date, and also accept an older-dated batch when our store for that contact is empty and the batch is
+  one we have not seen.
+
+### Guard
+
+`PrekeyBookkeeperTests`: an older-dated batch with a new ID is accepted, a repeated ID is dropped, and a batch
+without an ID keeps the date rule. The interop vectors `payload.prekeyBatchWithID` and
+`recipientPayload.prekeyBatchWithID` pin the wire field.
+
+The reopenable-slot date rule: `PrekeyBookkeeperReplayTests` (a batch replayed after its ID aged out is refused; an
+older-dated new ID is accepted on a one-time key and refused on a reopenable slot), `PrekeyConversationSimulationTests.replayAfterIDsAgeOut`,
+`PrekeyReplayWiringTests` (`openGroup` and `decryptSealed` pass the slot they opened with), and
+`PrekeyConversationTests.replayedLongTermReply` (Bob's first reply redelivered to Alice after her 8 IDs rolled past it).
+
+## Bug 159 — A fresh prekey batch is generated before the bundle has passed every check
+
+**Status:** Fixed 2026-10-08 (prekey continuity stage 0, branch `v2.0.0/prekey-stage-0`).
+
+**Target:** `v2.0.0`. `decryptSealed` has had this order since forward secrecy was introduced; `openGroup` since
+`87d3a21f` (2026-06-25).
+
+### Severity: Low (leftover Enclave keys; no message is accepted that shouldn't be)
+
+### What happens
+
+`decryptSealed` calls `generateAndStoreFreshBatch` before `decodePayload`; `openGroup` calls it before the
+`senderProof` check. Both bundles have already been authenticated by AES-GCM at that point, so nothing forged
+gets through. But if a later step throws, the 15 Enclave keys already exist while the pending batch is never
+saved (the explicit `modelContext.save()` is not reached). Every retry of the same file makes 15 more (Bug 156).
+
+### Fix
+
+The pending-batch bookkeeping (clearing the batch, or generating one) now runs after every check that can
+throw and immediately before the save: `decryptSealed` step 5, `openGroup` step 6.5. Prekey *consumption*
+stays where it was, at the moment the bundle opens, so a rejected bundle still can't leave a used prekey alive
+in the Enclave (§2.2 of `SECURITY_CHECKLIST.md`). This is also the ordering Bug 155's fix needs.
+
+One check still runs after the save: `openGroup`'s missing-`groupID` rejection. A bundle failing it has already
+saved its bookkeeping, so its keys are recorded rather than left behind, which is outside this bug. It is noted
+here because it means a bundle rejected there can still drive the bookkeeping.
+
+### Guard
+
+`PrekeyReplenishmentTriggerTests.swift` (Enclave-gated): `rejectedAfterOpenLeavesNothing` (`decryptSealed`, a
+bundle carrying an invalid inbound batch) and `rejectedAfterSlotOpensLeavesNothing` (`openGroup`, a corrupted
+shared ciphertext). Each asserts no pending batch and no Enclave prekeys afterwards. With the old order, both
+fail with 15 keys left behind.
+
+## Bug 160 — No test exercises the real prekey replenishment trigger
+
+**Status:** Fixed 2026-10-08 (prekey continuity stage 0, branch `v2.0.0/prekey-stage-0`).
+
+**Target:** `v2.0.0`.
+
+### Severity: Medium (process: the mechanism that restores forward secrecy has no regression guard)
+
+### What happens
+
+`ExhaustionScenarioTests` (`ForwardSecrecyIntegrationTests.swift`) re-implements the orchestration inside the
+tests instead of calling it. `exhaustion_hasPendingBatch_blocksSecondGeneration`, for example, contains its own
+`if !contact.hasPendingBatch { … }`, and `exhaustion_pendingBatchCleared_onFSReceipt` calls `consume` and
+`clearPendingBatch` directly. They would all still pass with the trigger deleted from `ContactManager`.
+
+The only test on the real path is `PieceCarriesPrekeyBatchTests.trusteeStoresBatch` (Bug 152), which checks that
+a batch is delivered and stored, not that a long-term bundle generates one or that a used key clears it.
+
+Not covered by anything: a long-term bundle stores a pending batch; a forward-secret bundle clears it; the full
+cycle (keys used up → fallback → batch generated → batch rides the reply → next message is forward-secret), on
+both `decryptSealed` and `openGroup`.
+
+The doc comment on `ContactManager.encryptGroupBundle` says a batch is attached when the member's "stock for this
+sender is below the replenishment threshold". It is attached whenever one is pending; the threshold
+(`PrekeyManager.replenishThreshold`) is not used anywhere in production. (Removed in prekey continuity stage 4,
+2026-10-15.)
+
+### Fix
+
+`PrekeyReplenishmentTriggerTests.swift` (`OccultaTests/Forward+Secrecy/`, Enclave-gated) drives the real
+trigger on both paths. A long-term bundle with no batch pending stores 15 fresh Enclave prekeys; a second one
+while a batch is pending generates nothing; a forward-secret bundle sealed to one of our prekeys clears the
+batch and consumes the key. The full cycle runs through the real `openGroup` and `encryptBundle`: long-term in,
+batch generated, the batch rides our reply in the sender's slot, the sender seals to its first key, the batch
+clears. Each test uses its own contact identifier and deletes its Enclave prekeys afterwards.
+
+The `encryptGroupBundle` comment now says the batch is attached whenever one is pending.
+
+`ExhaustionScenarioTests` was deleted the same day. Each of its five tests either re-implemented the
+orchestration in its own body or asserted something another suite already covers: the long-term mode with no
+prekey (`CryptoForwardSecrecyTests`), batch generation (`PrekeyManagerTests`), and pending-batch store, load
+and clear (`ForwardSecrecyModelTests`). Names like `fallbackDetected` and `onFSReceipt` described app behaviour
+the tests never touched, which is how this bug went unnoticed. All five were Enclave-gated, so CI's skip count
+drops by five.
+
+### Guard
+
+The tests above. They assert the trigger's effects directly (a stored batch, its 15 Enclave keys, the batch
+cleared), so removing the trigger from either method would fail them.
+
+## Bug 161 — A contact's sealed prekey record changes size with their message activity
+
+**Status:** Fixed 2026-10-10 in prekey continuity stage 1 (`Docs/Features/Prekey Continuity/DESIGN.md` §8, PR #94),
+merged 2026-10-13 into `v2.0.0/prekey-refactor`, not yet in the release branch; ships with the contacts slice. Found planning
+that stage. Step 3's filler rows don't exist yet; they must use the same sealed size.
+
+**Target:** `v2.0.0`. Present since `forwardSecrecyEncrypted` was introduced (forward secrecy, 2026-03).
+
+### Severity: Medium (forensic, once v2.0.0 seals records per depth; subsumed today)
+
+Today the passcode alone opens the local DB key, so whoever can read the file can read everything, and this adds
+nothing. Once steps 1–5 of v2.0.0 seal each depth's records under its own key, a record's *length* is still
+readable without any key, so it becomes a leak.
+
+### What happens
+
+`Contact.Profile.forwardSecrecyEncrypted` is `encrypt(JSONEncoder().encode(ForwardSecrecy))`
+(`Contact+Model+Profile.swift`). Its plaintext holds the contact's public prekeys we can still use
+(`encodedPrekeys`, 0–15 entries, each a JSON-encoded `Prekey`) and the batch we're waiting to deliver
+(`pendingOutboundBatch`, present or absent). AES-GCM preserves length, so the ciphertext's size tracks both:
+- it shrinks by one prekey each time we send them a message, and jumps back when their batch arrives;
+- it grows by a batch when their long-term message arrives, and shrinks when they use a key from it.
+
+Anyone with the database file and no key can therefore read, per contact row, roughly how many of their keys we
+hold and whether a batch is pending. Comparing two images shows how many messages went each way in between.
+That holds for hidden contacts too: their rows exist, and step 3's filler only hides them if every row's field has
+the same length. Prekey continuity stage 1 makes this worse, since the record will also hold our own private
+blobs (D9), 143 bytes each.
+
+**The field's presence leaks too (added 2026-10-09).** `forwardSecrecyEncrypted` is optional and stays `nil`
+until `configureForwardSecrecy` creates it, which happens only on the first send (`encryptBundle`,
+`encryptGroupBundle`) or the first receive (`decryptSealed`, `openGroup`). SQLite records NULL structurally,
+independent of encryption. So a plain `WHERE forwardSecrecyEncrypted IS NULL` query, with no key, separates
+contacts the user has exchanged messages with from those never written to. That is the same class as Bug 112's
+`deletionToken`.
+
+Other variable-length sealed fields on `Contact.Profile` were not checked for the same problem. Steps 3–5's
+fixed-width rule applies to them as well.
+
+### Fix — decided 2026-10-08
+
+Pad the encoded record to a **fixed capacity of 16 KB** before sealing, for every contact and for step 3's filler
+rows alike, so the field's length never varies. The capacity is sized for stages 2 and 4 as well, so it never has
+to grow:
+- worst case (48 of our own keys in as many entries as they can form, the pending batch and 33 one-key entries;
+  two full batches of theirs; 8 accepted batch IDs) measures 15,683 bytes (15,874 with stage 2's last-resort keys)
+  in a compact binary layout, with each
+  batch's ID dropped once delivered (16,508 with them kept, past the capacity; found 2026-10-11), and would be far larger as JSON with
+  base64. So the record moves to a compact layout; JSON doesn't fit. (The first estimate, about 11.5 KB with
+  30-key inbound batches and 64-byte key IDs, was wrong: measured with distinct values those limits need 19,751
+  bytes. Corrected 2026-10-11 by limiting inbound batches to 15 keys and 36-byte IDs; design §8, "Size limits".)
+- the record can't exceed the capacity: prekey continuity's bookkeeper caps what it holds (48 own keys, 15 keys
+  per inbound batch, 36-byte inbound key IDs, 8 accepted batch IDs), and when installing a batch would pass the
+  own-key cap it deletes the oldest retired keys, never keys not yet retired. That can lose a file sealed to a
+  retired key and not yet opened, within the 30-day grace, but only when more than 18 such keys are waiting. The codec itself never drops data; it throws on a record past capacity
+  (decided 2026-10-09, design stage 1).
+
+**Never null (added 2026-10-09).** The field is written, as an empty record at the fixed size, when the contact is
+created, so no contact ever has it null. Deletion overwrites it with filler of the same size rather than clearing
+it (stage 1).
+
+**Migration (decided 2026-10-09).** One pass over every contact row at launch, before v2.0.0 reseals records per
+depth, moves each record into a **new field** at its fixed size, gives contacts that had none an empty one, and
+sets `forwardSecrecyEncrypted` to `nil` on every row. The old field is then uniformly null, which leaks nothing,
+and is made private (not deprecated, which warned on every build through `@Model`'s generated code). Migrating lazily, row by row as records were opened, was rejected: migrated and
+unmigrated rows are distinguishable without a key, and after the reseal the rows left unmigrated during duress
+use would be the hidden contacts.
+
+### Guard
+
+`PrekeyRecordCodecTests` (exactly the capacity, empty and with every cap reached at once; throws rather than
+trims), `PrekeyBookkeeperTests` (eviction of the oldest retired keys first), `PrekeyLifecycleTests` (a saved, an
+imported and a deleted contact all have the field at the same length) and `PrekeyRecordMigrationTests` (after the
+pass every row's field has that length, whatever it started with). Still needed when step 3 is built: a filler
+row's field matches a real one's length.
+
+## Bug 162 — A trustee's piece count for an owner tells how many of the owner's depths have a backup
+
+**Status:** Open. The on-screen count and the custody manifest's size are fixed (2026-10-16, below); the stored
+rows and the pieces' dates still carry it: open, needs a decision. Found 2026-10-12 reviewing custody for depth
+leaks.
+
+**Target:** `v2.0.0`. Present since per-entry splitting was retired (`decisions.md`, 2026-09-26/27), which left
+the backup key as the only split secret, one per depth.
+
+### Severity: High (coercion; reaches the owner's hidden depths without the owner's phone)
+
+### What happens
+
+Each of an owner's depths that sets up a backup splits its own backup key and sends each of its trustees one
+piece (`ShardCustodyManager.distributeBackup`, `SignedAttribute.backupKeyPieceLabel`). A later re-split sends a
+`.replace`, which deletes the trustee's old piece (`handleReplace`), so the trustee holds one piece per depth.
+Every piece carries the owner's identity in its sealed row (`ownerContactIdentifier`, `ownerKeyFingerprint`),
+which the trustee needs to return it.
+
+So Bob, a trustee of Alice's, holds one piece for each of Alice's depths that names him, and his Vault tab says
+so: "Held for Others" lists Alice with "3 pieces held for them" (`heldShards`, `Vault+Tab.swift`). Three pieces
+means Alice has at least three depths with a backup, two of them hidden.
+
+- **Who learns it:** Bob, who is a contact, not the owner; and anyone who gets into Bob's phone, at whichever of
+  Bob's depths shows Alice. Alice's phone isn't needed, and neither is any of her secrets.
+- **What blurs it, temporarily:** pieces from the retired per-entry splits still count until they're cleaned up
+  (`decisions.md`, "A trustee's 'held for this contact' count still includes old per-entry pieces").
+- **What doesn't help:** the trustee-depth stamping decided for custody rows
+  (`RECOVERY_BUFFER_LAYERING.md` §6 item 7) protects Bob's own depths, not Alice's. Rows stamped with Bob's
+  depth still number one per depth of Alice's.
+
+The prekey continuity design rejected a signed lineage ID partly because it "would let a trustee … count how
+many of the owner's depths have backups" (`DESIGN.md` §3.1, D5). The count shown today already allows that.
+
+**The pieces' dates point at the active depth (added 2026-10-12).** Each held piece carries its signed
+`createdAt`, and a depth's piece is replaced on every re-split, so each date shows when that depth last re-split.
+The newest among an owner's pieces hints at the depth in daily use, the activity-profile leak v2.0.0's step 4
+guards against on the owner's own phone, here readable by a contact. The container below hides it: one date for
+the whole container, which changes when any depth re-splits and says nothing about which.
+
+### Fix — open, needs a decision
+
+- **Stop showing the count.** Show that pieces are held for an owner, not how many. Cheap, and it removes the
+  number from the screen a coercer would look at, but not from Bob's database: anyone running code on Bob's
+  unlocked phone can still count rows per owner.
+- **Pad the count on the owner's side.** Every owner sends each trustee a fixed number of pieces whatever its
+  depth count, the unused ones filler that can't be told from a real piece. Hides the count structurally, at a
+  cost of rows and traffic per trustee, and the filler must be indistinguishable to the trustee, who verifies
+  each piece's signature.
+- **One piece per owner and trustee.** The owner keeps, per trustee, one fixed-size array with a slot per depth,
+  each depth writing only its own slot under its own key and filler elsewhere, as `BackupEncryptionKey` already
+  does on the owner's side (`VAULT_KEY_LAYERING.md`), and sends the whole array as one piece. The trustee holds
+  one opaque blob per owner. Needs the slot array to be resealed whole on every write (v2.0.0 step 4) and a wire
+  change for the piece format.
+
+The first is a reasonable interim step whichever structural fix is chosen.
+
+**Decided 2026-10-16: build the first now. The second is dropped from the candidates** (examined below); the
+container stays the structural fix, open, needs a decision.
+
+**Built 2026-10-16: the count is gone from the screen.** `ShardCustodyManager.heldShardOwners` (was
+`heldShards`) returns each owner once, with no count, so the number isn't there for a view to show again. The
+Vault tab's "Held for Others" rows show the owner's name only, with no subtitle: one piece or several look the
+same. Still open, needs a decision:
+- **The stored rows.** Code on Bob's unlocked phone can still decrypt the custody rows and count them per owner.
+- **The pieces' dates**, described above. Nothing shows them on screen.
+- **Trustees on older builds** still show the count, and send unpadded manifests (below).
+
+**The custody manifest's size, found and fixed 2026-10-16.** Every 1:1 forward-secret bundle Bob sends Alice
+carries `custodyManifest`, the ID of every piece he holds for her, and nothing padded it (group bundles pad their
+piece operations and carry no manifest). Each ID added about 39 bytes of JSON to a ciphertext whose length is in
+the clear, so a copy of a bundle whose message size is known, a piece-only one say, gave the count without either
+phone. It also told a contact Bob holds nothing for (an empty list) from one he does.
+- **Fix:** `ContactManager.encryptBundle` pads the manifest with random IDs to at least 32
+  (`custodyManifestFloor`, one per possible depth, `AppLayerConfig.maxDepthCount`), then to the next doubling
+  tier (`ShardPadding.tier`), on the group-format and the legacy path alike. `buildCustodyManifest` still
+  returns only the real IDs. About 1.25 KB more per 1:1 forward-secret bundle. Floor chosen 2026-10-16 over 8
+  and 16.
+- **Older owners are unaffected:** every owner build since manifests began (1.7.0; checked at v1.7.0, v1.8.3,
+  v1.9.0, v1.10.0, v1.10.3, v1.11.1 and now) only looks up the IDs it queued or watches (`processInboundManifest`),
+  so an ID it never sent confirms nothing and adds no row. Nothing needs stripping on receipt.
+- **Residual, open, needs a decision:** above 32 pieces for one owner (old per-entry pieces, or Bug 163's stale
+  ones) the tier steps to 64, which shows. A trustee on an older build still sends an unpadded manifest.
+
+**Padding on the owner's side, examined 2026-10-16: not recommended.** It isn't the cheap no-format-change fix it
+looked like:
+1. **Nothing can decide the filler without a cross-depth record.** The owner's depths can't see each other, so
+   either a depth-blind record per trustee says how much filler went out, which tells code at any depth of the
+   owner's phone the very count being hidden (rollout stage 4 is moving the queue and watch rows the other way),
+   or every slot is seeded with filler in advance and depth *d* replaces slot *d*. Seeding only trustees needs a
+   depth-blind "seeded" mark, which says some depth uses that trustee, so it would have to go to every
+   trustee-eligible contact: about 15–20 KB stored and 11 KB sent per pair, and "Held for Others" listing everyone.
+2. **Dates.** Filler never re-splits, so the pieces dated after the seeding are the real ones. Hiding that needs
+   one constant `createdAt` on every piece, which Bug 163's lineage needs for ordering.
+3. **x-coordinate.** A real piece's first byte is the trustee's position in the split, 1 to the number of
+   trustees (`ShamirSecretSharing.split`), so it stays small. Filler would have to copy that, or every real split
+   would have to use random x-coordinates.
+4. **Snapshots.** Two copies of Bob's store taken apart show which pieces changed, and only real ones re-split.
+   Refreshing every piece whenever one changes needs the record from item 1.
+5. **Bug 163.** A lost or late `.replace` leaves one piece over the fixed number, tied to real activity, so this
+   bug would have to be fixed first, with lineages for filler too.
+6. **Two trustees.** Pieces of one real split share an `entryID` across trustees and filler doesn't, so two
+   trustees' phones give the number of depths they both serve.
+
+Restore would cope: each handed-back filler piece has its own `entryID`, so it banks as its own one-sender row
+and `restoreBackup` tries it and moves on. Trustees on older builds would store and show every piece. On the
+whole it is about as large as the container and leaves more open.
+
+**The container, worked out 2026-10-12, and deferred: too large a change for now.** Bug 162 stays open.
+
+- Alice's phone keeps one fixed-size container per trustee, one slot per possible depth (`AppLayerConfig`
+  allows 32), filler in every slot no depth uses. Each depth that names the trustee writes only its own slot.
+  Whenever a slot changes, the whole container goes to the trustee, signed and dated.
+- Bob holds exactly one row per owner, always the same size, so he can't count anything. A newer container
+  replaces the one held, and an older one is ignored. That also closes Bug 163: there is no separate per-depth
+  piece to leave behind, whatever the order or loss.
+- **Requires:**
+  - Depth isolation inside the container: each slot is sealed under its own depth's key, so a duress depth
+    rewriting its slot carries the others as opaque bytes and can't read or reveal them.
+  - A key a new phone can rebuild, so a restore can open its depth's slot after Alice loses her phone: that
+    depth's passphrase (v2.0.0 step 1), or a key stored with the depth's exported backup file, which a restore
+    needs anyway.
+  - Resealing the whole container on every write (v2.0.0 step 4), so snapshots don't show which slot changed.
+  - A new wire and storage format, with interop vectors and handling for trustees on older builds.
+- **Costs:** about 5 KB per container (32 slots of roughly 150 bytes), sent until confirmed and stored once per
+  owner; and a rework of distribution, custody storage, manifests (one container date instead of piece IDs) and
+  restore. A feature, not a fix.
+
+### Guard
+
+The display: `HeldShardOwnersTests` (`ShardCustodyTests.swift`), an owner holding pieces from three depths is
+listed once, and the list is the same as with one. Both fail with the de-duplication removed. Simulator-safe.
+Full suite, 2026-10-16: 1,101 tests, 1,095 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+Not walked through on a device: the "Held for Others" rows without their subtitle.
+
+The manifest: `CustodyManifestPaddingTests` (pads to the floor up to 32, to the next tier above, keeps the real
+IDs, filler distinct; an owner given a padded manifest confirms only its real piece and adds no watch row) and
+`EncryptBundleManifestPaddingTests` (`ShardFallbackGatingTests.swift`: bundles with 0, 1 and 3 IDs are the same
+size within one ID; one past the floor steps up). Each fails with its rule removed: no padding in
+`encryptBundle`, no tier above the floor, a floor of 2. Simulator-safe. Full suite: 1,108 tests, 1,102 passed, 0 failed, 6 skipped (the `KeychainMigrationSETests` baseline).
+
+Still needed: the stored rows for an owner are the same whether that owner has one depth with a backup or
+several.
+
+## Bug 163 — A lost or late `.replace` leaves the trustee holding the piece it replaced
+
+**Status:** Open — fix needs a decision. Found 2026-10-12 working out the replay matrix for prekey continuity's D5
+(stage 2): no ordering rule on the trustee's side makes custody converge, because of what's described here.
+
+**Target:** `v2.0.0`. Present since `.replace` replaced implicit revoke (`bugs.md` Bug 141, 2026-09-27).
+
+### Severity: Medium (a stale piece outlives a re-split; with a new key, it's a piece of a key the re-split retired)
+
+### What happens
+
+A re-split of one depth's backup key sends each trustee kept on it a `.replace` naming the new piece and the
+one piece it replaces: the trustee's piece in that depth's current record (`distributeBackup`, `previousIDs`). The
+trustee removes exactly that piece (`handleReplace`); nothing else ever removes a same-key piece, since implicit
+revoke is gone. And before queuing the new pieces, the re-split deletes the previous split's queued operations
+(`deleteQueuedAndWatchRows`, Bug 142). So a `.replace` that never reaches the trustee is never sent again once a
+later re-split has run.
+
+Three pieces in a row for one trustee: B1 carries `.distribute(P1)`, B2 `.replace(P2 ← P1)`, B3 `.replace(P3 ← P2)`.
+
+- **B2 lost, and Alice re-splits again before Bob confirms P2.** B2's operation is dropped from Alice's queue at
+  the second re-split. B3 removes P2, which Bob never had. **Bob keeps P1 and P3**, for good.
+- **B2 late: B1, B3, B2.** B3 removes P2 (not held) and adds P3; B2 then adds P2 and removes P1. **Bob keeps P2
+  and P3.** A stale piece again, this time the newer stale one.
+
+In-order delivery leaves P3 alone. In both cases Bob holds two pieces of one depth's backup:
+
+- **Same key re-split:** both are shares of the same secret from different splits. They don't combine with each
+  other, but each still counts toward its own split's threshold together with other trustees' stale pieces.
+- **New key re-split** (a trustee was dropped, Bugs 141, 144): the stale piece belongs to the retired key, which
+  still opens backups exported under it. Stale pieces at several trustees, with the dropped trustee's, can reach
+  the old threshold, which is exactly what the new key was meant to prevent.
+- It also inflates the piece count Bug 162 describes.
+
+### Why no trustee-side rule closes it
+
+The trustee can't tell which pieces belong together: pieces carry no lineage, a re-split mints a new `entryID`
+(Bug 124), and one owner's pieces from different depths are indistinguishable (the D5 alternatives in
+`Docs/Features/Prekey Continuity/DESIGN.md` §3.1 record why a signed lineage ID was rejected). A `.replace` names
+only its immediate predecessor. So when the operation that would remove a piece is lost, or dropped as stale, nothing
+names that piece again. Ordering bundles (applying only the newest) fixes the late case's resurrection but not the
+lost case, and on its own turns the late case into the lost one.
+
+### Fix — open, needs a decision
+
+**Decided 2026-10-12: fix it on its own, with the lineage below, not with Bug 162's container,** which would close
+it too but is deferred as too large a change. **Then deferred the same day:** it is in v1.11.1 already, so waiting
+changes nothing for current users, and prekey continuity stage 2 doesn't make it worse, since piece operations never
+ride a last-resort slot (`Docs/Features/Prekey Continuity/DESIGN.md` §3.1, D5, "Revised 2026-10-12").
+
+Directions considered:
+
+- **The owner carries forward what it still owes.** A re-split's `.replace` also names every earlier piece of
+  that trustee's the owner hasn't seen confirmed gone, instead of only the last.
+- **A lineage per owner depth and trustee,** so a `.replace` means "whatever you hold for this lineage". Simple
+  and order-proof, but a wire change, and it lets the trustee link pieces, which D5 rejected; Bug 162 shows the
+  count is already exposed.
+- **Bug 162's container** (one fixed-size piece per owner and trustee, a slot per depth) would make this moot: a
+  single piece, replaced whole, can't leave a predecessor behind. Deferred with Bug 162.
+
+**The lineage, worked out 2026-10-12. Not built.**
+
+- **The rule (trustee).** A piece operation carries a lineage: which owner depth it belongs to, for this
+  trustee. The trustee holds at most one piece per lineage. A piece with a newer signed `createdAt` replaces the
+  one held in its lineage; the same or older is ignored. Lost bundles, any order and any number of re-splits end
+  on the newest piece delivered. A `.replace`'s removal of the piece it names still runs, which is how the first
+  lineage-carrying piece clears the lineage-less one held before it.
+- **Lineage (owner).** `HMAC(depth seed, trustee tag)`. The seed is 16 random bytes minted once per depth and
+  kept across every re-split, same key or new. Each trustee gets a different lineage for the same depth, stable
+  over time, and two trustees can't match theirs. A trustee removed and re-added gets the same lineage back, so
+  their old piece is replaced rather than left.
+- **Order (owner).** The piece's signed `createdAt`, which the owner keeps strictly increasing per depth by
+  storing the last piece's date, so a clock going back can't make a newer piece look older (Bug 158's lesson).
+- **Storage (owner).** The seed and the last date go in the backup key payload's header, carved out of the
+  existing fixed width by taking one trustee slot (255 → 254), so every row stays the same size. The version
+  tag is inside the sealed payload.
+- **Wire.** `ShardOperation` gains an optional `lineage`, omitted when nil, in the operation rather than the
+  signed piece: changing the signed payload would make older trustees reject every piece. The bundle
+  authenticates it, as it does the replaced-piece ID. Existing interop vectors keep their bytes.
+- **Compatibility.** An older trustee ignores the lineage and keeps today's behaviour, so this bug stays possible
+  there. An older owner sends none, and the trustee behaves as today.
+- **What the trustee learns.** That pieces of one lineage belong together. It holds one per lineage, so that
+  labels only what Bug 162's count already shows. Lineages differ per trustee, so trustees can't correlate.
+
+**Rejected within it:**
+- **A lineage stored per piece record.** About 4 KB more per depth (255 slots × 16 bytes); derived from one seed
+  instead.
+- **A generation counter instead of the date.** It would tell the trustee how many times each of the owner's
+  depths has re-split ("14" against "1"), pointing at the depth in daily use. The date is already in every piece,
+  so ordering by it adds nothing the trustee couldn't read.
+- **A larger header, as a new payload size.** A depth's row is re-encoded only when that depth re-splits, so for
+  a while the rows rewritten since the update would be longer than the rest, pointing at the depths in use.
+
+**Still open:**
+- **Wiping a depth's backup and setting it up again** mints a new seed, so trustees keep the old lineage's piece,
+  as they keep any piece today. Keeping the seed through a wipe would fix it, but a wipe is meant to start fresh.
+- ~~Prekey continuity stage 2's "newest used key" cut~~ **Dropped 2026-10-12** with the decision to defer this
+  bug: without lineages there was nothing for it to make converge. Stale manifests, which it would still have
+  ordered, only flip a status until the next manifest.
+
+### Guard
+
+None yet. Needed: every delivery order of a run of re-splits, with any bundle lost or delivered twice, leaves the
+trustee holding only the newest piece delivered; and the owner's backup key rows stay the same size.
+
+## Bug 164 — On a one-to-one bundle, a fallback slot's piece operations and manifest aren't dropped on receipt
+
+**Status:** Fixed 2026-10-12 in prekey continuity stage 2 (`36cac4d`, 3/4; PR #97), merged 2026-10-13 into
+`v2.0.0/prekey-refactor`, not yet in the release branch: `openGroup` strips the shared payload too. Found 2026-10-12.
+
+**Target:** `v2.0.0`. Present since one-to-one bundles moved to the group format (1.9.0).
+
+### Severity: Low today; Medium once last-resort keys ship (stage 2), since their bundles can be redelivered
+
+### What happens
+
+The receiver is meant to drop piece operations and custody manifests from a slot opened on the long-term path,
+"regardless of what the sender claims" (`ContactManager.openGroup`). It drops them from the per-recipient payload
+only. A one-to-one bundle carries them in the shared payload instead, and the caller falls back to that when the
+per-recipient fields are empty (`OccultaApp`, `recipShardOps ?? sealed.shardOperations`). So on a one-to-one
+bundle only the sender's own gate keeps them off a long-term slot; the receiver's check doesn't apply.
+
+Prekey continuity stage 2 relies on the same check to keep piece operations off last-resort slots, whose bundles
+open again on every redelivery (D5): with it ineffective for one-to-one bundles, a sender bug that attached them
+would make them replayable.
+
+The existing tests cover the per-recipient fields (`openGroupStripsOnFallbackSlot`) and the legacy single-recipient
+path (`decryptSealedStripsOnFallback`), not a one-to-one group-format bundle.
+
+### Guard
+
+`ReceiverShardFallbackTests.openGroupStripsSharedOnFallbackSlot` (long-term slot) and
+`LastResortReceiveTests.lastResortSlotDropsSharedShardContent` (last-resort slot dropped, one-time slot kept). Both
+fail with the fix removed. Enclave-gated, so skipped on CI.
+
+## Bug 165 — A group member can rewrite another member's message to the rest of the group
+
+**Status:** Fixed 2026-10-13 (PR #100), merged into `v2.0.0/prekey-refactor`, not yet in the release branch; ships
+in v2.0.0. Found 2026-10-12 in
+the security review of prekey continuity stage 3 (`Docs/Features/Prekey Continuity/DESIGN.md` §3.4), confirmed by
+`GroupBodyBindingTests`.
+
+**Target:** `v2.0.0`. Present since group bundles shipped (1.9.0).
+
+### Severity: High (forgery of a contact's messages by another contact)
+
+### What happens
+
+A group bundle encrypts its body once, under a random content key, and gives each recipient a slot wrapping that
+key (`Manager.Crypto.seal(sealedPayload:groupID:recipients:)`). A slot is bound to `blind`, a random value per
+bundle, and to nothing else: no slot commits to the body. `senderProof`, the body's check that the sender sealed
+it, is `HMAC(content key, sender's public key)`, and every recipient has both.
+
+So when Alice sends to Bob and Carol, Bob can write a body of his own, compute its `senderProof`, encrypt it under
+the same key with the same `blind`, and keep Alice's slot to Carol. Carol's `openGroup` opens it as Alice's: the
+slot is genuine, and on a forward-secret slot Alice's signature over the ephemeral key verifies, because it is
+Alice's.
+
+- **When:** any time, if Carol's slot is long-term or last-resort, since neither key is used up. If it used a
+  one-time key, only until Carol opens the original. Bob usually has the same file Carol does, at the same time.
+- **What Bob can forge in Alice's name, to Carol:**
+  - any message in the group;
+  - `appVersion`, which `updateMaxVersion` records, raising Alice's capability tier on Carol's phone. Carol then
+    sends Alice what her build may not open;
+  - piece operations and manifests. A multi-recipient bundle's per-recipient manifest is never marked attempted,
+    so the caller falls back to the body's fields (`buildOwnedBasket`), and so do empty per-recipient operations.
+    A forged `.handback` replaces the piece Alice returned in Carol's return buffer (`absorbShard`: a later share
+    from the same sender replaces the first), so Carol's restore can fail. A forged manifest marks Carol's pieces
+    with Alice present or absent. In shipped builds the body's shard content isn't dropped on long-term slots, so
+    this works at any time. Bug 164's fix (`v2.0.0/prekey-stage-2`) drops it on long-term and last-resort slots,
+    which leaves the race on a one-time slot.
+- **Not reachable today:** identity challenges, because `openIdentityBundle` reopens each with the long-term key
+  and a group bundle never opens that way. Prekey continuity stage 3 as first planned would remove that check
+  and expose them. A forged *response* still can't pass, since passing needs Alice's signature over Carol's
+  nonce, but see Bug 166.
+- **Not affected:** bundles with one recipient. Only the sender and that recipient know the content key.
+
+### Fix — built 2026-10-13
+
+Every slot carries `RecipientPayload.bodyDigest`, the SHA-256 of the bundle's ciphertext
+(`Manager.Crypto.seal(sealedPayload:groupID:recipients:)`). The slot is encrypted under a key only the sender
+could have built (a signed ephemeral key, or long-term key agreement between sender and recipient), so the digest
+inside it is the sender's. The ciphertext alone is enough: its GCM tag covers the outer associated data, so
+changing either changes the ciphertext. Every build since 1.9.0 ignores the unknown key, so the sender sends it to
+everyone, with no tier check.
+
+The receiver:
+- **rejects a mismatch** (`bodyDigestMismatch`) in `findAndOpenRecipientSlot`, before the slot's one-time key is
+  recorded as used. Decided 2026-10-13: the slot is the sender's own, for a message not opened yet, and consuming
+  would let the forger, by delivering first, make the genuine message unopenable. Keeping the key leaves it as it
+  was before the forgery arrived, which withholding the bundle achieves anyway. The one exception to consuming at
+  open (`SECURITY_CHECKLIST.md` §2.2, amended);
+- **rejects a missing digest** (`missingBodyDigest`) from a sender recorded at the new tier, `.bodyDigestCapable`
+  (2.0.0, marker byte 0x09). A tier only rises, so a claim can't switch it off. Keyed on the app version, so no
+  build numbered 2.0.0 or later may ship without the digest, TestFlight included; the prekey refactor, which
+  carries it, ships in 2.0.0 (decided 2026-10-14, `ROLLOUT_PLAN.md`);
+- **accepts a missing digest** below the tier, with no tier recorded, and with a stranded marker. Decided
+  2026-10-13: refusing a stranded marker would block 1.10.2–1.11.x contacts as Bug 81 does, and refusing only
+  there would tell whether Secure Mode was used on 1.10.0/1.10.1. Their first bundle at the tier repairs it;
+- **rejects an identity challenge in a group body without a digest,** whatever the tier: stage 3's requirement;
+- **rejects a body without a digest that claims app version 2.0.0 or later** (added 2026-10-13), whatever the
+  tier. Every build at that version sends the digest, so the claim and its absence contradict each other: the
+  body is a rewrite of an older bundle. Refused before `updateMaxVersion` reads the claim, so a rewriter can't
+  raise the sender's recorded tier and change how we send to them.
+
+Both rejections show the existing "couldn't confirm this message came from this contact" message, so they add no
+string to tell apart. A new interop vector, `recipientPayload.bodyDigest`; the existing ones are unchanged.
+
+**Left open — builds before 2.0.0, on either side:**
+- **Senders.** A bundle sealed by a build before 2.0.0 has no digest, so its body can be rewritten (though no
+  longer to carry a challenge or a 2.0.0 claim). Once Carol has recorded Alice at the tier, even Alice's
+  pre-update bundles are refused.
+- **Receivers.** A build before 2.0.0 ignores the digest. Only updating closes it.
+
+(Corrected 2026-10-13: this said a sender Carol has never heard from was forgeable on their first bundle. It
+isn't, if that sender is on 2.0.0: Alice seals her slot to Carol with the digest inside, and a rewriter can't
+remove it, so the comparison catches the rewrite whatever Carol has recorded. The tier rule only matters for
+bundles sealed before Alice updated.)
+
+**Closing the sender half — open, needs a decision.** A later release could refuse every group bundle without a
+digest, making 2.0.0 the minimum version a contact can send from. One-to-one messages use the group format too,
+so contacts who haven't updated could then send nothing, and would see the existing "ask them to update"
+message. It's a matter of timing, against how much of the population is on 2.0.0, like retiring the unprefixed
+ephemeral signature (`verifySenderEphemeralSignature`). Refusing only piece operations and manifests in bodies
+without a digest was considered and rejected: older contacts send their one-to-one piece operations in the
+body, so custody with them would break, and a rewriter can strip a bundle to one slot, so group and one-to-one
+bundles can't be told apart.
+
+### Guard
+
+`GroupBodyBindingTests`: the digest is in every slot; a rewritten body is rejected; a mismatch leaves the one-time
+key and the genuine bundle opens; a missing digest is refused only at the tier (all four recorded states); a
+challenge without one is refused below the tier, and one with it opens; a body claiming 2.0.0 or later without
+one is refused and leaves the recorded tier where it was, while the same claim with it opens, and a 1.11.1 claim
+without it opens. `PrekeyRecordWiringTests.
+digestMismatchKeepsThePrekey` (Enclave-gated) does the mismatch end to end against the record.
+`consumptionSavedBeforeRejection` now rejects through a bad signature, since a corrupted body no longer consumes.
+With the three receiver checks disabled (the mismatch moved after consumption), each one's test failed, and so
+did the claim test with its rule disabled.
+
+## Bug 166 — A response we aren't waiting for shows "Verification failed — this may not be <contact>"
+
+**Status:** Fixed 2026-10-13 (PR #102), merged into `v2.0.0/prekey-refactor`, not yet in the release branch; ships
+in v2.0.0. Found 2026-10-12 in the security review of prekey continuity stage 3, confirmed by
+`IdentityChallengeUnsolicitedResponseTests`.
+
+**Target:** `v2.0.0`. Present since identity challenges shipped.
+
+### Severity: Medium (a false impersonation warning about a contact)
+
+### What happens
+
+`IdentityChallenge.Coordinator.handleInboundChallenge` shows the red result sheet for any response that fails,
+and `verifyResponse` returns a failure for a response whose nonce names no challenge we're waiting for. The sheet
+says "Verification failed" and "This may not be <contact>. If they may have lost their device, re-exchange keys
+in person."
+
+- **Reopening a genuine response file** after it passed is enough: its nonce was used up when it passed. No
+  attacker needed.
+- **A group member could trigger it** through Bug 165: a response envelope in a rewritten group body fails to open
+  in `openIdentityBundle`, and a failure to open showed the sheet too. Bug 165's fix closes this route for any
+  sender: a group body carrying a challenge or response without a digest is refused before the coordinator.
+- **The contact can, at any time,** which matters less: they can lie to us anyway.
+
+### Fix — built 2026-10-13
+
+`verifyResponse` returns `.passed`, `.failed` or `.notOurs` instead of a yes or no. `.notOurs` is a response whose
+nonce names no challenge waiting for that contact: a replay, an old file reopened, or a challenge we sent someone
+else. The coordinator shows a result only for `.passed` and `.failed`, and nothing for `.notOurs` or a response
+that doesn't open. A response that names our challenge and fails the signature or the time window still shows
+"Verification failed": that's the case the sheet is for. Nobody but the contact can learn the waiting nonce, so
+nobody else can reach the sheet.
+
+A pending challenge is now settled only by a response that names it, from the contact it went to. One naming it
+from another contact used to remove it; it now leaves it waiting for the real answer. It still expires as before.
+
+### Guard
+
+`IdentityChallengeUnsolicitedResponseTests`: a reopened response shows nothing; one that won't open shows nothing
+and leaves the challenge waiting, so the genuine one still passes; one naming our challenge with a bad signature
+still fails. `IdentityChallengeProtocolTests.verify_replayedResponse_returnsFalseOnSecondAttempt` checks the
+replay is `.notOurs`. With the coordinator showing failure for `.notOurs` again, the first two fail.
+
+## Bug 167 — Identity challenges and responses can be recognised by their size
+
+**Status:** Open — needs a decision. Found 2026-10-12 in the security review of prekey continuity stage 3.
+
+**Target:** `v2.0.0`. Present since identity challenges shipped.
+
+### Severity: Low (forensic)
+
+### What happens
+
+A challenge is meant to look like an ordinary long-term message (`IdentityChallenge+Manager.swift`, header).
+Message bodies aren't padded, and a challenge without a note always has the same body: the fixed fallback text,
+a 72-byte payload and the same fixed fields. A response's varies only with its DER signature, by a few bytes.
+Anyone collecting `.occ` files can therefore pick them out by size, whichever key sealed them.
+
+Prekey continuity stage 3 moves challenges to the group format so they stop standing out once long-term bundles
+are rare (§3.4). That change alone doesn't achieve it, because of the size.
+
+### Fix — open, needs a decision
+
+- **Pad every bundle body to size buckets.** Hides challenges among messages of the same bucket, and message
+  lengths generally. Costs traffic, and touches every send path.
+- **Drop the fallback text from group-format challenges.** Only new-tier contacts receive those, so the text
+  serves no one. Makes the body smaller, not less recognisable; useful only alongside padding.
+
+### Guard
+
+None yet.
+
+---
+
+## Bug 168 — A downgraded build deletes every contact's prekey record
+
+**Status:** Accepted, 2026-10-16 (owner's decision), for TestFlight and sideload users. Found the same day while
+checking Prekey Continuity D6's premise on a simulator. The acceptance covers the prekey refactor only. The
+passphrase migration's downgrade is a separate question (see "Fix" below).
+
+**Target:** `v2.0.0`. Present since prekey continuity stage 1, merged into `release/v2.0.0` with PR #110.
+
+### Severity: Medium (data loss; reachable only through TestFlight and sideloaded builds)
+
+### What happens
+
+- **The older build migrates the store back.** It creates its `ModelContainer` at launch
+  (`OccultaApp.swift:70`). Core Data finds the store at a newer model version, takes that model from the
+  store's own `Z_MODELCACHE` table, and runs a lightweight migration back to the older schema. Attributes the
+  older model lacks are dropped, values and all. The app doesn't fail to open; it runs.
+- **For the prekey refactor, that drops `Contact.Profile.prekeyRecordEncrypted`.** Every contact loses our blob
+  prekeys, our last-resort keys, and the batches the contact sent us. The older build reads only
+  `forwardSecrecyEncrypted`, which `migratePrekeyRecords` set to nil on every row, so it holds no prekeys at all.
+- **While downgraded:**
+  - Sends fall back to the long-term key until each contact sends a new batch.
+  - Messages contacts seal to our blob prekeys or last-resort keys can't be opened.
+  - Contacts can't detect the downgrade (D6), so each one keeps sealing to our last-resort key, and those
+    messages keep failing.
+- **Upgrading again** brings the column back empty. `migratePrekeyRecords` then carries over whatever the older
+  build stored in `forwardSecrecyEncrypted` during the downgrade (`PQmigration.swift:345–358`). The record from
+  before the downgrade is gone for good. The private keys in it existed only there, so messages sealed to them
+  can never be opened.
+
+### Verified, 2026-10-16
+
+A throwaway iPhone 17 Pro simulator on iOS 26.2. Debug builds of the pre-refactor release commit `9ff49f9` (old)
+and the refactor `9a23264` (new):
+
+| Step | `ZPROFILE` columns | Contact row |
+|---|---|---|
+| Old build creates the store | `ZFORWARDSECRECYENCRYPTED` only | — |
+| Upgrade to new | both | A row planted with `sqlite3`, `ZPREKEYRECORDENCRYPTED` = `DEADBEEF` |
+| Downgrade to old | `ZPREKEYRECORDENCRYPTED` gone | The row survives; the value is gone |
+| Upgrade to new again | both | `NULL` |
+
+The row was planted directly because a real contact needs a key exchange between two devices. No crash report
+was written at any step.
+
+### Why D6 didn't prevent it
+
+D6 ruled downgrades out by release order, on the premise that an older build can't read a migrated database at
+all (`ROLLOUT_PLAN.md`, "Migrations are one-way"). It can. The passphrase migration would be read back the same
+way, so pairing the refactor with it only adds to what a downgrade deletes. That case is untested, but the
+mechanism is the same.
+
+### Fix — decided 2026-10-16: accept it
+
+- **Taken: accept it** for TestFlight and sideload users, the only people who can downgrade on iOS, and say so in
+  the TestFlight notes. The prekey refactor ships in 2.0.0 without waiting for the passphrase work, since release
+  order protected nothing (`decisions.md`, 2026-10-16).
+- **Not taken for the refactor:** making a downgrade lose nothing by keeping migrated data where an older build
+  doesn't look, such as a new store file. For the refactor that would mean moving the store, which is new work.
+  `ROLLOUT_PLAN.md` still proposes it for the passphrase migration, where a downgrade would delete everything
+  resealed rather than prekey records alone. That is not decided. *Decided 2026-10-19 for the passphrase
+  migration:* a new store file, with the old store kept until graduation as Rule 4's way back
+  (`decisions.md`, 2026-10-19). The prekey refactor's acceptance above is unchanged.
+- **Already rejected:** a "last reported version" marker (D6). It would be a downgrade lever for anyone with
+  temporary use of a contact's identity key.
+
+### Guard
+
+None yet.
+
+## Bug 169 — The Files app shows an "Occulta" folder
+
+**Status:** Fixed 2026-10-18 on `v2.0.0/hide-files-folder`. Found in the Simulator while testing introduction cards.
+
+### What happens
+
+The app target set `INFOPLIST_KEY_UISupportsDocumentBrowser = YES` (Debug and Release) from the project's start. That key is for apps that browse their own documents, which Occulta doesn't, and with it Files lists the app's `Documents/` folder under On My iPhone › Occulta. It's empty in normal use, but it's a visible trace of the app outside every duress depth, and it would show anything that ever reached `Documents/`. Today that is only `Documents/Inbox/`, between iOS delivering an opened file and `handleOpenURL` deleting it after the read (Bug 101, step 1), or longer after a crash in between.
+
+### Fix
+
+The key is removed from the app target. Opening `.occ` and `.occbak` files doesn't depend on it: that is `CFBundleDocumentTypes` and `LSSupportsOpeningDocumentsInPlace = NO`, both unchanged. The Quick Look preview extension also sets the key; there it has no effect, and it was left alone.
+
+### Guard
+
+None automated: the folder is decided by iOS from `Info.plist`. Checked in the Simulator: no Occulta folder in Files, and a `.occ` opened from Files still reaches the app.
+
+---
+
+## Bug 170 — Deleting the app leaves its keychain items, including prekey tags that name contacts
+
+**Status:** Open in part. Found 2026-10-19 while checking whether Prekey Continuity D9's blobs suit the app's
+other keys (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`, decision 15). Not verified on a device in this pass.
+- **Decided 2026-10-19 by the owner (decision 15):** per-install keys stay in the keychain, the new phrase key
+  included. Erase All Data deletes the share staging key, built and merged 2026-10-19 (PR #118, with #119's
+  sweep of unread `inbound/` handoffs).
+- **Still open, needs a decision:** the legacy keychain prekeys, and the shard custody key.
+`SECURITY_CHECKLIST.md` (the 2026-08-15 correction under Bug 82) already relies on the same iOS behaviour for
+the identity key.
+
+**Target:** `v2.0.0`, with the passphrase work. Present since the first release.
+
+### Severity: Medium (forensic trace after the app is deleted; the legacy prekey tags name contacts)
+
+### What happens
+
+iOS keeps an app's keychain items after the app is deleted. The app container goes, and the keychain items stay.
+A user who deletes Occulta to hide it therefore leaves these behind:
+
+| Item | Tag or account | Created |
+|---|---|---|
+| Identity key | `master.key.privacy.turtles.are.cute` | First launch |
+| Local DB Enclave key | `local.db.se.key.occulta` | First use of the local DB key |
+| Local DB random component | account `local.db.random.key.occulta` | Same |
+| Vault key | `vault.key.occulta.v1` | First vault use |
+| Shard custody key | `shard.custody.occulta` | First custody use |
+| Secure Mode PIN key | `app.layer.key.occulta.v1` | First launch (`Manager.Security.init`) |
+| Share staging key | `share.index.se.key.occulta`, group `group.com.occulta.shared` | First access |
+| Legacy prekeys | `prekey.<contactID>.<uuid>` | Each batch |
+
+*Added 2026-10-24: items from Bug 171's fix (#123), which outlive an app deletion the same way.* Erase All Data
+deletes them (`Manager.Key.deleteAllKeys`, `ShareStagingKeyManager.deleteKey`).
+
+| Item | Account | Created |
+|---|---|---|
+| Tier B secret `r_B` | `vault.random.key.occulta` | When Bug 171's upgrade runs for tier B |
+| Tier U and B ML-KEM records, iOS 26+ | `local.db.pq.key.occulta`, `vault.pq.key.occulta`, and `.pending` versions during an upgrade | When the upgrade runs for that tier on iOS 26+ |
+| Share staging secret `r_S` and its ML-KEM record | `share.staging.random.key.occulta`, `share.staging.pq.key.occulta`, App Group | When share staging first runs after the upgrade |
+
+**What an examiner learns from them, without the app:**
+- **The app was set up and used,** not only downloaded. The access group identifies the app whatever the tags
+  say. Every item carries `kSecAttrCreationDate`, which dates first launch, first vault use and each prekey
+  batch.
+- **The contacts, from the legacy prekeys.** Their tags carry contact identifiers, which step 17 of
+  `HARDENING_STEPS.md` already treats as naming contacts.
+  - D9 moved new prekeys into the sealed record.
+  - Legacy keychain prekeys retire 30 days after their batch's last use, but only while the app runs.
+  - Deleting the app before then leaves them for good.
+
+**What it adds to traces that already exist.** App Store download history and the OS's own usage records
+already show that the app was installed and used (`HARDENING_STEPS.md` step 11). The keychain adds:
+- a record on the device itself, which needs no cooperation from Apple;
+- the dates of specific features' first use;
+- for legacy prekeys, the contacts.
+
+**A smaller, related gap: Erase All Data keeps the share staging key.** `eraseAllData`
+(`Manager+App.swift:22`) deletes the prekeys and every key `Manager.Key` lists. `ShareStagingKeyManager` has no
+delete path, so its key and its creation date survive a wipe.
+
+### Fix — decided in part, 2026-10-19
+
+**Decided by the owner (decision 15):**
+- **15a.** The passphrase work's per-install Enclave key is a keychain item, not a blob in the app's files.
+- **15b.** The identity key stays in the keychain.
+- **15c.** The keys graduation retires aren't moved first.
+- **15d.** Erase All Data deletes the share staging key, which stays a keychain item. Built and merged 2026-10-19
+  in PR #118, together with the share extension's leftovers in the App Group, and #119's sweep of unread
+  `inbound/` handoffs. It ships in 2.0.0.
+
+Per-install keys therefore keep outliving an app deletion, with their creation dates. The analysis below is
+kept as the record; its "Proposed" line was not taken.
+
+**Still open, needs a decision:**
+- **The legacy keychain prekeys,** which name contacts.
+- **The shard custody key,** with stage 5.
+
+**The analysis before the decision:**
+
+**Proposed:** keep per-install keys out of the keychain, as CryptoKit Enclave blobs in files inside the app's
+container, under `FileProtectionType.complete`. Deleting the app deletes the container, and the blobs with it.
+Taken key by key:
+- **The passphrase work's per-install Enclave key** (`PASSPHRASE_LAYER_KEYS.md` §1, 2026-10-15). It doesn't
+  exist yet, so it can start as a blob at no cost.
+- **Keys the passphrase work retires:** the local DB key and its random component, the Secure Mode PIN key and
+  the vault key. *Corrected 2026-10-24:* since Bug 171's fix the random component is tier U's `r_U`, which
+  shard custody, the restore buffer and compose staging also use. So only the Enclave key retires with the local
+  DB until those move.
+  - Graduation deletes them, but only on installs that graduate, and only while the app runs.
+  - Until then they survive a deletion.
+  - Moving them first isn't worth a migration of its own.
+- **Identity key.** An Enclave key in the keychain can't be converted into a CryptoKit blob, so moving it means
+  a new identity, which strands every contact (Bug 82). It would also stop surviving a reinstall, which is what
+  lets a reinstalled app keep its identity today.
+- **Shard custody key.** It depends on how ROLLOUT_PLAN stage 4 seals custody rows.
+- **Share staging key.** The App Group container is shared with the extension, so a blob there would work.
+  Separately from the decision, Erase All Data should delete it.
+- **Legacy prekeys.** Nothing in the app can act after it is deleted. Shortening their retirement only narrows
+  the window.
+
+Renaming the tags to drop "occulta" doesn't help, because the access group names the app.
+
+
+### Guard
+
+None yet.
+
+---
+
+## Bug 171 — Keys derived as ECDH(Enclave key, G) are a function of the key's public point
+
+**Status:** Fixed in `v2.0.0` on the Simulator, 2026-10-23 (Stages 1 to 8; the device checks and the decisions listed under "What stays open" are not done). Found 2026-10-21 by a trial run of a security-audit skill on `v2.0.0/introduction-cards` (audited at `8c51ad97`), then settled the same day with a test on the iOS Simulator and, for the vault's access control, on an iPhone 15 Pro (iOS 26.7.1) that holds no real data. Numbered 171 because Bug 170 is taken on `v2.0.0/passphrase-rollout-plan`.
+
+**Target:** `v2.0.0`. Present since the local DB key was first derived this way; every later Enclave-derived key copied it.
+
+### Severity: High as a design claim; for shipped data it depends on who can reach the keychain item that holds Q, which is open
+
+### What happens
+
+Each key below is `HKDF(ECDH(enclave_priv, G) …)` with G the P-256 generator. ECDH with peer G computes d·G, which is Q, the Enclave key's own public point. So the exchange output is the ANSI X9.63 KDF (SHA-256, size 32, no shared info) of x(Q), and the HKDF around it takes Q as its salt (or G ⊕ Q for the legacy key). Nothing secret goes in. Anyone who has Q can compute every one of these keys without the Enclave, without the biometric, and on another machine.
+
+| Key | Derived in | Q of | Rebuilt from Q alone |
+|---|---|---|---|
+| Share staging key | `ShareStagingKeyManager.deriveSymmetricKey` | the share staging key | Yes, real class |
+| Compose staging key (an eighth, added by PR #122 on 2026-10-23, after this entry was filed) | `ShareStagingKeyManager.deriveComposeStagingKey`, same Enclave key and G, info `Occulta-v1-group-compose-staging-2026` | the share staging key | Yes: the same construction. Stage 8 moves it to tier U |
+| Local DB key (hybrid) | `Manager.Key.createHybridLocalEncryptionKey` | the local DB key | Yes, real class, together with the Keychain-random half it already mixes in |
+| Local DB key (legacy) | `Manager.Key.createLocalEncryptionKey` | **the identity key** | Yes, mirror of the code on a throwaway key |
+| Vault key | `Manager.Key.deriveVaultKey` | the vault key | Yes, mirror only; the real key can't be made on a Simulator |
+| Shard custody key | `deriveShardCustodyKey` | the shard custody key | Yes, real class |
+| Restore vault key | `deriveRestoreVaultKey` (same Enclave key, other info) | the shard custody key | Yes, real class |
+| Secure Mode PIN key | `deriveSecureModeKey` | the PIN key | Yes, real class |
+
+For the legacy local DB key, Q is the identity public key, which every contact holds by design. Anything still sealed under it (`decryptLegacy`, until migration has rewritten it, and any older copy of that ciphertext) is open to every contact of the user who has the ciphertext.
+
+**What the Enclave and the biometric gate do and don't protect.** They protect the private scalar d: it can't be read out, and an exchange or signature with *any other* peer still needs the chip. The gate decides who may *use* d. None of these keys needs d, so the gate is never reached. In particular `.biometryCurrentSet` invalidating the vault key when the enrolled biometrics change locks nothing that matters here, and the code comment "key unusable if biometrics change" (`Key+Manager.swift`, vault checklist) is true of the Enclave key and false of the symmetric key built from it. The hybrid local DB key is, in effect, its Keychain-random half alone: the Enclave half adds no secrecy.
+
+**Whether Q needs authentication.**
+- **Measured, four keys:** Q came back from `SecKeyCopyPublicKey` on a key reference fetched by tag with no `LAContext` at all, for the share staging, local DB, shard custody and PIN keys, whose access control is `.privateKeyUsage` and device unlock (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Their gate is device unlock and nothing else.
+- **Measured on a device, the vault's access control:** the Simulator refuses it (`SecKeyCreateRandomKey` fails with -25293, underlying LAError -1020, "not supported on iOS Simulator"), so `publicPointOfTheVaultACLKeyNeedsNoEvaluation` is skipped there. On an iPhone 15 Pro (iOS 26.7.1, no real data) it ran and passed. A key created with `[.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode]` was fetched by tag through a fresh `LAContext` with `interactionNotAllowed = true` that had evaluated nothing, and `SecKeyCopyPublicKey` returned the same Q as at creation. ECDH with that same context failed with LAError -1004, "User interaction is required". So the gate holds for *using* d and does not touch Q.
+- **Where Q sits at rest, checked on the Simulator only (2026-10-21).** A throwaway test, not committed, ran on the iPhone 17 Pro Simulator (iOS 26.1, Apple Silicon host). It created two Enclave keys with the production policy (`.privateKeyUsage`, `WhenUnlockedThisDeviceOnly`): (a) a permanent `SecKeyCreateRandomKey` key under a known tag, which is how the keys in the table above are held, and (b) a CryptoKit `SecureEnclave.P256.KeyAgreement.PrivateKey`, keeping its `dataRepresentation`. It recorded x(Q), y(Q) and the 65-byte Q of each. A read-only scan of copies of `Library/Keychains/keychain-2-debug.db` and its `-wal` and `-shm` then looked for those bytes as raw bytes, as hex text and as base64.
+  - **Key (a):** x(Q), y(Q) and the 65-byte Q appear nowhere in the three files. The row (`keys` table, `tkid` `com.apple.setoken`) stores `SHA-1(Q)` in the clear as `klbl` (`kSecAttrApplicationLabel`, indexed). `atag` holds the SHA-1 of the tag, not the tag. The `data` column (2,494 bytes) is an opaque envelope, so the scan can't say whether the payload it wraps holds Q.
+  - **Key (b):** the blob is 143 bytes and holds the 65-byte Q in the clear, at offset 46 (x at 47, y at 79). CryptoKit keeps no keychain row for it, so wherever an app stores that blob, Q is stored with it. The seven keys above are not held this way.
+  - **What this shows:** on the Simulator, no cleartext column of a copy of the keychain database yields Q. It does yield `SHA-1(Q)`, which confirms a candidate Q but doesn't produce one. The Simulator's keychain has no hardware class-key wrapping, so this says nothing about the device keychain format or what a device extraction recovers. The device answer stays open, and so does whether the payload inside `data` holds Q. Both bear on the dump-plus-quantum case (D1 in the fix plan).
+  - **Cleanup and method:** key (a) was deleted by tag afterwards (its `keys` row is gone) and the probe file removed. `xcodebuild test` runs on a clone of the Simulator by default (the first attempt's log names "Clone 1 of iPhone 17 Pro"), so that attempt's keychain was not the one scanned. The result above is from a rerun with `-parallel-testing-enabled NO` on the Simulator itself. The first attempt's key was never deleted by tag; it was made in a clone's keychain.
+  - **Claims in the code:** the vault checklist in `Key+Manager.swift` calls its public half "never stored, never exported"; that describes the app's own storage, not the keychain item. The identity key's Q isn't in doubt: it is sent to every contact.
+
+**Where it matters.**
+- **Offline attack off the phone.** An attacker with the ciphertext and Q recomputes the key anywhere. The only secret left in the local DB key is the Keychain-random half, which is itself an ordinary Keychain item (`WhenUnlockedThisDeviceOnly`, no Enclave involvement), readable by the same code that reads Q.
+- **Crypto-erase.** Deleting an Enclave key (Erase All Data deletes the share staging key, `ShareStagingKeyManager.deleteKey`) makes nothing unrecoverable for anyone who recorded Q earlier, since Q is all that was needed.
+- **The planned layer keys** (`PASSPHRASE_LAYER_KEYS.md` §1). Their `ECDH(SE_priv, G)` half is not device-binding. The 2026-09-29 fix, `ECDH(SE_priv, Q_D)` with `Q_D = s·G` for the stretched phrase s, doesn't help: the output is s·d·G = s·Q, which the attacker computes from the guess s and the public Q with no Enclave call. So the requirement "the Enclave takes part in every guess" is not met by either form, and an AFU attacker moves the guessing to a GPU farm after reading Q once. The 90-bit phrase and the KDF are then the whole defence, which the same document calls "margin rather than the thing holding the line".
+
+### Verified, 2026-10-21
+
+`OccultaTests/SecureMode/EnclaveGeneratorECDHTests.swift`, run alone on an iPhone 17 Pro Simulator (iOS 26.1, Apple Silicon host):
+
+```
+xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
+  -destination 'platform=iOS Simulator,id=<simulator udid>' \
+  -only-testing:OccultaTests/EnclaveGeneratorECDHTests test
+```
+
+13 passed, 1 skipped (the vault access control, above), 0 failed. The vault case alone was then run on the iPhone 15 Pro with `-destination 'platform=iOS,id=<device udid>'`: passed, not skipped, and its attachment `vault-acl-public-point.txt` read as quoted above. The two simulators named "iPhone 17 Pro" on this host make `name=` ambiguous, hence the id.
+
+- The exchange, computed as production does (same algorithm, peer G, requested size 32, no shared info), equals `SHA256(x(Q) ∥ 00 00 00 01)` computed from the public key alone.
+- The full HKDF output of each site above equals the rebuild from Q alone.
+- The real `Manager.Key` shard custody, restore vault and PIN keys, the real `ShareStagingKeyManager` key, and the real hybrid local DB key (with its Keychain-random half read from the keychain) equal the rebuild.
+- Control: ECDH against a software key's public point, whose discrete log the test doesn't use, does **not** equal the Q-only value. The equality is a property of G.
+- Corollary: Enclave `ECDH(d, s·G)` equals software `ECDH(s, Q)`.
+
+### Fix — open, needs a decision
+
+**Plan adopted 2026-10-21; Stages 1, 1b, 2, 3, 4, 5, 6, 7 and 8 built.** The fix is staged. Each stage lands with its tests green and changes behaviour only where it says so:
+- **0a:** whether an image alone yields Q. Done on the Simulator ("Where Q sits at rest" above); the device answer is open. **0b:** the vault's access control on a device with no real data. It waits for a phone to be named.
+- **1:** the derivations, the tier secrets, the reseal inventory and the schema guard, with no behaviour change. **Built.** `enclaveBoundKey(_:)` derives `HKDF(ECDH(enclave_priv, P) ‖ r_tier)`, with P a compiled-in nothing-up-my-sleeve point (counter 1 of a SHA-256 try-and-increment) and `r_tier` the access tier's Keychain secret. `legacyKey(_:)` is today's derivations, unchanged, and the existing protocol methods delegate to it. The tier secrets have explicit creators that no production code calls. `ShareStagingKeyManager` carries its own copy, `TestKeyManager` a software mirror, and `KeyReseal+Inventory.swift` the inventory with its schema guard. `EnclaveGeneratorECDHTests` is flipped (see "Guard"). Nothing in production calls the new derivations yet.
+- **1b:** the ML-KEM term on iOS 26+, for tiers U, B and share staging. **Built**, with no behaviour change: nothing in production creates a record or uses a hybrid key yet.
+  - **The record.** Each tier has a `TierPQRecord` (`Occulta/Services/TierPQRecord.swift`), one generic-password item, `WhenUnlockedThisDeviceOnly`: U `local.db.pq.key.occulta`, B `vault.pq.key.occulta`, S `share.staging.pq.key.occulta` in `group.com.occulta.shared`. Layout: a mode byte (0 classical, 1 hybrid), a 2-byte blob length, the Enclave key's blob padded to 8,192 bytes, then the 1,568-byte ciphertext c. A classical record is the mode byte and random bytes, so both modes are 9,763 bytes.
+  - **Measured on the iPhone 17 Pro Simulator (iOS 26.1):** the Enclave ML-KEM-1024 `dataRepresentation` is 4,788 bytes, the same for 25 keys (it carries the 1,568-byte public key), which matches `Docs/Features/Introduction Cards/SPEC.md` §5. The public key and the ciphertext are 1,568 bytes and the shared secret 32. The padded size, 8,192, is 1.7 times the measurement: room for a different blob on a device (the Simulator's number is not a device's) or in a later OS without changing the record's size. A blob that still doesn't fit throws at creation and is never cut.
+  - **The derivation.** `enclaveBoundKey(_:)` reads the secret, then the record, then touches an Enclave key. A classical record gives `HKDF(t ‖ r)` with the Stage 1 info strings. A hybrid one gives `HKDF(t ‖ ss ‖ r)` with `ss` the Enclave's decapsulation of c, the `-pq-2026` info strings and SHA-256(c) appended. A hybrid record that won't decapsulate gives nil, and share staging throws: never a classical key in its place. A missing record gives nil.
+  - **Creation.** `createTierPQRecordIfAbsent` follows the rule for the tier secrets (only while the tier has never been resealed, or on a fresh install), except share staging's, which may be created if absent at any time because staging holds nothing for longer than an hour. A provider that exists but can't make the key throws and stores nothing.
+  - **Share staging** carries its own copy of the codec and its own CryptoKit `SecureEnclave.MLKEM1024` calls behind `#available(iOS 26, *)`, because the extension doesn't link `OccultaCore`.
+  - **Open, needs a device check before Stage 5:** a CryptoKit Enclave key is a blob with no access group, unlike the staging `SecKey`, which is created in the shared group so the app and the extension can both use it. The Simulator can't show whether a blob the extension made decapsulates in the app, and the reverse. If it doesn't, the hybrid staging key fails on iOS 26+ whichever process created the record.
+- **2:** the reseal of tier U data (local DB, custody, restore) at launch, before `Manager.Security`. **Built**, 2026-10-22. This is the first stage that changes behaviour: after it, an upgraded install's local DB, shard custody and restore buffer data are sealed under the Enclave-bound keys.
+  - **Where.** `LaunchSequence.run` (`Occulta/App/LaunchSequence.swift`) is called in `OccultaApp.init()` after the pragmas and before `Manager.Security(...)`. It runs `KeyReseal.bootstrap`, then `KeyReseal.run` (`KeyReseal+Run.swift`), then decides the process's keys (below), then the old `migrate()` passes in their old order. Running before Security matters because its init reads `persistedDepth` and `pinEnabledPerDepth`, which have to open under the key they are sealed under; afterwards, a lowered gate would come back up on the upgrade launch.
+  - **Per value.** Opens under the new key: skipped. Under the legacy key: resealed with the same AAD and the same length, and the new ciphertext is opened and compared before it replaces the old one. Under neither: left alone. Random filler in a container the inventory marks as filler (`Group` member slots, the `BackupEncryptionKey` rows' `depth` and `deletionToken`) is rewritten as fresh random bytes of the same length, and a container (one group's slots, the 32 gate entries, the backup-key table) changes as a whole or not at all, so no member shows which were real. `Profile.identifier` and every record that stores it as a value are untouched (the user's decision, 2026-10-21; open, needs a decision: the address-book link stays readable to a holder of Q until the passphrase migration).
+  - **Crash safety.** Rows are saved in batches of 200, each batch one `save()` with autosave off, so a kill leaves a mix that the next launch finishes, and a big store cannot make every launch exceed the watchdog. After the last batch the pass writes `AppLayerConfig.keyEpoch`, 30 bytes sealed under the new local key (number 1, and the form the tier's record has: classical or hybrid), then checkpoints the WAL. The epoch counts as present when the column is non-nil, without opening it, because opening needs the key whose secret may be what is missing. A key, `r_U` or the tier U record that can't be read means no writes and no epoch, with the reason in a DEBUG-only report; a locked device is reported differently from a missing secret.
+  - **Bootstrap.** While tier U has no epoch it creates `r_U` and the tier U record if the Keychain has none, the `AppLayerConfig` row if the store has none (the same `AppLayerConfig.seeded()` that `Manager.Security.init` now calls, sealed under the new key), and a sealed `vaultKeyEpoch` of 1. With an epoch it creates nothing: a secret or record missing after an epoch is not recreated, and every derivation fails loudly. A Keychain read that throws creates nothing.
+  - **The keys follow the epoch.** `createHybridLocalEncryptionKey()`, `deriveShardCustodyKey()` and `deriveRestoreVaultKey()` return the Enclave-bound derivation only once the epoch exists, and the legacy one before (`Manager.Ambient.tierUKeys`, a small piece of process state, not a fetch per derivation; a test binds its own with the key manager). `LaunchSequence` sets it to legacy when it starts and decides it once after the pass, from `keyEpoch != nil`. A pass that aborted or didn't finish therefore leaves the whole process on the legacy keys, consistent with a store that is still sealed under them, and the next launch retries. There is no retry mid-session: a key derived before such a switch could write legacy ciphertext after the epoch is set, and the pass would never revisit it. The vault key, the PIN key and share staging are unchanged. Found in Stage 2a: with the keys switched and the pass aborted (a background launch with the device locked), ordinary use would write over data it can't read. Prekey records, restore slots and `ReconstructShard` rows are the known cases.
+  - **A pass that stopped partway: the launch is blocked (Stage 2c).** **Built**, 2026-10-22, the user's decision of that day (it replaces "Recommended; open, needs a decision: in that session the committed fields read as empty until the next launch", which let the session run on a mixed store). When the tier U pass committed at least one batch and ended without its epoch, the store is a mix of both keys, or all new with the epoch's own save failing, while the process is on the legacy keys. Three ways to get there: a `save()` that throws after a batch (or the epoch's own), a read-back that fails partway (`.incomplete`), and a legacy key found underivable partway (`.aborted`). `KeyReseal.run` takes a `Progress` that counts committed batches, because its report is lost when it throws. `LaunchSequence` then returns `blocked` before the verifier wrap and every migration pass, so none of them opens or rewrites what it can't read (the earlier rule held them back only for a thrown pass, and let an aborted or incomplete one go on to run them).
+    - **The screen.** `OccultaApp` builds the rest of the app over an empty in-memory store with Secure Mode off (`Report.container(real:)`), so nothing it constructs can read or write the real one: `VaultManager` tops up its filler rows when it is built, and `Manager.Security` creates a Secure Mode key and a config row. `RootView` takes the `LaunchScreen` and shows `StorageErrorView` in place of everything else, before the PIN flow: none of the app view's task, handlers or observers is attached to it. The words are "Occulta couldn't finish updating its data. Make sure the iPhone has free storage, then reopen the app." They name no key, encryption, PIN or Secure Mode, there is no retry button (a retry mid-session is what the epoch rule forbids), and nothing is written. `AppScreen.blockedViewAppeared()` removes the launch cover, which nothing else would, and from then on no cover is installed and `wire(security:)` does nothing, so the PIN flow cannot start in this process even if something wired it. An `.occ` or `.occbak` handed in is dropped without being read or queued and can be opened again later; the copy iOS puts in the app's Inbox is cleared when the app goes to the background. Staged share sessions stay where they are.
+    - **Not blocked.** A pass that stopped before it wrote anything (a locked device, a missing secret, a read-back that fails from the first value): the store isn't mixed, so the app runs on the legacy keys as Stage 2 made it. A kill never reports at all, and the next launch finishes first.
+    - **Open, needs a decision.** The report knows only this launch. A launch that aborts before writing, over a store an earlier launch left mixed (killed partway, say, or blocked, and then the device is locked at the next one), is not blocked, and runs on the legacy keys over a mixed store, as Stage 2 did. Nothing in the store marks a pass as started, and the epoch can't: it is written last. Closing it needs a marker written before the first batch, which is a new fact that distinguishes an install the pass has touched.
+    - **Not covered.** The verifier wrap and the vault rewrap are one transaction each, so they leave nothing mixed to block on.
+    - **Tests** (`LaunchBlockedTests`): the report's `blocked` flag in each of the four ways to stop partway, in both forms, with the store really holding new values (and legacy ones, except when the epoch's save is what failed); not blocked for five ways to stop before writing, for a completed pass and for the launch after it; nothing after the pass ran (rows, verifiers, the process's keys); a relaunch without the fault completes the pass, opens the gate and runs the held-back passes; the scratch container; the message's words; `AppScreen` never starting the PIN flow once blocked; and `RootView` hosted in a window, once with the storage error (the screen is told, the phase stays covered) and once with the app (the PIN is asked for, as the control).
+  - **Tests.** `OccultaTests/SecureMode/KeyReseal*Tests.swift` (`TestKeyManager`, no Enclave, frozen fixtures with pinned key bytes): every inventory entry tier U owns round-trips in both forms; row counts and plaintext; crash safety at each fault point; read-back before replace; failures leave data intact; the launch order (gate, `VaultManager.unlock`, `migratePrekeyRecords`); a backup-key split; fresh install; re-upgrade after a downgrade; volume; Erase All Data; the keys following the epoch, with every ordinary-use path run after an aborted pass; and, gated on the Enclave, round trips through the real `Manager.Key` in both forms.
+  - **Measured, iPhone 17 Pro Simulator (iOS 26.1).** 2,000 contacts with every field and a full prekey record, software keys: 66,032 values resealed in 2.07 s (about 1 ms a contact), 200 MB footprint after. Through the real Enclave, per derivation: legacy 1.80 ms, Enclave-bound classical 1.41 ms, hybrid 2.09 ms. 1,500 `String.decrypt()` calls, which derive afresh each time: 2.9 s legacy, 2.3 s classical, 2.8 s hybrid, which is about 11 s for a 2,000-contact list of three fields. No iPhone 11 or other device was measured; the Simulator's Enclave is not a device's.
+  - **Downgrade check, 2026-10-22, a throwaway Simulator** (deleted afterwards): `b471bac` (the intro-cards tip), then this branch, then `b471bac` again, then this branch again, with a snapshot of `default.store` after each launch. The first launch seeds the `AppLayerConfig` row (the gate arrays and verifiers), the `Vault` row and 32 backup-key filler rows, which is all the store holds without driving the UI. Per field:
+    - Old to new: `persistedDepth`, `coercerBaseDepth`, `pinEnabledPerDepth` (one blob), and `depth` and `deletionToken` of all 32 backup-key rows changed bytes, none changed length. The two epoch columns appeared, 30 bytes each. The verifiers, `encryptedPayload` of the backup-key rows and the `Vault` row did not change.
+    - New to old: the older build's lightweight migration dropped both epoch columns, and nothing else changed. It rewrote nothing it couldn't read.
+    - Old to new again: both epoch columns came back (new nonces), the data fields stayed (they were still under the new key), and the 32 filler rows' `depth` and `deletionToken` were re-randomised, as the uniform-change rule has it.
+    - Not shown by this store, because it holds none: values the older build writes under the legacy key after the downgrade. `KeyResealReUpgradeTests` shows the re-upgrade carries those over. What the older build overwrites on a path that reads an unreadable record as empty (a prekey record on the next message, a restore slot on the next piece, `ReconstructShard` rows at vault unlock) stays lost, as the plan states. Accepted for TestFlight and sideload, as Bug 168 was (the user's decision).
+  - **Open, needs a decision.** The bootstrap creates the `AppLayerConfig` row even when the `secureMode` feature flag is off; `Manager.Security` doesn't with the flag off. The flag is on in `features.plist`. Rows still at the v1 scheme are sealed under the v1 local key, which is also a function of a public point, and stay so until `migrateToV2` moves them.
+- **3:** the PIN verifiers, wrapped. **Built**, 2026-10-22.
+  - **Why.** A verifier is `AES-GCM(HKDF(deriveSecureModeKey(), label ∥ pin), sentinel)`, and `deriveSecureModeKey()` is a function of the PIN Enclave key's public point (the Bug 171 construction). A holder of the config row and that point could test PIN guesses offline against the 64 verifiers and two scalars, with no Enclave and no lockout counter.
+  - **Format.** Each verifier is sealed again under `enclaveBoundKey(.secureModeWrap)`, which needs `r_U` and the tier U record: 53 bytes become 81, no AAD, as the inner verifier has none. The inner layer is exactly what it was. All 64 slots, filler included, and the non-nil scalars.
+  - **The pass** (`KeyReseal.wrapVerifiers`, `KeyReseal+Verifiers.swift`) runs in the launch sequence after the tier U reseal and before `Manager.Security`, in one transaction on the config row, and is keyed on size: 53 bytes is plain, 81 is wrapped. Every value changes in the one commit, so a run which wrapped only the slots holding a real verifier would not show which those are. When the previous release has written a 53-byte verifier into a wrapped store (a downgrade and a re-upgrade), the other values are changed too: wrapped ones are sealed again with a fresh nonce, and 81 random bytes that open under no key are replaced by fresh ones. Each new ciphertext is opened and compared before anything is assigned; one that doesn't read back means no writes. A wrap key that can't be derived means no writes and nothing created. The tier U pass throwing keeps it from running.
+  - **Writing follows the process, checking doesn't.** Whether verifiers are written wrapped is decided once per process after the pass (`Manager.Ambient.pinVerifiers`), by size alone: wrapped when every verifier in the store is 81 bytes. `configurePIN`, activation, the coercion-acceptance branch of `reEnablePIN` and every other write build a verifier in that form only, so an array is never mixed, and filler (`verifierFillerSize`, `PINManager.verifierSize`) is that size too. A fresh install ends uniformly at 81: the bootstrap seeds its config row wrapped. `checkVerifier` accepts both sizes: an 81-byte slot is opened under the wrap key and the 53 bytes inside checked as before.
+  - **Call sites.** `PINManager.buildVerifier` and `checkVerifier` take both keys, and the nine places in `Manager.Security` that derived the inner key derive both (`pinKeys()`). The wrap key is derived whenever it can be, whatever the process writes, so a plain process opens an 81-byte slot too (a store can hold both sizes after a downgrade, until the next pass), and a correct PIN never reads as a wrong attempt. A process that writes wrapped verifiers and can't derive the key fails to build one and fails to check a wrapped slot, rather than falling back to 53 bytes.
+  - **Timing.** `checkVerifier` does the same work whether or not a slot unwraps: random filler gets the inner check on stand-in bytes. Otherwise a scan would take longer by the number of real slots, which is the number of layers.
+  - **Lockout** is unchanged: a wrong PIN counts, the sixth sets the first lockout, a locked attempt doesn't count.
+  - **Downgrade, checked in the code at `b471bac`.** The older build writes verifier filler only when the arrays are empty (`Manager.Security.init`'s migration), when they are short (`ensurePadded`), and when a layer is deactivated or the PIN removed (`clearVerifiers`, `deactivatePIN`), and the last two first check a PIN that no longer verifies. Nothing turns an unreadable slot into filler, so it keeps the 81-byte verifiers, and no PIN opens on it (the scalar is non-nil, so it asks for one). A re-upgrade wraps whatever 53-byte verifier it wrote. No Simulator round trip was done for this stage.
+  - **Tests** (`PINVerifierWrapTests`, `TestKeyManager`, frozen: fixtures sealed with pinned key bytes and an inline copy of the previous release's builder): format and both sizes; the pass, its crash safety at its three fault points, read-back with the corrupting sealer, the wrap key unavailable, the PIN key unavailable, no config row, no PIN at all, a mixed store; the launch with PINs verified at depths 0, 1 and 3, duress verifiers found only by scanning, lockout counts, every `Manager.Security` operation in both forms, a fresh install, an install old enough to hold only scalars, and a re-upgrade; and, gated on the Enclave, a round trip through the real `Manager.Key`.
+  - **Open, needs a decision.** Filler a wrapped process writes later (`clearVerifiers`, `deactivatePIN`, `Manager.Security`'s padding) is random bytes, and doesn't open under the wrap key, while the filler the pass wrapped does. Someone who can run the Enclave with `r_U`, which means a device in use and not a disk image, could tell the two apart, and so see which slots were cleared after the upgrade. Wrapping new filler would remove that, at the cost of the wrap key in every `AppLayerConfig` filler call.
+  - **Not as the plan said.** `LayerArrayUniformityTests` covers `pinEnabledPerDepth` only and had no verifier size to update; the only size pin was `PINManagerTests.fillerSize_matchesPINManagerVerifierSize`, which compares two constants and stays true. New pins were added beside both.
+- **4:** the vault tier, rewrapped at the first vault unlock. **Built**, 2026-10-22.
+  - **Order in `VaultManager.unlock(context:)`.** (1) Read the vault epoch (`AppLayerConfig.vaultKeyEpoch`, sealed under the tier U key): 2 sets this process's vault key to the Enclave-bound one, 1 to the legacy one, unreadable leaves it as it was. (2) The legacy-storage migration (`migrateLegacyBackupStorageIfNeeded`), under the vault key as it stands, so the old 32-slot backup-key array, which nothing else moves, is read before anything changes key; a migration that throws holds the rewrap back to the next unlock. (3) At epoch 1, the rewrap. (4) `migrateReconstructShardsIfNeeded`, `deleteLegacyRestoreState` and `retireEntrySplittingIfNeeded`, where they were.
+  - **The rewrap** (`KeyReseal.rewrapVault`, `KeyReseal+Vault.swift`). It creates `r_B` and the tier B record if absent, and only while the epoch is 1: once it is 2 the vault is sealed under keys that include them, and a new one would make it unreadable. Then, in one transaction: every `VaultEntry.encryptedEntryKey` (all depths, orphaned rows included); every `BackupEncryptionKey.encryptedPayload`, a container whose real payloads are resealed, whose filler is re-randomised, and whose payloads already under the new key are sealed again, so the whole table changes or none of it does; and `backup-export-meta.dat`; then the epoch, set to 2 with the form of the tier B record, in the same commit. Each value opens under the new key (skip), the legacy key (reseal) or neither (left), and every new ciphertext is opened and compared before it is used: one that doesn't read back means no writes (`.incomplete`). Labels, contents and `.occbak` files are under keys it doesn't touch.
+  - **The file** is written to `backup-export-meta.dat.rewrap` next to it, read back, and renamed over it, before the commit, so it never lags the epoch. A kill between the two leaves the file under the new key and everything else old, and the next unlock skips what is moved and finishes; the one thing unreadable in that window is the backup staleness snapshot. A failure that is not a kill puts the old file back. A temp file a kill left is replaced, and a wipe removes it.
+  - **The vault key follows the vault epoch.** `deriveVaultKey(context:)` returns the legacy key while `Manager.Ambient.vaultKeys` is `.legacy` and the Enclave-bound one after. `unlock` sets it to `.enclaveBound` right after the rewrap commits (or finds the epoch at 2), before any other vault operation; a rewrap that fails rolls back, stays legacy, and retries at the next unlock. Nothing caches a vault key across the switch: `currentKey()` derives per operation, `Backup` takes the key as a parameter, and the one key `unlock` derives before the rewrap is used for the migration and dropped.
+  - **The tier B record.** Stage 2's bootstrap made only tier U's. The launch bootstrap now makes the tier B record on every install while the vault epoch is 1, so its creation date doesn't mark the first time the vault was opened; once the epoch is 2 a missing one is not recreated, and the report says so. `r_B` is made by the first unlock, which has the evaluated context, and by `retrieveVaultPrivateKey` at the same moment as a new vault Enclave key.
+  - **Duress.** The rewrap covers every row whatever depth unlocks, and takes the same time at every depth. Measured on the iPhone 17 Pro Simulator with software keys: 1,000 entries at depths 0 to 5 (every 7th orphaned), 8 backup keys, 24 filler rows and the export file, about 95 ms in either form. A device adds the Enclave's cost of two derivations, once.
+  - **Downgrade, from the code at `b471bac` (the Simulator can't create the vault key, so no round trip).** The older build derives the legacy vault key and cannot open a rewrapped entry key or backup payload. Labels and contents are not touched. An entry it can't open is unreadable there, and one it makes is wrapped under the legacy key and carried over by the re-upgrade (a test). It does not overwrite the backup key: `fetchDecoded` throws on a live row it can't open instead of returning nil, so `setup` throws and nothing is staged. A restore the user runs there replaces that depth's key with the restored one, as it always did. The re-upgrade finds the epoch dropped, the bootstrap seeds it at 1, and the next unlock moves whatever was written under the legacy key.
+  - **Tests** (`VaultRewrapTests`, `TestKeyManager`, frozen: pinned key bytes): the pins, the round trip in both forms, the table changing whole, idempotence, an interruption at each of four fault points including between the file and the commit, a kill in that window, read-back, the failures (`r_B` unreadable, the vault key unavailable, a locked device, the record missing after epoch 2), `unlock` ordering with a legacy array, a fresh vault, backups exported before and after (BEK recovery from returned shards included), a re-upgrade, 1,000 entries, and Erase All Data. The real vault access control is device-only (0b): `deriveVaultKey` on a real `Manager.Key` and the creation of `r_B` beside a new vault Enclave key are not exercised.
+  - **Open, needs a decision (D8).** Until the first unlock after the upgrade the per-entry keys stay under the legacy vault key, and the epoch shows anyone holding the tier U key whether the vault has been opened since.
+- **5:** share staging. **Built**, 2026-10-22. The cross-process ML-KEM blob check passed on the Simulator (below); a phone is still pending.
+  - **Sealing and opening** (`ShareStagingKeyManager.swift`). `encrypt` seals under the Enclave-bound key in the form the S record says: `t ‖ ss ‖ r_S` with the `-pq` info and SHA-256(c) on iOS 26+, `t ‖ r_S` below. It never seals under the legacy key, and a hybrid record that won't decapsulate makes it throw instead of sealing in a lower form. `decrypt` tries the current form, then the classical form if the record is hybrid (a session staged while the device was classical, before Stage 6 rewrites the record), then the legacy ECDH-against-G key (a session the previous build staged), and returns the first that authenticates. A form whose key can't be derived (no `r_S` or record yet) is skipped, and decrypting creates nothing. **The classical and legacy fallbacks go one release after 2.0.0**, when no session sealed that way can be alive (sessions are swept after an hour); the header of the file says which two functions to delete.
+  - **Creation** (`createTierItemsIfAbsent()`): `r_S` and the S record are made by whichever process first needs them. The app's launch does it (`LaunchSequence.run(staging:)`, passed by `OccultaApp`, after the blocked check: a blocked launch writes nothing, and the result lands in `Report.staging`), and so does the extension's first `encrypt`. Both read first and add only what is missing; a race ends with one item each, because the adder reads what the other added on `errSecDuplicateItem`. S is the one tier where this is allowed at any time: staging holds nothing for longer than an hour. A launch that can't create them (a locked device) goes on, and the extension creates them. On iOS 26+ the record is hybrid, made with the file's own `SecureEnclave.MLKEM1024` code; a provider that can't make the key throws with nothing stored, so a hybrid-capable device never gets a classical record. The extension's key code is still only `ShareStagingKeyManager.swift`; it also compiles `ShareManifest.swift`, and since streamed bundles (`STREAMING_SPEC.md` §8.4) the sealed-file writer (`Attachment+Manager.swift`, `NoCacheFile.swift`, `AttachmentKeyInfo.swift`, `Data.swift`) and links `OccultaFormats`. Staged files are sealed as `.eatt` under `deriveStreamSealingKey()`, the same key `encrypt(data:)` seals under; the app opens them under whichever of the current, classical and legacy keys passes the file's header check.
+  - **Erase All Data** already removed `r_S` and the record (`deleteKey()`, Stage 1); a test now shows the next session starts over on fresh ones and nothing sealed before opens.
+  - **Downgrade, from the code at `b471bac`.** The previous build derives the legacy key only. It opens its own sessions, and so does this one through the fallback. It cannot open a session this build staged: `ShareSession.load` deletes that session's directory and throws, and `sweep` deletes an unreadable manifest at once, so a share staged by this build and opened by the older app is lost and has to be shared again. The older build's Erase All Data doesn't know `r_S` or the record and leaves both in the shared group; a re-upgrade finds and uses them. Nothing is resealed in either direction.
+  - **Trace.** Two generic-password items in the shared group on every install (`r_S`, 32 bytes, and the PQ record, 9,763 bytes in both modes), dated at the first 2.0.0 launch, or at the first share if the extension gets there first. No Enclave key is added: the ML-KEM key is a blob inside the record.
+  - **Cost.** Each `encrypt` and `decrypt` derives the key again (two Keychain reads, an ECDH and, when hybrid, a decapsulation). The extension does this once per file and once for the manifest. Nothing is cached, because holding the key in memory is a security trade that is yours to make. A legacy-sealed session costs up to three derivations per file, for its last hour.
+  - **Cross-process check, Simulator evidence** (iPhone 17 Pro, iOS 26.1, the Mac's Enclave; run by the coordinator, 2026-10-22). On this Simulator the keychain's `acct` column is stored hashed, so a query on the account name never matches; filter on `agrp = 'group.com.occulta.shared'` against a copy of the database and its `-wal` and `-shm` files.
+    - **Extension created, app used.** After uninstalling the app, `simctl keychain reset` and installing without launching (no item in the shared group), a photo shared from Photos made the S record (an 11,742-byte item), `r_S` and the staging key in the extension, in the same second as the staged session. The session survived two foreground sweeps, while a planted control session with a random 132-byte manifest was deleted on the next foreground. So the app opened a manifest sealed under the hybrid record the extension made, and its ML-KEM blob decapsulates across the process boundary.
+    - **App created, extension used.** After a reset, a reinstall and one app launch, the launch made `r_S` and the S record. A share from Photos then staged a session, the extension created only the staging P-256 key, and the record's modification date was unchanged. Sealing has no fallback, so the extension decapsulated the app-made blob. The app's sweep kept that session and deleted a planted control.
+    - **Still open, needs a device:** the same on a phone you name.
+  - **Open, needs a decision.** While the fallbacks exist, anyone holding Q (the staging key's public point) who can write into the App Group container can plant a session that the app opens through the legacy key. It needs write access to that container, and ends with the fallback one release later.
+  - **Tests.** `ShareStagingEnclaveBoundTests` runs on a software P-256 key with two instances sharing one phone's items, so it needs no Enclave: fixtures sealed with CryptoKit rebuilds of the legacy and classical keys, not through the code under test; sealing in both forms and not under the legacy key or, on a hybrid device, the classical one; a legacy-sealed session opening with and without the items, creating nothing; a classical-sealed one opening after the record became hybrid; the app and the extension agreeing; the items created by either side and left alone by the other; their attributes and size; a race; a refused provider; a fresh install through the launch; a blocked launch writing none; Erase All Data; the older build as a legacy-only reader; and the stale-session sweep unchanged. `ShareStagingKeyManagerTests`, still Enclave-gated, gained a real-Enclave round trip in each form.
+- **6:** the upgrade pass when a classical device reaches iOS 26. **Built**, 2026-10-22. This is the second reseal, on those devices only. Images taken while the device was classical stay classical: no reseal protects what is already copied.
+  - **Trigger** (`KeyReseal.upgradeTierU`, `KeyReseal+Upgrade.swift`, called by `LaunchSequence` between the reseal and the verifier wrap): an ML-KEM provider exists, tier U's epoch exists and says classical, and tier U's stored record is classical. It never runs while no provider exists, and a record never goes back to classical. A stored record that is already hybrid is the end state, whatever else is true.
+  - **Order, and why.** (1) A hybrid record is made and written to a second Keychain item, the *pending* record, before any key derived from it seals anything: the new ML-KEM key is never only in memory, so a kill after the data commit cannot lose it. (2) Every tier U value is resealed from the classical key to the hybrid one, with the Stage 2 pass and its batches, read-back and uniform-change rule, and the classical form as the "legacy" key. (3) One commit, one `save()` on the config row: the epoch (number 1, form hybrid), the vault epoch (resealed under the new local key with its number and form unchanged), and every PIN verifier (unwrapped with the classical wrap key and wrapped with the hybrid one; filler is replaced by fresh random bytes, so the row changes whole). The vault epoch and the verifiers are sealed under tier U keys, so they have to move with the data or the vault and every PIN would be unreadable. (4) The tier's own record is replaced by the pending one, in place (`SecItemUpdate`, the item keeps its creation date), and the pending item is deleted.
+  - **A pending record from an earlier launch is reused, never replaced:** rows already moved are under its key, so a fresh one would strand them. A launch that finds the epoch hybrid and the stored record classical finishes the swap from the pending record before anything derives a key (`.swapFinished`). One that finds the stored record hybrid and a pending item left by a kill after the swap deletes it. A test stops the launch at each of seven points (after the pending record is written, after the first row, mid-batch, after the last batch, before the commit, after the commit, after the swap) and shows, at every one, that no value is unreadable, and that the next launch ends with all of it hybrid, the same pending key used, and nothing pending.
+  - **Blocked, as in Stage 2c** (decided with the user on 2026-10-22 for the reseal; the same reasoning applies and I extended it): an upgrade that saved a batch and did not commit, or committed and did not swap, leaves values under the hybrid key while the process derives from the classical record. `LaunchSequence` blocks that launch and runs nothing else, so tier B's and tier S's records do not move either. An upgrade that aborted or stopped before saving anything leaves the store as it was and the launch goes on with the classical keys. **Open, needs a decision**, the same residual as Stage 2c: the report knows only this launch, so a launch that aborts before writing over a store an earlier launch left mixed is not blocked. The pending record could serve as a marker, but an upgrade that fails for a lasting reason (say an ML-KEM key that won't decapsulate) would then block every launch from the second on, which is worse than the residual, so I did not.
+  - **Tier B.** The record moves to hybrid in place at the launch, with no pending record: nothing is sealed under it at launch, and the classical vault key is `HKDF(t ‖ r_B)`, which reads nothing from the record. The vault's data moves at the next unlock, through the Stage 4 rewrap run again with the classical key as its "legacy" one (`rewrapVault`, epoch (2, classical) with a hybrid record), and the epoch becomes (2, hybrid). Until then the vault key follows the epoch's form, not the record: `Manager.Ambient.vaultKeys` is `.enclaveBoundClassical`, so the vault opens under the classical key whatever the record says, and a failed rewrap retries at the next unlock. A classical-form vault no longer depends on its record at all.
+  - **Tier S.** The record moves to hybrid in place at the same launch (`ShareStagingKeyManager.upgradeTierPQRecordIfClassical`). No data moves: a session sealed classical opens through Stage 5's fallback, which derives the classical key from `r_S` without reading the record.
+  - **Trace.** The store is rewritten once more, at the first launch after the OS update, the same way on every device that upgrades and independent of depth. The pending item (9,763 bytes, as every record) exists only during that one upgrade: it is created before the first batch and deleted after the swap. A wipe removes it too (`deleteAllKeys`).
+  - **Downgrade, from the code.** An older build over an upgraded store: Stage 2's note stands for a build from before the fix, which cannot read anything. A build of Stages 2 to 5 derives tier U from the stored record and so reads an upgraded store, except the vault until it is unlocked once on a Stage 6 build (its key follows the record there, and the data is still classical). Nothing of this is released.
+  - **Tests** (`HybridUpgradeTests`, `HybridUpgradeVaultTests`, `HybridUpgradeRecordTests`, frozen: fixtures sealed with the pinned classical keys, expectations the pinned hybrid keys of `Frozen.recordU`): every inventory entry hybrid with plaintext, counts and sizes unchanged and nothing left under the classical key; the vault epoch and the verifiers moving with it; never while the provider is nil; the crash points; read-back; the failures, none of which writes; tiers B and S; backups exported before and after, with banked and returned pieces; 2,000 contacts and 1,000 vault entries timed (on the iPhone 17 Pro Simulator with software keys: the tier U upgrade of 2,000 contacts with every field and a full prekey record, 66,032 values, took 1,993 ms in batches of 200, about 1 ms a contact; the vault rewrap of 1,000 entries, 8 backup keys, 24 filler rows and the export file took 102 ms; a device adds the Enclave's cost of two derivations per batch and once); and, on a real Enclave, a whole upgrade of real keys. The Enclave suite `HybridUpgradeEnclaveTests` stays gated.
+- **7:** legacy cleanup, and the comments and documents that claim the opposite. **Built**, 2026-10-23.
+  - **The v1 local key is reachable from `migrateToV2` only.** `createLocalEncryptionKey` (ECDH against G on the *identity* key, whose Q every contact holds) is no longer a requirement of `KeyManagerProtocol`, and `Manager.Crypto` has no `decryptLegacy`. The concrete managers (`Manager.Key`, `TestKeyManager`) still derive it, and are reached through a narrow `LegacyLocalKeyProviding` that only `LegacyCryptoManager` asks for. `decryptLegacy` moved from `CryptoProtocol` to `LegacyCryptoProtocol`, which only `migrateToV2` takes. `LegacyKeyPathTests` scans the shipped source, as `OSTraceTests` does, and fails if a second caller of either appears, if the protocol gets the method back, or if `Manager.Crypto` grows a legacy decrypt. The v1 read path itself stays (D9).
+  - **Comments that claimed the opposite, corrected** in `Key+Manager.swift` (the vault checklist: "Public half: never stored, never exported — no harvest surface", "Biometric gate", "Device binding"; the Phase 1 comment, which said an attacker needed both the SE component and the random half; the SE inventory's "All four keys"; the `SaltInfo` docs, which now say which strings are legacy forms), `KeyManagerProtocol.swift` (the doc of each accessor), `PIN+Manager.swift` (the header, which said the SE key provides device binding) and `Vault+Manager+Backup.swift` (`writeExcludedFromBackup`'s "device-bound"). Where the fix does not settle a claim (what a change of enrolled biometrics does to the vault key and `r_B`, a device-only check) the comment says so.
+  - **Documents:** `PROTECTION_ASSESSMENT.md` (the residual row and the trust list), `SECURITY_CHECKLIST.md` (the ticked item that said "both halves are device-bound"), `VAULT_SSS_GUIDE.md` (the vault key and the custody and restore derivations), `PASSPHRASE_LAYER_KEYS.md` §1 and `HARDENING_STEPS.md` step 2. For the last two D2 is **recommended; open, needs a decision**: drop the per-guess Enclave requirement and keep the `ECDH(d, P)` device-binding term, because P cannot depend on the phrase and a phrase-dependent peer is a bespoke construction nobody has reviewed. Both stay as written with the note beside them, and nothing records D2 as decided.
+  - `CLAUDE.md` lists the new Enclave-gated suites, so the CI skip count stays explained.
+- **8:** the compose staging key. **Built**, 2026-10-23, after PR #122 and PR #121 were merged in (`ea7e94c`). `ShareStagingKeyManager.deriveComposeStagingKey()` seals the attachments staged in the app's `tmp/` and `Drafts/` for a recipient with no per-contact key, a group or a contact we hold no public key for (`ComposeViewModel` → `ComposeStagingKeyProviding` → `AttachmentManager(contactKey:)`). It was the Bug 171 construction, an eighth affected key: ECDH against G on the share staging key, info `Occulta-v1-group-compose-staging-2026`, a function of that key's public point. The merge left it on release's derivation so as to change no behaviour; Stage 8 fixes it. **The user's decisions, 2026-10-23:** (1) no reseal and no legacy fallback: the key was only ever in dev builds, so files sealed under release's compose key are not carried over; (2) the key moves to the app-only tier, tier U, and not to share staging: compose runs only in the app, its files live in the app's own container, and tier U already has Stage 6's pending-record upgrade.
+  - **The key.** `EnclaveBoundKey.composeStaging`: the local DB Enclave key and `r_U`, in the form of tier U's record. Classical `HKDF(ECDH(d, P) ‖ r_U, salt: Q, info: "Occulta-v2-compose-staging-2026")`; hybrid `HKDF(ECDH(d, P) ‖ ss ‖ r_U, salt: Q, info: "Occulta-v2-compose-staging-pq-2026" ‖ SHA-256(c))`. No new Keychain item; the info string alone separates it from the local DB key, which shares its Enclave key and secret. Pinned known answers (an independent script, which first reproduces the pinned local DB vectors): classical `7bd69193…bba`, hybrid `c63e237c…489`, and the frozen manager's `7e242f45…3c2` and `50ad2fe6…79e`.
+  - **It follows tier U's process state, and has no legacy form.** `deriveComposeStagingKey()` (a new `KeyManagerProtocol` accessor) returns the Enclave-bound key only when `Manager.Ambient.tierUKeys == .enclaveBound`, and nil in a legacy-state process (a reseal that aborted). `ComposeStagingKeyProviding`'s default is now `TierUComposeStagingKey`, which asks the ambient key manager and throws `ImportError.stagingKeyUnavailable` for nil. Then `ComposeViewModel.setup` leaves the attachment manager nil and every import is refused ("Secure storage not ready."), so there is no plaintext fallback and no key of another form; `encrypt` of a staged file fails closed; and `adopt` with no manager keeps the draft's file references untouched and deletes nothing. A test for each.
+  - **Share staging is as it was after Stage 5.** `deriveComposeStagingKey()`, `composeHkdfInfo`, the conformance and the shared `deriveLegacyKey(info:)` are gone from `ShareStagingKeyManager.swift`, which the extension links.
+  - **Stage 6 carries the draft attachments.** When a classical device reaches iOS 26, tier U's compose key goes from classical to hybrid, and a draft file sealed under the classical one would otherwise be kept but unreadable (`AttachmentManager.isSealed` checks only the magic header): data loss. So `upgradeTierU` reseals every compose-sealed file under `Application Support/Drafts/<draft id>/` after the pending record is written and before anything else: `AttachmentManager.reseal` streams a chunk at a time (a large video is never in memory), writes `<file>.resealing` under the hybrid key, reads it back (length and SHA-256), and renames it over the original atomically. Files are found by trial: one whose header authenticates under the classical compose key is moved; one that opens under the hybrid key was moved by an earlier run; one that opens under neither is sealed under a per-contact file key, or is plaintext from an earlier build, and is left byte for byte. A temporary a killed run left is removed. A file that won't reseal stops the upgrade (`.incomplete`, nothing committed) instead of committing over a draft that still needs the classical key. A moved file counts as the store having been touched (`Progress.movedFiles`), so an upgrade that moved files and did not commit blocks the launch as one that saved a batch does. A new fault point, `afterFirstFile`, and the existing `afterFilesBeforeBatches` sit between the file reseal and the commit. Tested at nine points, from the pending record to the pending item's deletion: at every one every draft file opens under the classical or the hybrid key, and under the hybrid key after the next launch.
+  - **Inventory.** `KeyReseal.files` lists the compose-sealed draft attachments under tier U (`Key.compose`, treatment reseal), apart from the per-contact-key ones in the same folder (not affected).
+  - **Not carried over, by decision.** Dev-build files sealed under release's compose key, ECDH against G, are not resealed and have no fallback: they are unreadable in a build with Stage 8, and a plaintext group draft file from an earlier dev build is sealed in place by `adopt` as before.
+  - **Open, needs a decision.** (a) The file reseal runs at launch, in `OccultaApp.init`, like the rest of the upgrade. A draft holding very large videos (up to gigabytes) on a device that reaches iOS 26 could keep the launch past the system's time limit. A killed launch loses nothing and the next one continues file by file, but a single file too big to reseal within one launch would keep failing. Nothing splits a file. (b) A draft file whose header authenticates under the classical key but whose chunks don't (disk corruption) stops the upgrade every launch, which leaves that device classical and its other data unchanged; skipping it would commit and leave the file unreadable, which is the loss the stage exists to prevent.
+
+**Decisions.** D1 is the user's, 2026-10-21: the tier Keychain secrets on every iOS version, plus an Enclave ML-KEM term on iOS 26+ for all three tiers, share staging included. Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer, stays open, needs a decision, until the device reaches 26 or the passphrase ships. D6 (accept the downgrade loss for TestFlight and sideload) and the `Contact.Profile.identifier` question (left byte-identical, with every reference to it) were decided by the user, 2026-10-21. D2 to D5 and D7 to D9 are recommended; open, needs a decision (`Docs/General/decisions.md`, "Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+").
+
+The fix is a derivation with a secret input that only the Enclave can supply, not a rewording of what the current one gives. Every option below changes every affected key, so each needs a one-way reseal of what's under it, with the migration plan and tests that stage requires. There is precedent: `kLocalDBHybridKeyInfo` keeps the old and new local DB keys from ever being equivalent. No option helps ciphertext already sealed under the old keys and copied: Q recomputes those.
+
+Options, 2026-10-21 (none built or tested):
+
+1. **Peer with an unknown discrete log.** Replace G with a point P whose discrete log nobody keeps: a software P-256 key generated once, its public point stored (not secret), its private scalar discarded. The output is k·Q = d·P, which needs d (or the discarded scalar). It is the same Enclave call as today with a different peer, so no new API, and the call already ran on a device in the Bug 171 test. The vault's biometric gate then guards a real input. Risks: the scalar existed in memory at creation and CryptoKit can't guarantee it is wiped; the stored P must be integrity-protected, because anyone who can swap in their own P chooses the key. Does not give the layer keys an Enclave call per guess: P can't depend on the phrase, or it is again known to the attacker. Rests on the P-256 discrete log, so a quantum adversary holding Q recovers d.
+2. **Wrap a random key in the Enclave.** A random 256-bit key sealed under the Enclave key with `SecKeyCreateEncryptedData` (ECIES), unwrapped with `SecKeyCreateDecryptedData`. As hardware-bound as option 1, but adds an ECIES unwrap path whose behaviour under these access controls is untested, and a stored blob whose integrity matters the same way (anyone can encrypt a chosen key to Q). Same quantum weakness.
+3. **Keychain secret under an access control.** Drop the exchange. Hold a random key as a generic-password item with `.biometryCurrentSet` or `.devicePasscode`. Simplest, and it makes the vault gate real, but the secret is plain data: a keychain-only extraction yields it, so the device-unlock keys get no hardware binding beyond the keychain itself.
+4. **Hash-to-curve peer, for the layer keys only.** Map the stretched phrase to a point with an unknown multiplier, so each guess needs one Enclave exchange. This is the only way to meet the "Enclave in every guess" requirement; any peer the guess determines by multiplying G is computable from Q. CryptoKit has no hash-to-curve. Try-and-increment over `P256.KeyAgreement.PublicKey(compressedRepresentation:)` works but its loop length leaks. A bespoke construction that needs its own review.
+5. **Keep the construction and correct the claims.** The workaround, not the fix. The Enclave step then adds cost and a false claim for no secrecy, and should go.
+
+Considered and rejected: **one master seed for all keys, derived with HKDF.** Domain separation makes the keys independent but not equal in access policy. The vault key needs biometrics; the custody, PIN and local DB keys need only device unlock; the staging key lives in a shared group for the extension. One seed released at device-unlock level removes the vault's biometric gate. It needs one protected root per access tier, about three. The iOS Secure Enclave also can't store a seed or run HKDF inside it: any seed reaches app memory when used, so "never leaves the enclave" isn't available. Options 2 and 3 are the real forms of that idea.
+
+**Recommendation, not decided:**
+- **Build option 1 for the keys that exist today.** It gives the same off-device guarantee as option 2 with the smallest change, and a stronger one than option 3.
+- **If quantum harvesting counts** (the vault checklist in `Key+Manager.swift` says "no harvest surface for QC", and the app uses ML-KEM elsewhere), the most secure form mixes three inputs into the HKDF: the option 1 term, a term from an Enclave ML-KEM key (encapsulate to its public key, store the ciphertext, have the Enclave decapsulate on use; iOS 26+, proven in this repo for the intro-card keys but not with the vault's biometric access control), and the existing Keychain-random half. Devices on iOS 18.6 to 25 would stay classical-only.
+- **Decide the quantum question before the migration is built.** Adding the ML-KEM term afterwards changes every key and forces a second full reseal. Whether a disk image alone yields Q bears on it: if it can't, quantum harvesting matters less. Checked on the Simulator only (see "Where Q sits at rest" above); the device answer is open.
+- **Layer keys:** decide whether the "Enclave in every guess" requirement is worth option 4's bespoke construction. If not, the requirement should be dropped from `PASSPHRASE_LAYER_KEYS.md` and `HARDENING_STEPS.md` step 2 instead of kept on a construction that doesn't meet it.
+- **Also separately:** retire the legacy local DB key (`createLocalEncryptionKey`, derived from the identity key whose Q every contact holds) once no v1 ciphertext remains. Until then, anything sealed under it is readable by every contact who has the ciphertext. **Stage 7, 2026-10-23: made unreachable except from `migrateToV2`** (see Stage 7); the v1 read path stays until D9 is decided.
+
+*As filed, 2026-10-21 (all done in Stage 7):* not changed in this pass: production code, including the comments that rely on the opposite (`Key+Manager.swift` "Public half: never stored… no harvest surface", "Device binding", "Biometric gate"). Other documents that rely on it and weren't edited: `Docs/v2.0.0/HARDENING_STEPS.md` step 2, "The Secure Enclave inside every guess"; `Docs/Audit/SECURITY_CHECKLIST.md`, the ticked item "Local DB encryption key is inaccessible after restore to a different device", which rests on "both halves are device-bound" (the conclusion holds only while Q isn't in whatever was restored); `Occulta/Features/ShareExtension/SHARE_EXTENSION_PLAN 16.32.42.md` and `Docs/Features/Vault/VAULT_SSS_GUIDE.md`, which describe the derivations. In `PROTECTION_ASSESSMENT.md` and `PASSPHRASE_LAYER_KEYS.md` the affected claims are marked "open, needs a decision".
+
+### What stays open
+
+Fixed means: every key the app derives today (the local DB, shard custody, restore, PIN-wrap, vault, share staging and compose staging keys) needs the Enclave key and a Keychain secret of its access tier, and on iOS 26+ an Enclave ML-KEM secret too, and a launch reseals what was sealed under the old keys, on the Simulator. These are not done or not decided; **each is open, needs a decision**, or needs a device.
+
+1. **Data copied before the reseal, and images taken while a device was classical.** Ciphertext sealed under a legacy key, and anything sealed under the classical form on a device below iOS 26, stays readable to whoever holds Q (and, for the classical form, the tier secret). No reseal protects what is already copied. Stage 6 moves a device to hybrid when it reaches iOS 26.
+2. **Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer.** No primitive there closes it (D1, the user's, 2026-10-21). The passphrase release closes it for phrase-protected depths on every version, and Stage 6 when the device reaches 26.
+3. **Whether an image alone yields Q.** No cleartext column of the Simulator's keychain database does (it holds SHA-1(Q)); a device answer needs extraction tooling we don't have (D4).
+4. **`Contact.Profile.identifier` is left byte-identical** (the user's decision, 2026-10-21), so for contacts imported from the address book a holder of Q can link each one to its address-book entry until the passphrase migration reseals each contact as one record.
+5. **The vault window (D8).** The per-entry keys stay under the legacy key until the first unlock after the upgrade, and the vault epoch shows anyone who holds the tier U key whether the vault has been opened since. A kill after the export file moved leaves the file under the new key and the rest under the old until the next unlock (nothing becomes unreadable except the backup staleness snapshot in that window).
+6. **A reseal or an upgrade that stopped partway, over a later launch that aborts before writing.** Stage 2c and Stage 6 block a launch that ended mixed; the report knows only its own launch, so a launch that aborts before writing over a store an earlier launch left mixed is not blocked. A marker written before the first batch would close it, and for the upgrade the pending record could serve, but an upgrade that fails for a lasting reason would then block every launch from the second on.
+7. **Share staging's legacy fallback.** While `decrypt` accepts the legacy key (one release), anyone holding Q who can write into the App Group container can plant a session the app opens. The fallbacks go one release after 2.0.0.
+8. **Stage 3's filler difference.** Filler a wrapped process writes later is random bytes and doesn't open under the wrap key, while the filler the pass wrapped does; someone with the Enclave, `r_U` and a device in use could tell which slots were cleared after the upgrade.
+9. **The layer keys' per-guess Enclave requirement (D2).** Recommended to be dropped (see Stage 7); not decided. D3, D5 and D7 to D9 are recommended in `Docs/General/decisions.md` and not decided either.
+10. **Device checks, which need a phone you name (0b):** the vault's real access control on `deriveVaultKey` and `r_B` created beside a new vault Enclave key; what `r_B` and the vault key do after the enrolled biometrics change, and with none enrolled; that creating `r_B` needs no prompt; the cross-process ML-KEM check of share staging, which passed on the Simulator only; timings on the slowest supported device (an iPhone 11), and the Enclave's cost per derivation.
+11. **Derivation cost.** Every `String.decrypt()` derives the local key afresh, and in the hybrid form each derivation adds a keychain read and a decapsulation. Caching the key in memory for the session would remove it and is a security trade that is the user's to make. Not done.
+12. **No iOS 18.6 runtime is installed** (18.5 is below the deployment target), so the lowest supported version is covered through `TestKeyManager`'s "no ML-KEM" switch only.
+13. **Draft attachments at the Stage 6 upgrade (Stage 8).** The file reseal runs at launch, so a draft holding very large videos could keep a launch past the system's time limit (a killed launch continues file by file, but one file too big for one launch keeps failing), and a draft file whose header authenticates but whose chunks don't stops the upgrade on every launch, which leaves that device classical.
+14. **`OPEN_LIMITATIONS.md` is gitignored** and exists only in the main checkout: any register change for the items above is made there.
+
+Decided, for the record: D1 and D6 (accept the downgrade loss for TestFlight and sideload, as Bug 168 did) and the `identifier` question, by the user, 2026-10-21; the blocked launch of Stage 2c, by the user, 2026-10-22; the compose staging key (tier U, no reseal and no legacy fallback, dev-only files not carried over), by the user, 2026-10-23.
+
+### Guard
+
+`EnclaveGeneratorECDHTests` pins today's behaviour: it passes *because* of this bug. When a fix lands, the equality assertions must flip to inequality (the control test already shows the shape). The vault access-control case asserts that Q needs no evaluation and only runs on a device, so it is skipped on the Simulator and on any CI runner; a fix that makes Q irrelevant leaves it true and meaningless, and it should be removed with the equalities.
+
+**Stage 1, 2026-10-21: flipped.** The peer test asserts that the new peer is P and not G, and that G remains only as the legacy peer. The exchange with P is asserted not to be a function of Q. Every Enclave-bound site asserts `!=` against what a holder of Q can rebuild, with the tier secret and without it, for the share staging, vault, shard custody, restore vault, PIN wrap and local DB sites. The real `Manager.Key` and `ShareStagingKeyManager` keys are asserted too, all but the vault key, which a Simulator can't create. The equalities stay for the legacy derivations, relabelled legacy and migration-only: what is sealed under them is still open to a holder of Q until the reseal moves it. That includes the identity-derived v1 local DB key and the PIN inner verifier key, which Stage 3 wraps. The control and the layer-key corollary stay. `publicPointOfTheVaultACLKeyNeedsNoEvaluation` and its helpers are removed.
+
+**Stage 1b, 2026-10-21: extended to the hybrid form.** Every site also asserts `!=` for the hybrid key, built from a real Enclave ML-KEM key, against an attacker who holds Q, the tier secret and the record's ciphertext c, and has no `ss`: with `ss` omitted, with a zero `ss`, and against the classical form of the same inputs. The real `Manager.Key` and `ShareStagingKeyManager` keys are asserted in whichever form this device's records are.
+
+## Bug 172 — The draft purge on duress entry never runs for a real duress PIN
+
+**Status:** Fixed in [#134](https://github.com/aibo-cora/occulta/pull/134), merged into `release/v2.0.0`. Found 2026-10-21 by tracing
+`applyVerifyState` for a security audit of `v2.0.0/introduction-cards`; confirmed by test the same day.
+
+**Target:** `v2.0.0`. Present since duress routing aliases (`activateSecureMode` writes `sealedNormalVerifiers[depth + 1]`).
+
+### Severity: Low (a draft addressed to a hidden contact outlives duress entry; no UI surface reads it)
+
+### What happens
+
+`Manager.Security.applyVerifyState` calls `purgeDraftsNotSafeAtCurrentDepth()` only for `PINVerifyResult.duress`
+(`Manager+Security.swift:751-753`). `verify()` returns `.duress` only in step 2, after step 1 found no match in
+`sealedNormalVerifiers`. But `activateSecureMode` writes the duress PIN into `sealedNormalVerifiers[depth + 1]` as a
+routing alias, so step 1 always matches first and returns `.normal(depth: 1)`. Nothing on the lock-screen path
+produces `.duress` for an activated PIN, so the purge is dead code there.
+
+A `Message.Draft` addressed to a contact classified real-only therefore survives entering the duress PIN. The
+function's own comment says this is the case it exists to prevent ("would otherwise keep that draft across any
+number of duress-PIN entries"), and `plan.md` (Removal Stage 1) records the purge as running on every duress-depth
+entry, the first included.
+
+What it does not do: expose the draft. `ContactsListV2` matches draft recipients against already depth-filtered rows,
+so the hidden contact's draft has no badge and no compose screen to open at depth 1. The cost is a row of
+ciphertext addressed to a hidden recipient staying in the store at a depth where nothing should point at it, which is
+the hygiene the purge's comment names as its job.
+
+### Verified, 2026-10-21
+
+`DuressDraftPurgeTests` (iOS Simulator, `.ambientTestKeyManager`):
+
+| Test | Result |
+|---|---|
+| `duressPINEntry_purgesDraftToContactHiddenAtDepth1` | **Fails**: `result was .normal(depth: 1)`, the draft survived |
+| `duressResult_purgesDraftToContactHiddenAtDepth1` | Passes: the same fixture is purged when `.duress` is passed in directly |
+| `activatedDuressPIN_neverRoutesAsDuress` | Passes |
+
+The first test records the failure as a known issue (`withKnownIssue`), as Bugs 165 and 166 do, so the suite stays green.
+It starts failing as "known issue not recurring" once the purge runs for the result a duress PIN actually produces,
+which is the cue to remove the wrapper.
+
+### Fix
+
+`applyVerifyState` now runs `purgeDraftsNotSafeAtCurrentDepth()` for any `.normal` whose depth is greater than
+`currentDepth`. The `.duress` case is unchanged.
+
+- **Purge-on-deeper only.** A drop to a lower depth or a same-depth entry purges nothing: a duress-layer draft to a
+  contact created there (`originDepth` 1) must not vanish when the owner returns to the master PIN and later
+  re-enters the duress layer.
+- **No new depth signal.** `checkpointStore()` already runs unconditionally on every unlock at every depth
+  (`OccultaApp.swift`, `.onChange(of: phase)`).
+- `currentDepth` is in memory and resets to 0 on a cold start, so any duress entry after a kill counts as deeper and
+  purges.
+
+Group drafts were still exempt from this purge when #134 merged; that is Bug 178.
+
+### Guard
+
+`DuressDraftPurgeTests`, all six passing on the iOS Simulator under `.ambientTestKeyManager`:
+`duressPINEntry_purgesDraftToContactHiddenAtDepth1` (the `withKnownIssue` wrapper is gone, so it passes for real),
+and new `masterPINEntry_doesNotPurge`, `sameDepthEntry_doesNotPurge` and
+`duressLayerDraft_survivesDropToRealAndReentry`, with `duressResult_purgesDraftToContactHiddenAtDepth1` and
+`activatedDuressPIN_neverRoutesAsDuress` unchanged. Only this suite was run for the PR, not the full suite.
+
+## Bug 173 — Approving an identity challenge answers a contact hidden at the current duress depth
+
+**Status:** Open — awaiting the user's decision (2026-10-25). Found 2026-10-21 in a security audit of `v2.0.0/introduction-cards`;
+confirmed by test the same day. No code change has been made; the options are under "Fix".
+
+**Target:** `v2.0.0`. Present since `passSecurityControl` was removed (`b1f9045`).
+
+### Severity: Low (same exposure as Bug 40's approval sheet; an action where Bug 40 and Bug 104 were about rendering)
+
+### What happens
+
+At a duress depth, a challenge from a contact hidden there reaches the approval sheet (Bug 104, closed as a
+duplicate of the 2026-08-13 decision). If the person holding the phone taps Approve and passes the biometric
+prompt, `approvePending` goes on to answer that contact:
+
+1. `contactManager.fetchContact(by:)` returns the hidden contact. It filters on `deletionToken` only.
+2. `Manager.respond(to:)` signs the challenge with the device identity key.
+3. `ContactManager.encryptBundle(for:identityChallenge:)` seals the response to the hidden contact's keys. It has no
+   visibility check.
+4. The response `.occ` is staged for sharing, labelled with the hidden contact's name.
+
+The 2026-08-13 decision accepts that a hidden sender's name renders, because the transport named the sender before
+Occulta ran. That argument covers what the screen shows. It does not cover the app acting on the hidden contact.
+Bug 40's gate closed this by rejecting the challenge before any processing; removing it under that decision also
+removed the only thing between a duress-depth session and a signed answer.
+
+The extra observable is on the other device: the hidden contact gets a valid "verified" result for the owner's key,
+produced while the phone was in someone else's hands. They have no way to know the phone was at a duress depth, and
+the verification is meant to tell them the owner is in control. The biometric prompt does not help against a
+coercer who can make the owner look at the phone.
+
+### Verified, 2026-10-21
+
+`IdentityChallengeHiddenContactTests` (iOS Simulator, `.ambientTestKeyManager`), both passing, which is the bug:
+Alice hidden at depth 1 (`visibleThroughDepth == 0`), device at depth 1 through the real activation and the duress PIN.
+
+- `fixtureIsHiddenAtDepth1`: the setup is what it claims.
+- `hiddenContactChallengeIsAnswered`: her group-format challenge opens through `openGroup`, reaches
+  `incomingChallenge`, `fetchContact(by:)` returns her, and `respond(to:)` through `encryptBundle` produces a group
+  bundle that opens on her side and verifies as `.passed`.
+
+Not covered: `approvePending` itself. It gates on `LAContext`, which a test cannot satisfy, so the test runs what
+`approvePending` runs after that gate, with the same calls in the same order.
+
+### Fix
+
+Not made, and not a one-line guard: a visibility check in `approvePending` is a depth-conditional behaviour on a
+path the 2026-08-13 decision left alone, and "Approve does nothing at a duress depth" is its own presence signal
+(`Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). The options are to extend that decision to cover
+acting as well as rendering, or to refuse to deliver the challenge to the sheet at all. Either one needs the
+decision's author to weigh the new observable against the one it removes.
+
+### Guard
+
+`IdentityChallengeHiddenContactTests.hiddenContactChallengeIsAnswered` pins the current behaviour and passes. Flip
+it when the decision is made. It is commit `1dcfacff` on `claude/cool-liskov-e5eeb5`, not on `release/v2.0.0`: it
+builds `Coordinator(contactManager:)`, which #136 replaces, so it goes in after that PR, updated for the new init.
+
+## Bug 174 — A crafted `.occ` file with an oversized ciphertext length crashes the app before authentication
+
+**Status:** Fixed in [#127](https://github.com/aibo-cora/occulta/pull/127), merged into `release/v2.0.0`. Found 2026-10-21 in a
+security audit of `v2.0.0/introduction-cards`; confirmed by a standalone probe the same day.
+
+**Target:** `v2.0.0`, and every build with the binary `OCCB` envelope.
+
+### Severity: Medium (anyone who can deliver a file can crash the app; no key, contact or depth needed)
+
+### What happens
+
+`WireHandle.parse` reads the ciphertext length as a `UInt64` and passes it on unchecked
+(`WireHandle.swift:57`, `try r.read(Int(ctLen))`):
+
+- `ctLen >= 2^63`: `Int(ctLen)` traps.
+- `ctLen` in `(Int.max - offset, Int.max]`: `Int(ctLen)` is fine, then `offset + count` in `Reader.read` overflows and traps
+  (`WireHandle.swift:414`).
+
+Both are `SIGTRAP` in a release build. The guard that follows (`end <= data.endIndex`) and the `try?` at
+`OccultaApp.swift:1040` never run, because the trap is not a throw. A 167-byte file does it: the 159-byte header
+(magic, version bytes, mode, flags, prekey flag, 36-byte prekey ID, 65-byte ephemeral key, nonce, fingerprint) plus
+the eight length bytes. It reaches `parse` from `OccultaBundle.decoded(from:)` as soon as the file is opened, before
+the sender is identified or anything is authenticated.
+
+Reach: any `.occ` from any holder. A file opened while the app is locked is queued and parsed on unlock, so the crash
+follows a PIN entry at any depth. `pendingFileData` is cleared before the parse (`OccultaApp.swift:401`) and lives
+only in memory, so there is no crash loop. The cost is a crash on every open of that file, and the crash report iOS
+writes: a trace that the app was opened with a hostile file, outside every duress depth.
+
+### Verified, 2026-10-21
+
+A standalone `swiftc -O` program compiled with the real `OccultaFormats` sources, one case per process, calling
+`OccultaBundle.decoded(from:)` on a 167-byte file. Source:
+`side-session-notes/…/trap-probe/main.swift`.
+
+| `ctLen` | Result |
+|---|---|
+| `1000` (control) | Throws, exit 0 |
+| `0xFFFFFFFFFFFFFFFF` | Exit 133 (`SIGTRAP`) |
+| `0x8000000000000000` | Exit 133 |
+| `0x7FFFFFFFFFFFFFFF` | Exit 133 |
+
+Run outside the Simulator because a trap kills the whole test host. No test is committed for it.
+
+### Fix
+
+`Reader.read(length: UInt64)` checks a wire-supplied length against the bytes remaining before converting it; a
+hostile value throws `unsupportedVersion`, as a short file already does. It is used at the three sites that trapped:
+the ciphertext length in `parse`, `msgLen` in `decode(payload:)`, and the file content length in `decode(basket:)`.
+The last two run only after AES-GCM authentication, so only an authenticated sender could reach them; the entry above
+named only the first. `Reader.read(_:)` now rejects a negative count and no longer computes `offset + count`. No wire
+format change; `InteropVectors.json` is untouched.
+
+### Guard
+
+`WireHandleLengthTests` (Simulator, no Secure Enclave): lengths `1000`, `0x7FFF…`, `0x8000…` and `0xFFFF…` must throw
+at all three sites; a length equal to the remaining bytes still parses and one more throws; payload and basket
+round-trips still work. `InteropVectorTests`, `OccultaBundleTests`, `SealedPayloadTests` and `VersionCompatibilityTests`
+still pass. Before the fix, a standalone `swiftc -O` probe built from the real sources exits 133 for all three sites.
+
+## Bug 175 — A negative `custodyManifestCount` in a group slot crashes the app after the prekey is spent
+
+**Status:** Fixed in [#125](https://github.com/aibo-cora/occulta/pull/125), merged into `release/v2.0.0` (branch
+`v2.0.0/bug-175-manifest-count`). Found 2026-10-21 in a security audit of `v2.0.0/introduction-cards`; confirmed by a
+standalone probe the same day.
+
+**Target:** `v2.0.0`. The field is decoded as `Int` with no range check.
+
+### Severity: Low (a paired contact, or whoever holds one's identity key, can crash the receiver; one prekey is spent each time)
+
+### What happens
+
+`RecipientPayload` decodes `custodyManifestCount` with `decodeIfPresent(Int.self, ...)`, so `-1` is accepted.
+`ContactManager.openGroup` then does
+`recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount)` (`Contact+Manager.swift:2107`),
+and `prefix(_:)` on a negative count is a precondition failure: a trap in every build.
+
+It is reached only when `shardMetadataAttempted` is true and the slot did not open on a fallback key
+(`metadataAttempted = !isFallback && ...`), so the sender needs a prekey of ours. That makes the sender a paired
+contact or someone holding their keys: a slot has to open for the payload to be read at all. Step 7 is after
+`findAndOpenRecipientSlot` consumed the prekey and after `save(prekeys, for:)` committed it, so each crash also burns
+one of that contact's prekeys.
+
+### Verified, 2026-10-21
+
+The same standalone probe: the real `RecipientPayload` decoded from JSON with `"custodyManifestCount": -1` and
+`"shardMetadataAttempted": true` decodes to `-1`, and the `openGroup` expression then exits 133. Control with a count
+inside the range exits 0. Not driven end to end through `openGroup`, which would need a signed, sealed group bundle
+carrying the payload; the trapping expression and the decoder are the shipped ones.
+
+### Fix
+
+The expression moved into `ContactManager.receivedManifest(_:isFallback:)`, which `openGroup` calls. A negative count
+returns `nil`, the same as "sender did not attempt this", so the receiver neither traps nor rejects the bundle.
+Rejecting would be a distinguishable event, and the prekey is already spent by then, so it buys nothing.
+
+`nil` rather than `max(0, count)`: a clamped count would be an empty list, which `processInboundManifest` reads as
+"the sender holds none of your pieces" (loss detection). A hostile count shouldn't be able to plant that signal.
+A sender with a slot can already send a real zero, so this closes nothing new; it just doesn't hand over a second way.
+The decoder is unchanged, so the wire format and `InteropVectors.json` are untouched.
+
+### Guard
+
+`ReceivedManifestTests` (`ShardFallbackGatingTests.swift`): a negative count (`-1`, `-3`, `Int.min`) returns `nil`
+instead of trapping; in-range, zero, past-the-end, not-attempted and fallback controls. They run through
+`receivedManifest`, not `openGroup`: this build never seals `shardMetadataAttempted: true`, so a sealed bundle can't
+carry the payload, and the test decodes it from JSON as the probe did. Not driven end to end through `openGroup`.
+
+## Bug 176 — A shard operation whose attribute has an out-of-range date crashes the app before the signature is checked
+
+**Status:** Fixed in [#128](https://github.com/aibo-cora/occulta/pull/128), merged into `release/v2.0.0`. Found 2026-10-21 in a
+security audit of `v2.0.0/introduction-cards`; confirmed by a standalone probe the same day.
+
+**Target:** `v2.0.0`. Present since signed attributes (v2 payload).
+
+### Severity: Low (needs a paired contact or their keys; crashes the receiver on every delivery of the message)
+
+### What happens
+
+`SignedAttribute.signingPayload(...)` converts both dates with `UInt64(date.timeIntervalSince1970)`
+(`SignedAttribute.swift:152` and the `expiresAt` line below it). That trap is on a negative value and on anything at or
+above `2^64`. Both dates come from the sender's JSON, which `JSONDecoder` reads as seconds since 2001
+with no bounds, so `-1e12` or `1e30` decodes fine. `verify(against:)` calls `signingPayload()` to build what it
+verifies, so the trap comes before the signature is looked at.
+
+`verify` has an expiry fast path (`exp < Date()` returns false), which catches a negative or past `expiresAt`. It
+does not catch a huge positive `expiresAt`, and `createdAt` has no check at all.
+
+Reached through `ShardCustodyManager.handleDistribute` and `handleReplace` (`ShardCustody+Manager.swift:114,148`),
+from a shard operation in a sealed payload. Those are dropped for a fallback slot, so, as for Bug 175, the sender is
+a paired contact or someone holding their keys.
+
+### Verified, 2026-10-21
+
+The same standalone probe: a `SignedAttribute` decoded from JSON, then `verify(against:)` with a valid P-256 public
+key (the key has to be valid, since `signingPayload()` is only evaluated after the key is created):
+
+| `createdAt` / `expiresAt` (seconds since 2001) | Result |
+|---|---|
+| `1e9` / none (control) | `verify` returns false, exit 0 |
+| `-1e12` / none | Exit 133 |
+| `1e30` / none | Exit 133 |
+| `1e9` / `-1e12` | `verify` returns false, exit 0 (expiry fast path) |
+| `1e9` / `1e30` | Exit 133 |
+
+### Fix
+
+`verify(against:)` returns false for a date the payload cannot encode (negative, 2^64 or more, NaN), before the key and
+payload are built. A fractional second is accepted, since the payload truncates it. `signingPayload` is unchanged and so
+are the signed bytes; no `InteropVectors.json` vector moves. Clamping in `signingPayload` was rejected: different dates
+would then sign the same bytes.
+
+Three inbound shard operations reach it, all needing a paired contact or their keys: `handleDistribute`,
+`handleReplace` and `handleHandback` (`ShardCustody+Manager.swift:114,148,271`). The third was missing from the entry
+above, and discards the result of `verify`, so it crashed for nothing. `Vault+Manager+Backup.swift:1264` also calls
+`verify` on stored shards at restore.
+
+### Guard
+
+`OccultaTests/Vault/SignedAttributeVerifyDateTests.swift`, software P-256 key, no Enclave: five unencodable dates
+(createdAt `-1e12`, `1e30`, one second before 1970 and 2^64; expiresAt `1e30`) return false; a control with a bad
+signature is rejected; a control with a real signature, round-tripped through JSON with a fractional-second expiry,
+verifies. On the unfixed code the two controls pass and the five rejected rows fail. `SignedAttributeVerifyDateTests`,
+`SignedAttributeCodecTests`, `ShardCustodyTests` and `InteropVectorTests`: 132 passed. The full suite and the
+`OccultaCore` package scheme were not run.
+
+---
+
+## Bug 177 — The Contacts screen shows an empty list differently when contacts are hidden
+
+**Status:** Fixed 2026-10-21 on `claude/contacts-empty-state-depth-849a87`. Found by an audit of the `v2.0.0/introduction-cards` diff.
+
+**Target:** `v2.0.0`. Present since the v2 Contacts screen.
+
+### Severity: High (a coercer can tell hidden contacts exist), conditional on a duress depth where every contact is hidden
+
+### What happens
+
+`ContactsV2` holds every contact at every depth in `contacts` (`@Query`) and filters it to `visibleContacts` for display. Two decisions read the unfiltered list instead:
+
+- the trust summary card showed when `!self.contacts.isEmpty`;
+- the "Tap **+** to create a new contact" hint showed when `self.contacts.isEmpty`.
+
+At a duress depth that hides every contact, the screen showed a 0/0/0 trust summary, no create-contact hint and "0 contacts · encrypted at rest". A genuinely empty install shows the hint and no summary. Whoever holds the unlocked phone can tell the two apart, and so learn that contacts exist that this depth hides.
+
+### Fix
+
+`ContactListFilter.isEmptyList(_:atDepth:)` answers from the contacts visible at the depth, and both conditions read it through `ContactsV2.isListEmpty`.
+
+The rest of the file was checked for the same pattern and needs no change:
+
+- `self.groups`: groups are not depth-filtered. A group is listed at every depth and only its membership differs (`Group+Model.swift`, `encryptedName`), so the groups list and its "N groups" footer show the same thing at every depth.
+- `self.drafts`: only decides the "Draft" tag on a row that is already visible.
+- `open(_:)` and `fetchContacts`: already use `visibleContacts` and `currentDepth`.
+
+### Guard
+
+`ContactsEmptyStateDepthTests`: two contacts hidden at depth 1, Secure Mode active and entered at depth 1 through the duress PIN, asserts the stored list is non-empty and the screen is still in its empty state. Failed against the unfiltered logic, passes with the fix. A SwiftUI body can't be tested directly, so this covers the decision, not that the view calls it; the two call sites are the only readers.
+
+## Bug 178 — A group draft written at the real depth loads into the group's compose field at a duress depth
+
+**Status:** Fixed in [#135](https://github.com/aibo-cora/occulta/pull/135), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by `GroupDraftDepthTests`, which failed on unmodified source (four of five tests,
+at the "group draft must be gone" assertion).
+
+**Target:** `v2.0.0`. Present since drafts became persistent.
+
+### Severity: High (proposed; disclosure of real-depth message content across the coercer boundary)
+
+### What happens
+
+`Message.Draft` has no depth scope, and group drafts are exempt from both depth controls on drafts:
+
+- `ComposeViewModel.isSensitive` returns `false` for every `.group` (`ComposeViewModel.swift:73-78`; its comment
+  says group sensitivity "is not yet designed"), so `DraftStore.save`'s only gate never fires.
+- `Message.Draft.purgeUnsafe` keeps any draft whose recipient is a known group (`Message+Draft.swift`), and it does
+  not run for a real duress PIN at all (Bug 172).
+
+At depth 0 the owner types an unsent message in group G's compose. `DraftStore` persists it keyed by G's UUID string,
+sealed under the local DB key, which is the same key at every depth. Groups are deliberately not depth-filtered, so a
+coercer at a duress depth sees G by name and opens it. `GroupDetailV3`'s `.task` calls `DraftStore.load`
+(`DraftStore.swift:106-132`) with no depth check and assigns the draft text, committed thread bubbles and attachment
+references to the compose view model. The compose field renders when G has at least one member visible at the current
+depth. A duress layer's member array starts as filler, so G usually shows no members at first; the draft appears once
+the duress-layer setup gave G a member, or when the coercer adds any visible contact through Edit. The coercer can then
+read the real-depth text, edit or delete the row the owner will see, or encrypt it for the duress-depth members. The
+draft was written for G's depth-0 members, who may all be hidden at the duress depth.
+
+Likelihood is limited by needing an unsent group draft at the moment of coercion and a visible member at the duress
+depth. This is open and undecided, not accepted: `Message Persistence/FINDINGS.md` records only that a group draft
+survives the purge on purpose, and has no section on group draft sensitivity.
+
+### Fix
+
+`Message.Draft.purgeUnsafe` no longer exempts groups: a draft survives a descent only if its recipient is a contact
+visible at the depth just entered. The `allGroupIdentifiers` parameter and the group fetch in
+`purgeDraftsNotSafeAtCurrentDepth` are removed, since nothing else used them. `Message Persistence/FINDINGS.md` had
+said group drafts always survive; a dated note was added there.
+
+- Group drafts are deleted whenever the session goes deeper (a routed duress PIN returning `.normal` at a deeper depth,
+  or `.duress`). Normal login, upgrade and launch at depth 0 delete nothing. No schema or key change, nothing to
+  migrate. Existing unsent group drafts are deleted the first time a session descends into a duress layer, as drafts to
+  hidden contacts already are (Bug 172).
+- **Open, not fixed:** a draft typed into a group at a duress depth is not scoped to that depth. It stays until the
+  next descent and is visible to the owner at depth 0 meanwhile.
+
+### Guard
+
+`GroupDraftDepthTests` (5) and `DuressDraftPurgeTests` (6) pass on the iOS Simulator under `.ambientTestKeyManager`.
+The full suite was not run for the PR.
+
+## Bug 179 — Erase All Data leaves every `Message.Draft` row and the `Drafts/` attachment files
+
+**Status:** Fixed in [#126](https://github.com/aibo-cora/occulta/pull/126), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by `EraseAllDataDraftTests.wipeDeletesDrafts`, which fails without the fix.
+
+**Target:** `v2.0.0`. Present since drafts became persistent.
+
+### Severity: Medium (proposed; metadata that survives a wipe, the class Bug 128 rated Medium for backup files)
+
+### What happens
+
+Settings promises Erase All Data deletes the "entire contact database, vault, private keys and stored messages"
+(`Settings.swift:161`). `Manager.App.eraseAllData` (`Manager+App.swift:22-31`) deletes prekey keys,
+`Contact.Profile` rows (`deleteAllContacts`: a batch delete of that one model), the vault and its backup files,
+share-extension leftovers, the share staging key and the Enclave keys. It never touches `Message.Draft` rows or
+`Application Support/Drafts/<draftID>/`. `Message.Draft.delete` calls itself the only correct way to delete a draft
+because removing the row leaves the attachment files on disk; the single-contact delete path does call it
+(`Contact+Manager.swift:534`), so the bulk wipe is the odd one out. Nothing later removes the orphans:
+`DraftStore.load` treats an undecryptable draft as none and leaves it, and the only bulk purge runs on a `.duress`
+verify, which Bug 172 shows doesn't happen and which a freshly reset install doesn't have anyway. Group rows go at
+the next launch's depth-0 `purgeUnreadableGroups`, which doesn't touch `Drafts/`.
+
+What an examiner finds on a wiped device that held an unsent draft: the `Message.Draft` row count and ciphertext
+sizes, and one folder per draft with its attachment files' count, sizes, timestamps and type extensions (`.jpg`,
+`.mp4`). Contents are sealed under keys the wipe just deleted, so the leak is metadata. If attachments for card
+contacts and groups are staged in plaintext, as a separate lead in the same audit claims (not filed here), their
+content would survive too. Bug 128 set the contract that a wiped device carries no file showing what it held.
+
+### Fix
+
+`ContactManager.deleteAllDrafts()` deletes every row through `Message.Draft.delete`, saves, then removes the whole
+`Drafts/` directory (`Message.Draft.attachmentsRoot`, new), so folders whose row is already gone go too. It opens no
+draft, so it needs no key. `eraseAllData` calls it right after `deleteAllContacts()`, well before
+`Manager.Key().deleteAllKeys()`.
+
+`eraseAllData` also calls `checkpointStore()` after `vault.deleteAllData()`: `secure_delete` only zeroes the page being
+freed, older WAL frames keep the pre-deletion rows, and nothing else checkpoints before the next launch or unlock.
+
+### Guard
+
+`EraseAllDataDraftTests` (iOS Simulator): `wipeDeletesDrafts` fails without the `deleteAllDrafts()` call and passes with
+it; `wipeDeletesContactChildren` passes before and after (the `Contact.Profile` batch delete cascades to its child
+rows). The tests run the data half only: the calls inside `eraseAllData` and the checkpoint are not under test, because
+the full method calls the real `Manager.Key().deleteAllKeys()`. The full suite was not run for the PR.
+
+## Bug 180 — Outstanding identity challenges and verified-at state survive `endSession` into a duress session
+
+**Status:** Fixed in [#136](https://github.com/aibo-cora/occulta/pull/136), in review, not merged (2026-10-25). Found by the
+2026-10-20 audit trial's source review. `IdentityChallengeDepthBindingTests` is the acceptance test: all four
+behaviours pass on the fix branch, and the full suite passes on the Simulator. Run against `2763d6f7`, the base before
+the fix (the original file, which compiles there), three of its four fail and the control passes. The same PR also carries the persisted stage of the design, the
+sealed per-depth column (owner's decision D1, 2026-10-25); it opens residuals R1–R7 below, **open, needs a decision**.
+
+**Target:** `v2.0.0`. Present since Bug 140's session reset.
+
+### Severity: Medium (proposed; the owner's own hidden-depth text and evidence of an action on a hidden contact)
+
+### What happens
+
+The owner, at the real depth, challenges contact H (visible there, hidden at a duress depth) and types a question into
+the context note. The challenge is recorded in the coordinator's in-memory `OutstandingChallengeStore` (contact
+identifier, nonce, timestamp, note). The app locks past the grace period, or the depth changes in place, and
+`RootView.endSession` runs. That is Bug 140's session boundary, but it clears only `outboundShare`,
+`incomingChallenge` and `verificationOutcome`. The store and `verifiedAt` live on: the coordinator is created once per
+process (`OccultaApp.swift:98`) and the store is swept only in `Coordinator.init` (`IdentityChallenge+Coordinator.swift:94`).
+
+A coercer then unlocks with the duress PIN. If H's response is opened, or drained from the queue, it resolves to H with
+no depth filter (the accepted presence oracle), matches the owner's real-depth entry by nonce and contact identifier
+(`IdentityChallenge+Manager.swift:391`), and the coordinator presents "Identity verified" with "You asked: <the owner's
+question>". A response after the one-hour window yields "Verification failed" with the same name and note. Without the
+carried entry the same response returns `.notOurs` and shows nothing (Bug 166's fix). So what is disclosed is the
+owner's own hidden-depth text, and evidence that the previous session acted on a contact the coercer can't see, beyond
+the inbound-name render Bug 104 accepted; Bug 104's note on `.response` puts `verifiedAt` out of scope. The same
+carried state also shows "Verification in progress" and "Verified N minutes ago" on contacts visible at both depths, a
+weaker signal.
+
+Calibration: it needs H's response to arrive or be opened after the handover, with the process still alive, so it is
+the timing-bounded, third-party-dependent class of the accepted passive case, plus the owner-authored content. It
+applies Bug 140's own invariant, that state created at one depth must end when the session changes, to state the fix
+list never named.
+
+### Fix
+
+State is a property of the contact, per depth, behind a `ChallengeLedger` that `ContactManager` implements. It reads
+`self.security.currentDepth` on every call (the depth is never a parameter), so a session cannot name another depth's
+entry. A response at another depth finds no entry and shows nothing; a response at the creating depth after a lock still
+passes. `endSession` needs no change, because the state is bound to the depth rather than cleared. The `Coordinator`
+drops its store and `verifiedAt`. Verified-at lives in the same per-(depth, contact) entry. Entries older than the stale
+threshold are free to overwrite, and a sweep at launch, unlock and foreground clears them at every depth; an unswept
+expired entry still answers `.failed`. The design is in `bug-180-challenge-state-design.md` in the session notes.
+
+The ledger was built in memory first and then switched, in the same PR, to `Contact.Profile.challengeStateEncrypted`:
+`ChallengeStateCodec`, 33 fixed 64-byte slots (depths 0…32), 2 128 bytes of plaintext and 2 156 sealed on every row, the
+slot index being the depth. Created with the contact, filled on old rows by `DatabaseMigration.migrateChallengeFields`
+(launch and unlock), emptied at deletion, added to the Bug 171 reseal inventory. A challenge now survives the app being
+killed. The owner's question is **not** persisted: it stays in memory in the `Manager`, keyed by the challenge, so
+after a kill the reply verifies without "You asked:", at every depth alike.
+
+### Residuals — all open, needs a decision
+
+Recorded as S10 in `Occulta/Features/SecureMode/forensic-trace-avoidance.md`.
+
+- **R1** — an at-rest record: with the local DB key, a challenge to contact X is outstanding at depth d, since when; a
+  live slot at index ≥ 1 also shows a duress layer was used in the last hour. New compared with before the fix.
+- **R2** — lifetime beyond the hour, until the next foreground sweep, for a phone never reopened.
+- **R3** — verified-at at rest, "who was verified, when", for up to an hour; droppable as a one-field change.
+- **R4** — a reply drained at the wrong depth is consumed there and cannot be reopened.
+- **R5** — an inbound challenge from a contact hidden at this depth still renders, and approving it signs (Bug 173).
+- **R6** — the note stays in memory until it settles, expires or the process ends.
+- **R7** — no key needed: recording, settling or sweeping a slot re-seals that contact's column with a fresh nonce, so
+  two copies of the database, the log or the file's modification time show which contact's row changed, and about
+  when. Re-sealing every contact's column on every ledger write and sweep would stop it singling anyone out, at about
+  1 MB of writes per event at 500 contacts and with the timing of the writes remaining. Proposed, not built. One
+  instance of a class that covers every sealed per-contact column (prekey record, tier marker, card field): S11 in
+  `forensic-trace-avoidance.md` lists what writes them. Closing R7 alone would close nothing.
+
+`OPEN_LIMITATIONS.md` is gitignored and exists only in the main checkout (`Docs/Audit/`); R1–R7 are entered there as section K.
+
+### Guard
+
+`IdentityChallengeDepthBindingTests` (all four behaviours), `IdentityChallengeDepthParityTests` (one scripted sequence
+at depth 0, depth 1 and with Secure Mode off, with equal observations), `IdentityChallengeLedgerExpiryTests`, and for
+the column `ChallengeStateTests.swift`: the codec (fixed shape, every slot, malformed input), creation and deletion at
+one sealed length, the launch migration, the ledger over the column (slot isolation both ways, kill-then-reply at the
+creating and at another depth, a stray reply writes nothing, the sweep at every depth, an unreadable column reads as
+empty), a source tripwire that only the ledger and the launch pass assign the column, and two interop vectors. On the
+iOS Simulator, none needing a real Enclave. Existing IdentityChallenge suites changed for the new labels only.
+
+SwiftData's lightweight migration of a store from before the column cannot be tested in process, so it was rehearsed
+by hand on a throwaway Simulator, 2026-10-25: the build at `2763d6f7` (before the column) installed, two contacts
+created through the UI, then this branch's build installed over it without uninstalling. The contacts opened with no
+onboarding; the store gained `ZCHALLENGESTATEENCRYPTED`, filled on both rows at 2 156 bytes; names, identifiers,
+prekey records, card fields and encryption scheme were byte-identical before and after.
+
+The downgrade was rehearsed the same way, on a second throwaway Simulator: this branch's build, one contact, then the
+build at `2763d6f7` installed over it. The old build opened the store and showed the contact. SwiftData's inferred
+migration **dropped `ZCHALLENGESTATEENCRYPTED`** from the table, and the row's name, identifier, prekey record, card
+field and scheme were unchanged. So a rollback loses the challenge state, which is at most an hour old and rebuildable,
+and nothing else. Installing this branch's build again re-added the column, filled at 2 156 bytes, with the other
+fields unchanged. A row of a store old enough to still be on the v1 scheme is covered by a test, not by hand: the pass
+skips it, the real `migrateToV2` (with stubbed crypto) converts it without writing the column, and the next pass fills it.
+
+## Bug 181 — A copy of a group bundle with an altered outer header uses up the recipient's one-time prekey
+
+**Status:** Fixed in [#129](https://github.com/aibo-cora/occulta/pull/129), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by `GroupBodyBindingTests.headerTamperKeepsTheOneTimeKey`, which failed on
+`release/v2.0.0` before the fix.
+
+**Target:** `v2.0.0`. Present since group bundles.
+
+### Severity: Medium (proposed; availability only, one message per tampered copy, no key needed)
+
+### What happens
+
+`findAndOpenRecipientSlot` sets `usedPrekey` once the slot opens and its `bodyDigest` matches, and a `defer` consumes
+it, which `SenderPrekeys.consume` persists at once (`Crypto+Manager+GroupDecrypt.swift:140-195`,
+`Contact+Manager+Prekeys.swift`). The slot AEAD authenticates only `blind`, and the digest covers only
+`bundle.ciphertext`. The outer header, `secrecy.ephemeralPublicKey` (65 cleartext bytes) and `secrecy.prekeyID` (a flag
+and 36 bytes), is authenticated only later, in the AAD of `openGroupCiphertext` (`Contact+Manager.swift:2008`). A
+group bundle's header is always the same constant (mode `.group`, empty key, nil prekey ID), yet the parser accepts any
+value.
+
+Anyone holding a copy of the `.occ` file can change one byte of the ephemeral field, or set the prekey ID flag with 36
+valid UTF-8 bytes, keep the sender fingerprint and deliver that copy first. The slot opens, the digest matches, the
+prekey is consumed and saved, and then `openGroupCiphertext` fails. The genuine copy arrives to find no key
+(`recipientSlotNotFound`). The attacker needs no key: a group member who has the same file (Bug 165 says that is usual),
+or whoever holds a transport copy. The project fixed the same outcome for a rewritten body (the Bug 165 amendment to
+`SECURITY_CHECKLIST.md` §2.2) and stated the rule: delivering first must not make the genuine message unopenable. The
+"prekey burn" cost accepted at `SECURITY_CHECKLIST.md:91` is framed around someone holding the batch we published, who can
+burn keys with bundles that open and fail; it doesn't cover a keyless copy-holder destroying one specific genuine
+message. The single-recipient path (`decryptSealed`) isn't affected: it opens under the full AAD before consuming.
+
+### Fix
+
+`openRecipientSlot` and `openCardSlot` now open the outer ciphertext under the slot's session key after the digest check
+and before the prekey is recorded as used, so a copy with an altered header throws before anything is consumed.
+`openCardSlot` had the same ordering and is fixed too. The outer open is now done twice (here and in `openGroup`);
+return types are unchanged to keep the diff small. A tampered bundle now fails during slot opening, before the
+tier-dependent checks in `openGroup`. No wire format, vector or UI change.
+
+### Guard
+
+`GroupBodyBindingTests.headerTamperKeepsTheOneTimeKey` (any host; changed ephemeral key and set prekey ID) failed on
+`release/v2.0.0` before the fix and passes after. `PrekeyRecordWiringTests.headerTamperKeepsThePrekey` needs a Secure
+Enclave (the Simulator on Apple Silicon provides one) and passes; it was not run against unfixed source. The PR ran
+the full `OccultaTests` on the Simulator: 1414 passed, 0 failed, 6 skipped (the expected `KeychainMigrationSETests`).
+Not covered by a new test: the card path (existing card suites pass) and a changed `version` byte.
+
+## Bug 182 — Shard state from before a contact became a card contact makes every card send throw `hardBlocked`
+
+**Status:** Fixed in [#130](https://github.com/aibo-cora/occulta/pull/130), merged into `release/v2.0.0`. Found by the 2026-10-20
+audit trial's source review; confirmed by the custodian-side and owner-side repros in
+`CardSendWithInheritedShardStateTests`, which threw `hardBlocked` before the fix.
+
+**Target:** `v2.0.0`. Present since introduction cards.
+
+### Severity: Medium (proposed; lasting denial of outgoing messages in one card conversation; nothing leaks)
+
+### What happens
+
+Introduction Cards SPEC §8 makes trustee and shard content a hard block for card contacts. `encryptCardBundle` enforces
+it by refusing the whole send when any shard operation or a non-empty custody manifest is attached
+(`ContactManager+Cards.swift:404`). Compose and the share-extension send attach `buildShardOperations` and
+`buildCustodyManifest` for every one-to-one recipient, and neither builder checks the card field. Nothing clears shard
+state when a contact becomes a card contact.
+
+A contact carries that state into a card conversation through the revoke-then-card flow (`reset(identity:)` keeps the
+row and identifier; the Pending row is offered a card). The durable form is on the custodian side: Bob holds
+`CustodyShard` rows whose `ownerContactIdentifier` is that contact, because the contact chose Bob as a trustee.
+`buildCustodyManifest` (`ShardCustody+Manager.swift:387`) then returns their IDs on every message, `encryptCardBundle`
+throws `CardError.hardBlocked`, compose retries without shard content only for `trusteeLacksQuantumMaterial`
+(`ComposeViewModel.swift:294`), and the share path has no catch. The only code that removes those rows is `purgeCustody`,
+called from `deleteContact`; a handback or replace needs shard content, which is blocked. The owner-side form (a queued
+`PendingShardDistribute`, re-queued by `reconcileBackupPieces` for a live trustee) is recoverable from the vault setup
+screen, which lists no card contacts and whose re-split deletes the queued rows.
+
+Confidentiality holds: the block stops shard content reaching the card contact. The effect is every outgoing message in
+that conversation failing until Bob meets the contact in person (which clears the card field) or deletes and re-imports,
+in a state `FINDINGS.md` says can't exist ("Card contacts are blocked by construction", about trustee eligibility).
+Nobody lower-trust causes it; it follows from a legitimate revoke of a trustee relationship.
+
+### Fix
+
+`buildShardOperations` and `buildCustodyManifest` take a required `isCardContact` and return nothing for a card
+contact; the rows are not read or changed. New `ContactManager.isCardContact(identifier:)` supplies the flag, and
+compose and the share-extension send pass it. The group send passes `false`: it already throws for card members before
+reaching the builders. `encryptCardBundle` is unchanged and still refuses shard content, as a backstop.
+
+Existing users: code only, no schema change and no data rewrite, so no migration. Existing rows are left as they are
+and flow again if the contact is verified in person; a conversation already stuck recovers on its first send after the
+update.
+
+**Open, needs a decision:** while the contact stays a card contact, the owner is not told a queued piece was not
+delivered, and the stale rows remain.
+
+### Guard
+
+`CardSendWithInheritedShardStateTests` (7 tests, Enclave-gated because importing a card makes a prekey batch). Before
+the fix the custodian-side and owner-side repros threw `hardBlocked`. They also cover both sides of a conversation,
+rows untouched and returning once the flag is false, an ordinary contact unaffected, the `hardBlocked` backstop and the
+`isCardContact` states. The PR ran the full `OccultaTests` on the Simulator: 1420 passed, 6 skipped, 0 failed.
+
+---
+
+## Bug 183 — Opening a bundle with a large attachment kills the app
+
+**Status:** Fixed in `v2.0.0/streaming-bundles` (`STREAMING_SPEC.md` stages 1–4). The share extension now stages files by streaming too, and keeps its 100 MB cap until its peak memory has been measured on a device (`STREAMING_SPEC.md` §8.4). Reported 2026-10-23: a contact opened a bundle carrying an ~800 MB video and the app crashed before the message appeared. Partly mitigated first by PR #132 (`v2.0.0/stream-attachment-write`).
+
+**Target:** `v2.0.0`. Present since the bundle format (one AES-GCM seal over the whole body).
+
+### Severity: High (messages with large attachments can't be opened)
+
+### What happens
+
+The group body is one AES-GCM seal over metadata, text and every attachment, so nothing can be shown until all of it is decrypted into one buffer. On receive, the inbound file is mapped and read through, and the body is opened twice in full: once in `openRecipientSlot` for the Bug 181 check, then in `openGroup`. Then `Encryptor.write` built each sealed attachment in another full-size buffer before writing it. For an 800 MB attachment that is roughly 2.4–3.2 GB resident, above the foreground Jetsam limit on many iPhones. No crash log was collected; the cause is from code reading.
+
+The send side holds about four copies at once: the decrypted staged attachment, the encoded basket, the ciphertext, and the encoded bundle. It survived here, probably on a phone with more memory.
+
+### Fix
+
+PR #132 writes each sealed chunk straight to disk in `Encryptor.write`, removing the last buffer. The full fix streams the body in fixed chunks on both sides (`STREAMING_SPEC.md`), with a memory guard for the inline layout that older contacts still need.
+
+### Guard
+
+`AttachmentWriteTests` (PR #132). `STREAMING_SPEC.md` §11 specifies the memory regression test for the full fix.
+
+**The fix, by stage:** the memory guard refuses an inline bundle that can't fit (stage 1); the chunked body codec (stage 2); a streamed bundle is read from an open file, its message shown first and its attachments decrypted a chunk at a time (stage 3); every send to a recipient set at the new tier streams its staged files from disk (stage 4). `StreamedMemoryTests` sends and receives a 1.5 GB attachment in the Simulator: the footprint grew by 1.6 MiB on send and 10.4 MiB on receive, against a limit of 64 MiB. A recipient below the tier is still sent the inline layout, under the guard, until their first message from 2.0.0 raises their recorded tier.
+
+---
+
+## Bug 184 — A received attachment from a sender we hold no key for is written to `tmp/` in plaintext
+
+**Status:** Fixed in `v2.0.0/streaming-bundles`, stage 1 of `STREAMING_SPEC.md`. Found 2026-10-23 by code reading while investigating Bug 183.
+
+**Target:** `v2.0.0`.
+
+### Severity: High (plaintext attachment on disk), conditional on a sender with no stored public key
+
+### What happens
+
+`OccultaApp.buildOwnedBasket` seals each received `.file` attachment under `try? fileEncryptionKey(for: ownerID)`. When that is nil, it writes the content with `writeProtected`: file protection, but plaintext in `tmp/`. `fileEncryptionKey` throws `contactHasNoKeys` for a contact with no `contactPublicKeys`, which includes an introduction-card contact not yet met in person. The message sheet builds its reader from the same call, so it reads those files unsealed.
+
+The send side had the same fallback and was fixed on 2026-10-22 (`Message Persistence/FINDINGS.md`), using the compose staging key. The receive side was not changed.
+
+### Fix
+
+`ContactManager.receivedAttachmentKey(for:)` is the one resolver, used by the writer (`ContactManager.sealReceivedFiles`, called from `OccultaApp.buildOwnedBasket`) and by the message sheet's reader. It uses the contact's file key, or failing that the compose staging key. With neither, the message is refused with "Secure storage not ready." before anything is written, so a received file is never in plaintext in `tmp/`. A message with no `.file` attachment needs no key and opens as before.
+
+Refusing the whole message rather than only the attachment is how this reads `STREAMING_SPEC.md` §6, "dropped with an error": the existing failure path for an attachment that can't be written already fails the message, and this state means the Enclave is unavailable, which is not the sender's doing.
+
+### Guard
+
+`ReceivedFilesSealedTests`: a key-less sender's attachment is sealed on disk, no plaintext marker is found in the directory, and it opens through the key the sheet resolves; with no key nothing is written; text needs no key; a hostile extension stays inside the directory. `ReceivedAttachmentKeyTests` covers the resolver's three outcomes. The tests drive `sealReceivedFiles`, which carries the writer's logic; that `OccultaApp` calls it, and that the sheet calls the resolver, is by inspection, since `OccultaApp` can't be built in a test.
+
+---
+
+## Bug 185 — A vault whose rows moved but whose epoch still reads 1 stays unreadable: the legacy-storage migration throws and holds the rewrap back
+
+**Status:** Fixed in the working tree on `release/v2.0.0`, not yet merged. Found 2026-10-26 from a device: a vault entry opened empty and the backup custody screen showed nothing. Debug output (`[VaultDiag]`, below) showed the entry key and the two real backup-key rows opening under the Enclave-bound key, `vaultKeyEpoch` reading `1 classical`, and the process on the legacy key.
+
+**Target:** `v2.0.0`.
+
+### Severity: High (the vault reads as empty and backup custody as absent, on every unlock, until fixed; no data is deleted)
+
+### What happens
+
+`VaultManager.unlock` runs `migrateLegacyBackupStorageIfNeeded` under the *legacy* vault key before the rewrap, and skips the rewrap when it throws (`migrated = false`). Both migration steps asked `Backup.fetchDecoded(...)` whether depth N already had a row, and `fetchDecoded` throws `decryptionFailed` for a live row that doesn't open under the key it is given. With the rows already under the new key and the epoch at 1, the legacy key can't open them, so the migration threw on every unlock, the rewrap that would have set the epoch to 2 never ran, and the process stayed on the legacy key. The entry's label and content, the backup key, and the custody metadata all read as unreadable.
+
+How the rows came to be under the new key with the epoch at 1 is **not established**. The rewrap writes both in one `save()`. Nothing that writes `vaultKeyEpoch` was found that could set it back (the bootstrap writes `1 classical` only while the column is nil). Open, needs a decision: find the writer, or the path that left the column nil or the row replaced.
+
+### Fix
+
+`VaultManager.hasLiveBackupRow(vaultKey:currentDepth:)` treats a live row that doesn't open as a claimed row, in both migration steps, so the migration passes, the rewrap finds the entry keys already under the new key, rewrites the rows, sets the epoch to 2 and switches the process. Nothing is written over a row that can't be read.
+
+### Guard
+
+`VaultRewrapUnlockTests.rowsOnNewKeyWithEpochOneAreRepaired`: a vault rewrapped, its epoch reset to `1 classical`, then unlocked: the epoch becomes 2, the process derives the Enclave-bound key, and every label and every real backup key reads back. It failed before the change.

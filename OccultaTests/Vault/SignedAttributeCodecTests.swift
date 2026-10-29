@@ -11,6 +11,7 @@
 import Testing
 import Foundation
 @testable import Occulta
+@testable import OccultaFormats
 
 @MainActor
 @Suite("SignedAttributeCodec — fixed-width SignedAttribute wire format")

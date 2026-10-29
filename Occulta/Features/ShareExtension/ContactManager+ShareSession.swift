@@ -14,13 +14,15 @@ import Foundation
 
 extension ContactManager {
 
-    /// Delete stale or half-written share sessions, and any leftovers from the mirror.
+    /// Delete stale or half-written share sessions, unread `.occ` handoffs, and any leftovers
+    /// from the mirror.
     ///
     /// Called on every `scenePhase == .active`.
     func cleanupPendingSessions() {
         guard let container = ShareSession.sharedContainer else { return }
 
-        ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
+        ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
+        ShareSession.sweepInbound(in: container)
         ShareSession.removeLegacyContactIndex(in: container)
     }
 }

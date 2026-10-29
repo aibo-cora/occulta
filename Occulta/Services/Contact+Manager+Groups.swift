@@ -6,6 +6,7 @@
 import CryptoKit
 import SwiftData
 import Foundation
+import OccultaFormats
 
 // MARK: - IneligibilityReason
 
@@ -14,6 +15,9 @@ enum IneligibilityReason {
     case versionUnknown
     /// Version is known but below 1.9.0.
     case versionTooOld
+    /// The contact's field is an introduction card in use (`imported` or `conversation`): groups refuse it
+    /// until the meeting (`Docs/Features/Introduction Cards/SPEC.md` §8).
+    case cardConversation
 }
 
 // MARK: - Group operations
@@ -119,6 +123,7 @@ extension ContactManager {
     /// Returns false if the contact is not found.
     func isGroupEligible(identifier: String, crypto: Manager.Crypto = Manager.Crypto()) throws -> Bool {
         guard let contact = try self.fetchContact(by: identifier) else { return false }
+        guard !contact.cardState.isCardContact else { return false }
         
         return Self.resolveTargetVersion(for: contact, using: crypto).supportsGroups
     }
@@ -148,6 +153,7 @@ extension ContactManager {
     /// Returns nil if the contact is not found.
     func groupIneligibilityReason(for identifier: String, crypto: Manager.Crypto = Manager.Crypto()) throws -> IneligibilityReason? {
         guard let contact = try self.fetchContact(by: identifier) else { return nil }
+        if contact.cardState.isCardContact { return .cardConversation }
         guard !Self.resolveTargetVersion(for: contact, using: crypto).supportsGroups else { return nil }
 
         // Unreadable counts as unknown, not as old — see `hasReadableBundleVersion`.

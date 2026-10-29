@@ -5,9 +5,10 @@
 //  ContactManager.encryptGroupBundle's per-member shard eligibility gate
 //  (capability + quantum material + prekey) and the tiered padding that keeps
 //  every recipient's shard section the same size regardless of eligibility.
-//  All simulator-safe — uses TestKeyManager throughout, real ShardCustodyManager
-//  with an in-memory ModelContainer, and directly-injected key material instead
-//  of a real proximity exchange.
+//  Uses TestKeyManager throughout, real ShardCustodyManager with an in-memory
+//  ModelContainer, and directly-injected key material instead of a real proximity
+//  exchange. Members' key material is sealed through the default `Manager.Crypto()`,
+//  so the gating tests run under `.ambientTestKeyManager`.
 //
 
 import Testing
@@ -15,6 +16,7 @@ import CryptoKit
 import SwiftData
 import LocalAuthentication
 @testable import Occulta
+@testable import OccultaFormats
 
 // MARK: - Helpers
 
@@ -30,7 +32,7 @@ private func makeContactManager() throws -> ContactManager {
         Contact.Profile.Key.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
     return ContactManager(modelContainer: container, security: security)
 }
 
@@ -46,8 +48,8 @@ private func makeShardCustodyManager() throws -> ShardCustodyManager {
 
 /// Build a profile with controllable capability/quantum/prekey state.
 ///
-/// `hasPrekey: true` pre-populates `forwardSecrecyEncrypted` with one inbound
-/// prekey so `encryptGroupBundle`'s `popOldestPrekeyData()` call finds it — the
+/// `hasPrekey: true` pre-populates `prekeyRecordEncrypted` with one inbound
+/// prekey so `encryptGroupBundle`'s `takeInboundPrekey` call finds it — the
 /// prekey's own key bytes are fake (not a real SE keypair); only its *presence*
 /// matters for the gating logic under test, not its cryptographic validity.
 @MainActor
@@ -89,12 +91,9 @@ private func makeMember(
         // Must be a real EC point, not filler bytes — encryptGroupBundle's FS path
         // does real ECDH against this key, which fails loudly on an invalid point.
         let prekeyPublicKey = try TestKeyManager().retrieveIdentity()
-        let prekey  = Prekey(id: UUID().uuidString, contactID: identifier, publicKey: prekeyPublicKey)
-        let encoded = try JSONEncoder().encode(prekey)
-        var secrecy = ForwardSecrecy()
-        secrecy.encodedPrekeys = [encoded]
-        let encodedSecrecy = try JSONEncoder().encode(secrecy)
-        profile.forwardSecrecyEncrypted = try encodedSecrecy.encrypt()
+        var record = PrekeyRecord.empty
+        record.inboundBatches = [.init(id: nil, keys: [.init(id: UUID().uuidString, publicKey: prekeyPublicKey)])]
+        profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
     }
 
     return profile
@@ -128,12 +127,12 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
 @Suite("encryptGroupBundle — per-member shard eligibility")
 @MainActor struct GroupShardGatingTests {
 
-    @Test("capable + quantum + prekey → member receives real shard content")
+    @Test("capable + quantum + prekey → member receives real shard content", .ambientTestKeyManager)
     func eligibleMemberReceivesShardContent() throws {
         let cm = try makeContactManager()
-        guard let member = try makeMember(
+        let member = try #require(try makeMember(
             identifier: "alice", capability: .groupShardCapable, hasQuantumMaterial: true, hasPrekey: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         try cm.insertProfile(member)
 
         let group = try cm.createGroup(name: "G")
@@ -161,12 +160,12 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
         #expect(!recipients[0].wrappedPayload.isEmpty)
     }
 
-    @Test("groupCapable but not groupShardCapable → no shard content, message still sent")
+    @Test("groupCapable but not groupShardCapable → no shard content, message still sent", .ambientTestKeyManager)
     func versionGateExcludesShardContent() throws {
         let cm = try makeContactManager()
-        guard let member = try makeMember(
+        let member = try #require(try makeMember(
             identifier: "bob", capability: .groupCapable, hasQuantumMaterial: true, hasPrekey: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         try cm.insertProfile(member)
 
         let group = try cm.createGroup(name: "G")
@@ -184,12 +183,12 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
         #expect(bundle.group?.recipients.count == 1)
     }
 
-    @Test("groupShardCapable but no quantum material → no shard content, message still sent")
+    @Test("groupShardCapable but no quantum material → no shard content, message still sent", .ambientTestKeyManager)
     func quantumGateExcludesShardContent() throws {
         let cm = try makeContactManager()
-        guard let member = try makeMember(
+        let member = try #require(try makeMember(
             identifier: "carol", capability: .groupShardCapable, hasQuantumMaterial: false, hasPrekey: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         try cm.insertProfile(member)
 
         let group = try cm.createGroup(name: "G")
@@ -206,12 +205,12 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
         #expect(bundle.group?.recipients.count == 1)
     }
 
-    @Test("groupShardCapable + quantum but no prekey available → no shard content, message still sent")
+    @Test("groupShardCapable + quantum but no prekey available → no shard content, message still sent", .ambientTestKeyManager)
     func prekeyGateExcludesShardContent() throws {
         let cm = try makeContactManager()
-        guard let member = try makeMember(
+        let member = try #require(try makeMember(
             identifier: "dave", capability: .groupShardCapable, hasQuantumMaterial: true, hasPrekey: false
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         try cm.insertProfile(member)
 
         let group = try cm.createGroup(name: "G")
@@ -232,12 +231,12 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
     // ineligible member must send successfully to both, and (per the padding scheme)
     // both recipients' wrappedPayload must be the exact same length -- proving the
     // eligible member's real shard content doesn't make their slot identifiable by size.
-    @Test("mixed group: one eligible, one not — send succeeds, slots are equal size")
+    @Test("mixed group: one eligible, one not — send succeeds, slots are equal size", .ambientTestKeyManager)
     func mixedGroupSendsToAllWithUniformSlotSize() throws {
         let cm = try makeContactManager()
-        guard let eligible = try makeMember(
+        let eligible = try #require(try makeMember(
             identifier: "eve", capability: .groupShardCapable, hasQuantumMaterial: true, hasPrekey: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         guard let ineligible = try makeMember(
             identifier: "frank", capability: .groupCapable, hasQuantumMaterial: false, hasPrekey: false
         ) else { return }

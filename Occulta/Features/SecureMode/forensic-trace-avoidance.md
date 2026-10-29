@@ -242,6 +242,106 @@ relies on SwiftData's untested (here) automatic entity-removal inference — not
 the risk to real user data for what is otherwise a purely cosmetic cleanup. Scheduled
 for outright removal once the migration has had time to run in the wild.
 
+### S10 — Identity challenge state: a sealed, per-depth column (Bug 180)
+
+**Added 2026-10-25. This makes one thing worse than before, and says so.** Until now nothing about an identity
+challenge was on disk: the outstanding challenge and the "Verified N minutes ago" time lived in the process, and
+the temp `.occ` file is deleted when the share sheet goes. Now `Contact.Profile.challengeStateEncrypted` holds them,
+so a challenge survives the app being killed (the common flow is challenge, share sheet, app evicted, open the reply).
+
+**What is on disk.** Every row, live, hidden and soft-deleted, has the same column: `ChallengeStateCodec.capacity`
+(2 128) bytes of plaintext, 2 156 sealed under the local DB key, in 33 fixed 64-byte slots, one per depth 0…32. A slot
+holds, if used: the 32-byte nonce, the issue time, the verified time. The slot index is the depth, so a session
+reads and writes its own depth's slot and cannot name another's (`ContactManager+ChallengeLedger.swift`, which reads
+`security.currentDepth` itself). Created with the contact, filled on old rows by `migrateChallengeFields` at launch and
+unlock, overwritten with the sealed empty state at deletion. Without the key every row is the same length and random
+bytes, whether or not Secure Mode was ever used; what it does not hide without the key is *which rows change, and
+when* (R7).
+
+**The owner's question is not on disk.** The context note stays in memory, keyed by the challenge. After a kill a
+reply still verifies and the sheet omits "You asked:", the same at every depth.
+
+**Lifetime.** An entry is cleared when it settles, or once `|now − issuedAt|` reaches the one-hour threshold, by a
+sweep over every row and every slot at launch, at each unlock and whenever the app becomes active. The sweep writes
+only when something expired, and checkpoints the log so the cleared slot's predecessor leaves it. The absolute
+difference is used so a clock set backwards cannot keep a record alive.
+
+**Open, needs a decision** (none is "accepted"):
+
+- **R1 — an at-rest record of a challenge.** With the local DB key, which an examiner on an unlocked or AFU device
+  derives with no biometric (S1, S5), the column shows that a challenge to contact X was outstanding, at which depth,
+  and since when. A live slot at index ≥ 1 also shows that a duress layer exists and was used in the last hour, which
+  `originDepth` and `visibleThroughDepth` already allow in kind but not in time. Not hideable: the app has no
+  per-depth secret by design, and cover traffic was rejected (it needs a key a coercer cannot derive, adds writes
+  visible in log timing, and makes the sweep touch rows for no reason).
+- **R2 — lifetime beyond the window.** A phone never opened after the hour keeps the slot until the next foreground.
+- **R3 — verified-at at rest.** "Who was verified, when", for up to an hour. Droppable as a one-field change if R1 is
+  judged too much; the badge would then be lost after a kill.
+- **R4 — a reply drained at the wrong depth is consumed.** A reply to the owner's depth-0 challenge that is drained
+  after a duress unlock is matched against an empty slot, shown as nothing, and gone; on a forward-secret slot its
+  one-time prekey is spent, so the owner must challenge again. That is the price of "nothing in a duress session
+  may react to the owner's state", and the same cost `.notOurs` already imposes on any reply with no entry.
+- **R5 — an inbound challenge from a contact hidden at this depth still renders**, and approving it signs
+  (Bug 173). Unchanged by this.
+- **R6 — the note stays in memory** until it settles, expires or the process ends. Unchanged from before.
+- **R7 — the column of a contact changes when its challenge does, readable without the key.** Recording, settling or
+  sweeping a slot re-seals that contact's column with a fresh random nonce, so two copies of the database (or the
+  write-ahead log, or the file's modification time) show *which contact's row changed*, and so that something happened
+  with that contact, at about when. No key is needed, unlike R1–R3. Other writes do the same (a prekey record, a card
+  field), and a group-format challenge also consumes one of that contact's one-time prekeys, which rewrites its prekey
+  record; a challenge to an older contact in the long-term format does not. Proposed, not built: re-seal every
+  contact's column on every ledger write and at every sweep, so a changed row singles nobody out. It costs one
+  2 156-byte re-seal and save per contact (about 1 MB at 500 contacts) at every launch, unlock, foreground and
+  challenge event, with the list re-rendering and the log growing, and it leaves the *timing* of writes. Open, needs a
+  decision. R7 is one instance of a class that covers every sealed per-contact column: see S11.
+
+What does not change: the share sheet leaves whatever the transport keeps (a Messages thread, an AirDrop log), outside
+the app.
+
+### S11 — Which contact's row changed, and when, is readable without the key
+
+**Added 2026-10-25, found while writing S10 (R7). A class, not a single column, and open, needs a decision.** Nothing
+here was mitigated before and nothing is mitigated now.
+
+**Mechanism.** Every sealed per-contact column is re-sealed under a fresh random AES-GCM nonce whenever it is written,
+so even a write that stores the same plaintext changes the ciphertext. SQLite then shows the change without any key:
+two copies of the database differ in that contact's row, the write-ahead log holds a record for it, and the file's
+modification time moves. The content stays sealed; what leaks is *that something happened with contact X, and about
+when*, to an examiner with two snapshots or a log. The fixed lengths (Bug 161, the card field, S10) hide what a column
+holds, not that it was written.
+
+**What writes a contact's row, from reading the code** (a survey by searching for the assignments and reading the call
+sites; not exhaustive, and not exercised):
+
+| Column | Written by |
+|---|---|
+| `prekeyRecordEncrypted` | A send that takes one of the contact's one-time prekeys (`encryptBundle`, `Contact+Manager.swift`, and the group path); a receive that uses one of ours or accepts a batch (`ContactManager.save(_:for:)`, then `saveAndFlush()`); the 30-day prune, only for a contact it changed; the card procedures |
+| `maxBundleVersion` | Every inbound bundle whose claimed version is at or above the recorded tier (`updateMaxVersion`), including one that leaves the tier unchanged, because it re-encrypts the same byte |
+| `introductionCardEncrypted` | Creating, cancelling, sharing and importing a card; the sweep, only when it clears a card; deletion |
+| `challengeStateEncrypted` | Recording, settling or sweeping a challenge (S10); deletion |
+| Name, number, address and other contact fields | Editing the contact |
+| Visibility and origin depth, `deletionToken` | Classification, deletion |
+| The legacy keychain prekeys | Not the database: `SecItemDelete` on use and on deletion, a separate trace in the keychain |
+
+Message traffic therefore already rewrites a contact's prekey record and tier marker on most sends and receives. Other
+tables (drafts, groups, vault entries, the custody and restore records) were not surveyed.
+
+**What this means for each use.** A contact one messages shows many writes anyway, so an identity challenge to them
+adds little (S10 R7). It adds more for a contact in the long-term format, whose challenge touches no prekey record.
+It also means closing R7 on its own would close nothing: the prekey record and the tier marker single the same contact
+out on the same occasions.
+
+**Precedents.** Bug 71 recorded the same correlation for the layer store file's modification time and added jitter to
+the maintenance cadence. The vault slot design considered hiding which depth was last active across snapshot diffs by
+re-sealing the whole array on every write, and dropped it for the snapshot protection (`bugs.md` Bug 105, the item 7
+decision). Neither was applied to contact rows.
+
+**The shape of a fix, not built.** Re-seal every contact's columns whenever any of them is written, and unconditionally
+at every launch, unlock and foreground, so a changed row singles nobody out. Cost: one re-seal and save per contact
+column per event (about 1 MB per column at 500 contacts for the 2.1 KB challenge column alone, and about 16 KB per
+contact for the prekey record), the contact list re-rendering, and the log growing. It still leaves the *timing* of
+writes, the keychain trace above and the file's modification time, so it narrows the leak rather than closing it.
+
 ---
 
 ## Keychain / AppLayerConfig Forensics
@@ -383,9 +483,31 @@ one against a `syncShareIndex()` call site. There is no longer a second copy to 
 with the first.
 
 What remains in the App Group: `pending/<session-uuid>/`, holding files the user has explicitly
-chosen to share, sealed under the share-index SE key with `.completeFileProtection`, named
-positionally, swept after an hour. That key keeps its tag and HKDF info string — it still seals
-staged files and manifests, and changing either would strand it.
+chosen to share, sealed under the share-staging SE key (`ShareStagingKeyManager`, formerly
+`ShareIndexKeyManager`) with `.completeFileProtection`, named positionally, swept after an hour.
+Compose attachments staged for a group or a contact with no key are not sealed by this key (`bugs.md` Bug 171, Stage 8). They are sealed under tier U's compose key, the local DB Enclave key and `r_U` with their own HKDF info (`Occulta-v2-compose-staging-2026`, hybrid on iOS 26+), in the app's own container, so staging them adds no Keychain item and no new creation-date tell, and the extension never sees them. A device upgrading to the hybrid form also holds, for the one upgrade, `<file>.resealing` temporaries beside the draft files it is moving.
+That key keeps its `share.index` tag and HKDF info string — it still seals staged files and
+manifests, and changing either would strand it. Since `bugs.md` Bug 171 (Stage 5) what seals them is
+not a function of that key's public point alone: it also needs `r_S`, a 32-byte Keychain secret, and
+a PQ record (9,763 bytes; a real ML-KEM key and ciphertext on iOS 26+, filler below), both
+generic-password items in the shared group, `WhenUnlockedThisDeviceOnly`. The app's first launch of
+2.0.0 creates them on every install, or the extension's first share if that comes first, at the same
+sizes everywhere, and the mode byte is the only difference between an iOS 26 device and an older one.
+They are dated like the key and deleted with it. On a device that was below iOS 26 the record is classical, and the app's first launch on iOS 26 replaces it with a hybrid one in place (the item keeps its date; only the mode byte and the contents change). A device upgrading its other records (`bugs.md` Bug 171, Stage 6) also holds, for the one upgrade, a *pending* copy of tier U's new record, the same size as every record, which is deleted when the upgrade finishes. A session staged by the previous build opens for its
+remaining hour through a legacy fallback in `decrypt`, which goes one release after 2.0.0. Also `inbound/<session-uuid>.occ`, an incoming
+`.occ` the extension hands to the app, already sealed by its sender and deleted once the app reads
+it. A handoff that never reaches the app is swept after the same hour (`ShareSession.sweepInbound`),
+judged by the file's modification date since it has no manifest to read. Until 2026-10-19 nothing
+swept `inbound/`, so such a file stayed until Erase All Data, recording that someone had sent the
+user an Occulta file.
+
+Erase All Data removes both directories, not just their contents, then deletes the share-staging
+key (`bugs.md` Bug 170). Each directory is created on first use, and its creation date, like the
+key's `kSecAttrCreationDate`, records the first share into Occulta. The normal sweeps leave the
+emptied directories in place, so each also keeps the time of the last share through it as its
+modification date — open, needs a decision. Removing them on every foreground would drop the
+creation date but move the last-share time into the App Group container's own modification date,
+and could delete `inbound/` between the extension creating it and writing into it.
 
 One consequence worth recording here rather than only in the bug: the old `max(currentDepth, 1)`
 clamp meant a contact classified as real-only could not be reached from the iOS share sheet at any

@@ -3,6 +3,7 @@ import SwiftData
 import UniformTypeIdentifiers
 import PhotosUI
 import AVKit
+import OccultaFormats
 
 extension URL: @retroactive Identifiable {
     public var id: String { self.absoluteString }
@@ -93,6 +94,7 @@ struct ComposableMessage: View {
                     .clipShape(RoundedRectangle(cornerRadius: 22))
                     .lineLimit(1...5)
                     .tint(.occultaAccent)
+                    .autocorrectionDisabled()
 
                 let hasText = !self.vm.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 Button { self.vm.addText() } label: {
@@ -166,18 +168,22 @@ struct ComposableMessage: View {
 extension ComposableMessage {
     struct Conversation: View {
         let mode: Modes
-        @Binding var messages: [Occulta.File]
+        @Binding var messages: [OccultaFormats.File]
         var pendingImports:    [PendingImport]    = []
         var attachmentManager: AttachmentManager? = nil
         var thumbnails:        [URL: UIImage]     = [:]
-        var onDelete:          ((Occulta.File) -> Void)? = nil
+        var onDelete:          ((OccultaFormats.File) -> Void)? = nil
+        /// Files of a received streamed bundle that are still being decrypted: shown as placeholders.
+        var incomingIDs:       Set<UUID>          = []
+        /// The attachments of a received streamed bundle could not be opened.
+        var receiveFailed:     Bool               = false
 
         enum Modes {
             case read(messageOwner: String), write
         }
 
         private enum Item: Identifiable {
-            case message(Occulta.File, showHeader: Bool)
+            case message(OccultaFormats.File, showHeader: Bool)
             case pending(PendingImport, showHeader: Bool)
 
             var id: UUID {
@@ -205,6 +211,13 @@ extension ComposableMessage {
             VStack {
                 if case .read(let owner) = self.mode {
                     Contact.Info(identifier: owner).padding(.top)
+                }
+
+                if self.receiveFailed {
+                    Text("Some attachments couldn't be opened.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
                 }
 
                 ScrollViewReader { proxy in
@@ -245,6 +258,7 @@ extension ComposableMessage {
                         mode: self.mode,
                         attachmentManager: self.attachmentManager,
                         thumbnails: self.thumbnails,
+                        isIncoming: self.incomingIDs.contains(file.id),
                         onDelete: self.onDelete.map { cb in { cb(file) } }
                     )
                 }
@@ -256,7 +270,7 @@ extension ComposableMessage {
             }
         }
 
-        private func shouldShowDateSeparator(before: Occulta.File, current: Occulta.File) -> Bool {
+        private func shouldShowDateSeparator(before: OccultaFormats.File, current: OccultaFormats.File) -> Bool {
             guard let d1 = before.date, let d2 = current.date else { return false }
             return !Calendar.current.isDate(d1, inSameDayAs: d2)
         }
@@ -267,10 +281,12 @@ extension ComposableMessage {
 
 extension ComposableMessage {
     struct MessageBubble: View {
-        let file:              Occulta.File
+        let file:              OccultaFormats.File
         let mode:              Conversation.Modes
         var attachmentManager: AttachmentManager? = nil
         var thumbnails:        [URL: UIImage]      = [:]
+        /// A streamed attachment whose bytes have not all arrived: a placeholder, not a file.
+        var isIncoming:        Bool                = false
         var onDelete:          (() -> Void)?      = nil
 
         @State private var showingFullScreen = false
@@ -336,6 +352,9 @@ extension ComposableMessage {
                         }
                 }
 
+            case .file(let metadata) where self.isIncoming:
+                self.incomingBubble(name: metadata.name ?? "file")
+
             case .file(let metadata):
                 let name = metadata.name ?? "file"
                 if FileExtensions.Image(rawValue: metadata.extension ?? "") != nil {
@@ -356,7 +375,7 @@ extension ComposableMessage {
             }
         }
 
-        @ViewBuilder private func imageBubble(name: String, metadata: Occulta.File.Metadata) -> some View {
+        @ViewBuilder private func imageBubble(name: String, metadata: OccultaFormats.File.Metadata) -> some View {
             VStack(spacing: 6) {
                 SwiftUI.Group {
                     if let img = self.decryptedImage {
@@ -396,7 +415,7 @@ extension ComposableMessage {
             }
         }
 
-        @ViewBuilder private func videoBubble(name: String, url: URL, metadata: Occulta.File.Metadata) -> some View {
+        @ViewBuilder private func videoBubble(name: String, url: URL, metadata: OccultaFormats.File.Metadata) -> some View {
             VStack(spacing: 6) {
                 SwiftUI.Group {
                     if let player = self.videoPlayer {
@@ -451,7 +470,18 @@ extension ComposableMessage {
             }
         }
 
-        @ViewBuilder private func genericFileBubble(name: String, metadata: Occulta.File.Metadata) -> some View {
+        @ViewBuilder private func incomingBubble(name: String) -> some View {
+            HStack(spacing: 12) {
+                ProgressView().tint(.white)
+                Text(name).lineLimit(1)
+            }
+            .padding(14)
+            .background(Color.occultaAccent)
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+        }
+
+        @ViewBuilder private func genericFileBubble(name: String, metadata: OccultaFormats.File.Metadata) -> some View {
             HStack {
                 Image(systemName: "doc.fill").font(.title2)
                 VStack(alignment: .leading, spacing: 2) {
@@ -739,8 +769,8 @@ struct PHPickerRepresentable: UIViewControllerRepresentable {
         ComposableMessage.Conversation(
             mode: .read(messageOwner: UUID().uuidString),
             messages: .constant([
-                Occulta.File(content: "https://www.apple.com".data(using: .utf8), format: .text),
-                Occulta.File(content: "Hi".data(using: .utf8), format: .text)
+                OccultaFormats.File(content: "https://www.apple.com".data(using: .utf8), format: .text),
+                OccultaFormats.File(content: "Hi".data(using: .utf8), format: .text)
             ])
         )
     }

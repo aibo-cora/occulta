@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - develop
+      - 'release/**'
   pull_request:
     branches:
       - develop
+      - 'release/**'
 
 jobs:
   test:
@@ -40,7 +42,7 @@ jobs:
         run: brew list xcbeautify >/dev/null 2>&1 || brew install xcbeautify
 
       - name: Run unit tests
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           # pipefail so a test failure fails the step: without it the step takes
           # xcbeautify's status and a red suite reports green. It makes xcbeautify's
@@ -57,6 +59,32 @@ jobs:
             -skip-testing:OccultaTests/KeychainMigrationSETests \
             2>&1 | tee xcodebuild.log \
             | xcbeautify --report junit --report-path . --junit-report-filename test-results.xml
+
+      # OccultaCore's own tests use it as another app would, so they can't run inside the app's
+      # test bundle, which links both modules. The package scheme runs them.
+      - name: Run OccultaCore API tests
+        if: always()
+        timeout-minutes: 10
+        working-directory: OccultaCore
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme OccultaCore-Package \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
+            2>&1 | xcbeautify
+
+      # That scheme builds every package target into one directory, so a test target there can
+      # import OccultaFormats without declaring it and Xcode won't object. SwiftPM's import check
+      # does object, which is what keeps the app-only formats out of the public API's reach.
+      - name: Check OccultaCore imports only what it declares
+        if: always()
+        timeout-minutes: 10
+        working-directory: OccultaCore
+        run: |
+          swift build --build-tests \
+            --explicit-target-dependency-import-check error \
+            --triple arm64-apple-ios18.6-simulator \
+            --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
