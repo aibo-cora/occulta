@@ -1405,3 +1405,13 @@ the share staging key.
 
 **Why:** (1) With no probation week the reseal is the one-way step, so it runs once. (2) A notice for a contact the open space can't see would reveal that the contact exists.
 
+## Bug 120 under independent spaces: a stated limit, not fixed
+
+**Status:** Recorded 2026-10-29 by the owner. Still open in the register, needs a decision.
+
+**Decision:** A duress space protects against one image, not a series, and the setup guidance (step 16) says so. In one image and with no phrase the design fixes per-type row counts (one sealed blob per contact), row sizes (a few fixed sizes, noise rows included) and space tags (none), and writes every change as "append a new row, shred the old". Rows a surrendered space can't open changing between images are not fixed. The append-only log stays a possible later release, not planned.
+
+**Why:** Noise rows don't close it. A key that recognises noise lets its holder count the real unopenable rows, and without one a duress session can't tell noise from real rows, so rewriting them could destroy real data. Independent spaces drop the chain, so no space can reseal another's rows.
+
+**Full reasoning:** `bugs.md` Bug 120, "Re-examined 2026-10-29".
+

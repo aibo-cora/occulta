@@ -29,11 +29,12 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 19, Bug 170's leftovers stay in Bug 170;
 - no typo check: no checksum and no retype before the first write (§1.5);
 - a bundle for a contact in another space is handled exactly like a corrupt file (§1.5);
-- the data slices ship together, in one reseal (§7.1).
+- the data slices ship together, in one reseal (§7.1);
+- Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
+  in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
 
 **Open, needs a decision:**
 - 6, a test phone;
-- uniform records and noise rows (Bug 120, spec §2);
 - the spec's own 2026-10-15 sub-items, most of which belonged to the storage design that is gone (spec §2 needs
   rewriting);
 - the per-row key header (§1.5).
@@ -544,6 +545,13 @@ Rule 3 allows only two visible states: lock off and lock on.
   - **Still open:** it shows across images the same way creating a depth does (spec §2, 2026-10-15, open).
 - **Repeated images.** The spec's finding stands: a duress depth doesn't survive comparison across images
   once its phrase is surrendered. Step 16's guidance has to say so.
+  **Recorded 2026-10-29 as a stated limit (Bug 120).** Independent spaces don't change it, and noise rows can't
+  close it. What the design does fix, in one image and with no phrase:
+  - **One table, one row shape:** each contact is one sealed blob (no per-type tables whose counts show), padded
+    to a few fixed sizes, with noise rows in the same sizes (spec §2, requirements 3 and 4).
+  - **No space tag on any row.**
+  - **Every change is "append a new row, shred the old",** so edits, additions and deletions look alike.
+  - It stays open in the register, as a limit and not as accepted.
 
 **One addition to the spec's ruled-out option.** The spec names public keys with append-only storage as the
 only full fix for write frequency, and rules it out for v2.0.0. Its wraps would also rest on elliptic-curve key
