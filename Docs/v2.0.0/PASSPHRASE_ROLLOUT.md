@@ -37,7 +37,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 6, a test phone;
 - the spec's own 2026-10-15 sub-items, most of which belonged to the storage design that is gone (spec §2 needs
   rewriting);
-- the per-row key header (§1.5).
+- the photo table's noise rows and size buckets (§1.5);
+- the unlock cost, to be measured on a device (waits on decision 6).
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -275,9 +276,20 @@ Decision 1 is closed by it.
   state is readable without a key. The soft-delete cap of 50 rows has to go with it.
 - **No slot-indexed verifier arrays.** Today `sealedNormalVerifiers[0]` is always the master PIN and duress PINs
   match at N ≥ 1 (`AppLayerConfig+Model.swift:117-123`), so a duress holder learns that an index 0 exists.
-- **Each row carries a small fixed-size key header,** so the unlock scan trial-decrypts headers rather than whole
-  rows (AES-GCM can't verify a large blob without reading all of it). Whether this is the per-row-key variant
-  the 2026-10-15 design rejected is open, needs a decision.
+- **No per-row key header** (decided 2026-10-29, replacing the brainstorm's proposal). Unlock trial-decrypts the
+  contact and group records whole. They are text-only sealed records of a few KB, so 10k of them is tens of MB,
+  which hardware AES-GCM reads in tens of milliseconds (an estimate, to be measured on a device). It isn't the
+  per-row-key variant the 2026-10-15 design rejected either, since there is no row key.
+  - **Photos live in their own table,** one sealed row per photo. The link is not a column: the sealed contact
+    record lists its photos' row IDs, and a photo row names nothing. A contact can have none, one or two. Unlock
+    never reads photos; they are fetched by ID once the contact opens. A retired photo is shredded like any
+    deleted row. The table shows how many photo rows exist, not whose or which are active. It needs noise rows
+    in the same size buckets, and photos stored at bounded sizes, or the total would track the real photos of
+    every space. The bucket sizes are open, needs a decision.
+  - **Vault entries keep their wrapped entry key** (`VaultEntry.encryptedEntryKey`), which is a cheap check of
+    its own, so they need no new header.
+  - **Fallback:** a 16-byte locator tag per row (an HMAC under a subkey of the space key), if a device
+    measurement shows unlock is too slow.
 - **Removing a space:** unlock it, crypto-shred its rows into noise, and forget the phrase. The app keeps no record
   of the space.
 - **Cost accepted:** a decoy goes stale unless it is actually used. Nothing copies the real space's changes into
@@ -665,15 +677,17 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 |---|---|---|---|
 | 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8, plus the spec's own open items: padding range, blob sizes, depth creation across images, the model sweep for requirement 5 | 1–2 |
-| 3 | Key derivation, headers, chain, shared key; vault into the new store | Spec §1 and §2 (2026-10-15); row AAD (step 5) | 2–3 |
-| 4 | Contacts into the new store | One padded blob per contact; groups per depth; origin lists; padding rows; stamps dropped; prekey blobs (D9); the ~175 sites in §4 | 4–7 |
+| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the model sweep for requirement 5 | 1–2 |
+| 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
+| 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4 | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
-| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the old-PIN fallback (§1.2); the coercion gate without absolute depths (§1.3); adding and removing depths; graduation | 2.5–4 |
-| 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several depths | 1, plus ~3 calendar weeks: the probation week and a 7-day phased release |
+| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); Erase All Data scoped to one space; deleting the old store once every layer has migrated; no old-PIN fallback and no graduation | 2.5–4 |
+| 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several spaces | 1, plus ~1 calendar week: a 7-day phased release |
 
 **Total: about 13–21 weeks of build, roughly 3–5 months.** Stage 4 and stage 2 decide where in that range it
-lands.
+lands. *Not re-estimated after 2026-10-29. Independent spaces drop headers, the chain, the shared key, origin
+lists, graduation and the old-PIN fallback, and add the photo table and scoped erase, so the range is a guess
+until stage 2 closes.*
 
 ---
 

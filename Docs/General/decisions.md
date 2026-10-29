@@ -1415,3 +1415,11 @@ the share staging key.
 
 **Full reasoning:** `bugs.md` Bug 120, "Re-examined 2026-10-29".
 
+## No per-row key header; photos in their own table, found by ID
+
+**Status:** Decided 2026-10-29 by the owner. Replaces the brainstorm's per-row key header. The photo table's noise rows and size buckets are open, needs a decision, and the unlock cost is an estimate to be measured on a device.
+
+**Decision:** Unlock trial-decrypts the contact and group records whole, since they are text-only sealed records of a few KB. Photos live in their own table, one sealed row each, linked only by row IDs listed inside the sealed contact record. A photo row names no contact. Unlock never reads them, and a retired photo is shredded like any deleted row. Vault entries keep their wrapped entry key as the cheap check. A 16-byte locator tag per row stays as the fallback if a device measurement shows unlock is too slow.
+
+**Why:** A clear photo-to-contact column would make an unopenable contact with photos attached visibly real. Text-only records are cheap to decrypt whole, so a header adds format for no measured gain. The photo table shows how many photo rows exist but not whose or which are active, and noise rows in the same size buckets keep the total from tracking real photos.
+
