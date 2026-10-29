@@ -1,0 +1,2004 @@
+[
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "Contact+Manager/openGroup:negative-custodyManifestCount-prefix-trap",
+    "title": "Negative custodyManifestCount in a group slot traps openGroup",
+    "description": "RecipientPayload.custodyManifestCount is a signed Int taken straight from the slot JSON with no range check. openGroup passes it to Array.prefix when the slot is a forward-secret one-time slot (not long-term fallback, not last-resort, not a card slot) and the sender set shardMetadataAttempted. Collection.prefix(_:) has a non-negativity precondition that stays in optimised builds, and the project sets -Onone only for Debug, so a count below zero terminates the app. The trap comes after the one-time prekey has been consumed and saved and after the inbound batch has been accepted and saved, so the message is lost and cannot be reopened. A contact (or anyone holding that contact's keys) can build such a slot, because the sender chooses every field inside it and holds everything the senderProof and ephemeral-signature gates ask for. Each further bundle traps again. No document in Docs lists this as a known item.",
+    "claimed_root_cause": "RecipientPayload's decoder accepts any Int for custodyManifestCount, and openGroup hands it to a precondition-checked standard-library call without clamping it or rejecting a negative value.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1074,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "An inbound .occ file that decodes as a group bundle goes to ContactManager.openGroup. Every send to a 1.9.0+ contact uses this format."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 162,
+        "scope": "Manager.Crypto.openRecipientSlot",
+        "description": "Our slot's plaintext is JSON-decoded into RecipientPayload; the slot opens with a key only the sender (or a holder of the sender's keys) can derive."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/OccultaBundle.swift",
+        "line": 743,
+        "scope": "RecipientPayload.init(from:)",
+        "description": "custodyManifestCount is decoded with decodeIfPresent(Int.self): any Int including a negative one, no range validation."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2105,
+        "scope": "ContactManager.openGroup",
+        "description": "metadataAttempted = !isFallback && recipientPayload.shardMetadataAttempted. isFallback (line 2090) is false for a forward-secret one-time slot, and shardMetadataAttempted is a sender-chosen field."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2107,
+        "scope": "ContactManager.openGroup",
+        "description": "Array(recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount)): Collection.prefix(_:) preconditions maxLength >= 0, so a negative count terminates the process."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/OccultaBundle.swift",
+        "line": 656,
+        "description": "public let custodyManifestCount: Int, documented as a real-entry count, with no non-negativity constraint or clamp anywhere in Occulta or OccultaCore; apart from its declaration, doc comments and the memberwise init, its only uses are the decode at line 743 and the sink."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2050,
+        "description": "The senderProof gate (HMAC over the sender's key under the content key) and, before it, the signature and body-digest gates authenticate the sender but do not look at the count. A contact holds every value those gates need."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2074,
+        "description": "acceptInboundBatch, replenish and save (lines 2064-2074) run before the sink, and the slot's prekey was consumed and saved when the slot opened, so the trap loses the message for good."
+      },
+      {
+        "file": "Occulta.xcodeproj/project.pbxproj",
+        "line": 724,
+        "description": "SWIFT_OPTIMIZATION_LEVEL appears only here, as -Onone in the Debug configuration. No Release setting and no -Ounchecked appears anywhere in the project file, so Release uses the default -O, which keeps _precondition."
+      },
+      {
+        "file": "OccultaTests/Groups/GroupDecryptTests.swift",
+        "line": 339,
+        "description": "The de-padding test mirrors the same prefix expression and covers only counts 0 and 1; the comment above it says openGroup has no end-to-end harness. No negative count is tested."
+      }
+    ],
+    "blockers": [
+      "Nothing could be executed in this run: no OS-enforced sandbox meeting the run's controls exists for an iOS target (xcodebuild and the Simulator run outside any sandbox the parent can impose), so the effect below was derived from source and documented Swift semantics only and was not observed. The Collection.prefix precondition and its survival under -O are standard-library behaviour recalled from the Swift source, not re-read here."
+    ],
+    "validation_plan": {
+      "local": "Settle the stdlib fact first, outside the XCTest/Swift Testing host because a trap there kills the whole test run: in a sandboxed scratch directory compile a two-line command-line program with `swiftc -O` that calls `Array([UUID()].prefix(Int(CommandLine.arguments[1])!))` and run it with arguments 0, 1 and -1; expected: the first two exit normally, -1 dies with SIGILL/EXC_BREAKPOINT. Then, on the app side, add to OccultaTests/Groups/GroupShardGatingTests.swift (which already drives openGroup with TestKeyManager phones) a case that seals a group bundle to a forward-secret one-time slot whose RecipientPayload has shardMetadataAttempted: true, custodyManifest: [UUID()], custodyManifestCount: -1, a valid bodyDigest, senderProof and senderEphemeralSignature, and calls ContactManager.openGroup; gate it with .enabled(if: secureEnclaveAvailable()) if it creates prekeys through PrekeySecretsManager. Expected today: process termination at Contact+Manager.swift:2107. After the fix (reject a negative count when decoding, or use max(0, min(count, custodyManifest.count))) openGroup returns with recipientCustodyManifest == [] or throws, and the new test passes."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "IdentityChallenge.Coordinator.approvePending/hidden-challenger-reply",
+    "title": "At a duress depth, approving a hidden contact's identity challenge signs a valid response and seals it to that contact",
+    "description": "At a duress depth, a fresh identity challenge from contact H, who is hidden there, still decrypts and presents IncomingChallengeSheet ('<H> is verifying your identity'). That much is the presence oracle accepted on 2026-08-13 and in Bug 104, which recorded the name and note render only. The sheet's Approve action is not bound to the depth. approvePending runs an LAContext check (biometrics when enrolled, device passcode only when none is, so a coercer needs the owner's biometric or the passcode, within the compelled-unlock model), looks the challenger up by identifier only, signs the challenge with the owner's long-term identity key, and for a challenger at .bodyDigestCapable seals the response through encryptBundle, which takes one of H's one-time prekeys, saves H's prekey record and attaches any pending batch for H; otherwise it seals the long-term format to H's key. The response .occ is then staged for sharing (ShareActivityView). Once delivered, H's app shows 'Identity verified: <owner> controls their device'. So the coercer replies into a hidden contact, and the reply is the artefact H relies on to check that a request really comes from the owner. The run's threat model names 'reply into' a hidden contact as an action a coercer must not be able to take. The project made the matching decision for cards on 2026-10-19 (SPEC 9: 'nothing leads into a hidden contact') and drops shard operations from a sender not visible at the current depth at receipt (OccultaApp.swift:1000-1026); Bug 40 originally flagged this approval sheet before the gate was removed. No recorded decision covers the outbound action. Calibration: a replayed or archived challenge cannot present, because decryptChallenge rejects one older than an hour (IdentityChallenge+Manager.swift:295-298), so the trigger is a fresh challenge from H during the coercion window, which a coercer could prompt out of band by asking H for something as the owner; the attack gives the coercer a valid 'device is in the owner's control' proof to H, not access to H's messages. Gating by visibility would itself be a duress-only difference, so the fix is a design decision (for example a same-size decoy response that verifies for no one and leaves H's record byte-identical, behind the same UI); that choice belongs to the owner.",
+    "claimed_root_cause": "IdentityChallenge.Coordinator.approvePending (IdentityChallenge+Coordinator.swift:263-310) and the sealing it calls have no check of the challenger's visibility at Manager.Security.currentDepth: ContactManager.fetchContact(by:) (Contact+Manager.swift:453-459), ContactManager.encryptBundle (Contact+Manager.swift:1055-1196) and IdentityChallenge.Manager.respond (IdentityChallenge+Manager.swift:316-342). The approval is bound to the stored contact, not to the depth of the session acting on it.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1081,
+        "scope": "RootView.buildOwnedBasket (group branch); also :1121 for the 1:1 branch",
+        "description": "At a duress depth, a fresh challenge from H (hidden there) is opened with no depth filter and handed to the coordinator."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 228,
+        "scope": "IdentityChallenge.Coordinator.route (.challenge)",
+        "description": "decryptChallenge succeeds (age under an hour, fingerprint bound to H's key) and incomingChallenge is set with challengerID = H."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+View.swift",
+        "line": 256,
+        "scope": "IdentityChallenge.IncomingChallengeSheet",
+        "description": "Approve calls onApprove, wired to identityChallenge.approvePending() (OccultaApp.swift:582)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 289,
+        "scope": "IdentityChallenge.Coordinator.approvePending",
+        "description": "After LAContext succeeds (:266-282), fetchContact(by: H) with no depth check selects the group or long-term format and seals the response for H (:291-296)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Manager.swift",
+        "line": 336,
+        "scope": "IdentityChallenge.Manager.respond(to:seal:)",
+        "description": "Signs domainPrefix || nonce || timestamp || challengerFingerprint with the owner's identity key."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1129,
+        "scope": "ContactManager.encryptBundle(for:identityChallenge:)",
+        "description": "For H at .bodyDigestCapable, takes one of H's inbound one-time prekeys and saves H's record (:1131), attaches H's pending batch (:1140) and saves the context (:1196). There is no visibility check (:1069)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 297,
+        "scope": "IdentityChallenge.Coordinator.approvePending",
+        "description": "Writes the response .occ and sets outboundShare (:298), presenting ShareActivityView (OccultaApp.swift:566-573) so the coercer can send a valid signed response to the hidden contact."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 263,
+        "description": "approvePending has no reference to depth or visibility. It goes from biometric or passcode approval straight to signing and sealing for pending.challengerID."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 453,
+        "description": "fetchContact(by:) predicates on identifier only, so a contact hidden at the current depth is returned."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1069,
+        "description": "encryptBundle fetches the recipient by identifier and never compares Contact.isVisible with currentDepth before taking a prekey (:1129) and saving the record (:1131)."
+      },
+      {
+        "file": "Occulta/Data Models/Contact+Model.swift",
+        "line": 225,
+        "description": "Contact.isVisible(atDepth:) is the control the lists and pickers use. It is absent from the approval path."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 8694,
+        "description": "Bug 104 records that the incoming-challenge and result sheets render the hidden contact's name and closes only that render as the accepted presence oracle; it does not discuss approving."
+      },
+      {
+        "file": "Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md",
+        "line": 336,
+        "description": "The 2026-08-13 decision accepts the inbound render (name and content). It does not address replying to the hidden sender."
+      },
+      {
+        "file": "Docs/Features/Introduction Cards/SPEC.md",
+        "line": 375,
+        "description": "The project's duress rule for cards (decided 2026-10-19): nothing leads into a hidden contact, because a view that opened a hidden contact would let the coercer act on it."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1025,
+        "description": "Comparable baseline: filterShardOperations drops shard operations from a sender not visible at the current depth, a gate on acting for a hidden sender that the challenge approval path lacks."
+      },
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Manager.swift",
+        "line": 295,
+        "description": "A challenge older than an hour is refused at decrypt, so only a fresh challenge from H can reach the approval sheet."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 65,
+        "description": "takeInboundPrekey removes a key from the hidden contact's inbound batches, so approval mutates the hidden contact's prekey state."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox for xcodebuild or the Simulator is available on this host, so target code was not executed.",
+      "approvePending gates on LAContext.evaluatePolicy and presents a share sheet. Neither runs in a unit test without a seam, and observing them needs a device or Simulator with Secure Mode and a duress PIN.",
+      "Confirming that the hidden contact's app reports 'Identity verified' for the coerced response needs a second device acting as H.",
+      "Whether the owner treats approving a hidden contact's fresh challenge as inside the accepted presence-oracle decision, and which fix (decoy response, refusal with the same UI, or none) to adopt, is an owner decision."
+    ],
+    "validation_plan": {
+      "local": "Unit, under .ambientTestKeyManager. Build a ContactManager whose Manager.Security is at currentDepth 1. Store contact H with visibleThroughDepth sealed as DepthCodec 0, so it is hidden at depth 1, holding H's TestKeyManager identity key. Have H's own IdentityChallenge.Manager create a long-term challenge sealed to our ambient identity. Call coordinator.handleInboundChallenge(bundle:envelope:sender: H) and assert incomingChallenge != nil, the accepted precondition. Then exercise the approval's sealing without LAContext: extract the body of approvePending after authentication into an internal func, for example sealApproval(_ pending:) throws -> Data, and call it. Expect today: H's IdentityChallenge.Manager.verifyResponse returns .passed for the result. For an H recorded at .bodyDigestCapable that has inbound prekeys, also expect H's prekeyRecord to hold one fewer inbound key afterwards. After a fix: for a challenger not visible at currentDepth, approval yields a same-size decoy that verifies for no one and leaves H's prekey record byte-identical, with the same UI path. The decoy design is a decision for the owner. Run inside an approved sandbox or CI with xcodebuild -project Occulta.xcodeproj -scheme OccultaTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:OccultaTests/<SuiteStructName> test.",
+      "deployment": "On a test phone with no real data and a second device as H: mark H hidden at the duress depth and have H send a challenge. Unlock with the duress PIN, open the challenge within the hour, tap Approve and share the response to H. H's app shows 'Identity verified' today."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "IdentityChallenge.Coordinator/session-state-survives-endSession",
+    "title": "Outstanding identity challenges and verified-at state survive endSession into a duress session",
+    "description": "The owner, at the real depth, challenges contact H (visible there, hidden at a duress depth) and types a question into the context note. The challenge is recorded in the coordinator's in-memory OutstandingChallengeStore (contact identifier, nonce, timestamp, note). The app later locks past the grace period, or the depth changes in place, and RootView.endSession runs. That is the Bug 140 session boundary, but it clears only the coordinator's three presentations; the store and verifiedAt live on because the coordinator is created once per process (OccultaApp.swift:98) and the store is swept only in Coordinator.init. A coercer then unlocks with the duress PIN. If H's response is opened, by the coercer or drained from the queue, it resolves to H with no depth filter (the accepted presence oracle), matches the owner's real-depth entry by nonce and contact identifier (IdentityChallenge+Manager.swift:391-394), and the coordinator presents 'Identity verified: H controls their device' with 'You asked: <owner's question>'. A response arriving after the one-hour window instead yields 'Verification failed - This may not be H' with the same name and note (:407-410), so the carried entry produces a sheet either way. Without the carried entry the same response returns .notOurs and shows nothing at that depth (Bug 166 fix, Coordinator:247). So what is disclosed is the owner's own hidden-depth text and evidence that the previous session acted on a contact the coercer cannot see, beyond the inbound-name render that Bug 104 accepted; Bug 104's note on .response puts verifiedAt out of scope. The same carried state also shows 'Verification in progress' and 'Verified N minutes ago' on contacts visible at both depths, a weaker signal. Calibration: the trigger needs H's response to arrive or be opened after the handover and while the process is still alive, so it is the same timing-bounded, third-party-dependent class as the accepted passive case, with the additional leak of owner-authored content; it applies to Bug 140's stated invariant (state created at one depth, 'unanswered decisions', must end when the session changes), which the fix list names only for the three presentations. Remediation note: simply emptying the store at endSession would silently break the legitimate flow of challenging, locking the phone for longer than the grace period and then opening the reply (the reply would become .notOurs and show nothing), so the better fix binds each entry, and the verified-at map, to the depth that created it and ignores them at any other depth (a mismatch behaves as 'no entry', a non-observable difference).",
+    "claimed_root_cause": "IdentityChallenge.Coordinator is constructed once per process (OccultaApp.swift:98) and owns the OutstandingChallengeStore and verifiedAt. RootView.endSession (OccultaApp.swift:625-639), the single session reset added for Bug 140, clears only outboundShare, incomingChallenge and verificationOutcome (:633-635). The store is swept only at Coordinator.init (IdentityChallenge+Coordinator.swift:94). verifyResponse correlates a response to an entry by nonce and contact identifier alone (IdentityChallenge+Manager.swift:391-394), with no binding to the session or depth that created it.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 103,
+        "scope": "IdentityChallenge.Coordinator.createChallenge(for:contextNote:)",
+        "description": "Owner at the real depth challenges contact H (visible there, hidden at the duress depth) with a context note."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Manager.swift",
+        "line": 200,
+        "scope": "IdentityChallenge.Manager.createChallenge(contactID:contextNote:seal:)",
+        "description": "The entry {nonce, timestamp, contactKeyID: H, contextNote} is stored in the process-wide OutstandingChallengeStore."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 98,
+        "scope": "OccultaApp.init",
+        "description": "One Coordinator, and so one store and one verifiedAt map, is created for the whole process lifetime."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 625,
+        "scope": "RootView.endSession()",
+        "description": "Runs on leaving .unlocked (:387) and on a sessionID change (:408-409). It clears only outboundShare, incomingChallenge and verificationOutcome (:633-635); store and verifiedAt survive."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1081,
+        "scope": "RootView.buildOwnedBasket (group branch); also :1121 for the 1:1 branch",
+        "description": "In the coercer's duress session, H's response is resolved with no depth filter (identifyOwner reads fetchAllContacts, Contact+Manager.swift:1610; fetchContact(by:) at :1080) and handed to the coordinator."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Manager.swift",
+        "line": 391,
+        "scope": "IdentityChallenge.Manager.verifyResponse(envelope:senderKey:senderID:)",
+        "description": "lookup(nonce:) finds the real-depth entry and contactKeyID == H, so the response is treated as ours. A valid signature returns .passed(contextNote: owner's note) (:446); a late one returns .failed with the same note (:409)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 250,
+        "scope": "IdentityChallenge.Coordinator.route (.response)",
+        "description": "Sets verifiedAt[H] (:244) and verificationOutcome with H's name and the owner's note. VerificationResultSheet renders them (IdentityChallenge+View.swift:294, :301) at the duress depth."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 633,
+        "description": "endSession clears identityChallenge.outboundShare, incomingChallenge and verificationOutcome (:633-635), and nothing else on the coordinator."
+      },
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 94,
+        "description": "store.removeExpired() is called only in Coordinator.init, so outstanding entries are never swept during the process lifetime."
+      },
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Store.swift",
+        "line": 50,
+        "description": "OutstandingChallengeStore keeps entries keyed by contact identifier, with contextNote, and no session or depth field (Entry, :31-43)."
+      },
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Manager.swift",
+        "line": 391,
+        "description": "Correlation is by nonce and contact identifier only (:391-394); no session or depth binding."
+      },
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+        "line": 247,
+        "description": "Without a matching entry, .notOurs returns with no UI (Bug 166). So the carried entry is what makes the sheet appear at the duress depth."
+      },
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+View.swift",
+        "line": 301,
+        "description": "VerificationResultSheet renders 'You asked:' and the stored note, and (:294) '<name> controls their device.'"
+      },
+      {
+        "file": "Occulta/Features/IdentityChallenge/IdentityChallenge+View.swift",
+        "line": 86,
+        "description": "VerifyIdentityButton shows 'Verification in progress' (hasOutstanding, :49-51) and the verified caption (:92) from the same process-wide state, for any contact the current depth can open."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 12004,
+        "description": "Bug 140 invariant: state created during an authenticated session at one depth, including unanswered decisions and values computed for this depth, must end when the session or depth changes. The fix's list names only the challenge's three presentations."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 8737,
+        "description": "Bug 104's note on .response leaves verifiedAt out of scope. The accepted residual is the inbound name render, not the owner's own session state carried across depths."
+      },
+      {
+        "file": "OccultaTests/IdentityChallenge/IdentityChallengeUnsolicitedResponseTests.swift",
+        "line": 57,
+        "description": "Existing tests build a Coordinator under .ambientTestKeyManager and drive handleInboundChallenge directly, a ready harness for the validation test."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox for xcodebuild or the Simulator is available on this host, so target code was not executed and the end-to-end render at a duress depth was not observed.",
+      "Whether the app process, and so the in-memory coordinator, survives from the owner's session to the coercer's duress unlock is iOS runtime behaviour, not visible in source.",
+      "Presenting VerificationResultSheet after a duress unlock needs a device or Simulator with Secure Mode and a duress PIN configured, plus a second identity to answer as H.",
+      "Whether the owner accepts the response-arrives-after-handover case as part of the passive third-party window already accepted on 2026-08-13 is an owner decision."
+    ],
+    "validation_plan": {
+      "local": "Add a Swift Testing suite in OccultaTests/IdentityChallenge, modelled on IdentityChallengeUnsolicitedResponseTests and run under .ambientTestKeyManager. Build the 'alice' profile and call coordinator.createChallenge(for:contextNote: \"real-depth question\"). Have alice answer with her own IdentityChallenge.Manager, as in challengeAndResponse. Then set exactly what RootView.endSession clears (outboundShare, incomingChallenge, verificationOutcome = nil). Expect today: coordinator.store.hasOutstanding(for: \"alice\") is true, and coordinator.handleInboundChallenge(bundle: response, envelope: .response(payload: Data()), sender: profile) sets verificationOutcome?.passed == true with contextNote == \"real-depth question\"; also run it with the clock moved past 3600 s and expect .failed with the same note. Proposed fix to test: record the creating depth in each store entry and in verifiedAt, and match only at the same depth. Then assert (a) a response handled at another depth leaves verificationOutcome nil and the badge nil, and (b) a response handled at the creating depth after a simulated lock (endSession) still passes, so the legitimate lock-then-reply flow is kept. Run inside an approved sandbox or CI with xcodebuild -project Occulta.xcodeproj -scheme OccultaTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:OccultaTests/<SuiteStructName> test.",
+      "deployment": "On a device with no real data and a second device as H: activate Secure Mode with a duress PIN, mark H hidden at the duress depth, challenge H at the real depth with a note, lock past the grace period without force-quitting the app. Unlock with the duress PIN and open H's response. Today the expected result is 'Identity verified' naming H with 'You asked: <note>'. After a fix, nothing should show."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "OccultaApp.buildOwnedBasket:sender-file-url-kept-for-non-file-formats:read-sheet-removeItem",
+    "title": "Sender-supplied File.url survives basket rebuild for non-file entries and is deleted on read-sheet dismiss",
+    "description": "On the JSON basket path (.v3fs bundles and the legacy trial-decrypt path, reachable by any contact), File.url is decoded from sender-controlled plaintext. buildOwnedBasket replaces url only for .file entries; text, contacts, link and nil-format entries keep the sender's url, and the read sheet's onDisappear calls FileManager.removeItem on every file.url. The code therefore contradicts its own rule that sender-controlled metadata is never trusted for path construction (OccultaApp.swift:1180-1188). Every hop is real; the candidate fails at the destination, because the sender cannot name a path the app can delete.",
+    "claimed_root_cause": "OccultaFormats.File carries a Codable url field that the JSON decoder accepts from the wire, and buildOwnedBasket's default branch forwards decoded files unchanged into a structure whose dismiss handler treats every url as an app-owned temp file to delete.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1167,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "Non-v4 plaintext is decoded with JSONDecoder into Basket, including each File.url."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/Basket.swift",
+        "line": 36,
+        "scope": "File.url",
+        "description": "url is a synthesized Codable property (no CodingKeys, no custom decoder on File), so decoding accepts it from sender plaintext."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1204,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "Entries whose format is not .file are appended unchanged, keeping the sender's url."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 884,
+        "scope": "RootView.processInboundFile",
+        "description": "The basket becomes openedFileContents and is presented in the read sheet."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 531,
+        "scope": "RootView.phaseContent read sheet onDisappear",
+        "description": "FileManager.default.removeItem(at: url) runs for every file.url, including sender-supplied ones."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1189,
+        "description": ".file entries get a fresh UUID path under tmp with a sanitized extension, the intended control that the default branch skips."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1160,
+        "description": "Legacy trial decrypt over all contacts feeds the same JSON decode, so any contact can reach the path (the .v3fs route is also open to any contact: Contact+Manager.swift verifyConsistency, line 1597, accepts both .v3fs and .v4)."
+      },
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 278,
+        "description": "The v4 binary decoder never sets url, so the issue is limited to the JSON path."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 267,
+        "description": "Outbound composer rebuilds each file from content with no url (also line 339); the share-session path does the same (ShareSession.swift:108), so this device never sends its own container path."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v1/ComposableMessage.swift",
+        "line": 319,
+        "description": "The text bubble renders from content and ignores url; url is read only in the .file branches, so no other sink consumes a sender url for non-file entries."
+      }
+    ],
+    "reason": "Source confirms the chain: File.url is synthesized Codable (Basket.swift:36), the .v3fs and legacy paths feed JSONDecoder (OccultaApp.swift:1160, 1167), the default branch appends non-.file entries unchanged (:1203-1204), and onDisappear removes every file.url (:529-532). It stops at the destination. removeItem(at:) needs a file URL that names something the sandbox lets the app delete, and everything the app can delete sits under its data container, whose absolute path contains a per-install random UUID that a contact does not have. I found no route that discloses it: all outbound basket encoders (ComposeViewModel.swift:267 and 339, the share-session path via ShareSession.load, OccultaApp.swift:1253) build files from content with no url, and the draft store (DraftStore.swift:226) is a local, sealed persistence path, not an outbound one. A rootless URL does not substitute for the path: a scheme-less one is not a file URL, so removeItem(at:) refuses it, and a rootless 'file:' URL resolves against the process working directory, which on iOS is / (an OS fact not visible in source; FileManager.default.currentDirectoryPath on a Simulator is a one-line check). No other consumer reads a sender url for non-file entries. With the prerequisite out of the adversary's reach, this is a latent hardening gap and not a vulnerability, so it is recorded as a hardening note rather than a candidate. Hardening fix: set url = nil for every decoded entry the rebuild does not recreate (or exclude url from File's wire keys), and have the dismiss handler delete only URLs under the temp directory the app created. Reopen under the same fingerprint if a channel is ever found that discloses the container path, or if the working-directory check shows it is the container."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "OccultaFormats/SignedAttribute.signingPayload:out-of-range-date-to-UInt64-trap",
+    "title": "Out-of-range SignedAttribute dates in inbound shard operations trap signature verification",
+    "description": "SignedAttribute.signingPayload converts createdAt and expiresAt to UInt64 with no range check. SignedAttribute is decoded from the sealed payload by the synthesized Codable with a default JSONDecoder, so a Date can be any Double the sender writes. A contact visible at the current depth can send a forward-secret bundle whose .distribute, .replace or .handback operation carries a createdAt before 1970 (or past 2^64 seconds), or a far-future expiresAt. ShardCustodyManager then calls verify(against:), which builds the signing payload as an argument to SecKeyVerifySignature before any signature is checked, and the app terminates. The surrounding do/catch in handleInbound catches thrown errors only. The same conversion trap was already fixed for .occbak entries (Vault+Manager+Backup.swift isWellFormed, Bug 96 item 1) but not for this inbound path. Because the JSON Date is seconds since 2001, an input such as createdAt = -1e12 or expiresAt = 1e30 is enough.",
+    "claimed_root_cause": "The SignedAttribute decoder accepts any Date, and signingPayload, the shared sign/verify routine, performs a trapping Double-to-UInt64 conversion on it. No range validation runs on an inbound attribute before verify().",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1091,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "Shard operations from an opened group bundle (this call; the single-recipient forward-secret path reaches handleInbound at line 1138) go to ShardCustodyManager.handleInbound. filterShardOperations (line 1018) only drops them when the sender is not visible at the current depth."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 216,
+        "scope": "WireHandle.decode(payload:)",
+        "description": "PayloadMeta, which carries shardOperations and their SignedAttribute, is decoded with a default JSONDecoder, so createdAt and expiresAt are arbitrary Doubles (deferredToDate). The per-recipient copy in RecipientPayload is decoded the same way."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Vault/ShardCustody+Manager.swift",
+        "line": 114,
+        "scope": "ShardCustodyManager.handleDistribute",
+        "description": "attribute.verify(against: senderPublicKey) is the first thing done with a .distribute attribute (line 148 for .replace). For .handback, line 271 calls attribute.verify(against: ownKey) whenever retrieveIdentity() succeeds. All run inside the do/catch at lines 74-89, which cannot catch a trap."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/SignedAttribute.swift",
+        "line": 209,
+        "scope": "SignedAttribute.verify",
+        "description": "After the 65-byte key check, the past-expiry early return (line 195) and SecKeyCreateWithData, verify evaluates self.signingPayload() as an argument of SecKeyVerifySignature, so the conversion runs before the signature is looked at."
+      },
+      {
+        "kind": "sink",
+        "file": "OccultaCore/Sources/OccultaFormats/SignedAttribute.swift",
+        "line": 152,
+        "scope": "SignedAttribute.signingPayload",
+        "description": "UInt64(createdAt.timeIntervalSince1970) traps for a value <= -1 or >= 2^64; line 159 does the same for expiresAt >= 2^64, which passes the exp < Date() check at line 195."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/SignedAttribute.swift",
+        "line": 152,
+        "description": "Unguarded UInt64(createdAt.timeIntervalSince1970). The struct has no custom init(from:) (the only Codable conformance is on line 38), so nothing restricts the decoded Date."
+      },
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/SignedAttribute.swift",
+        "line": 159,
+        "description": "Unguarded UInt64(expiresAt.timeIntervalSince1970). A far-future expiresAt is not caught by the line-195 expiry check, which only handles the past."
+      },
+      {
+        "file": "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+        "line": 276,
+        "description": "Sibling control: isWellFormed rejects a createdAt outside [0, UInt64.max) before the same conversion, with a comment that UInt64(_: Double) traps. It guards .occbak entries only."
+      },
+      {
+        "file": "Occulta/Features/Vault/Vault+Model.swift",
+        "line": 415,
+        "description": "SignedAttributeCodec (the at-rest sealed form) clamps only the negative side (max(0, ...)); it runs after verification and so is not a guard for this path."
+      },
+      {
+        "file": "Occulta/Features/Vault/ShardCustody+Manager.swift",
+        "line": 85,
+        "description": "The catch block covers thrown errors only; a Swift runtime trap terminates the process."
+      },
+      {
+        "file": "Occulta/Features/Vault/ShardCustody+Manager.swift",
+        "line": 148,
+        "description": "handleReplace verifies the attribute (after only a category and attributeID check) in the same unguarded way, so all three operation kinds reach the sink."
+      }
+    ],
+    "blockers": [
+      "Nothing could be executed in this run: no OS-enforced sandbox meeting the run's controls exists for an iOS target (xcodebuild and the Simulator run outside any sandbox the parent can impose), so the effect below was derived from source and documented Swift semantics only and was not observed. That UInt64(_: Double) keeps its range preconditions in Release is standard-library behaviour; the project's own Bug 96 entry records it as a real crash on the .occbak path."
+    ],
+    "validation_plan": {
+      "local": "Settle the conversion in a throwaway macOS command-line program built with `swiftc -O` in a sandboxed scratch directory (a trap inside the test host would kill the whole run): print UInt64(Date(timeIntervalSinceReferenceDate: x).timeIntervalSince1970) for x = -1e12 and 1e30 and expect SIGILL/EXC_BREAKPOINT for both and normal exit for x = 0. Then in OccultaTests/Vault/ShardHandbackAttestationTests.swift (already .ambientTestKeyManager) add one test per case: build a SignedAttribute(label:, value: 33 bytes, category: .shard, signature: Data(repeating: 1, count: 70), createdAt: Date(timeIntervalSinceReferenceDate: -1e12), entryID: UUID()), JSON-round-trip it so the test goes through the real decoder, wrap it in OccultaBundle.ShardOperation(kind: .handback, attribute:), and call custody.handleInbound(shardOperations:custodyManifest:senderPublicKey:senderIdentifier:vaultManager:) as the existing tests do; a second case uses a valid createdAt and expiresAt = Date(timeIntervalSinceReferenceDate: 1e30). Expected today: process termination at SignedAttribute.swift:152 and :159. After the fix (verify returns false when either timestamp is outside [0, UInt64.max), or the decoder rejects it, mirroring isWellFormed) both cases return and handleInbound stores nothing."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "OccultaFormats/WireHandle:unchecked-UInt64-length-to-Int-and-offset-add-trap",
+    "title": "Crafted .occ length field traps WireHandle and terminates Occulta before authentication",
+    "description": "WireHandle converts attacker-controlled 64-bit length fields with Int(_:) and adds them to the read offset unchecked. A 167-byte file starting with OCCB and carrying a ciphertext length >= 2^63 (or within 167 of Int.max) makes OccultaBundle.decoded trap instead of throw. The app terminates whenever the file is opened, or at the next PIN unlock if it was queued while locked; the queue is memory-only, so nothing persists across the crash and the effect is a process termination, not memory corruption, and it needs the user to open the file. Anyone who can get a file opened in Occulta can do this: no contact relationship, key or depth is involved. The same pattern in decode(payload:) and decode(basket:) lets a contact, a card holder (before redemption, at every depth), or a group co-recipient of a pre-digest sender trap the receiver after decryption. A trap during a share-extension handoff also skips the deferred removal of group.com.occulta.shared/inbound/<uuid>.occ, which nothing else sweeps (the existing Inbox cleanup covers only Documents/Inbox and tmp). This is a concrete instance of the open 'no fuzzing of .occ decoders' item, not a restatement of it.",
+    "claimed_root_cause": "Reader has no checked length helper: callers do Int(UInt64) conversions, and Reader.read computes offset + count before its bounds guard. Swift traps on both in -O builds, and try? at the call site cannot catch a trap.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 687,
+        "scope": "RootView.handleOpenURL",
+        "description": "Any .occ file opened in Occulta (Open in / AirDrop / Files / share extension handoff) is read whole with no size or format gate (:770), then passed to processInboundFile (:798), or queued while locked and processed at the next unlock (:793-795, :400-403)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 866,
+        "scope": "RootView.processInboundFile",
+        "description": "Only the 1,768-byte card check runs first; every other file goes to buildOwnedBasket (:875)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1040,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "`try? OccultaBundle.decoded(from: fileContents)`: try? swallows thrown errors but cannot catch a runtime trap."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/OccultaBundle.swift",
+        "line": 806,
+        "scope": "OccultaBundle.decoded",
+        "description": "A file starting with 4F 43 43 42 (OCCB) goes to WireHandle.parse before any key, sender or depth logic."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 58,
+        "scope": "WireHandle.parse",
+        "description": "ctLen (UInt64, attacker bytes 159-166) is converted with Int(ctLen): a runtime trap when ctLen >= 2^63."
+      },
+      {
+        "kind": "sink",
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 414,
+        "scope": "Reader.read",
+        "description": "`let end = offset + count` is computed before the `end <= data.endIndex` guard. For count in (Int.max - offset, Int.max], e.g. ctLen 0x7FFFFFFFFFFFFFFF, the addition overflows and traps."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 57,
+        "description": "`let ctLen = try r.uint64BE()` is followed by `let ciphertext = try r.read(Int(ctLen))` with no range check."
+      },
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 213,
+        "description": "decode(payload:) does the same: `let msgLen = Int(try r.uint64BE())` then `r.read(msgLen)` (:214)."
+      },
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 274,
+        "description": "decode(basket:) does the same: `let ctLen = Int(try r.uint64BE())` then `r.read(ctLen)` (:275)."
+      },
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 415,
+        "description": "The only bounds control, `guard end <= data.endIndex`, runs after the overflowing addition on :414."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1040,
+        "description": "The only error handling around the outer parse is `try?`, which does not cover traps."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 708,
+        "description": "redeemSlot calls `try? WireHandle.decode(payload: body)` on a card holder's body, after the introduction, slot-signature and routing checks, which the card's holder can satisfy with its own keys, and before redemption, over every issued card at every depth (identifyOwner -> redeemCard, Contact+Manager.swift:1640)."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2009,
+        "description": "openGroup decodes the shared body with WireHandle.decode(payload:) after the slot opens (decryptSealed does the same through decodePayload, :1722 and :1806). For a sender not recorded at .bodyDigestCapable, any co-recipient can rewrite that body (the known Bug 165 residual)."
+      },
+      {
+        "file": "Occulta.xcodeproj/project.pbxproj",
+        "line": 724,
+        "description": "Only the Debug configuration sets SWIFT_OPTIMIZATION_LEVEL (-Onone); no -Ounchecked or unsafe flags appear anywhere in the project or in OccultaCore/Package.swift, so Release keeps the overflow and conversion traps and the effect is process termination."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 744,
+        "description": "The deferred removal of the handed-off file runs only when the Task completes. A trap leaves group.com.occulta.shared/inbound/<uuid>.occ in place; ShareSession.sweep (ShareSession.swift:175-197) sweeps only pending/."
+      },
+      {
+        "file": "Occulta/Extensions/FileManager.swift",
+        "line": 45,
+        "description": "clearInboxes removes Documents/Inbox and tmp *-Inbox copies stranded by a crash, but nothing equivalent covers the app group's inbound/ directory."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox meeting the run's controls exists for this iOS target, so no target code was built or executed; the trap is established from source and Swift semantics (Int(UInt64) conversion and Int addition are checked operations) and was not observed.",
+      "The shipped build's optimisation level was not observed from a built binary. Source shows Release on the default -O with checks retained; an -Ounchecked build would turn the trap into an unchecked overflow and would need a separate memory-safety check."
+    ],
+    "validation_plan": {
+      "local": "Simulator only, never a connected iPhone. Add an OccultaTests suite (for example struct WireHandleLengthBoundsTests) with one @Test per fixture. (1) fixtureA = 4F434342 04 04 01 0000 00 + 36x00 + 65x00 + 16x00 + 32x00 + FFFFFFFFFFFFFFFF (167 bytes). (2) fixtureB = the same with 7FFFFFFFFFFFFFFF. (3) decode(payload:) input = 00000002 7B7D FFFFFFFFFFFFFFFF; decode(basket:) input = BasketMeta JSON length-prefixed + 00000001 + 00000002 7B7D + FFFFFFFFFFFFFFFF (use a minimal valid BasketMeta/FileMeta JSON so the loop reaches the length). Each asserts #expect(throws: (any Error).self) on OccultaBundle.decoded(from:) / WireHandle.parse / decode(payload:) / decode(basket:). A trap kills the test host, so run each fixture in its own xcodebuild invocation (-scheme OccultaTests -only-testing:OccultaTests/WireHandleLengthBoundsTests/<test>), in Debug and Release, and read the termination reason from the crash report or .xcresult: a crashed host can be reported as a green 'Executed 0 tests' (see CLAUDE.md). Expected today: termination with 'Not enough bits to represent the passed value' (A) or an arithmetic-overflow trap in Reader.read (B), not a thrown error. After the fix (reject a length greater than the remaining bytes before any conversion, for example `guard let n = Int(exactly: ctLen), n <= r.remaining else { throw .malformedBundle }`, plus `count >= 0 && count <= remaining` in Reader.read before the addition), all cases throw.",
+      "deployment": "On a device the owner names that holds no real data, AirDrop fixtureA renamed x.occ and open it in Occulta. The app should terminate and a crash report naming WireHandle.parse should appear under Settings > Privacy > Analytics. With the share-extension route, check that group.com.occulta.shared/inbound/<uuid>.occ is left behind."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "ShareStagingKeyManager.deriveSymmetricKey:ecdh-with-generator-is-public-point",
+    "title": "Share staging key is a function of the Enclave key's public point, not of its private key",
+    "description": "ShareStagingKeyManager derives the AES-256-GCM key that seals staged share files and manifests from ECDH(SE private key d, P-256 generator G) using .ecdhKeyExchangeCofactorX963SHA256. For P-256 (cofactor 1) that shared point is d*G, the key's own public point Q, so the ECDH output is X9.63-SHA256 of x(Q), and the HKDF salt is the x9.63 encoding of Q; the info string is a constant. No secret enters the derivation: the AES key is a function of Q alone. The file header and comments present the key as bound to the Secure Enclave. If Q, or a blob from which Q is parsed without an Enclave call, is recoverable from a keychain or filesystem extraction, an examiner holding an image taken while a share session is staged (sessions are swept after 3600 s, and the sweep runs only when the main app is foregrounded) could decrypt the staged files and manifest offline, without calling the Enclave. Impact is bounded: staged files and the manifest are also written with .completeFileProtection, the manifest no longer names a recipient (it lists file names and extensions), and the content is the attachment being shared, not hidden-depth state, so the AES layer only adds protection against an examiner who can read class-A file bytes but cannot use the Enclave. Project docs already treat the Enclave half of this construction as a fixed value that one call during extraction captures (Docs/v2.0.0/HARDENING_STEPS.md:72); this candidate is the stronger observation that the value is computable from public data alone, which no known item records.",
+    "claimed_root_cause": "Using the curve generator as the ECDH peer turns the key-agreement step into public-key recomputation (d*G = Q); no secret input enters the derivation, so Enclave binding of the private key does not translate into secrecy of the symmetric key.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "ShareExtension/ShareViewController.swift",
+        "line": 200,
+        "scope": "ShareViewController.copyFileRepresentation",
+        "description": "Shared attachment plaintext is read here (the encrypt call is on the next line) and sealed with shareKeyManager.encrypt before it is written to pending/<uuid>/<n>.tmp."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/ShareExtension/ShareStagingKeyManager.swift",
+        "line": 171,
+        "scope": "ShareStagingKeyManager.encrypt",
+        "description": "Seals with the key returned by deriveSymmetricKey."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/ShareExtension/ShareStagingKeyManager.swift",
+        "line": 147,
+        "scope": "ShareStagingKeyManager.deriveSymmetricKey",
+        "description": "ECDH with the fixed peer generatorG; for P-256 the shared point is the key's own public point Q."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/ShareExtension/ShareStagingKeyManager.swift",
+        "line": 159,
+        "scope": "ShareStagingKeyManager.deriveSymmetricKey",
+        "description": "HKDF over an IKM derived from x(Q), salted with the public key x9.63 and a constant info string: the AES key depends only on public material."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/ShareExtension/ShareStagingKeyManager.swift",
+        "line": 42,
+        "description": "generatorG is the standard P-256 base point used as the ECDH peer."
+      },
+      {
+        "file": "Occulta/Features/ShareExtension/ShareStagingKeyManager.swift",
+        "line": 41,
+        "description": "Comment states ECDH(privKey, G) 'produces a deterministic secret tied to the private key', which is the assumption that fails: it is also a deterministic function of the public key."
+      },
+      {
+        "file": "Occulta/Features/ShareExtension/ShareStagingKeyManager.swift",
+        "line": 155,
+        "description": "Salt comes from SecKeyCopyPublicKey and SecKeyCopyExternalRepresentation (line 156), i.e. Q itself."
+      },
+      {
+        "file": "Occulta/Features/ShareExtension/ShareSession.swift",
+        "line": 83,
+        "description": "The app decrypts the manifest (and each file at line 98) with the same derived key; nothing else authenticates or hides the staged content."
+      },
+      {
+        "file": "ShareExtension/ShareViewController.swift",
+        "line": 204,
+        "description": "Staged ciphertext is written with .completeFileProtection (also lines 167 and 238), which bounds the incremental value of the AES layer."
+      },
+      {
+        "file": "Docs/v2.0.0/HARDENING_STEPS.md",
+        "line": 72,
+        "description": "Project docs treat ECDH(SE_priv, G) as a constant that needs one Enclave call to capture; this candidate is the stronger variant that needs only the public key."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox exists for the iOS target in this run, so no code was executed: the identity ECDH(d, G) = x(Q) and the resulting key function are established from source and P-256 arithmetic and were not observed on an Enclave.",
+      "Decisive OS fact, not source-visible: whether an SE key's public point is stored in a recoverable form in the keychain item or token object data that a passcode-based extraction yields, without an Enclave operation. If it is not, impact reduces to the already-known Bug 119 baseline (an examiner with code execution and the passcode can call the Enclave).",
+      "Device-lifecycle fact, not source-visible: which examiner states leave the staged class-A files readable while the Enclave is unusable (for example a post-unlock image analysed later). Without such a state the AES layer was never the only barrier."
+    ],
+    "validation_plan": {
+      "local": "Simulator on bare-metal Apple Silicon only, never a connected iPhone. Add an OccultaTests case gated with .enabled(if: secureEnclaveAvailable()) that creates a throwaway SE P-256 key under a unique test tag (the production tag is private, so replicate the derivation byte for byte, or expose a seam), exports only the public key with SecKeyCopyExternalRepresentation, then in CryptoKit without the private key computes SHA256(x(Q) || 00000001), where x(Q) is bytes 1..32 of the x9.63 encoding, and HKDF<SHA256>(ikm, salt: Q x9.63, info: 'Occulta-v1-share-index-2026', 32 bytes), and asserts the result equals the key the Enclave path (SecKeyCopyKeyExchangeResult against G, then the same HKDF) produces; delete the throwaway key afterwards. This settles the arithmetic only, not the extraction question. After a fix the same test asserts the public-only recomputation no longer matches. Fix direction: make decryption need a live Enclave operation, for example seal a random 32-byte staging key to the SE public key with SecKeyCreateEncryptedData (ECIES) and open it with SecKeyCreateDecryptedData in the app and extension, instead of deriving from ECDH with G.",
+      "deployment": "Owner-observed, on a dedicated test device holding no real data. Stage a share session, take a passcode-based full-file-system and keychain extraction with the owner's own tooling, and check whether the staging key item (tag share.index.se.key.occulta, access group group.com.occulta.shared) exposes the 65-byte public point or a blob from which it is parsed without the SEP. If it does, recompute the key as in the local test and open one staged file from the same image; if it does not, close as the Bug 119 baseline."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "forensic:attachment-staged-plaintext-when-recipient-has-no-file-key",
+    "title": "Attachments for card contacts and groups are staged and kept as drafts in plaintext, though the design says they are sealed under the per-contact file key",
+    "description": "Compose stages attachments in tmp/ through AttachmentManager, which seals them under the recipient's per-contact file key. DraftStore then copies the staged file byte for byte into Application Support/Drafts/<draftID>/, which Message+Draft.swift:155-160 documents as 'still sealed under the contact's per-contact key' and FINDINGS.md:145 describes as 'no weaker-protection window while a draft sits unsent'. ContactManager.fileEncryptionKey(for:) derives that key from the contact's stored long-term public key and throws contactHasNoKeys when there is none. Keys are appended only by the in-person exchange path (Contact+Manager.swift:617), so every introduction-card contact before the meeting has none: Carol's new contact from importCard (createPendingContact), and a pending contact Bob has issued a card for. ComposeViewModel.setup also never builds a manager for a group. With attachmentManager nil, handleMedia (images, :150) and handleFile (:200) write the user's raw bytes to tmp/ with writeProtected (NSFileProtectionComplete, excluded from backup, but not encrypted). handleFile names the staged file after the original. The send path reads those files straight back with URLSession (:265, :338), so the plaintext fallback is a deliberate branch, not an accident. Every change to the compose state schedules a draft save (2 s debounce, and immediately on backgrounding), and DraftStore.save copies the plaintext file into Drafts/, where it outlives the tmp/ launch sweep until the user sends, removes it, reopens and leaves the compose, or the draft is purged on reclassification, contact deletion or duress entry. Inbound card bundles go the same way: buildOwnedBasket writes each attachment of a key-less card owner to tmp/<uuid>.<ext> in plaintext, deleted when the read sheet closes or at the next launch's sweep. The video path refuses without a manager ('Secure storage not ready.', :104), so the image and file paths are inconsistent siblings. A forensic examiner with a passcode-unlocked filesystem image reads photos and files composed to card contacts or groups directly; for every other contact the same files need the identity Enclave key, which means running code on the live device. The draft gate (isSensitive == currentDepth) skips only a contact visible now but hidden at the very next layer. It does not stop the draft copy for a card contact that stays visible at the next layer, and it never gates the tmp/ staging copy or any group. Erase All Data does not remove the Drafts/ files either (forensic:erase-all-data-omits-message-drafts-and-draft-attachments). Verifier note: the group variant predates the introduction-cards branch (the plaintext fallback was added with writeProtected for all tmp writes), but no known-limitation item covers it, and introduction cards make the key-less 1:1 contact the normal case for this feature. Not decided or accepted in OPEN_LIMITATIONS.md, bugs.md, PROTECTION_ASSESSMENT.md or the Introduction Cards docs, which never mention attachments.",
+    "claimed_root_cause": "ComposeViewModel (and buildOwnedBasket) treat a missing AttachmentManager as 'write plaintext with file protection' instead of failing closed or sealing under another key, and DraftStore.save assumes every staged file is already sealed and copies it verbatim into persistent storage. Introduction cards created a whole class of 1:1 contacts with no stored contact key, so they inherit the group path's plaintext fallback.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactDetailV2.swift",
+        "line": 95,
+        "scope": "Contact.DetailsV2.body",
+        "description": "A card contact's detail screen shows the card section and then composeBlock, whose + menu offers Photos & Videos and Browse Files (:517-523). The user picks a photo or file to send to a contact they have only an introduction card for."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 57,
+        "scope": "ComposeViewModel.setup",
+        "description": "attachmentManager is set only if fileEncryptionKey(for:) succeeds and only for .contact. Groups and key-less contacts leave it nil (:54-60)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 701,
+        "scope": "ContactManager.fileEncryptionKey(for:)",
+        "description": "Throws contactHasNoKeys when contactPublicKeys?.last?.material is absent. Keys are appended only by the in-person path (:617), so a card contact created by createPendingContact (ContactManager+Cards.swift:329-331) has none."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 150,
+        "scope": "ComposeViewModel.handleMedia",
+        "description": "With no manager, the picked image bytes are written as-is with writeProtected to tmp/media_<id>.<ext>. handleFile does the same at :200, under the user's original filename (:176-178)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactDetailV2.swift",
+        "line": 162,
+        "scope": "Contact.DetailsV2 onChange(messages)",
+        "description": "Every attachment change schedules DraftStore.scheduleSave (:245-255). Backgrounding flushes at once (:270-285). The gate skips only contacts whose visibleThroughDepth equals currentDepth; a group is never sensitive (ComposeViewModel.swift:75)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift",
+        "line": 213,
+        "scope": "DraftStore.save",
+        "description": "FileManager.copyItem copies the staged file verbatim into Application Support/Drafts/<draftID>/<fileID>.<ext> on the stated assumption 'same bytes, same per-contact key' (:189-192). The plaintext attachment now persists across launches."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Data Models/Message+Draft.swift",
+        "line": 155,
+        "description": "Doc contract: each attachment in Drafts/<id>/ is 'still sealed under the contact's per-contact key' (:155-160)."
+      },
+      {
+        "file": "Docs/Features/Message Persistence/FINDINGS.md",
+        "line": 145,
+        "description": "Design decision: attachments stay encrypted on disk through drafting via AttachmentManager, with 'no weaker-protection window while a draft sits unsent'. Line 231 repeats that the per-contact key already protects them during composition."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 104,
+        "description": "The video path refuses without a manager ('Secure storage not ready.'). The image (:150) and file (:200) paths fall back to plaintext instead, an inconsistent sibling control."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 265,
+        "description": "At send time, with no manager the staged file is read back as plaintext with URLSession (and for groups at :338), confirming the plaintext fallback is a designed branch for key-less recipients and groups."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 72,
+        "description": "Group drafts are never treated as sensitive and always persist (:72-75), so the group variant copies plaintext group attachments into Drafts/ at every depth."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift",
+        "line": 32,
+        "description": "Group compose builds ComposeViewModel(recipient: .group). setup returns early, and ComposeHeroV3.swift:84-90 offers Photos & Videos and Browse Files."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1198,
+        "description": "Inbound variant: when fileEncryptionKey fails for the decrypted owner (:1174), as it does for any key-less card owner, each attachment is written to tmp/<uuid>.<ext> in plaintext and deleted only when the read sheet closes (:529-533)."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 117,
+        "description": "createCard requires a contact without in-person keys, and importCard creates a new key-less contact (:298, :329-331). A key-less card contact is the normal case for the feature."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 397,
+        "description": "cleanup() deletes only each file.url. After DraftStore.load those URLs point at the Drafts/ copies, so a durable plaintext copy lives until the user sends, reopens and leaves that compose, or the draft is purged on reclassification, deletion or duress entry."
+      },
+      {
+        "file": "Occulta/Services/ContactManager+Classification.swift",
+        "line": 21,
+        "description": "isSensitive is true only when visibleThroughDepth == currentDepth (visible now, hidden at the next layer). It is the only gate on DraftStore.save and does not cover the tmp/ staging copy or groups."
+      }
+    ],
+    "blockers": [
+      "Per the parent's execution note, there is no OS-enforced sandbox for xcodebuild or the Simulator on this host, so the bytes on disk of a staged or draft attachment for a key-less card contact or a group were not observed.",
+      "Whether FileManager.copyItem keeps NSFileProtectionComplete on the Drafts/ copy is an OS runtime fact. It affects whether the file can be read before first unlock, not whether it is plaintext."
+    ],
+    "validation_plan": {
+      "local": "Add OccultaTests/Contacts/AttachmentAtRestTests.swift. Card import needs an Enclave, so either gate the card-import case with .enabled(if: secureEnclaveAvailable()) or create the key-less contact directly with ContactManager.save(contact: Contact.Draft(identifier:givenName:), currentDepth: 0) under .ambientTestKeyManager. Steps: (1) assert fileEncryptionKey(for:) throws contactHasNoKeys; (2) build ComposeViewModel(recipient: .contact(id)), call setup, and assert attachmentManager == nil; (3) write a temp source file containing the marker 'OCCULTA-AT-REST-MARKER', call handleFile(.success([url])), and wait until messages is non-empty; (4) assert the staged file at messages[0].url starts with the 4-byte 'OATT' header and does not contain the marker; (5) call DraftStore(debounceDelay: .zero).flush(recipientID:isSensitive:false,text:\"\",messages:useThread:false,modelContext:) and make the same two assertions on every file under Message.Draft.attachmentsFolder(for: draft.id). Repeat for ComposeViewModel(recipient: .group(UUID())). The candidate is confirmed if steps 4-5 fail on HEAD (marker found in clear). After a fix, both must pass. Clean up the Drafts/ folder in a defer."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "forensic:erase-all-data-omits-message-drafts-and-draft-attachments",
+    "title": "Erase All Data leaves every Message.Draft row and the Application Support/Drafts/ attachment files",
+    "description": "Settings promises that Erase All Data deletes the 'entire contact database, vault, private keys and stored messages' (Settings.swift:161). Bug 128's fix set the contract that a wiped device carries no file showing what it held ('A wiped device is supposed to carry none of this', bugs.md:11215), because 'Files outlive row deletion and key deletion alike' (Vault+Manager.swift:373). Manager.App.eraseAllData deletes prekey keys, Contact.Profile rows (a batch delete with no relationship to Message.Draft), the vault's models and its backup files, share-extension leftovers, and the Secure Enclave keys. It never touches Message.Draft rows or Application Support/Drafts/<draftID>/, which Message.Draft.delete calls 'the only correct way to delete a draft' because deleting just the row leaves the content on disk (Message+Draft.swift:189-198). The single-contact delete path does purge the draft (Contact+Manager.swift:534), so the bulk wipe is the odd one out. Nothing later removes the orphans: DraftStore.load treats an undecryptable draft as none and leaves it, and the only bulk purge, purgeUnsafe, runs from applyVerifyState on a .duress verify only (Manager+Security.swift:748-753), which a freshly reset install does not have. After a wipe, a forensic examiner (or whoever later holds the phone) finds the Message.Draft row count and ciphertext sizes, plus one folder per draft holding attachment files with their count, sizes, timestamps and type extensions (.jpg, .mp4). The row and file contents are sealed under keys the wipe has just deleted, so the leak is metadata (that the app was used to compose and leave unsent messages), the same class Bug 128 rated Medium for backup files. It affects only a device that held at least one unsent draft at wipe time. For card-contact and group drafts the attachment files are plaintext (forensic:attachment-staged-plaintext-when-recipient-has-no-file-key), so the attachment content itself would survive the wipe in readable form, which depends on that candidate being confirmed. Group rows survive too, but only until the next launch's depth-0 purgeUnreadableGroups (Contact+Manager+Groups.swift:108). That purge does not touch Drafts/ folders. No known-limitation item covers it: Bug 128 is fixed for backup files only and Message Persistence/FINDINGS.md never discusses the wipe.",
+    "claimed_root_cause": "eraseAllData enumerates the stores to wipe by hand (Manager+App.swift:22-27, VaultManager.deleteAllData). When drafts became persistent (Message.Draft in the OccultaApp schema at :47, files in Drafts/), the wipe was never extended to them. Message.Draft rows and their folder are outside every step of the wipe.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 176,
+        "scope": "Settings Erase All Data confirmation",
+        "description": "'Delete Everything' calls appManager.eraseAllData() after a dialog promising every contact, the vault and all keys are deleted."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Manager+App.swift",
+        "line": 22,
+        "scope": "Manager.App.eraseAllData",
+        "description": "Deletes prekey keys, then contacts, then vault data, then share-extension leftovers and SE keys (:22-31). It has no draft or Drafts-folder step."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 563,
+        "scope": "ContactManager.deleteAllContacts",
+        "description": "Batch-deletes Contact.Profile only. Message.Draft has no relationship to it, unlike the single-contact delete at :534, which purges that contact's draft."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Vault/Vault+Manager.swift",
+        "line": 359,
+        "scope": "VaultManager.deleteAllData",
+        "description": "Deletes vault and shard models and the backup files from Bug 128. It covers no Message.Draft and no Drafts/ folder."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Data Models/Message+Draft.swift",
+        "line": 161,
+        "scope": "Message.Draft.attachmentsFolder(for:)",
+        "description": "Application Support/Drafts/<draftID>/ and the sealed Message.Draft rows stay after the wipe. delete(_:in:) (:195-198), the only remover, is reached only through DraftStore, classification, contact deletion or purgeUnsafe on duress entry."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 161,
+        "description": "User-facing promise: 'Delete entire contact database, vault, private keys and stored messages.'"
+      },
+      {
+        "file": "Occulta/Features/Vault/Vault+Manager.swift",
+        "line": 373,
+        "description": "The wipe's own comment: 'Files outlive row deletion and key deletion alike (bugs.md Bug 128)'. Only backup files are handled (the two calls after it)."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 11215,
+        "description": "Bug 128 contract: 'A wiped device is supposed to carry none of this.' Fixed for backup files only, so Drafts/ is a new, uncovered case of the same class."
+      },
+      {
+        "file": "Occulta/Data Models/Message+Draft.swift",
+        "line": 192,
+        "description": "Deleting only the row 'would leave their content readable on disk' (:189-192), and the wipe deletes neither the row nor the folder."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 753,
+        "description": "purgeDraftsNotSafeAtCurrentDepth, the only pass that removes undecryptable draft rows and folders in bulk, runs only on a .duress verify (:748-753), never at launch or after a wipe."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift",
+        "line": 132,
+        "description": "load() treats a corrupt or undecryptable draft as none (returns nil) without deleting the row or folder, so orphans left by a wipe are never cleaned up on a later compose."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 534,
+        "description": "The single-contact delete path calls Message.Draft.purge(recipientID:), which shows the draft row and folder are meant to go with the contact. deleteAllContacts at :563 does not."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 47,
+        "description": "Message.Draft is a persisted model in the shared store, alongside the models eraseAllData does delete."
+      }
+    ],
+    "blockers": [
+      "Per the parent's execution note, there is no OS-enforced sandbox for xcodebuild or the Simulator, so the rows and files left after eraseAllData were not observed.",
+      "eraseAllData calls the real Manager.Key().deleteAllKeys() and PrekeySecretsManager, so a full-path test needs a host with an Enclave. The .ambientTestKeyManager trait would fail on the real Manager.Key."
+    ],
+    "validation_plan": {
+      "local": "Add a test beside VaultBackupRoundTripTests.wipeDeletesBackupFiles. Insert a Message.Draft row with id D into the test container and write a file under Message.Draft.attachmentsFolder(for: D). Run the data half of the wipe (contactManager.deleteAllContacts(); vaultManager.deleteAllData()), or the full Manager.App.eraseAllData() under .enabled(if: secureEnclaveAvailable()). Then assert that FetchDescriptor<Message.Draft>() returns no rows and that attachmentsFolder(for: D) and Application Support/Drafts/ no longer exist. The candidate is confirmed if the assertions fail on HEAD. In the same test, also assert that no Contact.Profile.Key, PhoneNumber, EmailAddress, PostalAddress or URLAddress rows remain after delete(model: Contact.Profile.self), because whether that batch delete cascades is a runtime fact."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "group-outer-header-unauthenticated-before-prekey-consumption",
+    "title": "A copy of a group bundle with an altered outer header uses up the recipient's one-time prekey, and the genuine message can then never be opened",
+    "description": "openRecipientSlot and openCardSlot record the slot's one-time prekey as used once the slot opens and its bodyDigest matches, and a defer then consumes it and SenderPrekeys saves the record at once. The slot AEAD authenticates only `blind`, and the digest covers only bundle.ciphertext. The outer header (secrecy.ephemeralPublicKey, 65 cleartext bytes, and secrecy.prekeyID, a flag plus 36 cleartext bytes) is authenticated only later, as part of the AAD in openGroupCiphertext. A group bundle's header is always the constant mode .group, empty ephemeral key and nil prekeyID, so those fields carry no information, yet the parser accepts any value. Anyone holding a copy of the .occ file can set one byte of the ephemeral field (or the prekeyID flag with 36 valid UTF-8 bytes), keep the sender fingerprint, and deliver the copy first: the slot opens, the digest matches, the prekey is consumed and persisted, and only then does openGroupCiphertext fail. The genuine copy that arrives later finds no key (recipientSlotNotFound). The attacker needs no key; a group member who has the same file at the same time (bugs.md Bug 165 says this is usual) or a holder of a transport copy qualifies. The project fixed the same outcome for a rewritten body (the Bug 165 amendment to SECURITY_CHECKLIST.md section 2.2) and stated the rule: delivering first must not make the genuine message unopenable. The 'prekey burn' cost accepted at SECURITY_CHECKLIST.md:91 is framed around someone holding the batch we published, who can burn keys with bundles that open and fail; it does not discuss a keyless copy-holder destroying one specific genuine message, so this is treated as an uncovered variant of that item and the Bug 165 exception, not a restatement. Scope: one message per tampered copy; availability only; the single-recipient path (decryptSealed) is not affected because it opens under the full AAD before consuming. Suggested fix: refuse, before trial decryption, a group bundle whose outer secrecy is not the constant every sender writes, or open the outer ciphertext before the prekey is recorded as used.",
+    "claimed_root_cause": "The one-time prekey is recorded as used, and so consumed and persisted, when the slot AEAD (AAD = blind) and the ciphertext digest pass. Neither covers the outer SecrecyContext. The AEAD that does cover it (openGroupCiphertext, AAD = version, sorted-JSON secrecy, blind) runs only after consumption, and the wire parser does not require the constant header values a group bundle always has. The Bug 165 digest reasoning ('changing either changes the ciphertext') holds only for someone who re-encrypts, not for an AAD-only change by a keyless holder.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1040,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "The inbound .occ bytes, which the attacker modified, are decoded with OccultaBundle.decoded(from:); identifyOwner at line 1052 uses only the unchanged sender fingerprint."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/WireHandle.swift",
+        "line": 54,
+        "scope": "WireHandle.parse",
+        "description": "The 65-byte ephemeral-key field and, at lines 52-53, the prekeyID flag and 36 bytes are read from cleartext. Any non-zero ephemeral field is kept (line 67); nothing ties it to mode .group."
+      },
+      {
+        "kind": "propagation",
+        "file": "OccultaCore/Sources/OccultaFormats/OccultaBundle.swift",
+        "line": 902,
+        "scope": "OccultaBundle.init(wireBundle:)",
+        "description": "bundle.secrecy is built from those cleartext fields with no validation (only valid UTF-8 is required of the prekeyID)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1074,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "A bundle with a group envelope goes to ContactManager.openGroup, which at Contact+Manager.swift:1901 checks only that secrecy.mode == .group."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1947,
+        "scope": "ContactManager.openGroup",
+        "description": "openRecipientSlot is called with the sender's SenderPrekeys (openCardSlot at line 1938 for a card contact)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 161,
+        "scope": "Manager.Crypto.openRecipientSlot",
+        "description": "The slot opens: its key comes from the slot's own secrecyContext, and its AEAD authenticates only `blind`, which is unchanged."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 167,
+        "scope": "Manager.Crypto.openRecipientSlot",
+        "description": "The bodyDigest check compares against SHA-256 of bundle.ciphertext only, which is unchanged, so it passes."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 173,
+        "scope": "Manager.Crypto.openRecipientSlot",
+        "description": "usedPrekey is set; the defer at lines 145-149 consumes it on return (card path: Crypto+Manager+Cards.swift:285, consumed by the defer at :273)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager+Prekeys.swift",
+        "line": 256,
+        "scope": "SenderPrekeys.consume",
+        "description": "The key is removed from the record, and persist (line 257) saves it at once through ContactManager.save (lines 114-115: store, then saveAndFlush)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 217,
+        "scope": "Manager.Crypto.openGroupCiphertext (called at Contact+Manager.swift:2008)",
+        "description": "The AAD built at line 214 from the altered bundle.secrecy no longer matches, so AES.GCM.open throws. The bundle is rejected after its prekey is gone; a later genuine copy finds no key and throws recipientSlotNotFound."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupEncrypt.swift",
+        "line": 165,
+        "description": "Every sender writes the constant outer secrecy: mode .group, empty ephemeral key, nil prekeyID. The header fields carry no information, so requiring those values costs nothing."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 84,
+        "description": "The documented Bug 165 exception: consuming on a body mismatch 'would let them, by delivering first, make the sender's genuine message unopenable'. The same harm is reached here through the header."
+      },
+      {
+        "file": "Docs/Audit/SECURITY_CHECKLIST.md",
+        "line": 107,
+        "description": "The Bug 165 amendment keeps the key when a copy of the bundle, not the sender, caused the failure. Its reasoning applies equally to a header changed in transit."
+      },
+      {
+        "file": "Docs/Audit/SECURITY_CHECKLIST.md",
+        "line": 91,
+        "description": "The accepted prekey-burn cost is framed as 'someone holding the batch we published to a contact'. A keyless holder of a copied file destroying one genuine message is not that case."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1709,
+        "description": "Sibling path decryptSealed derives its key from bundle.secrecy and opens the whole bundle under AAD(version, secrecy) before consuming at line 1718, so a changed header there fails before the key is used up."
+      },
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/OccultaBundle.swift",
+        "line": 696,
+        "description": "The bodyDigest doc comment says covering the ciphertext is enough because 'changing either changes the ciphertext'. That is true for a re-encrypting forger and false for a keyless AAD-only change, which leaves the ciphertext and so the digest untouched."
+      },
+      {
+        "file": "OccultaTests/Forward+Secrecy/PrekeyReplenishmentTriggerTests.swift",
+        "line": 421,
+        "description": "digestMismatchKeepsThePrekey covers only ciphertext corruption (the `corrupted` helper at line 191); GroupBodyBindingTests.mismatchKeepsTheOneTimeKey (line 218) covers a rewritten body. No test changes the outer header and checks that the key survives."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/Crypto+Manager+Cards.swift",
+        "line": 282,
+        "description": "Card conversations check the digest (282-283) then record the prekey (285) before openGroup's outer AEAD: the same order and the same gap."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 13552,
+        "description": "(Line numbers as at audited commit 8c51ad97.) Bug 165 records that another group member usually has the same file as the victim at the same time, which makes delivering first realistic."
+      }
+    ],
+    "blockers": [
+      "Nothing could be executed in this run: no OS-enforced sandbox meeting the run's controls exists for an iOS target (xcodebuild and the Simulator run outside any sandbox the parent can impose), so the effect below was derived from source and documented Swift semantics only and was not observed. That the tampered copy consumes the key and the genuine copy then fails with recipientSlotNotFound is derived from reading the code path, not observed.",
+      "The end-to-end openGroup check with a record-held prekey needs a host with a Secure Enclave: PrekeyRecordWiringTests in OccultaTests/Forward+Secrecy/PrekeyReplenishmentTriggerTests.swift is gated by .enabled(if: secureEnclaveAvailable()). The slot-level check does not need one."
+    ],
+    "validation_plan": {
+      "local": "(1) Runs on any host. In OccultaTests/Groups/GroupBodyBindingTests.swift add headerTamperKeepsTheOneTimeKey, modelled on mismatchKeepsTheOneTimeKey (same SoftwareOneTimePrekey, whose consume() records the ID and whose privateKey(forPrekeyID:) then returns nil). Seal `original` from alice to carol with that one-time key. Build `tampered` = OccultaBundle(version: original.version, secrecy: SecrecyContext(mode: .group, ephemeralPublicKey: Data([0x04] + Array(repeating: 0x01, count: 64)), prekeyID: nil), ciphertext: original.ciphertext, fingerprintNonce: original.fingerprintNonce, senderFingerprint: original.senderFingerprint, group: original.group), and round-trip it through OccultaBundle.decoded(from: WireHandle.encode(tampered)) to show the wire carries it. Today's source should give: findAndOpenRecipientSlot(in: tampered) returns used == .oneTime(...); carolsKey.consumed == [id]; openGroupCiphertext(tampered, using: slot session key) throws; findAndOpenRecipientSlot(in: original) now throws recipientSlotNotFound. Repeat with the prekeyID flag set (36 ASCII bytes). The invariant requires carolsKey.consumed to stay empty and `original` to open afterwards. (2) On an Enclave host add headerTamperKeepsThePrekey to PrekeyRecordWiringTests beside digestMismatchKeepsThePrekey, and run it with `xcodebuild -project Occulta.xcodeproj -scheme OccultaTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:OccultaTests/PrekeyRecordWiringTests test` inside an approved sandbox; expected today: openGroup(tampered) throws, PrekeyBookkeeper().blob(forPrekeyID:in: f.savedRecord) == nil, and openGroup(genuine) then throws."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta/card-holder-disambiguation/last-resort-and-long-term-slots-route-to-first-holder",
+    "title": "With two contacts holding the same peer card key, a slot sealed to a last-resort key or a long-term card slot goes to whichever contact sorts first and is rejected",
+    "description": "identifyOwner collects every contact, at every depth, whose card field names the bundle's sender key (Contact+Manager.swift:1628-1636). When there is more than one, cardHolder (:1651-1658) picks the holder whose prekey record holds a blob for a slot's prekeyID, and otherwise holders[0]. It looks the ID up with PrekeyBookkeeper.blob(forPrekeyID:), which searches one-time keys only (PrekeyBookkeeper.swift:165-171). A slot sealed to the recipient's last-resort key carries a derived prekeyID (HMAC of the ephemeral key under the key's ID, Crypto+Manager+Cards.swift:80-84, OccultaBundle.swift:547), which only lastResort(matchingPrekeyID:ephemeralPublicKey:in:) resolves (PrekeyBookkeeper.swift:175), and a long-term slot names no prekey. Both fall to holders[0]. fetchAllContacts orders by the sealed familyName (Contact+Manager.swift:438), arbitrary but stable. If holders[0] is the dead holder, openCardSlot tries that contact's keys, cannot open, and throws recipientSlotNotFound (Crypto+Manager+Cards.swift:302); nothing is consumed or mis-credited, and the same file opens once the dead holder is gone. The collision arises in the case the code documents: the same card imported at two depths. The re-import match ignores contacts hidden at the current depth (ContactManager+Cards.swift:274, decided 2026-10-17), so a duress-depth import of a found card file creates a second holder with its own keys. If that decoy sent once, sentFirstMessage is true and the sweep never clears it (CardRules.swift:85); an unsent one is cleared at its deadline, at most two card lifetimes. Bob uses Carol's last-resort key only after her one-time keys run out (about 15 messages without a fresh batch; ContactManager+Cards.swift:452-456) and a long-term slot only when he holds neither, so the failure affects heavy one-way sending, not the first replies, which are sealed to one-time keys and are covered by CardConversationTests.sameCardOnTwoContacts (:465). Whether the failure happens is fixed by the sort order of the two contacts: if the dead holder sorts first, every such slot fails for as long as both exist. Impact is a partial denial of an existing card conversation that a lower-trust principal (the coercer, or the owner's own decoy) can cause; no message is credited to the wrong contact and nothing leaks. Verifier note: the hunter's second route, a redeemer naming a public card key to create the duplicate on Bob's phone, is not possible, since identifyOwner routes a bundle whose fingerprint already matches a contact to that contact and skips redemption.",
+    "claimed_root_cause": "cardHolder assumes every slot sealed to a prekey can be matched by PrekeyBookkeeper.blob(forPrekeyID:). That lookup covers one-time keys only, so last-resort-derived IDs and long-term slots get the unconditional holders[0] fallback instead of the holder that can open them.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1052,
+        "scope": "buildOwnedBasket",
+        "description": "An inbound card-conversation bundle from Bob reaches identifyOwner(of:)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1633,
+        "scope": "ContactManager.identifyOwner(for:)",
+        "description": "Every contact whose card field names Bob's card agreement key is appended to cardHolders, at every depth."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1637,
+        "scope": "ContactManager.identifyOwner(for:)",
+        "description": "With more than one holder, cardHolder(among:of:) picks the sender."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1657,
+        "scope": "ContactManager.cardHolder",
+        "description": "Only bookkeeper.blob(forPrekeyID:) is consulted; a derived last-resort ID or a long-term slot (no prekeyID) matches nothing, so the result is holders[0] (:1658)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 165,
+        "scope": "PrekeyBookkeeper.blob(forPrekeyID:in:)",
+        "description": "Searches ownBatches' one-time keys only; last-resort keys are matched by lastResort(matchingPrekeyID:ephemeralPublicKey:in:) at :175, which cardHolder does not call."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1938,
+        "scope": "ContactManager.openGroup",
+        "description": "openCardSlot runs with the chosen holder's CardReceiveContext and SenderPrekeys."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IntroductionCards/Crypto+Manager+Cards.swift",
+        "line": 322,
+        "scope": "Manager.Crypto.cardSlotSource",
+        "description": "The wrong holder's record has no matching one-time or last-resort key, so the slot falls back to ECDH with that holder's own card agreement key, which is the wrong key."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/IntroductionCards/Crypto+Manager+Cards.swift",
+        "line": 302,
+        "scope": "Manager.Crypto.openCardSlot",
+        "description": "No slot opens; recipientSlotNotFound rejects the peer's genuine message."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/IntroductionCards/Crypto+Manager+Cards.swift",
+        "line": 81,
+        "description": "A slot sealed to a last-resort key carries a derived prekeyID, not the key's own ID."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 454,
+        "description": "Bob falls back to Carol's last-resort key when her one-time keys run out (:452-453), and to a long-term slot when he has neither."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1650,
+        "description": "The doc comment expects only long-term slots to name no prekey ('then the first'); it does not account for derived last-resort IDs."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 274,
+        "description": "The same-card check matches only contacts visible at the current depth, so a second holder is created at a duress depth (SPEC.md:252, decided)."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/CardRules.swift",
+        "line": 85,
+        "description": "An imported field with sentFirstMessage == true is never swept, so a second holder that sent once can persist."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 438,
+        "description": "fetchAllContacts orders by familyName, so which holder is first is arbitrary."
+      },
+      {
+        "file": "OccultaTests/IntroductionCards/CardConversationTests.swift",
+        "line": 465,
+        "description": "sameCardOnTwoContacts checks only Bob's first reply, which is sealed to a one-time key."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available in this run for xcodebuild or the iOS Simulator, so target code was not executed; the misrouting and the recipientSlotNotFound result are unobserved.",
+      "Which holder sorts first depends on runtime SwiftData ordering of the sealed familyName values, which source cannot predict."
+    ],
+    "validation_plan": {
+      "local": "Extend CardConversationTests.sameCardOnTwoContacts (gated .enabled(if: enclave)). After Bob's first reply opens on the redeemed contact, on Bob's side empty the record's inboundBatches while keeping inboundLastResort (or send enough messages to use the batch up), have Bob send 'on last resort', and assert carol.receive opens it with ownerID equal to the redeemed contact. Repeat with inboundLastResort = nil (long-term slot). Make both orders deterministic by setting the two contacts' familyName so each holder sorts first in turn (bobRedeemsHidden true and false). Today one order is expected to throw GroupDecryptError.recipientSlotNotFound. After the fix (resolve derived IDs with PrekeyBookkeeper.lastResort(matchingPrekeyID:ephemeralPublicKey:in:) per slot, and for a long-term slot try each holder until one opens) both must pass. Run on a bare-metal Apple Silicon host with Enclave access via xcodebuild -scheme OccultaTests -only-testing:OccultaTests/CardConversationTests."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "occulta/card-redemption/introduction-agreement-key-unbound-own-key-reflection",
+    "title": "Card redemption accepts an introduction agreement key the sender does not hold, including the issuer's own card key, which enables reflection of the issuer's own messages as the peer's",
+    "description": "redeemSlot (ContactManager+Cards.swift:670-713) checks the introduction signature, the slot's ephemeral signature, the routing fingerprint and the sender proof, all over values the redeemer chose; none needs the private half of introduction.agreementKey, and Bob's own card agreement key is not refused. redeemCard stores it as peerAgreementKey (:653). Because the card long-term derivation is symmetric, a long-term slot Bob seals to a peer key equal to his own key opens again on his side, and its sender proof equals his own HMAC, so a reflected bundle would be credited to the card contact.",
+    "claimed_root_cause": "redeemSlot and redeemCard accept CardIntroduction.agreementKey without proof that the sender holds its private key and without rejecting the receiver's own card agreement key or any key that already identifies a contact.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1052,
+        "scope": "buildOwnedBasket",
+        "description": "Inbound v4 group bundle: identifyOwner(of:) runs sender resolution, which redeems an issued card when no contact matches."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1640,
+        "scope": "ContactManager.identifyOwner(for:)",
+        "description": "redeemCard(for:) runs only when neither an in-person key nor a card holder matched the bundle's sender fingerprint (lines 1620-1640)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 693,
+        "scope": "ContactManager.redeemSlot",
+        "description": "introduction.verify checks only that agreementKey parses and that the signing key signed it over the card digest; no proof of possession."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 701,
+        "scope": "ContactManager.redeemSlot",
+        "description": "The routing fingerprint is compared with SHA-256(introduction.agreementKey || nonce), public values the sender chose."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 712,
+        "scope": "ContactManager.redeemSlot",
+        "description": "The sender proof is an HMAC over introduction.agreementKey keyed with the session key the sender chose."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 653,
+        "scope": "ContactManager.redeemCard",
+        "description": "conversation is stored with peerAgreementKey = introduction.agreementKey, which may equal Bob's own card agreement key."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2051,
+        "scope": "ContactManager.openGroup",
+        "description": "senderProof is Bob's own HMAC over his own key and equals the HMAC over the stored peerAgreementKey; a reflected long-term bundle is returned with the card contact as owner."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/IntroductionCards/CardRules.swift",
+        "line": 62,
+        "description": "The import-side sibling control refuses a card whose agreement key is one of our own issued keys; redemption has no equivalent."
+      },
+      {
+        "file": "OccultaCore/Sources/OccultaFormats/CardIntroduction.swift",
+        "line": 57,
+        "description": "verify(cardDigest:) checks key parsing, the ML-KEM modulus check and the signature only."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/Crypto+Manager+Cards.swift",
+        "line": 183,
+        "description": "cardLongTermKey accepts ownPublicKey == peerPublicKey; the derivation is symmetric between the two sides."
+      },
+      {
+        "file": "Docs/Features/Introduction Cards/FINDINGS.md",
+        "line": 303,
+        "description": "Accepted and inherent: whoever uses the card first becomes the named contact, so a card redeemer can already author any content Bob attributes to the card contact."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1637,
+        "description": "cardHolder runs and redemption is skipped whenever a contact's in-person key or peer card key already matches the sender fingerprint, so a redeemer cannot duplicate an existing contact's key."
+      }
+    ],
+    "reason": "The mechanics hold in source, but no boundary is crossed and nothing is gained. (1) The only party that can name Bob's own card key is the card redeemer, and a redeemer can already author any content that Bob attributes to the card contact (first-to-use-wins, FINDINGS.md:303; card contacts carry the 'Not verified' tier), so echoing Bob's own words back adds no capability. The redeemer cannot read the long-term slots it would reflect, because the ECDH of Bob's card key with itself is known only to Bob, and it forges nothing: no third party is impersonated and the contact credited is the redeemer itself. (2) The claimed link to the duplicate-holder candidate is refuted: identifyOwner tries in-person keys first and then card holders, and calls redeemCard only when nothing matched (Contact+Manager.swift:1620-1640). A redeemer therefore cannot name a key that already identifies a contact (an identity key or another contact's peer card key) because the bundle routes to that contact and redemption is never attempted, and a second redemption naming Bob's own card key hits the first contact the same way. Two holders of one peer key can arise only by importing one card twice on Carol's phone. (3) Bob also accepting his own pending batch as the peer's only makes his later sends unreadable to the redeemer. Residual hardening note, not a finding: redemption lacks proof of possession of introduction.agreementKey and the own-key check that CardRules.importDecision has (CardRules.swift:62); a cheap guard is to refuse an introduction whose agreementKey equals the card's own agreement key."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta/inbound/duress-reopen-of-archived-reopenable-bundle-from-hidden-contact",
+    "title": "A coercer at a duress depth can re-open archived re-openable .occ files from a hidden contact and read them on demand",
+    "description": "The inbound path resolves the sender over contacts at every depth (identifyOwner reads fetchAllContacts, which filters only deletionToken) and nothing on the way checks Contact.isVisible against the current depth, so a bundle from a contact hidden at a duress depth opens and the read sheet shows the message with that contact's name, phone and email. That is the presence oracle accepted on 2026-08-13 (Bugs 103/104). Its written rationale limits the content exposure to a new message from a real third party arriving during the coercion window, 'timing-bounded and not adversary-controlled', and says content confidentiality is a separable question that was not taken up. Bundles sealed on a re-openable slot are not single-use: a long-term fallback slot derives its wrapping key from the two long-term keys and consumes nothing, and a last-resort slot keeps its key until it retires (Bug 82 table; Prekey Continuity D5, decided 2026-10-07 as 'messages may reopen'). Fallback carries the first message of a relationship in each direction and about 1 in 16 after it, plus last-resort sends. A coercer holding the unlocked phone can open any retained copy of such a file from the transport (Messages, Mail, Files; .occ is a registered document type) through Open in Occulta and read content written long before the coercion, repeatedly and on demand. That is adversary-controlled and not bounded by the window, so the acceptance rationale does not obviously cover it. Each successful open also saves the hidden contact's prekey record, and a replayed long-term bundle with no batch pending makes replenish install a fresh prekey batch into that record. Calibration: the re-openability itself is a known, documented cost (Bug 82a, D5, and the compose indicator copy 'Multiple Views - Long-Term Key ... Hold back anything sensitive'), and the exposure is limited to messages that were sealed on those slots and are still retained, not to all history. The new element is the in-app route at a duress depth, which the existing decisions do not address. The codebase does gate one stateful action for hidden senders at receipt (filterShardOperations drops shard operations from a sender not visible at the current depth), so the absence of a gate on message content here is a decision, not an oversight; whether it extends to replay is the owner's call.",
+    "claimed_root_cause": "Two properties combine: the inbound path resolves and decrypts for contacts at every depth by design (identifyOwner over fetchAllContacts, no visibility check), and bundles on long-term fallback and last-resort slots are not single-open, so any retained copy decrypts again. The presence-oracle acceptance assumed only newly arriving messages reach that path; nothing makes an already-opened re-openable bundle fail the way a consumed forward-secret bundle does, at every depth.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 687,
+        "scope": "RootView.handleOpenURL",
+        "description": "A file URL from Open in Occulta (Messages/Mail/Files attachment) is accepted at any depth; .occ is a registered document type (Occulta/Info.plist:85)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 798,
+        "scope": "RootView.handleOpenURL",
+        "description": "While unlocked (any depth) the bytes go straight to processInboundFile; while locked they are queued (:793-796) and drained identically on any unlock (:400-403)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1052,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "identifyOwner(of:) resolves the sender with no depth or visibility check."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1610,
+        "scope": "ContactManager.identifyOwner(for:)",
+        "description": "fetchAllContacts() filters only deletionToken (:436-440), so a contact hidden at the current depth matches the cleartext sender fingerprint (:1616-1625)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1074,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "A group bundle goes to openGroup with the hidden sender's identifier (1:1 bundles go to decryptSealed at :1115, same property)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 152,
+        "scope": "Manager.Crypto.openRecipientSlot",
+        "description": "A fallback slot derives its wrapping key from the long-term keys; usedPrekey stays nil for fallback and last-resort slots (:140-149), so nothing is consumed and the same file opens again every time."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2073,
+        "scope": "ContactManager.openGroup",
+        "description": "After a replayed batch is ignored (PrekeyBookkeeper.swift:133-134 returns false without throwing), replenish(after:) installs a fresh batch when the slot was long-term and none is pending, and :2074 saves the hidden contact's record on every successful open."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 884,
+        "scope": "RootView.processInboundFile",
+        "description": "openedFileContents is set and the read sheet (:520-528) renders the decrypted message with Contact.Info for the hidden sender (ComposableMessage.swift:209)."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 4009,
+        "description": "Bug 82 table: fallback bundles are re-openable indefinitely; forward-secret ones are single-use."
+      },
+      {
+        "file": "Docs/Audit/OPEN_LIMITATIONS.md",
+        "line": 52,
+        "description": "Fallback fires at the first message in each direction and roughly 1 in 16 thereafter (register file, present only in the main checkout)."
+      },
+      {
+        "file": "Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md",
+        "line": 265,
+        "description": "The accepted trade is scoped to the passive variant: a genuine third party's new message arriving while a duress depth is active, a timing-based trade."
+      },
+      {
+        "file": "Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md",
+        "line": 400,
+        "description": "The 2026-08-13 decision states the exposure 'needs a real third party to send during the coercion window, which is timing-bounded and not adversary-controlled', and that content confidentiality is a separable option not taken."
+      },
+      {
+        "file": "Docs/Features/Prekey Continuity/DESIGN.md",
+        "line": 191,
+        "description": "D5 (decided 2026-10-07): a last-resort bundle opens again whenever redelivered and a long-term one already does so forever; weighed against piece-operation replay, not against a duress-depth reader."
+      },
+      {
+        "file": "Docs/Features/Prekey Continuity/DESIGN.md",
+        "line": 636,
+        "description": "Compose indicator copy for the long-term state tells the sender the message can be opened by anyone who gets into either device with no time limit: re-openability is a stated cost, though not stated for a hidden-depth reader."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1610,
+        "description": "Sender resolution spans every depth (no visibility filter), by design."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 140,
+        "description": "Fallback-mode and last-resort slots use no consumable prekey and are never consumed on open."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 134,
+        "description": "A replayed batch on a re-openable slot is silently ignored rather than rejecting the bundle, so the replay opens."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1025,
+        "description": "Comparable baseline: filterShardOperations drops shard operations from a sender not visible at the current depth, so one stateful action on a hidden sender is already gated at receipt; message display is not."
+      },
+      {
+        "file": "Occulta/Info.plist",
+        "line": 85,
+        "description": ".occ is an exported document type owned by Occulta, so attachments in other apps open directly in it."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available for xcodebuild or the Simulator in this run, so target code was not executed; the second open at a duress depth is established from source only.",
+      "Whether the accepted presence-oracle decision (2026-08-13) was meant to cover replay of retained transport files is an owner decision the source cannot settle; its written rationale (passive, timing-bounded, not adversary-controlled) does not cover it, but the same document leaves content confidentiality open and D5 accepts re-opening.",
+      "That iOS Messages/Mail/Files keep received .occ attachments openable via Open in Occulta on the same device is a platform fact not visible in source."
+    ],
+    "validation_plan": {
+      "local": "Add a test in OccultaTests under .ambientTestKeyManager (e.g. DuressArchiveReplayTests): create contact A at depth 0 with in-person keys and visibleThroughDepth = 0 so A is hidden at depth 1; have A's simulated device seal a long-term-fallback group bundle to us (no prekeys of ours held by A). Open it once via ContactManager.identifyOwner(of:) + openGroup(bundle:ownerID:) at depth 0, then set security.currentDepth = 1 and open the same bytes again. Assert the second open returns the plaintext and ownerID == A, and that A.isVisible(atDepth: 1) is false. Repeat with a last-resort slot (a bundle sealed to the last-resort key of a batch we issued). Also assert the read-back of A's prekey record after each open to record the write. A fix (a single-open record for re-openable slots, or a content gate, either failing like a consumed forward-secret bundle at every depth) should make the second open throw at depth 0 and depth 1 alike. Run only in the Simulator or CI, never on a phone that holds real data.",
+      "deployment": "Owner-observed on a test phone with no real data: at depth 0 receive a first (fallback) message from a contact via Messages, read it, mark the contact hidden for a duress depth, unlock with the duress PIN, tap the old attachment in Messages and choose Open in Occulta; observe whether the message and the hidden contact's name appear."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta/inbound/known-sender-open-failure-distinct-from-unknown-sender",
+    "title": "Inbound error text tells a coercer whether a file's sender is a contact hidden at the current depth",
+    "description": "processInboundFile shows one alert when no contact matches the bundle's cleartext sender fingerprint ('Could not find this file's owner's public key...', from ContactManager.Errors.noPublicKeyToEncryptWith) and a different one when a contact at any depth matches but nothing opens ('There was an error. <localizedDescription>', the catch-all). Sender matching spans every depth by design and excludes only deleted contacts, so at a duress depth the alert answers 'is this sender a live contact on this phone?' for people absent from the list, without any decryption succeeding. Three ways to supply the probe: (1) re-open an already-read forward-secret .occ found in the phone's own transport history (its prekey is spent, so no slot opens and openGroup/decryptSealed throw recipientSlotNotFound or a derivation error); (2) craft a bundle whose fingerprint is SHA-256(publicKey || nonce) for a suspected person's public identity key, which needs that key from outside the phone; (3) craft one from the agreement key inside an introduction card file found in chat history, which matches a contact whose field is imported or a conversation, at any depth. Result: a 'There was an error' alert for a person absent from the list shows a live hidden contact exists and which one, and separates 'hidden' from 'deleted'. Case (3) goes around the decided re-import design (SPEC 6.3: a hidden holder 'isn't matched ... and shows nothing of it'). Calibration: case (1) adds less than it seems, because the transport thread already shows that this person sent the user an .occ file, and the 2026-08-13 decision relied on that same transport disclosure; what (1) adds is deniability ('I deleted them') for already-read files, a weak signal. Case (2) depends on the unkeyed fingerprint, which is the known open item 'sender fingerprint attribution (17a)'. Case (3) is the least covered. The existing comment at OccultaApp.swift:896-899 and the card precedent at Contact+Manager.swift:2018-2019 (reject 'as an unrecognised sender') show the project treats an error class that tracks a hidden fact as an oracle. A fix that needs no duress-only observable exists: make a matched sender with no openable slot show the same alert as an unknown sender at every depth (that alert already says the message may not have been addressed to the user), with the cost of losing the distinct diagnostic for a real contact's unreadable file.",
+    "claimed_root_cause": "The inbound pipeline lets the error class leak the result of sender resolution: a fingerprint match (computed over a public key or card agreement key and checked against contacts at every depth) followed by a slot or key-derivation failure surfaces GroupDecryptError or a derivation error through the generic alert, while a non-match surfaces noPublicKeyToEncryptWith with its own text. Sender resolution is intentionally depth-blind, so the distinction is a membership oracle for hidden contacts.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 687,
+        "scope": "RootView.handleOpenURL",
+        "description": "Any .occ (re-opened from transport history, or crafted) is accepted at a duress depth."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1052,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "identifyOwner(of:) runs before any decryption."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1616,
+        "scope": "ContactManager.identifyOwner(for:)",
+        "description": "Each non-deleted contact at every depth is tested with isLikelySender: SHA-256(contact public key || fingerprintNonce) == senderFingerprint (Contact+Model+Profile.swift:18-22); card peer agreement keys are tested too (:1627-1634)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1642,
+        "scope": "ContactManager.identifyOwner(for:)",
+        "description": "No match (after redeemCard returns nil) throws noPublicKeyToEncryptWith."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 192,
+        "scope": "Manager.Crypto.openRecipientSlot",
+        "description": "A match whose slots do not open (spent prekey, or junk) throws recipientSlotNotFound; the card path throws the same at Crypto+Manager+Cards.swift:302; the 1:1 path throws a derivation error from deriveInboundKey (Contact+Manager.swift:1699)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 955,
+        "scope": "RootView.processInboundFile",
+        "description": "Matched-but-unopened errors fall to the generic catch, 'There was an error. <localizedDescription>' (:955-957), while the non-match is caught at :889-891 with a different, specific string."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 889,
+        "description": "noPublicKeyToEncryptWith gets its own alert text."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 955,
+        "description": "Every error not caught above, including recipientSlotNotFound, gets the generic 'There was an error.' alert."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 896,
+        "description": "The comment on the shared 'could not confirm this message came from this contact' string states that splitting error strings that track a hidden fact is a duress oracle; the matched-but-unopened versus unmatched split was not treated the same way."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 436,
+        "description": "fetchAllContacts filters only deletionToken == nil, so sender matching spans every depth and excludes deleted contacts."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/Contact+Model+Profile.swift",
+        "line": 19,
+        "description": "The fingerprint is computed from the public key and a cleartext nonce only, so anyone holding the key can produce a matching one."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/Crypto+Manager+GroupDecrypt.swift",
+        "line": 192,
+        "description": "A matched sender with no openable slot throws recipientSlotNotFound."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager+Prekeys.swift",
+        "line": 87,
+        "description": "The design already treats 'an unauthenticated file ... naming a contact' as a threat for writes, but not for the alert class."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2018,
+        "description": "Precedent: a card contact's identity challenge is rejected 'as an unrecognised sender', hiding that the sender is known."
+      },
+      {
+        "file": "Docs/Features/Introduction Cards/SPEC.md",
+        "line": 252,
+        "description": "Decided intent: a card held by a contact hidden at the current depth is not matched on re-import and 'shows nothing of it'."
+      },
+      {
+        "file": "Docs/v2.0.0/PROTECTION_ASSESSMENT.md",
+        "line": 61,
+        "description": "Known open residual: passive attribution of files by public key (17a, not built); the on-device membership test via alert class is not recorded."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available for xcodebuild or the Simulator in this run, so no observed result exists; the two alert strings differ in source, but the end-to-end probe at a duress depth was not run.",
+      "Whether the accepted presence-oracle decision's second reason (the transport already named the sender) is meant to cover a no-decrypt membership probe, and whether deniability for already-read files is worth closing, is an owner decision the source cannot settle.",
+      "Whether a realistic probe input exists in a coercion (a retained already-read forward-secret file, a card file in chat history, or an out-of-band public key) is an environment fact; platform retention of .occ attachments is not visible in source."
+    ],
+    "validation_plan": {
+      "local": "Add a test in OccultaTests under .ambientTestKeyManager (e.g. InboundSenderMembershipOracleTests): contact A at depth 0 with in-person keys, hidden at depth 1. Build an OccultaBundle v4 group bundle with fingerprintNonce N, senderFingerprint = SecrecyContext.fingerprint(for: A.publicKey, nonce: N) and one recipient entry of random bytes; build a second identical bundle over a random key. With currentDepth = 1, assert identifyOwner(of:) returns A for the first and throws noPublicKeyToEncryptWith for the second, and openGroup on the first throws GroupDecryptError.recipientSlotNotFound. Repeat with a re-opened, consumed forward-secret bundle from A, and with a card holder (imported field) using the card's agreement key. Then extract the alert mapping from processInboundFile into a testable function and assert both cases map to the same message; the fix should make that assertion pass at every depth, and keep unknown-sender timing and writes unchanged.",
+      "deployment": "Owner-observed on a test phone with no real data: hide a contact at a duress depth, unlock with the duress PIN, re-open an already-read forward-secret .occ from that contact via Open in Occulta, then open one from a deleted contact; compare the two alerts."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta:cards:card-conversation-seals-to-pre-card-inbound-prekeys",
+    "title": "Card conversation on a revoked contact seals replies to the revoked device's prekeys",
+    "description": "After the owner revokes a contact (\"<Name>'s phone was lost or stolen\", ContactManager.reset(identity:)), the row shows as Pending and its details offer an introduction card (ContactDetailV2.needsExchange is true for an expired last key, and ContactCardSection offers Create card). Revoking only writes expiredOn on the last key. The contact's PrekeyRecord keeps the inbound one-time keys and the last-resort key the revoked device sent, and nothing on the card path clears them: createCard never touches the record, importCard removes only pending own batches, and redemption (openGroup -> PrekeyBookkeeper.accept) appends the new peer's batch after the old ones while takeInboundPrekey always returns the oldest inbound key. Bob's replies in the new card conversation are therefore sealed (wrapCardRecipient) to a revoked-device one-time key instead of to the new peer's introduction batch (SPEC 6.5, 'FS to Carol's batch'). At most 15 stale keys can survive (maxInboundKeysPerBatch 15, maxInboundBatches 2; a third batch evicts the oldest). The new phone cannot open those bundles: the prekey ID names none of its keys and the card-agreement fallback derives a different key, so openCardSlot throws recipientSlotNotFound. Carol stays 'imported' and Bob's bootstrap stays open (it closes only on a non-bootstrap slot from Carol) until the stale keys are used up; the messages sealed to them are lost. The Carol-side mirror (importing into a revoked row) strands Carol's ordinary slots once her field is a conversation, because Bob's new batch is also appended behind his old device's. Side effects: whoever holds the revoked phone recognises its own prekey IDs on the wire and, if its Enclave keys are reachable, can open the classical outer layer, but not the ML-KEM-protected inner payload, so no content is disclosed. If the old relationship's latestInboundGeneratedAt is later than the new batch's generatedAt (clock skew between the two phones), accept() refuses the new batch on the reopenable bootstrap slot (PrekeyBookkeeper.swift:134) and Bob keeps sealing to the old last-resort key indefinitely, a permanent stall; otherwise the stall ends once the stale keys are gone. Verifier note: this is a lifecycle defect that needs no adversary to trigger, and the same carry-over exists for an ordinary re-exchange with a new phone (clearCard leaves the record alone when the field was already empty), so the card flow is one instance of a general rule that a revoked or replaced identity does not invalidate the inbound prekey state. Impact is availability and a small linkability signal; no confidentiality or integrity loss was found.",
+    "claimed_root_cause": "ContactManager.reset(identity:) revokes by writing expiredOn only, and card entry (createCard, importCard, redeemCard) treats a contact without unexpired in-person keys as fresh although its PrekeyRecord still holds the revoked device's inbound batches and last-resort key. PrekeyBookkeeper.accept appends a new batch behind them and takeInboundPrekey / lastResortPrekey prefer the oldest, so the card conversation inherits keys from a relationship the owner explicitly revoked, against SPEC sections 1, 5 and 6.5.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+        "line": 182,
+        "scope": "TrustCheckV2.revokeCard",
+        "description": "Owner picks \"<Name>'s phone was lost or stolen\" and confirms Revoke, which calls reset(identity:)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 642,
+        "scope": "ContactManager.reset(identity:)",
+        "description": "Only the last key's expiredOn is written; prekeyRecordEncrypted (inbound batches, inbound last-resort, own batches, accepted IDs, latestInboundGeneratedAt) is left as it was."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactDetailV2.swift",
+        "line": 114,
+        "scope": "ContactDetailV2.body",
+        "description": "needsExchange (lines 51-54) is true for an expired last key, so the Pending contact is offered ContactCardSection (create card)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 117,
+        "scope": "ContactManager.createCard",
+        "description": "The gate checks only the card field and hasInPersonKeys (false for an expired key); the record is never reset. importCard (line 304-305) likewise removes only pending own batches."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2064,
+        "scope": "ContactManager.openGroup",
+        "description": "After redemption the new peer's introduction batch is accepted; PrekeyBookkeeper.accept appends it after the revoked device's batch (PrekeyBookkeeper.swift:147-150) and refuses it on a reopenable slot if older than latestInboundGeneratedAt (:134)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 452,
+        "scope": "ContactManager.encryptCardBundle (.conversation)",
+        "description": "takeInboundPrekey returns the oldest inbound key, i.e. one of the revoked device's (PrekeyBookkeeper.swift:65-72); the last-resort fallback at :454 is also the old one if the new batch was refused."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/IntroductionCards/Crypto+Manager+Cards.swift",
+        "line": 73,
+        "scope": "Manager.Crypto.wrapCardRecipient",
+        "description": "The bootstrap or ordinary card slot is sealed with ECDH(ephemeral, revoked-device prekey) under that prekey's ID; the new peer's openCardSlot finds no matching prekey and falls back to the card agreement key (line 322), which does not open it (line 302 throws recipientSlotNotFound)."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Docs/Features/Introduction Cards/SPEC.md",
+        "line": 28,
+        "description": "Intended behaviour: card contacts, like newly met contacts, hold no prekeys for each other until their first messages; Carol's introduction carries her batch and Bob's first reply carries his."
+      },
+      {
+        "file": "Docs/Features/Introduction Cards/SPEC.md",
+        "line": 280,
+        "description": "Bob's bootstrap reply is 'FS to Carol's batch, or long-term', not to keys from another relationship."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/FORWARD_SECRECY_GUIDE.md",
+        "line": 268,
+        "description": "Leaving the card drops card-era batches; nothing describes clearing pre-card batches on entering card state, and 'a re-exchange with a contact that had no card keeps its record' (:270)."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 221,
+        "description": "clearCard doc: a field that was already empty leaves the record alone ('an ordinary re-exchange keeps its prekeys'), so a replaced identity keeps the old inbound state outside cards too."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 632,
+        "description": "reset(identity:) body (632-645) writes expiredOn and saves; no store(PrekeyRecord.empty) as deleteContact does at line 529."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 304,
+        "description": "importCard loads the existing record and only removes pending own batches (:305) before installFreshBatch; inbound batches and inboundLastResort survive."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 65,
+        "description": "takeInboundPrekey always returns inboundBatches.first, the oldest batch; accept() appends at :147; sweep (:318-329) touches own batches and legacy keys only."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/Crypto+Manager+Cards.swift",
+        "line": 322,
+        "description": "Receiver: a prekey ID naming none of our keys is tried only against the card agreement key, so a slot sealed to a foreign prekey cannot open."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 4147,
+        "description": "Project intent: a key expired through reset(identity:) is a revocation lever; the revoked relationship's keys are not meant to stay in use."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available in this run for xcodebuild or the iOS Simulator, so target code was not executed; the chain is established from source only.",
+      "The decisive two-phone flow generates prekeys through PrekeySecretsManager (Secure Enclave), so the test needs a host with Enclave access (gated like PrekeyConversationTests and CardConversationTests)."
+    ],
+    "validation_plan": {
+      "local": "Add a Swift Testing suite (e.g. CardAfterRevokePrekeyTests) to OccultaTests, gated .enabled(if: secureEnclaveAvailable()), on the two-phone harness used by CardConversationTests/PrekeyConversationTests. 1) Bob and old-Carol exchange in person and old-Carol sends Bob one message, so Bob's record for her holds old-Carol's inbound batch. 2) Bob calls contactManager.reset(identity:) for her, then createCard(for:) on the same row. 3) A fresh phone (new-Carol) imports the card into a new contact and sends a first message; Bob receives it (redemption, then openGroup). 4) Bob calls encryptBundle(basket:for:) for her. Assert the slot's secrecyContext.prekeyID is one of new-Carol's introduction-batch IDs and not an ID from old-Carol's batch (today expected to be old-Carol's), and that new-Carol's decrypt succeeds (today expected to throw recipientSlotNotFound). Add the mirror (Carol imports into a revoked row, then sends after her field becomes a conversation) and a clock-skew case where old-Carol's last batch generatedAt is later than new-Carol's (expected: batch refused, Bob keeps the old last-resort key). Also run the ordinary-contact variant (reset(identity:) then update(key:for:) with a new key) to confirm the general form. Run with: xcodebuild -project Occulta.xcodeproj -scheme OccultaTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:OccultaTests/CardAfterRevokePrekeyTests test, on bare-metal Apple Silicon, not on a device holding real data."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta:cards:inherited-shard-custody-state-hard-blocks-card-send",
+    "title": "Shard state from before a contact became a card contact makes every card send throw hardBlocked",
+    "description": "SPEC section 8 makes vault trustee and shard content hard blocks for card contacts. encryptCardBundle enforces this by refusing the whole send when any shard operation or a non-empty custody manifest is attached. Compose (ComposeViewModel.swift:282-283) and the share-extension send (OccultaApp.swift:1259-1260) attach buildShardOperations and buildCustodyManifest for every one-to-one recipient. Neither builder checks the card field, and nothing clears shard state when a contact becomes a card contact. A contact can carry that state into a card conversation through the revoke-then-card flow (reset(identity:) keeps the row and identifier, the Pending row is offered a card). The durable form is the custodian side: Bob holds CustodyShard rows whose ownerContactIdentifier is that contact (the contact chose Bob as a trustee). buildCustodyManifest then returns their IDs on every message, encryptCardBundle throws CardError.hardBlocked, Compose retries without shard content only for trusteeLacksQuantumMaterial (:294), and the share path has no catch. The only code that removes those rows is purgeCustody, called from deleteContact; a handback or replace needs shard content, which is blocked. The owner-side form (a PendingShardDistribute queued for the contact, re-queued by reconcileBackupPieces for a live pending/confirmed trustee) is recoverable from the vault setup screen, which lists no card contacts and whose re-split deletes the queued rows. Confidentiality holds: the block stops shard content from reaching the card contact. The effect is a lasting denial of outgoing messages in that card conversation until Bob meets the contact in person (which clears the card field) or deletes the contact and re-imports a card, and it is a reachable state that FINDINGS.md:549 says cannot exist ('Card contacts are blocked by construction'). Nobody lower-trust causes it deliberately; it follows from a legitimate revoke of a trustee relationship.",
+    "claimed_root_cause": "The hard block is enforced only at the outbound sink, as a refusal of the whole bundle. The shard state that feeds the sink (custody rows keyed by the contact identifier, queued distributions) is filtered for card contacts only by the trustee-setup UI. It is not cleared or excluded when the contact is revoked and then moved into imported or conversation, and ShardCustodyManager's builders never consult CardState.isCardContact.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 282,
+        "scope": "ComposeViewModel.encrypt(for:)",
+        "description": "Every one-to-one send builds shard operations and the custody manifest for the recipient identifier. The share-extension path does the same at OccultaApp.swift:1259-1260."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Vault/ShardCustody+Manager.swift",
+        "line": 387,
+        "scope": "ShardCustodyManager.buildCustodyManifest",
+        "description": "Returns the IDs of every CustodyShard whose owner is this contact identifier. pendingDistributeOps (:355-366) returns every queued distribution to it. There is no card-state check."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Vault/ShardCustody+Manager.swift",
+        "line": 475,
+        "scope": "ShardCustodyManager.distributeBackup",
+        "description": "Queues a PendingShardDistribute for every recipient without an eligibility check; reconcileBackupPieces (:526-595) re-sends to any live pending or confirmed trustee."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1072,
+        "scope": "ContactManager.encryptBundle",
+        "description": "A card contact is routed to encryptCardBundle with the shard fields unchanged."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 406,
+        "scope": "ContactManager.encryptCardBundle",
+        "description": "Any shard operation or non-empty custody manifest throws CardError.hardBlocked (:407), which fails the whole message. Compose catches only trusteeLacksQuantumMaterial (ComposeViewModel.swift:294) and otherwise shows an error."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Docs/Features/Introduction Cards/SPEC.md",
+        "line": 363,
+        "description": "Hard blocks: vault trustee and shard content refuse card contacts. The intended effect is that card contacts never take part in shard custody, not that their ordinary messages fail."
+      },
+      {
+        "file": "Docs/Features/Introduction Cards/FINDINGS.md",
+        "line": 549,
+        "description": "Design assumption: 'Card contacts are blocked by construction' from trustee status. A revoked trustee turned card contact breaks it."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Vault/Vault+ShardSetup.swift",
+        "line": 43,
+        "description": "The only card-aware trustee filter is in the setup screen. It does not affect existing custody rows."
+      },
+      {
+        "file": "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+        "line": 404,
+        "description": "Comment: 'Compose passes an empty custody manifest for every contact: empty says nothing, and is dropped. Any shard content at all is refused.' This assumes the builders return nothing for a card contact."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 642,
+        "description": "Revoke keeps the contact row and identifier, so shard rows keyed by that identifier survive into the card conversation created on the same row."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 294,
+        "description": "Only trusteeLacksQuantumMaterial triggers a retry without shard content. hardBlocked propagates to the error alert."
+      },
+      {
+        "file": "Occulta/Features/Vault/ShardCustody+Manager.swift",
+        "line": 639,
+        "description": "purgeCustody removes the custody rows of an owner and is called only from deleteContact (Contact+Manager.swift:551); no other path removes a held shard for a revoked owner."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available in this run for xcodebuild or the iOS Simulator, so target code was not executed; the throw of CardError.hardBlocked with a populated custody manifest is established from source only."
+    ],
+    "validation_plan": {
+      "local": "Add a test (e.g. CardSendWithInheritedShardStateTests) in OccultaTests under .ambientTestKeyManager, with injected card keys (CardKeyProviding test double) and PostQuantumProviderFactory.createForTesting(). Gate it on secureEnclaveAvailable() only if redemption's installFreshBatch is reached. 1) Insert a CustodyShard whose ownerContactIdentifier is contact C, via ShardCustodyManager.handleInbound of a .distribute while C is verified, or by sealing a row directly. 2) Call reset(identity:) on C, then store CardState.conversation for C, or run createCard plus redemption. 3) Call contactManager.encryptBundle(basket:for:custodyManifest:) with custodyManifest set to shardCustodyManager.buildCustodyManifest(for: C), exactly as ComposeViewModel.encrypt does. Expected fixed behaviour is a bundle; today it should throw CardError.hardBlocked. Repeat with a PendingShardDistribute queued for C through distributeBackup, then confirm the vault setup re-split without C deletes that row and unblocks the send."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta:contacts-list-empty-state-unfiltered-query:ContactsV2.contacts",
+    "title": "Contacts list empty state and trust summary are keyed on the unfiltered contact query, revealing hidden contacts at a depth with none visible",
+    "description": "ContactsV2 filters its rows, section counts and footer count by depth (visibleContacts), but decides whether to show the trust-summary card and the first-run hint from self.contacts, the @Query over every non-deleted contact at every depth (Contact.Profile.descriptor filters only deletionToken; hidden rows stay in the store and are filtered in the UI only, accepted item S5). At a depth where every contact is hidden (all classified sensitive at the shallower layer, or a deeper layer whose visible set is empty), the coercer sees a TrustSummaryCard reading 0 verified / 0 not verified / 0 pending, no 'Use the search field to import a contact' / 'Tap + to create a new contact' hint, and '0 contacts · encrypted at rest'. A store that really has no contacts shows the hint and no card, and soft-deleted contacts are excluded from the query, so a user who deleted everything also shows the hint. The difference exists only when hidden contacts exist, so it is a deterministic UI tell that the visible depth is hiding contacts. Signal strength is narrow: the state needs an empty visible list, which the Secure Mode user guide already warns against and the Vault-custodian fix doc already calls an empty contacts list suspicious on its own (Shard-Custody doc line 122), and recognising the tell needs knowledge of the fresh-install screen or a second install to compare against. The sibling ShareRecipientPicker decides its empty state from the filtered lists, and the same unfiltered-emptiness shape was fixed once in the Vault tab's custodian section (Shard-Custody doc line 243), so this is a new instance of a fixed class, not a restated known item.",
+    "claimed_root_cause": "Two branch conditions in ContactsV2.body (showTrustSummary && !self.contacts.isEmpty at line 125, and self.contacts.isEmpty at line 151) read the unfiltered @Query result instead of the depth-filtered visibleContacts, so the screen's structure depends on rows that ContactListFilter hides at the current depth.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+        "line": 53,
+        "scope": "ContactsV2 @Query(Contact.Profile.descriptor) contacts",
+        "description": "The Contacts tab the coercer sees at a duress depth is driven by a query over every non-deleted contact at every depth; the descriptor (Contact+Model.swift line 393) filters only on deletionToken == nil."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+        "line": 69,
+        "scope": "ContactsV2.visibleContacts",
+        "description": "Depth-filtered set (ContactListFilter.visibleContacts at security.currentDepth) used for the rows, section counts and the footer count; empty at a depth where every contact is hidden."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+        "line": 125,
+        "scope": "ContactsV2.body trust summary",
+        "description": "TrustSummaryCard is shown when showTrustSummary (default true, line 47) and !self.contacts.isEmpty, so it renders 0/0/0 when only hidden contacts exist and is absent on a store with no contacts."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+        "line": 151,
+        "scope": "ContactsV2.body empty-state hint",
+        "description": "The first-run hint is shown only when self.contacts.isEmpty, so it disappears when hidden contacts exist even though the visible list is empty."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/ShareExtension/ShareRecipientPicker.swift",
+        "line": 93,
+        "description": "Sibling recipient list decides its empty state from the depth-filtered contacts and groups, not the raw query."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift",
+        "line": 6,
+        "description": "Header states the filter is shared so the contact screens cannot drift on what a depth hides."
+      },
+      {
+        "file": "Docs/Bugs/v1.10.0/Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md",
+        "line": 243,
+        "description": "Prior fix of the same shape: the Vault tab's custodian section emptiness checks were switched from the unfiltered query to the filtered rows so presence or absence is not a tell."
+      },
+      {
+        "file": "Docs/Bugs/v1.10.0/Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md",
+        "line": 122,
+        "description": "States that an empty contacts list looks wrong under scrutiny, which both explains why the empty visible list is already a weak signal and why the extra card/hint difference is only a narrow addition."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+        "line": 47,
+        "description": "showTrustSummary defaults to true, so the card branch is live on a default install; the hint branch is independent of that setting."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/USER_GUIDE.md",
+        "line": 191,
+        "description": "Guide advises not leaving the decoy list empty but nothing enforces it; classification can mark every contact sensitive and a deeper layer can have an empty visible set."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available for xcodebuild or the Simulator in this run, so the rendered list at a duress depth with only hidden contacts was not observed; SwiftUI views cannot be instantiated in the existing unit tests.",
+      "How distinguishable the screen is in practice depends on whether the coercer can compare it with an empty-store screen; that is an observer-knowledge fact, not a code fact."
+    ],
+    "validation_plan": {
+      "local": "Unit level, under @Test(.ambientTestKeyManager): create two contacts whose visibleThroughDepth encodes 0 (hidden at every duress depth) in an in-memory store, configurePIN and activateSecureMode, apply verify(duressPIN) then applyVerifyState so currentDepth == 1, and assert ContactListFilter.visibleContacts(all, atDepth: 1).isEmpty while all.isEmpty == false, which is the exact state in which ContactsListV2.swift lines 125 and 151 take the hidden-contacts branch. Better, extract the two predicates into ContactListFilter (showsTrustSummary and showsEmptyStateHint, taking the visible list) and assert they match the no-contacts store at depth 1. Then a Simulator check on a test-only install with dummy contacts: activate Secure Mode, mark every contact sensitive, background past the grace period, enter the duress PIN and confirm the Contacts tab shows a 0/0/0 trust card and no hint; compare with a fresh install showing the hint and no card."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta:group-draft-not-depth-scoped:ComposeViewModel.isSensitive+Message.Draft.purgeUnsafe",
+    "title": "A group draft written at the real depth loads into the group's compose field at a duress depth",
+    "description": "Message.Draft has no depth scope and group drafts are exempt from every depth control. At depth 0 the owner types an unsent message in group G's compose; DraftStore persists it as a Message.Draft keyed only by G's UUID string (ComposeViewModel.isSensitive returns false for every .group, so DraftStore.save's only gate never fires). The row is sealed under the canonical local DB key, which is the same key at every depth, and Message.Draft.find matches on recipient identifier alone. Neither depth control touches it: Message.Draft.purgeUnsafe keeps any draft whose recipient is a known group, and on an activated install the duress PIN matches its routing alias in Manager.Security.verify step 1 and returns .normal(depth: 1), so applyVerifyState never reaches the .duress branch that calls the purge at all. A coercer at the duress depth sees every group by name (groups are deliberately not depth-filtered, Group Messaging SPEC lines 188 and 193) and can open G. GroupDetailV3's .task calls DraftStore.load with no depth check and assigns the owner's draft text, committed thread bubbles and attachment references to the compose view model, whether or not G has any members at this depth. The compose field (ComposeHeroV3) or the 'Open thread' button renders only when G has at least one member visible at the current depth (GroupDetailV3 line 59). By design the duress layer's member array starts as filler (SPEC line 193), so G usually shows 0 members at first; the draft then appears as soon as the duress-layer setup gave G a member, or the coercer adds any visible contact through Edit (Group.FormV3 writes the current depth's array). Once shown, the coercer can read the real-depth unsent text, edit or delete it (the edit lands in the row the owner will see), or encrypt it for the duress-depth members. The draft was composed for G's depth-0 membership, which may be entirely contacts hidden at the duress depth. Impact is disclosure of real-depth message content across the coercer boundary; likelihood is limited by the need for an unsent group draft at the moment of coercion and for a visible member at the duress depth (present from setup or added by the coercer). Not in the known-limitations inventory: ComposeViewModel.swift:69 calls group draft sensitivity 'not yet designed' and points at Message Persistence FINDINGS.md, which has no section on it (it only records that a group draft survives the purge on purpose, line 363), so it is open and undecided, not accepted.",
+    "claimed_root_cause": "Message.Draft carries no depth scope, and the only two depth controls on drafts both exempt groups: ComposeViewModel.isSensitive returns false for .group, and Message.Draft.purgeUnsafe keeps any draft whose recipient is a known group. Group membership is per depth but the group's draft is a single row shared by every depth, so content composed for one depth's members is loaded unconditionally at every other depth.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+        "line": 255,
+        "scope": "ContactsV2 .navigationDestination(for: UUID.self)",
+        "description": "The coercer, unlocked at a duress depth, taps group G (listed by name at every depth: sortedGroups at line 65 and the ForEach at line 95 use the unfiltered @Query of groups) and is routed to GroupDetailV3(groupID:) with no depth check."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift",
+        "line": 122,
+        "scope": "GroupDetailV3.body .task",
+        "description": "Calls draftStore.load(recipientID: G.uuidString) and assigns draftText, messages and thread mode to composeVM unconditionally; it runs even when G has no member visible at this depth."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift",
+        "line": 110,
+        "scope": "DraftStore.load",
+        "description": "Looks the row up with Message.Draft.find (recipient identifier only), opens it under the canonical local DB key and decodes the payload; nothing compares the depth the draft was written at with the current depth."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 75,
+        "scope": "ComposeViewModel.isSensitive(contactManager:)",
+        "description": "Write side: returns false for every .group recipient, so GroupDetailV3.scheduleDraftSave and onDisappear always let DraftStore.save persist the real-depth draft (DraftStore.swift line 150 is the only gate)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 753,
+        "scope": "Manager.Security.applyVerifyState (.duress branch)",
+        "description": "The only draft purge on depth entry sits in the .duress branch, which an activated duress PIN does not reach (verify step 1 returns .normal(depth: 1), PINManagerTests.swift line 206-216); even when reached, Message.Draft.purgeUnsafe (Message+Draft.swift line 235) keeps every group draft."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/UI/Tabs/Contacts/v3/ComposeHeroV3.swift",
+        "line": 60,
+        "scope": "ComposeHeroV3.body TextField(text: $vm.draftText)",
+        "description": "Renders the loaded real-depth text and attachment chips when GroupDetailV3 line 59 (count > 0 members at this depth) is true; the coercer can make it true by adding a visible contact through Group.FormV3, then read, edit, delete or encrypt the draft."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+        "line": 69,
+        "description": "Doc comment: group-level sensitivity gating for drafts is not yet designed; groups are never treated as sensitive and their drafts always persist."
+      },
+      {
+        "file": "Occulta/Data Models/Message+Draft.swift",
+        "line": 235,
+        "description": "purgeUnsafe: a draft survives if allGroupIdentifiers contains its recipient, whatever depth it was composed at."
+      },
+      {
+        "file": "Occulta/Data Models/Message+Draft.swift",
+        "line": 125,
+        "description": "Message.Draft.find decrypts and compares encryptedRecipientID only; no depth field exists on the model."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 758,
+        "description": "Doc comment: Message.Draft carries no visibleThroughDepth/isVisible of its own and there is no UI-level filter as a backstop; the stated safety net for contact drafts is that the Draft badge is matched against depth-filtered rows, which does not cover GroupDetailV3."
+      },
+      {
+        "file": "OccultaTests/SecureMode/PINManagerTests.swift",
+        "line": 216,
+        "description": "Existing test asserts an activated duress PIN returns .normal(depth: 1), not .duress, so purgeDraftsNotSafeAtCurrentDepth never runs on activated installs; recorded as hardening, not the root cause."
+      },
+      {
+        "file": "Docs/Features/Group Messaging/SPEC.md",
+        "line": 178,
+        "description": "Stated property: the coercer operates entirely within their own independent member array and learns nothing about the real layer; the shared per-group draft is outside that array."
+      },
+      {
+        "file": "Docs/Features/Group Messaging/SPEC.md",
+        "line": 193,
+        "description": "Groups are not depth-filtered, every group name shows at every depth, and the duress layer's array starts as filler, which is why G may show 0 members and the coercer needs a member present to see the compose field."
+      },
+      {
+        "file": "Docs/Features/Message Persistence/FINDINGS.md",
+        "line": 363,
+        "description": "Design note keeps group drafts through the purge on the grounds that group sensitivity is handled by membership purges, which do not touch the draft's content; no section decides group-draft depth handling."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available for xcodebuild or the Simulator in this run, so target code was not executed and the duress-depth group screen was not observed rendering the owner's draft; a confirmed verdict needs a bounded local observed result.",
+      "Whether the draft is visible without any coercer action depends on whether the owner populated G's duress-depth member array (empty by design); the add-a-member path through Group.FormV3 and the SwiftUI re-render of an already-loaded ComposeViewModel were traced in source only.",
+      "The draft persists only if the owner leaves unsent group compose content at depth 0 before the compelled unlock; that is an owner-behaviour fact, not a code fact."
+    ],
+    "validation_plan": {
+      "local": "Add a Swift Testing case next to OccultaTests/Contacts/DraftStoreTests.swift (for example GroupDraftDepthTests), @MainActor with @Test(.ambientTestKeyManager). The container in PINManagerTests.swift:16 lacks Group and Message.Draft, so build a new in-memory ModelContainer with AppLayerConfig, Contact.Profile and its child models, Group and Message.Draft. Create Manager.Security(modelContainer:, keyManager: TestKeyManager()) and ContactManager(modelContainer:, security:), configurePIN(\"123456\") and activateSecureMode(confirmingEntryPIN: \"123456\", duressPIN: \"999999\"). Create Group(name: \"G\") at depth 0 and insert it. Call DraftStore().flush(recipientID: g.readID()!.uuidString, isSensitive: ComposeViewModel(recipient: .group(gid)).isSensitive(contactManager: cm), text: \"real-depth text\", messages: [], useThread: false, modelContext: cm.modelContext). Then let r = try security.verify(\"999999\"); security.applyVerifyState(for: r). Assert r == .normal(depth: 1), security.currentDepth == 1, ContactListFilter.sortedGroups(try cm.allGroups(), matching: \"\") still contains G, and DraftStore().load(recipientID: gid.uuidString, modelContext: cm.modelContext) == nil. On current source the last assertion is expected to fail by returning the depth-0 text. Optionally also call g.addMember(visibleContact.identifier, atDepth: 1) to show the precondition GroupDetailV3 line 59 needs. Then a Simulator check on a test-only install with dummy data: with Secure Mode active, type in a group's compose at the real PIN, background past the grace period, enter the duress PIN, open Contacts > Groups > G (add a visible contact through Edit if it shows 0 members) and observe the compose field."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "occulta:group-raw-member-count-includes-hidden:Group.FormV3.atCapacity+ContactListFilter.groupsWithMembers",
+    "title": "Group capacity and share-picker eligibility count members hidden at the current depth",
+    "description": "Group membership is stored per depth, and a contact hidden at a duress depth M>=1 stays in deeper depths' member arrays: ContactManager.cleanUpGroupDuressMembership purges only when the hide happens at depth 0, and its own comment acknowledges that a hidden identifier can remain a stale invisible member that consumes capacity. At such a deeper depth N the group screens filter the displayed count by visibility (Group.FormV3.membersHeader and GroupDetailV3.resolvedMembers), but Group.FormV3.atCapacity counts the raw array seeded from Group.members(atDepth:): with h hidden members the header turns orange and every unselected row is disabled once the visible selected count reaches 32-h, while the header still reads e.g. 'Members · 29 / 32'. The form's own comment (lines 83-87) names a raw-versus-visible count mismatch a concrete, calculable forensic tell and hides the count for that reason, yet the capacity gate reintroduces the same information through colour and disabled rows; the comment at lines 76-78 shows the raw gate is intentional (a hidden member still occupies a real slot). Variant: ContactListFilter.groupsWithMembers also tests the raw array, so ShareRecipientPicker at depth N lists a group whose members are all hidden there (GroupDetailV3 shows 0 members), and encryptGroupBundle for it throws groupHasNoMembers after filtering hidden members. Either observable tells the coercer that someone at a shallower layer hid a member of this group, i.e. that deeper or shallower layers exist. Deleted contacts do not produce the same mismatch because deleteContact purges the identifier from every group at every depth, so the signal is specific to the hidden-stale state. Conditions are uncommon: several duress layers configured, a contact added to a group at a deeper depth and then hidden while operating at an intermediate duress depth (not depth 0), and either a near-full group (at least 32-h visible members) or a group whose deeper-depth members are all hidden. Not in the known-limitations inventory.",
+    "claimed_root_cause": "Stale per-depth member identifiers that are hidden at that depth are tolerated by design (encryptGroupBundle filters them out), but two UI decisions read Group.members(atDepth:) without the isVisible filter: Group.FormV3.atCapacity (seeded from the raw per-depth array) and ContactListFilter.groupsWithMembers.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+        "line": 154,
+        "scope": "Group.FormV3 .onAppear",
+        "description": "The coercer at depth N opens Edit Group; selectedIdentifiers is seeded from the raw per-depth member array, hidden members included."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Data Models/Group+Model.swift",
+        "line": 137,
+        "scope": "Group.members(atDepth:)",
+        "description": "Returns every identifier stored for the depth, including members hidden at that depth; there is no visibility filter at this layer."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/ContactManager+Classification.swift",
+        "line": 174,
+        "scope": "ContactManager.cleanUpGroupDuressMembership",
+        "description": "Precondition: a hide at duress depth M>=1 (setVisibility or saveClassification) takes the refreshCiphertext branch only; purgeForReal requires currentDepth == 0, so the hidden identifier stays in deeper depths' member arrays."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+        "line": 80,
+        "scope": "Group.FormV3.atCapacity",
+        "description": "Capacity uses the raw count: the header turns orange (line 120) and unselected visible rows are disabled (line 186) while the displayed count (lines 88-95) excludes the hidden members."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift",
+        "line": 53,
+        "scope": "ContactListFilter.groupsWithMembers",
+        "description": "Variant: keeps groups whose raw array at the depth is non-empty without checking member visibility; ShareRecipientPicker.swift line 37 uses it, so a group with only hidden members is offered while GroupDetailV3 shows 0 members."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+        "line": 83,
+        "description": "Comment: showing the raw count would print e.g. 30 / 32 while only 25 rows are visible, and both that and the detail-screen disagreement are concrete, calculable forensic tells; the capacity gate still uses that raw count."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+        "line": 76,
+        "description": "Comment: selectedIdentifiers includes hidden members' identifiers, so the true total gates capacity because a hidden member still occupies a real slot; this shows the gate is deliberate and which trade-off it makes."
+      },
+      {
+        "file": "Occulta/Services/ContactManager+Classification.swift",
+        "line": 152,
+        "description": "Doc comment acknowledges a stale invisible member may remain in a duress-depth array and that the depth-0 purge only stops the stale slot from permanently consuming capacity; reclassification from a duress depth never purges."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1294,
+        "description": "encryptGroupBundle acknowledges a member hidden after being added at the current depth stays in the array and filters it out of the send."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1303,
+        "description": "Sending to such a group at that depth throws groupHasNoMembers once hidden members are filtered out."
+      },
+      {
+        "file": "Occulta/Data Models/Group+Model.swift",
+        "line": 172,
+        "description": "addMember enforces slotCount on the raw array, so a save also fails early at raw capacity."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift",
+        "line": 41,
+        "description": "The detail screen's member count filters by isVisible, so it disagrees with the picker and the capacity gate."
+      }
+    ],
+    "blockers": [
+      "No OS-enforced sandbox is available for xcodebuild or the Simulator in this run, so neither the form's capacity behaviour nor the picker listing was observed.",
+      "Reachability depends on a multi-depth configuration and a hide performed at an intermediate duress depth, traced in source only; how often owners operate at depth M>=1 is an owner-behaviour fact."
+    ],
+    "validation_plan": {
+      "local": "Under @Test(.ambientTestKeyManager) with an in-memory store that includes Group: configure PIN, activate Secure Mode at depth 0, move to depth 1 with applyVerifyState(.normal(depth: 1)) and activate a second layer; create contact X at depth 0 (visible at every depth); at depth 2 call g.addMember(X, atDepth: 2); move to depth 1 and call contactManager.setVisibility(for: X, isSensitive: true); move to depth 2 and assert g.members(atDepth: 2).contains(X), X.isVisible(atDepth: 2) == false, ContactListFilter.groupsWithMembers([g], atDepth: 2) == [g], and contactManager.encryptGroupBundle(basket:groupID:) throws groupHasNoMembers. Then add 31 visible identifiers at depth 2 and assert g.addMember(32nd visible, atDepth: 2) throws capacityExceeded while only 31 are visible. These are expected to pass on current source, demonstrating the raw-count observables; a view-level check of the orange header needs the Simulator on a test-only install with dummy contacts."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "prekey-accept-reopenable-slot-replay-of-newest-dated-batch",
+    "title": "After a contact's clock goes back, a replayed bundle on a reopenable slot can bring back their newest-dated batch, whose keys they have already deleted",
+    "description": "PrekeyBookkeeper.accept blocks batch replays with a window of the last 8 accepted batch IDs and, on slots that open again (long-term or last-resort), a date rule that refuses only a batch strictly older than the newest date ever accepted (`generatedAt < newest`). On one-time slots a new ID alone is enough, by design (Bug 158), and the stored maximum is never lowered. If the contact's clock goes back, the batch with the highest date (B_hi) sets the maximum, and eight later batches dated earlier are accepted on our one-time keys by ID alone. They push B_hi's ID out of the window without raising the maximum. A holder of an earlier file in which that contact sent B_hi on a long-term or last-resort slot can then deliver it again: the slot reopens, B_hi's ID is unknown, and `generatedAt == newest` passes the strict comparison. B_hi's one-time keys are appended (possibly evicting the oldest held batch, the cap is 2) and its last-resort key replaces the current one. The contact has used up and deleted those keys, so messages we later seal to them cannot be opened: up to 15 one-time sends and the last-resort slot are lost. The replay can be repeated after eight more batches. The code comment at PrekeyBookkeeper.swift:142 and DESIGN.md:361 state the intent that a replay is older than whatever was accepted since; that fails exactly at equality. The open item at DESIGN.md:369 (Bug 158, clock went back) covers refusal of the contact's new batches, not acceptance of a replay, so this is recorded as a new variant. Likelihood is low: it needs a clock-back sender, at least eight of their batches accepted on one-time slots while the clock stays behind B_hi's date (roughly 80 or more messages from us), and a kept copy of a bundle that carried B_hi on a reopenable slot. The only effect is lost availability of our messages to that one contact, bounded and self-correcting once the stale keys are used. Suggested fix: refuse `generatedAt <= newest` at PrekeyBookkeeper.swift:134; any genuine new batch is dated strictly later.",
+    "claimed_root_cause": "The date gate at PrekeyBookkeeper.swift:134 compares strictly (`generatedAt < newest`) against latestInboundGeneratedAt, the maximum date ever accepted. The ID window (lines 135-138) can drop the ID of the batch that set that maximum without the maximum moving, so a replay of that batch passes both checks.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 1074,
+        "scope": "RootView.buildOwnedBasket",
+        "description": "An old, genuine group bundle from the contact (a kept copy) is delivered again and goes to openGroup."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1947,
+        "scope": "ContactManager.openGroup",
+        "description": "The recipient slot reopens on the long-term key or a still-held last-resort key; neither is consumed (used.consumable == nil). All sender-proof, signature and digest gates pass because the bundle is genuine."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 2064,
+        "scope": "ContactManager.openGroup",
+        "description": "The slot's own prekeyBatch (B_hi) is passed to acceptInboundBatch."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Contact+Manager+Prekeys.swift",
+        "line": 128,
+        "scope": "ContactManager.acceptInboundBatch",
+        "description": "onReopenableSlot is set to used.consumable == nil, true for a long-term or last-resort use."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 133,
+        "scope": "PrekeyBookkeeper.accept",
+        "description": "B_hi's ID is no longer in acceptedBatchIDs: eight later batches, accepted on one-time slots by ID alone, pushed it out (lines 135-138)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 134,
+        "scope": "PrekeyBookkeeper.accept",
+        "description": "`generatedAt < newest` is false because B_hi's date is the stored maximum (line 144 never lowers it), so the replay is accepted."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 147,
+        "scope": "PrekeyBookkeeper.accept",
+        "description": "B_hi's stale one-time keys are appended to inboundBatches (trimmed to 2 at line 148), and line 152 replaces inboundLastResort with B_hi's old last-resort key."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 1315,
+        "scope": "ContactManager.encryptGroupBundle",
+        "description": "takeInboundPrekey (and lastResortPrekey at line 1323) later pick the stale keys, so our messages are sealed to keys the contact has deleted and cannot open."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 142,
+        "description": "Comment stating the intent: a batch a clock-back sender got through on a one-time key must not let an older replay through on a reopenable slot."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 113,
+        "description": "Doc comment assumption 'a replayed batch is older than whatever was accepted since'. It fails when the batches accepted since are dated earlier, which line 116 explicitly allows on one-time slots."
+      },
+      {
+        "file": "Occulta/Features/Forward+Secrecy/PrekeyBookkeeper.swift",
+        "line": 40,
+        "description": "maxAcceptedBatchIDs = 8 bounds the ID window."
+      },
+      {
+        "file": "Docs/Features/Prekey Continuity/DESIGN.md",
+        "line": 358,
+        "description": "The date rule exists so a replay after its ID ages out does not add a batch whose keys the contact has already used up and deleted. Line 361 words the rule as 'no older than the newest', which admits equality."
+      },
+      {
+        "file": "Docs/Features/Prekey Continuity/DESIGN.md",
+        "line": 369,
+        "description": "The known clock-back residual covers only refusal of the contact's new batches while we are on a reopenable slot, not acceptance of a replay."
+      },
+      {
+        "file": "OccultaTests/Forward+Secrecy/PrekeyBookkeeperTests.swift",
+        "line": 784,
+        "description": "The aged-out replay test pushes the ID out only with later-dated batches. olderDatedNewID (line 807) shows an older-dated new ID is accepted on a one-time slot with the maximum unchanged, and no test combines that with a replay of the maximum-dated batch."
+      }
+    ],
+    "blockers": [
+      "Nothing could be executed in this run: no OS-enforced sandbox meeting the run's controls exists for an iOS target (xcodebuild and the Simulator run outside any sandbox the parent can impose), so the effect below was derived from source and documented Swift semantics only and was not observed. The acceptance result for the equal-date replay is derived from the code in PrekeyBookkeeper.accept, which is pure and deterministic.",
+      "How often this happens depends on a data state outside source: a contact whose clock stays behind an earlier batch date while at least 8 of their batches are accepted on one-time slots, plus a kept copy of a bundle that carried the maximum-dated batch on a long-term or last-resort slot."
+    ],
+    "validation_plan": {
+      "local": "Add to PrekeyBookkeeperReplayTests in OccultaTests/Forward+Secrecy/PrekeyBookkeeperTests.swift; it is pure and needs no Enclave. Start with `var record = PrekeyRecord.empty`. accept(id: idHi, generatedAt: start, prekeys: oldKeys, lastResort: oldLastResort, onReopenableSlot: true) returns true. Then 8 times: accept(id: randomBytes(16), generatedAt: start - TimeInterval(3600 * (k + 1)), prekeys: wire(15), lastResort: lastResortKey(), onReopenableSlot: false) returns true. Preconditions: !record.acceptedBatchIDs.contains(idHi) and record.latestInboundGeneratedAt == start. Then accept(id: idHi, generatedAt: start, prekeys: oldKeys, lastResort: oldLastResort, onReopenableSlot: true). Expected today: returns true, record.inboundLastResort == oldLastResort and record.inboundBatches.last?.keys matches oldKeys. The invariant requires false and the record unchanged. Run with `xcodebuild -project Occulta.xcodeproj -scheme OccultaTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:OccultaTests/PrekeyBookkeeperReplayTests test` inside an approved sandbox. After changing the gate to `<=`, rerun that suite and reopenableAcceptsNewer to confirm a strictly later batch is still accepted."
+    }
+  }
+]

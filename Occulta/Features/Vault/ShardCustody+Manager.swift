@@ -24,6 +24,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
+import OccultaFormats
 
 @Observable
 @MainActor
@@ -151,6 +152,11 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
+
+        // G1 (prekey continuity D5): a piece already held is skipped, as `.distribute` skips it (Case 15), so a
+        // repeated `.replace` adds no second row. The first one already removed what it replaced.
+        let held = try self.decryptAllCustodyShards(using: custodyKey)
+        guard !held.contains(where: { $0.payload.signedAttribute.id == attribute.id }) else { return }
 
         let rowID   = UUID()
         let newFP   = Self.fingerprint(of: senderPublicKey)
@@ -329,7 +335,12 @@ final class ShardCustodyManager {
     ///
     /// Owner side: `.distribute` / `.replace` from PendingShardDistribute rows.
     /// Trustee side: `.handback` for mismatch-fingerprint shards (signals key rotation).
-    func buildShardOperations(for contactIdentifier: String, currentContactPublicKey: Data?) throws -> [OccultaBundle.ShardOperation] {
+    ///
+    /// Nothing for a card contact (`bugs.md` Bug 182): shard content never reaches one (Introduction Cards SPEC §8),
+    /// and a row left from before the card would make every send to it throw. The rows are left as they are.
+    func buildShardOperations(for contactIdentifier: String, currentContactPublicKey: Data?, isCardContact: Bool) throws -> [OccultaBundle.ShardOperation] {
+        guard !isCardContact else { return [] }
+
         // Derived once and passed to both halves below — pendingDistributeOps and
         // mismatchHandbackOps each independently derived this same shard custody key, so a
         // single call here (invoked once per group member when encrypting a group bundle) was
@@ -377,8 +388,10 @@ final class ShardCustodyManager {
     // MARK: - Outbound: build manifest fields
 
     /// IDs of all shards currently held for `ownerIdentifier`. Sent in every outbound 1:1
-    /// bundle; group bundles carry none (`RecipientPayload.shardMetadataAttempted`).
-    func buildCustodyManifest(for ownerIdentifier: String) throws -> [UUID] {
+    /// bundle; group bundles carry none (`RecipientPayload.shardMetadataAttempted`). Empty for a card contact,
+    /// like `buildShardOperations`.
+    func buildCustodyManifest(for ownerIdentifier: String, isCardContact: Bool) throws -> [UUID] {
+        guard !isCardContact else { return [] }
         return try self.decryptAllCustodyShards()
             .filter { $0.payload.ownerContactIdentifier == ownerIdentifier }
             .map    { $0.payload.signedAttribute.id }
@@ -386,20 +399,24 @@ final class ShardCustodyManager {
 
     // MARK: - Trustee display
 
-    /// How many shards this device holds per owner, keyed by owner contact identifier.
+    /// The owners this device holds shards for, each once, by owner contact identifier.
+    ///
+    /// No count per owner: each of an owner's depths with a backup sends its own piece, so
+    /// the number held for one owner tells how many of their depths have one (`bugs.md`
+    /// Bug 162).
     ///
     /// Accepts the raw rows from the view's `@Query` to avoid a second ModelContext
     /// fetch — the `@Query` context is always in sync with the persistent store.
     /// Returns an empty array when decryption fails.
-    func heldShards(from rows: [CustodyShard]) -> [(ownerContactIdentifier: String?, count: Int)] {
+    func heldShardOwners(from rows: [CustodyShard]) -> [String?] {
         guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return [] }
-        var groups: [String?: Int] = [:]
+        var owners = Set<String?>()
         for row in rows {
             guard let payload = try? self.openRow(row.encryptedPayload, as: CustodyShard.Payload.self, using: custodyKey, id: row.id)
             else { continue }
-            groups[payload.ownerContactIdentifier, default: 0] += 1
+            owners.insert(payload.ownerContactIdentifier)
         }
-        return groups.map { ($0.key, $0.value) }
+        return Array(owners)
     }
 
     // MARK: - Shard distribute queuing (owner → trustee)

@@ -10,7 +10,8 @@
 
 import Foundation
 
-/// ML-KEM artifacts from a hybrid PQ key exchange.
+/// ML-KEM artifacts from a hybrid PQ key exchange. A plain value, so nonisolated: `CardState`, which is, holds one.
+nonisolated
 struct QuantumKeyMaterial: Codable, Equatable {
     /// ML-KEM shared secret from our encapsulation of the contact's key (32 bytes).
     /// Cannot be rederived — encapsulation used one-time internal randomness.
@@ -34,6 +35,7 @@ struct QuantumKeyMaterial: Codable, Equatable {
 
     // MARK: - Convenience initializer from exchange result
 
+    @MainActor
     init(from result: ExchangeManager.HybridExchangeResult) {
         self.encapsulatedSecret = result.mlkemSecret1
         self.decapsulatedSecret = result.mlkemSecret2

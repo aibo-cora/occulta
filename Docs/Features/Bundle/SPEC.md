@@ -2,7 +2,8 @@
 
 **Status:** Ready for implementation  
 **Replaces:** `v3fs` JSON serialisation throughout the encryption pipeline  
-**Related:** `Docs/Features/Crypto/bundle.md` (protocol overview), `Docs/Features/Rust Package/RUST_PACKAGES_SPEC.md`
+**Related:** `Docs/Features/Crypto/bundle.md` (protocol overview), `Docs/Features/Rust Package/RUST_PACKAGES_SPEC.md`  
+**Extended by:** `STREAMING_SPEC.md` (2026-10-23). Group bundles get a streamed body layout, wire version `0x0A`, and new reader rules for the `version` byte.
 
 ---
 

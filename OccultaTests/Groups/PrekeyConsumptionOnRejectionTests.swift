@@ -4,15 +4,16 @@
 //
 //  §2.2 — a prekey must not survive a bundle that opened and was then rejected.
 //
-//  These need a real Secure Enclave: prekey private keys are SE-backed and
-//  `findAndOpenRecipientSlot` takes the concrete `Manager.PrekeyManager`, so there is no
-//  injection seam to prefer over gating (see CLAUDE.md's note on the two).
+//  These need a real Secure Enclave: they check that a legacy keychain prekey, SE-backed, is gone
+//  from the keychain, which an injected `PrekeyPrivateKeys` would not exercise (see CLAUDE.md's
+//  note on seams and gating).
 //
 
 import Testing
 import Foundation
 import CryptoKit
 @testable import Occulta
+@testable import OccultaFormats
 
 /// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
 /// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
@@ -27,10 +28,10 @@ private func secureEnclaveAvailable() -> Bool {
 @MainActor struct PrekeyConsumptionOnRejectionTests {
 
     /// One sender, one recipient, one real SE-backed prekey, sealed FS-mode.
-    private struct Fixture {
+    @MainActor private struct Fixture {
         let senderKM: TestKeyManager
         let recipientCrypto: Manager.Crypto
-        let prekeyManager: Manager.PrekeyManager
+        let prekeySecretsManager: Manager.PrekeySecretsManager
         let prekey: Prekey
         let contactID: String
         let bundle: OccultaBundle
@@ -40,11 +41,11 @@ private func secureEnclaveAvailable() -> Bool {
         init(prefixed: Bool = false) throws {
             self.senderKM        = TestKeyManager()
             self.recipientCrypto = Manager.Crypto(keyManager: TestKeyManager())
-            self.prekeyManager   = Manager.PrekeyManager()
+            self.prekeySecretsManager   = Manager.PrekeySecretsManager()
             self.contactID       = "consume-" + UUID().uuidString
 
             self.prekey = try #require(
-                self.prekeyManager.generateBatch(contactID: self.contactID, count: 1).first
+                self.prekeySecretsManager.generateBatch(contactID: self.contactID, count: 1).first
             )
             let recipient = GroupRecipient(
                 publicKey:       try TestKeyManager().retrieveIdentity(),
@@ -61,23 +62,23 @@ private func secureEnclaveAvailable() -> Bool {
 
         /// True while the prekey's private half is still in the Enclave.
         var privateKeyStillPresent: Bool {
-            self.prekeyManager.retrievePrivateKey(for: self.prekey) != nil
+            self.prekeySecretsManager.retrievePrivateKey(for: self.prekey) != nil
         }
 
         func open(senderPublicKey: Data) throws
-        -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?, mode: OccultaBundle.Mode) {
+        -> (payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode) {
             try self.recipientCrypto.findAndOpenRecipientSlot(
                 in: self.bundle,
                 blind: self.bundle.group!.blind,
                 senderContactID: self.contactID,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: nil,
-                prekeyManager: self.prekeyManager
+                prekeys: self.prekeySecretsManager
             )
         }
 
         func cleanUp() {
-            self.prekeyManager.deleteAllKeys(for: self.contactID)
+            self.prekeySecretsManager.deleteAllKeys(for: self.contactID)
         }
     }
 
@@ -110,10 +111,10 @@ private func secureEnclaveAvailable() -> Bool {
         defer { f.cleanUp() }
 
         #expect(f.privateKeyStillPresent)
-        let (_, consumable, mode) = try f.open(senderPublicKey: f.senderPub)
+        let (_, used, mode) = try f.open(senderPublicKey: f.senderPub)
 
         #expect(mode == .forwardSecretNoPQ)
-        #expect(consumable != nil, "the returned prekey reports what was consumed")
+        #expect(used.consumable != nil, "the returned prekey reports what was consumed")
         #expect(!f.privateKeyStillPresent)
     }
 
@@ -133,7 +134,7 @@ private func secureEnclaveAvailable() -> Bool {
                 senderContactID: "someone-else",
                 senderPublicKey: f.senderPub,
                 quantumMaterial: nil,
-                prekeyManager: f.prekeyManager
+                prekeys: f.prekeySecretsManager
             )
         }
 

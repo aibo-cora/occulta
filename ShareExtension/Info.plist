@@ -12,6 +12,8 @@
 				<integer>20</integer>
 				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
 				<integer>20</integer>
+				<key>NSExtensionActivationSupportsMovieWithMaxCount</key>
+				<integer>20</integer>
 			</dict>
 		</dict>
 		<key>NSExtensionPrincipalClass</key>

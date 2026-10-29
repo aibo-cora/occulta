@@ -5,8 +5,9 @@
 //  Structural tests (slot counts, sizes, random filler) are simulator safe —
 //  they test Group.freshFillerArray() and static constants directly, no SE needed.
 //
-//  Encrypted round-trip tests (add/remove member, name, ID, createdAt) require
-//  the Secure Enclave and guard on secureEnclaveAvailable().
+//  Encrypted round-trip tests (add/remove member, name, ID, createdAt) run under
+//  `.ambientTestKeyManager`: the local DB key comes from a TestKeyManager, so they
+//  need no Secure Enclave and run on CI.
 //
 
 import Testing
@@ -15,12 +16,9 @@ import Combine
 import SwiftData
 import CryptoKit
 @testable import Occulta
+@testable import OccultaFormats
 
 // MARK: - Helpers
-
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {
@@ -78,8 +76,7 @@ struct GroupStructuralTests {
 @Suite("Group — encrypted round-trips")
 @MainActor struct GroupEncryptedTests {
 
-    @Test func addMember_readsBackAtSameDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_readsBackAtSameDepth() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Friends")
         ctx.insert(group)
@@ -89,8 +86,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 0).contains(id))
     }
 
-    @Test func addMember_doesNotAppearInOtherLayer() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_doesNotAppearInOtherLayer() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Friends")
         ctx.insert(group)
@@ -99,8 +95,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 1).isEmpty, "Real member must not leak into duress layer")
     }
 
-    @Test func addMember_allSlotsRemain156bytes() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_allSlotsRemain156bytes() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Family")
         ctx.insert(group)
@@ -113,8 +108,7 @@ struct GroupStructuralTests {
         }
     }
 
-    @Test func addMember_longIdentifier_readsBack() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_longIdentifier_readsBack() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Test")
         ctx.insert(group)
@@ -129,8 +123,7 @@ struct GroupStructuralTests {
         }
     }
 
-    @Test func addMember_fullRecompute_everyDepthChanges() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_fullRecompute_everyDepthChanges() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Team")
         ctx.insert(group)
@@ -146,8 +139,7 @@ struct GroupStructuralTests {
         #expect(beforeDeeper != group.deeperMemberSlots)
     }
 
-    @Test func deeperDuressDepths_areIndependentFromEachOtherAndFromDepth1() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func deeperDuressDepths_areIndependentFromEachOtherAndFromDepth1() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "MultiLayer")
         ctx.insert(group)
@@ -167,8 +159,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 3) == [depth3ID])
     }
 
-    @Test func editingDeepDepth_doesNotClobberShallowerDepths() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func editingDeepDepth_doesNotClobberShallowerDepths() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Layered")
         ctx.insert(group)
@@ -182,8 +173,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 1) == [depth1ID])
     }
 
-    @Test func newGroup_deeperSlots_prePaddedAndStayFullSizeAcrossEdits() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func newGroup_deeperSlots_prePaddedAndStayFullSizeAcrossEdits() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Layered")
         ctx.insert(group)
@@ -204,8 +194,7 @@ struct GroupStructuralTests {
         }
     }
 
-    @Test func members_outOfRangeDepth_returnsEmptyWithoutCrashing() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func members_outOfRangeDepth_returnsEmptyWithoutCrashing() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Bounds")
         ctx.insert(group)
@@ -215,8 +204,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 999).isEmpty)
     }
 
-    @Test func addMember_depthAtOrBeyondDepthCount_throwsInvalidDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_depthAtOrBeyondDepthCount_throwsInvalidDepth() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Bounds")
         ctx.insert(group)
@@ -226,8 +214,7 @@ struct GroupStructuralTests {
         }
     }
 
-    @Test func removeMember_noLongerReadable() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func removeMember_noLongerReadable() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Crew")
         ctx.insert(group)
@@ -238,8 +225,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 0).isEmpty)
     }
 
-    @Test func addMember_duplicate_isIdempotent() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_duplicate_isIdempotent() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Club")
         ctx.insert(group)
@@ -250,8 +236,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 0).count == 1)
     }
 
-    @Test func addMember_exceeds32_throwsCapacityExceeded() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addMember_exceeds32_throwsCapacityExceeded() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Large")
         ctx.insert(group)
@@ -264,8 +249,7 @@ struct GroupStructuralTests {
         }
     }
 
-    @Test func removeFirst_then_add_atCapacity_succeeds() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func removeFirst_then_add_atCapacity_succeeds() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Full")
         ctx.insert(group)
@@ -285,13 +269,12 @@ struct GroupStructuralTests {
         #expect(members.count == Group.slotCount)
     }
 
-    @Test func addFirst_atCapacity_throwsBeforeRemove() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func addFirst_atCapacity_throwsBeforeRemove() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Full")
         ctx.insert(group)
 
-        var ids = (0..<Group.slotCount).map { _ in UUID().uuidString }
+        let ids = (0..<Group.slotCount).map { _ in UUID().uuidString }
         for id in ids { try group.addMember(id, atDepth: 0) }
 
         // Adding before removing at capacity must throw — this is the failure mode
@@ -306,8 +289,7 @@ struct GroupStructuralTests {
         #expect(!group.members(atDepth: 0).contains(toAdd))
     }
 
-    @Test func duressLayer_independentFromRealLayer() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func duressLayer_independentFromRealLayer() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Dual")
         ctx.insert(group)
@@ -321,16 +303,14 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 1) == [duressID])
     }
 
-    @Test func readName_roundTrip() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func readName_roundTrip() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Alpha Team")
         ctx.insert(group)
         #expect(group.readName() == "Alpha Team")
     }
 
-    @Test func writeName_updatesReadName() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func writeName_updatesReadName() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Old")
         ctx.insert(group)
@@ -338,16 +318,14 @@ struct GroupStructuralTests {
         #expect(group.readName() == "New")
     }
 
-    @Test func readID_isValidUUID() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func readID_isValidUUID() throws {
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Test")
         ctx.insert(group)
         #expect(group.readID() != nil)
     }
 
-    @Test func readCreatedAt_isSecondPrecision() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func readCreatedAt_isSecondPrecision() throws {
         let ctx = ModelContext(try makeContainer())
         let before = floor(Date().timeIntervalSince1970)
         let group = try Group(name: "Dated")
@@ -369,12 +347,11 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
-    @Test func create_insertsGroup() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func create_insertsGroup() throws {
         let cm  = try self.makeContactManager()
         _       = try cm.createGroup(name: "Ops")
         let all = try cm.allGroups()
@@ -382,8 +359,7 @@ struct GroupStructuralTests {
         #expect(all[0].readName() == "Ops")
     }
 
-    @Test func delete_removesGroup() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func delete_removesGroup() throws {
         let cm    = try self.makeContactManager()
         let group = try cm.createGroup(name: "Temp")
         guard let id = group.readID() else { Issue.record("readID() returned nil"); return }
@@ -402,7 +378,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager(crypto: Manager.Crypto) throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -474,12 +450,13 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
-    /// Returns nil (caller should skip) when SE is unavailable — `material` is
-    /// encrypted via the default (SE-backed) `Manager.Crypto()`, same as production.
+    /// Returns nil when the local DB key is unavailable — `material` is encrypted via the
+    /// default `Manager.Crypto()`, same as production, so callers run under
+    /// `.ambientTestKeyManager` and `#require` the result.
     private func makeProfile(identifier: String, publicKey: Data, using crypto: Manager.Crypto) throws -> Contact.Profile? {
         guard let encrypted = try crypto.encrypt(data: publicKey) else { return nil }
         let profile = Contact.Profile(
@@ -496,20 +473,20 @@ struct GroupStructuralTests {
     // membership and per-contact visibility (visibleThroughDepth) are independent,
     // unsynchronized state, so a member reclassified as sensitive after being added
     // to a group must still be excluded at send time.
-    @Test func excludesSensitiveMember_evenWhenPresentInGroupMemberList() throws {
+    @Test(.ambientTestKeyManager) func excludesSensitiveMember_evenWhenPresentInGroupMemberList() throws {
         let realCrypto = Manager.Crypto()
         let cm = try self.makeContactManager()
 
         let visibleID = UUID().uuidString
-        guard let visibleProfile = try self.makeProfile(
+        let visibleProfile = try #require(try self.makeProfile(
             identifier: visibleID, publicKey: try TestKeyManager().retrieveIdentity(), using: realCrypto
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         try cm.insertProfile(visibleProfile)
 
         let hiddenID = UUID().uuidString
-        guard let hiddenProfile = try self.makeProfile(
+        let hiddenProfile = try #require(try self.makeProfile(
             identifier: hiddenID, publicKey: try TestKeyManager().retrieveIdentity(), using: realCrypto
-        ) else { return }
+        ))
         // Non-decryptable field — isVisible() takes the conservative-exclusion path,
         // hiding this contact at every depth without needing a real classification flow.
         hiddenProfile.visibleThroughDepth = Data([0xFF, 0xFE])
@@ -529,14 +506,14 @@ struct GroupStructuralTests {
     // Sanity check for the same fix: a group made up entirely of sensitive members
     // must fail with groupHasNoMembers rather than silently sending to nobody or
     // falling through to the pre-fix behavior.
-    @Test func allMembersSensitive_throwsGroupHasNoMembers() throws {
+    @Test(.ambientTestKeyManager) func allMembersSensitive_throwsGroupHasNoMembers() throws {
         let realCrypto = Manager.Crypto()
         let cm = try self.makeContactManager()
 
         let hiddenID = UUID().uuidString
-        guard let hiddenProfile = try self.makeProfile(
+        let hiddenProfile = try #require(try self.makeProfile(
             identifier: hiddenID, publicKey: try TestKeyManager().retrieveIdentity(), using: realCrypto
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
+        ))
         hiddenProfile.visibleThroughDepth = Data([0xFF, 0xFE])
         try cm.insertProfile(hiddenProfile)
 
@@ -554,8 +531,7 @@ struct GroupStructuralTests {
 @Suite("Group — purgeMembersFromDuressDepths")
 @MainActor struct GroupPurgeMembersFromDuressDepthsTests {
 
-    @Test func removesOnlyGivenIdentifiers_keepsRealLayerAndOtherDuressMembers() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func removesOnlyGivenIdentifiers_keepsRealLayerAndOtherDuressMembers() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Purge")
         ctx.insert(group)
@@ -578,8 +554,7 @@ struct GroupStructuralTests {
 
     // Regression guard: a diff that shows only the touched depths changing (real layer
     // untouched) would itself reveal that a duress-only purge just happened.
-    @Test func reencryptsRealLayerSlots_evenThoughMembershipUnchanged() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func reencryptsRealLayerSlots_evenThoughMembershipUnchanged() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Purge")
         ctx.insert(group)
@@ -593,8 +568,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 0).count == 1)
     }
 
-    @Test func onGroupWithNoMatchingMembers_isNoOpAndSucceeds() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func onGroupWithNoMatchingMembers_isNoOpAndSucceeds() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Empty")
         ctx.insert(group)
@@ -613,7 +587,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -631,8 +605,7 @@ struct GroupStructuralTests {
     // membership, while leaving every other (unrelated) duress-depth member untouched.
     // A prior version of this cleanup wiped *all* duress-depth membership on any
     // depth-0 hide, destroying unrelated decoy content a user may have built by hand.
-    @Test func setVisibility_sensitiveAtDepth0_purgesThatContactOnly_keepsOtherDuressMembers() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func setVisibility_sensitiveAtDepth0_purgesThatContactOnly_keepsOtherDuressMembers() throws {
         let cm = try self.makeContactManager()
         let identifier = UUID().uuidString
         try self.insertPlainProfile(identifier: identifier, in: cm)
@@ -648,8 +621,7 @@ struct GroupStructuralTests {
     }
 
     // Marking a contact safe hides no one — must not purge any duress membership.
-    @Test func setVisibility_safeAtDepth0_doesNotPurge_butStillRefreshesCiphertext() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func setVisibility_safeAtDepth0_doesNotPurge_butStillRefreshesCiphertext() throws {
         let cm = try self.makeContactManager()
         let identifier = UUID().uuidString
         try self.insertPlainProfile(identifier: identifier, in: cm)
@@ -669,8 +641,7 @@ struct GroupStructuralTests {
 
     // Reclassification from a duress depth can't be guaranteed non-coerced the way
     // depth 0 can — must not trigger the purge. Ciphertext must still refresh.
-    @Test func setVisibility_sensitiveFromDuressDepth_doesNotPurge_butStillRefreshesCiphertext() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func setVisibility_sensitiveFromDuressDepth_doesNotPurge_butStillRefreshesCiphertext() throws {
         let cm = try self.makeContactManager()
         let identifier = UUID().uuidString
         try self.insertPlainProfile(identifier: identifier, in: cm)
@@ -689,8 +660,7 @@ struct GroupStructuralTests {
         #expect(beforeDeeper != group.deeperMemberSlots)
     }
 
-    @Test func saveClassification_hidingSomeone_atDepth0_purgesThatContactOnly_keepsOtherDuressMembers() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func saveClassification_hidingSomeone_atDepth0_purgesThatContactOnly_keepsOtherDuressMembers() throws {
         let cm = try self.makeContactManager()
         let safeID      = UUID().uuidString
         let sensitiveID = UUID().uuidString
@@ -707,8 +677,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 3) == [unrelatedID])
     }
 
-    @Test func saveClassification_allSafe_doesNotPurge_butStillRefreshesCiphertext() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func saveClassification_allSafe_doesNotPurge_butStillRefreshesCiphertext() throws {
         let cm = try self.makeContactManager()
         let safeID = UUID().uuidString
         try self.insertPlainProfile(identifier: safeID, in: cm)
@@ -730,8 +699,7 @@ struct GroupStructuralTests {
 @Suite("Group — refreshCiphertext and purgeMember")
 @MainActor struct GroupCiphertextHygieneTests {
 
-    @Test func refreshCiphertext_changesEveryDepth_keepsAllMembership() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func refreshCiphertext_changesEveryDepth_keepsAllMembership() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Refresh")
         ctx.insert(group)
@@ -758,8 +726,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 4) == [deeperID])
     }
 
-    @Test func purgeMember_removesFromEveryDepth_includingRealLayer() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func purgeMember_removesFromEveryDepth_includingRealLayer() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Purge")
         ctx.insert(group)
@@ -776,8 +743,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 3).isEmpty)
     }
 
-    @Test func purgeMember_leavesOtherMembersUntouched() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func purgeMember_leavesOtherMembersUntouched() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Purge")
         ctx.insert(group)
@@ -795,8 +761,7 @@ struct GroupStructuralTests {
     // Regression guard: touching only the depths where the identifier was actually
     // found would reveal which depths held this contact. Every depth must re-encrypt
     // regardless of whether a removal happened there.
-    @Test func purgeMember_reencryptsEveryDepth_evenWhereNotPresent() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func purgeMember_reencryptsEveryDepth_evenWhereNotPresent() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Purge")
         ctx.insert(group)
@@ -830,7 +795,7 @@ struct GroupStructuralTests {
 @MainActor struct GroupKeyedReencryptionTests {
 
     private func requireKey() throws -> SymmetricKey {
-        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
             throw GroupError.keyUnavailable
         }
         return key
@@ -838,8 +803,7 @@ struct GroupStructuralTests {
 
     // MARK: Parity — usingKey: variants must match the no-key convenience overloads
 
-    @Test func refreshCiphertext_usingKey_matchesNoKeyOverload() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func refreshCiphertext_usingKey_matchesNoKeyOverload() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Refresh")
         ctx.insert(group)
@@ -859,8 +823,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 4) == [deeperID])
     }
 
-    @Test func purgeMember_usingKey_matchesNoKeyOverload() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func purgeMember_usingKey_matchesNoKeyOverload() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Purge")
         ctx.insert(group)
@@ -876,8 +839,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 1) == [bystander])
     }
 
-    @Test func purgeMembersFromDuressDepths_usingKey_matchesNoKeyOverload() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func purgeMembersFromDuressDepths_usingKey_matchesNoKeyOverload() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Purge")
         ctx.insert(group)
@@ -896,8 +858,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 1) == [unrelatedID])
     }
 
-    @Test func members_atDepth_usingKey_matchesNoKeyOverload() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func members_atDepth_usingKey_matchesNoKeyOverload() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "Read")
         ctx.insert(group)
@@ -911,8 +872,7 @@ struct GroupStructuralTests {
 
     // MARK: Defensive — a wrong key must not crash, and must not silently "succeed"
 
-    @Test func members_atDepth_usingKey_withWrongKey_returnsEmpty_notCrash() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func members_atDepth_usingKey_withWrongKey_returnsEmpty_notCrash() throws {
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "WrongKey")
         ctx.insert(group)
@@ -929,22 +889,26 @@ struct GroupStructuralTests {
 
     // MARK: Fail-loud — derivation failure must abort, not silently skip the refresh
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func refreshCiphertext_throwsKeyUnavailable_whenSEUnavailable() throws {
-        guard !secureEnclaveAvailable() else { print("⚠︎ Skipping — requires an SE-unavailable environment"); return }
+    /// The group is created while the key works, then the key goes missing — `Group(name:)`
+    /// encrypts its own fields, so it cannot be created without one.
+    @Test(.ambientTestKeyManager) func refreshCiphertext_throwsKeyUnavailable_whenLocalKeyUnavailable() throws {
         let ctx   = ModelContext(try makeContainer())
-        let group = try Group(name: "NoSE")
+        let group = try Group(name: "NoKey")
         ctx.insert(group)
+        let km = try #require(Manager.Ambient.keyManager as? TestKeyManager)
+        km.simulatesLocalKeyUnavailable = true
 
         #expect(throws: GroupError.keyUnavailable) {
             try group.refreshCiphertext()
         }
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func addMember_throwsKeyUnavailable_whenSEUnavailable() throws {
-        guard !secureEnclaveAvailable() else { print("⚠︎ Skipping — requires an SE-unavailable environment"); return }
+    @Test(.ambientTestKeyManager) func addMember_throwsKeyUnavailable_whenLocalKeyUnavailable() throws {
         let ctx   = ModelContext(try makeContainer())
-        let group = try Group(name: "NoSE")
+        let group = try Group(name: "NoKey")
         ctx.insert(group)
+        let km = try #require(Manager.Ambient.keyManager as? TestKeyManager)
+        km.simulatesLocalKeyUnavailable = true
 
         #expect(throws: GroupError.keyUnavailable) {
             try group.addMember(UUID().uuidString, atDepth: 0)
@@ -959,7 +923,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -971,8 +935,7 @@ struct GroupStructuralTests {
         try cm.insertProfile(profile)
     }
 
-    @Test func deleteContact_purgesMemberFromEveryDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func deleteContact_purgesMemberFromEveryDepth() throws {
         let cm = try self.makeContactManager()
         let identifier = UUID().uuidString
         try self.insertPlainProfile(identifier: identifier, in: cm)
@@ -989,8 +952,7 @@ struct GroupStructuralTests {
 
     // Deletion is unambiguous everywhere — unlike classification, purging is safe at
     // any depth, since it only ever touches the one deleted identifier.
-    @Test func deleteContact_fromDuressDepth_stillPurgesMember() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func deleteContact_fromDuressDepth_stillPurgesMember() throws {
         let cm = try self.makeContactManager()
         let identifier = UUID().uuidString
         try self.insertPlainProfile(identifier: identifier, in: cm)
@@ -1006,8 +968,7 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 1).isEmpty)
     }
 
-    @Test func deleteContact_leavesOtherGroupMembersIntact() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func deleteContact_leavesOtherGroupMembersIntact() throws {
         let cm = try self.makeContactManager()
         let target    = UUID().uuidString
         let bystander = UUID().uuidString
@@ -1025,7 +986,7 @@ struct GroupStructuralTests {
 
     /// RootView reconciles the current depth's backup-key pieces on this, so a deleted
     /// trustee's piece shows as lost at once (bugs.md Bug 144).
-    @Test(.enabled(if: secureEnclaveAvailable()))
+    @Test(.ambientTestKeyManager)
     func deleteContact_announcesTheDeletion() throws {
         let schema = Schema([
             Group.self,
@@ -1033,7 +994,7 @@ struct GroupStructuralTests {
             Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self, Contact.Profile.Key.self,
         ])
         let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let cm        = ContactManager(modelContainer: container, security: security)
         let target    = UUID().uuidString
         try self.insertPlainProfile(identifier: target, in: cm)
@@ -1060,7 +1021,7 @@ struct GroupStructuralTests {
 
     private func makeContactManager() throws -> ContactManager {
         let container = try makeContainer()
-        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         return ContactManager(modelContainer: container, security: security)
     }
 
@@ -1072,8 +1033,7 @@ struct GroupStructuralTests {
         try cm.insertProfile(profile)
     }
 
-    @Test func safeContact_visibleAtEveryDepth() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func safeContact_visibleAtEveryDepth() throws {
         let cm = try self.makeContactManager()
         let id = UUID().uuidString
         try self.insertPlainProfile(identifier: id, in: cm)
@@ -1086,8 +1046,7 @@ struct GroupStructuralTests {
         #expect(contact.isVisible(atDepth: cm.security.currentDepth), "a safe contact must stay visible at every depth")
     }
 
-    @Test func sensitiveContact_visibleThroughClassificationDepth_hiddenBeyond() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+    @Test(.ambientTestKeyManager) func sensitiveContact_visibleThroughClassificationDepth_hiddenBeyond() throws {
         let cm = try self.makeContactManager()
         let id = UUID().uuidString
         try self.insertPlainProfile(identifier: id, in: cm)

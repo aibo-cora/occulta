@@ -19,10 +19,6 @@ import LocalAuthentication
 
 // MARK: - Helpers
 
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 private func makeRig() throws -> (
     vault:     VaultManager,
@@ -52,7 +48,7 @@ private func makeRig() throws -> (
         AppLayerConfig.self,
     ])
     let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let security  = try Manager.Security(modelContainer: container, keyManager: km)
+    let security  = Manager.Security(modelContainer: container, keyManager: km)
     let contacts  = ContactManager(modelContainer: container, security: security)
     let vault     = VaultManager(modelContainer: container, keyManager: km)
     let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
@@ -73,7 +69,7 @@ private func insertPlainProfile(identifier: String, in cm: ContactManager) throw
 // MARK: - Tests
 
 @MainActor
-@Suite("Backup-key distribution at a duress depth", .serialized, .enabled(if: secureEnclaveAvailable()))
+@Suite("Backup-key distribution at a duress depth", .serialized, .ambientTestKeyManager)
 struct DecoyShardDistributionTests {
 
     /// Per-entry splitting was retired (decisions.md, "Retire per-entry splitting"); the

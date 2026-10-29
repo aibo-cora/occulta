@@ -19,6 +19,13 @@ enum ContactListFilter {
         contacts.filter { $0.isVisible(atDepth: depth) }
     }
 
+    /// Whether the contacts screen is in its empty state at `depth`: no trust summary, the create-contact hint.
+    /// Decided on what is visible, not on what is stored. Reading the unfiltered list tells a duress-depth
+    /// viewer whether hidden contacts exist, since a genuinely empty install shows the hint and this would not.
+    static func isEmptyList(_ contacts: [Contact.Profile], atDepth depth: Int) -> Bool {
+        self.visibleContacts(contacts, atDepth: depth).isEmpty
+    }
+
     /// Search-filtered and sorted for display: family name first when either side has one,
     /// given name otherwise.
     static func sortedContacts(_ contacts: [Contact.Profile], matching searchText: String) -> [Contact.Profile] {

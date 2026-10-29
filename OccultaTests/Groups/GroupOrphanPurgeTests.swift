@@ -23,17 +23,11 @@ import SwiftData
 import CryptoKit
 @testable import Occulta
 
-/// True when this host can derive the real hybrid local DB key. False on CI runners, which
-/// have no Secure Enclave.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 
 // MARK: - Helpers
 
 private func canonicalKey() -> SymmetricKey? {
-    try? Manager.Key().createHybridLocalEncryptionKey()
+    try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 }
 
 @MainActor
@@ -67,12 +61,12 @@ private func strand(_ group: Group) {
 
 // MARK: - Tests
 
-/// Requires a Secure Enclave: `createGroup` seals through `Manager.Key()` directly.
-@Suite("Bug 75 — orphaned group purge", .enabled(if: secureEnclaveAvailable()))
+/// Runs under `.ambientTestKeyManager`: `createGroup` seals with the ambient local key.
+@Suite("Bug 75 — orphaned group purge", .ambientTestKeyManager)
 @MainActor
 struct GroupOrphanPurgeTests {
 
-    @Test("A stranded group is removed and a healthy one is kept", .enabled(if: secureEnclaveAvailable()))
+    @Test("A stranded group is removed and a healthy one is kept", .ambientTestKeyManager)
     func removesOnlyStrandedGroups() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()
@@ -97,7 +91,7 @@ struct GroupOrphanPurgeTests {
     /// against a key that encrypted none of them, every row is stranded and every row goes.
     /// This is why the key is a required parameter and why the call site refuses to run the
     /// sweep at all when derivation fails — there is no in-function guard to test.
-    @Test("All groups stranded — every row goes, none left behind", .enabled(if: secureEnclaveAvailable()))
+    @Test("All groups stranded — every row goes, none left behind", .ambientTestKeyManager)
     func removesAllWhenAllStranded() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()
@@ -111,7 +105,7 @@ struct GroupOrphanPurgeTests {
         #expect(try manager.allGroups().isEmpty)
     }
 
-    @Test("An empty store is a no-op", .enabled(if: secureEnclaveAvailable()))
+    @Test("An empty store is a no-op", .ambientTestKeyManager)
     func emptyStoreIsNoOp() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()
@@ -121,7 +115,7 @@ struct GroupOrphanPurgeTests {
         #expect(try manager.allGroups().isEmpty)
     }
 
-    @Test("Repeated sweeps are idempotent and leave healthy groups alone", .enabled(if: secureEnclaveAvailable()))
+    @Test("Repeated sweeps are idempotent and leave healthy groups alone", .ambientTestKeyManager)
     func idempotent() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()

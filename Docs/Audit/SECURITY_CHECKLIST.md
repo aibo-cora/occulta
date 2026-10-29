@@ -104,6 +104,16 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       previous behaviour: 4 of its 5 cases break when the `defer` is removed. The fifth asserts
       a non-recipient consumes nothing, and holds either way by design.
 
+      **Amended 2026-10-13 — one exception, for Bug 165.** A body that doesn't match the slot's
+      `bodyDigest` throws `bodyDigestMismatch` before the prekey is recorded as used, so it survives.
+      The slot is the sender's own, for a message not opened yet; another recipient, who holds the
+      session key, put a body of theirs behind it. Consuming would let them, by delivering first,
+      make the genuine message unopenable. Keeping the key leaves it as it was before the forgery
+      arrived, which anyone can bring about anyway by withholding the bundle, and retirement still
+      covers it. Every other rejection after the slot opens consumes as above. Guarded by
+      `GroupBodyBindingTests.mismatchKeepsTheOneTimeKey` and
+      `PrekeyRecordWiringTests.digestMismatchKeepsThePrekey`.
+
       **A second defect under the same item, independent of ordering — also fixed.** `consume`
       returns 1/0 and both call sites discarded it, so a failed `SecItemDelete` at what its own
       doc calls "the exact moment forward secrecy is established" passed unnoticed on the
@@ -138,13 +148,22 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       (`PrekeyManager.swift:70`, `ShareIndexKeyManager.swift:147`, and `TestKeyManager`'s
       in-memory pairs). Delete this item or re-point it at whatever replaced the component.
 - [x] Local DB encryption key is inaccessible after restore to a different device
-      — **wording amended.** The item described `ECDH(ourSEKey, G)`; the derivation is now
-      hybrid — `HKDF(ECDH(localDB_SE_priv, G) ‖ keychain_random)`, salted with the SE public key
-      (`Key+Manager.swift:432`). Both halves are device-bound and the property is stronger than
-      before: the SE half is `kSecAttrTokenIDSecureEnclave` with `.privateKeyUsage` only and
-      `WhenUnlockedThisDeviceOnly` (`:506`), so it is non-exportable and non-migratable; the
-      random half is `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (`:562`), so it does not
-      travel in an encrypted backup. Neither half can be reconstructed on another device.
+      — **wording amended twice.** The item described `ECDH(ourSEKey, G)`; the derivation was then
+      hybrid — `HKDF(ECDH(localDB_SE_priv, G) ‖ keychain_random)`, salted with the SE public key — and
+      the old text called both halves device-bound. **That was wrong for the SE half (`bugs.md` Bug 171,
+      found 2026-10-21): ECDH against G is d·G, the key's own public point Q, so the half is a function of
+      Q and needs no Enclave; the key was in effect its random half alone, and the item held only while
+      Q was not in whatever was restored.** Fixed in 2.0.0: the key is now
+      `HKDF(ECDH(localDB_SE_priv, P) ‖ [ss ‖] r_U)` (`Manager.Key.enclaveBoundKey(.localDB)`), with P a point
+      nobody knows the discrete log of, `r_U` the Keychain random half
+      (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, so it does not travel in an encrypted backup), and on
+      iOS 26+ `ss` from an Enclave ML-KEM key held only as a blob this device's Enclave can use. The SE
+      half is `kSecAttrTokenIDSecureEnclave` with `.privateKeyUsage` only and `WhenUnlockedThisDeviceOnly`,
+      so it is non-exportable and non-migratable. None of the terms can be reconstructed on another device.
+      **Open, needs a decision:** (a) data already sealed under the legacy key and copied before the
+      launch reseal moved it stays readable to a holder of Q; no option changes that. (b) Below iOS 26 there is
+      no ML-KEM term, so a keychain dump that holds Q and `r_U`, analysed later with a quantum computer, is
+      open until the device reaches iOS 26 (Stage 6) or the passphrase release ships.
 
 ## 3. Protocol Invariants
 
@@ -280,6 +299,26 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       is present — no double-display
       — `OccultaApp.swift:673–681`.
 
+- [ ] Introduction cards (`Docs/Features/Introduction Cards/SPEC.md`), added in v2.0.0. Each line below is
+      covered by a test in `OccultaTests/IntroductionCards/`, but none has been verified on a device yet.
+      - A card contact is **Not verified** everywhere and hard-blocked (SPEC §8) from groups, vault
+        trustees, shard content and identity challenges, at send and at receive
+        (`CardState.isCardContact`; `Contact+Manager+Groups.swift`, `encryptCardBundle`).
+      - A card contact never gets a bundle under the identity key. A missing piece throws rather than
+        falling back (`CardError.keyMaterialMissing`, `CardError.hardBlocked`).
+      - Card keys are Enclave blobs inside the contact's sealed, fixed-size card field
+        (`CardStateCodec.capacity`): no keychain items, no files left behind (the share temp file is
+        deleted, and has a random name with no extension), and the same sealed length in every state.
+      - Redemption checks the introduction's signature against the card, the slot's signature, the
+        fingerprint, the body digest and `senderProof` before anything is stored. A failure leaves the
+        card `issued` and consumes nothing.
+      - The meeting proof is 64 bytes whether it holds a signature or a filler. An older build drops it as
+        a discovery message with an empty token.
+      - An in-person exchange writes the card field `.empty` and drops the card-era batches in the same
+        save as the new key, then checkpoints the store.
+      - **Device-only, not done:** the card field size on a device, a hostile ML-KEM blob passed to the
+        Enclave reload, and the end-to-end flow on two phones holding no real data.
+
 ## 4. Data at Rest
 
 - [x] All contact fields are encrypted before SwiftData storage — no plaintext PII written to disk
@@ -309,9 +348,14 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       the bytes are queued in memory and the function returns early.
 - [x] No sensitive material written to `UserDefaults`, `NSCache`, or temp files without
       protection class
-      — `UserDefaults`/`@AppStorage` holds four booleans only: `showFingerprints`,
-      `showTrustSummary`, `hasCompletedOnboarding`, `vault.postRestoreActionNeeded`. No key
-      material, no identifiers, and no key whose name discloses Secure Mode.
+      — `UserDefaults`/`@AppStorage` holds four booleans and one version string: `showFingerprints`,
+      `showTrustSummary`, `hasCompletedOnboarding`, `vault.postRestoreActionNeeded`, and
+      `whatsNewLastSeenVersion` (the marketing version, which `Info.plist` already carries). No key
+      material, no identifiers, and no key whose name discloses Secure Mode. `OSTraceTests` fails
+      on any key outside these five, so adding one means updating this list and that test together.
+      The What's New copy
+      (`WhatsNew.releases`) is compiled into the binary and shown on an unlocked phone, so each
+      release's entry is read against the same rule before tagging.
 - [x] All writes to `FileManager.temporaryDirectory` use `Data.writeProtected(to:)`
       (`.completeFileProtection`) — no bare `write(to:)` calls
       — **was FAIL, fixed this pass.** `IdentityChallenge+Coordinator.swift:285` wrote the
@@ -322,6 +366,18 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       — `OccultaApp.init()` (`:92`). Note it dispatches through `Task.detached`, so it is
       *initiated* before any UI and not necessarily *complete* before it; the item's "verify it
       runs before any UI is shown" is therefore satisfied only in the weaker sense.
+- [x] Compose attachments are sealed on disk for every recipient kind — no plaintext in `tmp/` or `Drafts/`
+      — **was FAIL, fixed this pass.** `ComposeViewModel.setup` built an `AttachmentManager` only for
+      a contact with a stored public key. For a group (always) and a contact with none, the manager
+      was nil: videos were refused ("Secure storage not ready.") while images and files fell back to
+      `writeProtected` — plaintext, protected only by the file class — and `DraftStore` copied them
+      into `Application Support/Drafts/<id>/`, where group drafts always persist. Now both cases seal
+      under `ShareStagingKeyManager.deriveComposeStagingKey()` (same Enclave key as the share
+      session, HKDF info `Occulta-v1-group-compose-staging-2026`, so no new Keychain item and the two
+      derived keys cannot open each other's files). With no key derivable the manager stays nil and
+      every import and `encrypt` fails closed; there is no plaintext path left. Covered by
+      `ComposeStagingTests`. Plaintext drafts from earlier builds are sealed in place on load
+      (`ComposeViewModel.adopt`) — see `Docs/Features/Message Persistence/FINDINGS.md`.
 - [x] Compose staging files are removed on view disappear, encrypt-and-share completion, and
       individual message delete
       — three `removeItem` paths in `ComposeViewModel.swift:397, 403, 411`.
@@ -473,6 +529,27 @@ sign-off block, not against project settings alone.
       of those being §7.2, deliberately left in place for this release. (Those five are gone as
       of `release/v1.10.3`; the sentence records the 1.10.2 archive as inspected. See §7.)
 
+      **Regressed, found 2026-10-01; fixed the same day (Bug 154).** A Release archive of
+      `develop` at `3319fd7` had six more docs at the top level of `Occulta.app/`, none of them
+      excluded: `AT_REST_LAYERING.md` and `PASSPHRASE_LAYER_KEYS.md` from `SecureMode/`, plus
+      `BEK_LAYERING_REFACTOR.md`, `RECOVERY_BUFFER_LAYERING.md`, `STORAGE_LAYERING.md` and
+      `VAULT_KEY_LAYERING.md` from `Vault/`. The two largest are about 140 KB and 104 KB. They
+      were added between 2026-08-28 and 2026-09-10. **`v1.11.1` and `v1.11.0` shipped all six.**
+      `v1.10.3` shipped `BEK_LAYERING_REFACTOR.md` alone, which at that tag was the full 26 KB
+      BEK/recovery layering design. (Tags were checked by reading their trees, not by
+      re-archiving them.)
+
+      The cause is the one above. The exclusion list fixed the docs that existed, and nothing
+      failed when a new one arrived. **Fix:** all six are added to `membershipExceptions`, and a
+      sweep found no other `.md`/`.html` under `Occulta/` missing from the list. **Guard:**
+      `OccultaTests/BundleContentsTests.swift` runs hosted in `Occulta.app` and fails on any
+      `.md` or `.html` in the bundle or its appexes. It also asserts that the host is the app
+      with both appexes embedded, so it cannot pass on an empty tree. With the exclusions
+      reverted it fails and names exactly the six. It needs no Enclave, so CI runs it on every
+      PR. **Re-verified** by re-archiving: zero `.md` and zero `.html` anywhere in the archive,
+      including both appexes. Full record:
+      `Docs/Bugs/v1.11.1/Internal-Design-Docs-Shipped-In-App-Bundle.md`.
+
 ## 7. Dependency & Supply Chain
 
 - [x] No third-party dependencies (confirmed: no CocoaPods, SPM, Carthage)
@@ -483,6 +560,15 @@ sign-off block, not against project settings alone.
       `Package.resolved` are now removed; `grep` over `Occulta.xcodeproj/` returns no
       `XCRemoteSwiftPackageReference`, `XCSwiftPackageProductDependency`, or `packageReferences`.
       The project has no package dependencies of any kind.
+
+      **Since `v2.0.0/occulta-core-package` (2026-10-01) the project has one local package**,
+      `OccultaCore/`, first-party and in this repo — so `packageReferences` now appears once, for it,
+      and `XCSwiftPackageProductDependency` once per product the app links (`OccultaCore`,
+      `OccultaFormats`), and the grep above no longer proves the item. The check is now: `grep XCRemoteSwiftPackageReference` over `Occulta.xcodeproj/`
+      returns nothing; the only `XCLocalSwiftPackageReference` is `relativePath = OccultaCore`;
+      `OccultaCore/Package.swift` declares no `dependencies`; and no `Package.resolved` exists.
+      The archive re-check below (zero bundles, CryptoKit the only crypto link) still applies —
+      a static Swift package with no resources adds neither.
 - [x] All crypto uses Apple frameworks only (`CryptoKit`, `Security.framework`) — no vendored
       crypto code
       — **was FAIL for 1.10.2, fixed on `release/v1.10.3` (2026-08-14).** 1.10.2 shipped five
@@ -570,9 +656,13 @@ That split is why the gate has to be run by a human on real hardware before a re
       eight days before the change that broke it, went unnoticed for months, and has never
       executed in CI
 - [x] Identity challenge tests cover all three phases and the replay/timestamp rejection cases
-- [x] Secure Mode key-rotation guards pass (`GroupKeyRotationTests`, `AppLayerConfigRotationTests`,
-      `EncryptedFieldCoverageTests`) — the tripwires fail on any new encrypted model property that
-      has not been added to a re-encryption path
+- [x] Secure Mode key-rotation leftovers are guarded (`LegacyRotationArtefactTests`,
+      `EncryptedFieldCoverageTests`) — **reworded 2026-10-18.** Key rotation was removed (Removal
+      Stage 3, `Features/SecureMode/plan.md`), and with it `GroupKeyRotationTests`,
+      `AppLayerConfigRotationTests` and the tripwires for unrotated fields, so a new encrypted field
+      no longer needs a re-encryption path. What remains: "Erase all data" deletes the keys an
+      interrupted v1.10.3 rotation could leave (Bug 139), and a bundle version stranded by an old
+      rotation reads as unreadable, not as never seen (Bug 80).
 
 ### Why this is a manual gate rather than automation
 

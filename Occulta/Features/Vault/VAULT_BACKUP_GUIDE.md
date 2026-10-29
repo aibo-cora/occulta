@@ -3,6 +3,9 @@
 Occulta Vault — export/import and full device-loss recovery reference.
 Commit this file alongside any PR that touches vault backup, export, or import.
 
+A phone-to-phone migration that reuses this guide's depth-scoped export and its import path is
+being designed in [`Docs/Features/Device Migration/FINDINGS.md`](../../../Docs/Features/Device%20Migration/FINDINGS.md).
+
 ---
 
 ## Design intent

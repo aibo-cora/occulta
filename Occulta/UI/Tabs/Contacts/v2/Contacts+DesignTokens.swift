@@ -11,11 +11,16 @@ nonisolated extension Color {
     static let occultaAccent   = Color(red: 0xD3/255, green: 0x4F/255, blue: 0x2C/255)
     static let occultaVerified = Color(red: 0x2E/255, green: 0x7D/255, blue: 0x5B/255)
     static let occultaWarn     = Color(red: 0xC0/255, green: 0x8A/255, blue: 0x2B/255)
+    /// The compose indicator's middle state, a message sealed to the contact's last-resort key (prekey continuity
+    /// D2). Blue, not red: `occultaDanger` is too close to `occultaAccent`, the Encrypt button beside it.
+    static let occultaTemporary = Color(red: 0x3D/255, green: 0x74/255, blue: 0xA8/255)
     static let occultaDanger   = Color(red: 0xD0/255, green: 0x48/255, blue: 0x40/255)
 }
 
 // MARK: - Verification Status
 
+/// `.unverified` is the one Not verified tier (Q-14): a contact whose card says so, and a contact whose
+/// keys came from another identity (shared or transferred). It is never green.
 nonisolated enum VerificationStatus {
     case verified, unverified, pending
 
@@ -35,7 +40,7 @@ nonisolated enum VerificationStatus {
         case .verified:   
             "✓ VERIFIED"
         case .unverified: 
-            "! UNVERIFIED"
+            "! \(IntroCardCopy.notVerifiedChip.uppercased())"
         case .pending:   
             "… PENDING"
         }
@@ -46,7 +51,7 @@ nonisolated enum VerificationStatus {
         case .verified:   
             "VERIFIED"
         case .unverified: 
-            "UNVERIFIED"
+            IntroCardCopy.notVerifiedChip.uppercased()
         case .pending:    
             "PENDING EXCHANGE"
         }
@@ -74,16 +79,23 @@ func avatarGradientV2(for id: String) -> LinearGradient {
 
 extension Contact.Profile {
     var verificationStatus: VerificationStatus {
+        self.statusAndCard.status
+    }
+
+    /// The status, and the card state when reading it was needed to decide (a contact with no usable key), so a
+    /// screen that wants both decrypts the card field once. Opens the key owner hash too: a list reads this once
+    /// per contact per pass, not in each row and filter.
+    var statusAndCard: (status: VerificationStatus, card: CardState?) {
         let keys = self.contactPublicKeys
-        
-        guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else { return .pending }
-        
-        let ownerHash = try? Manager.Crypto().decrypt(data: keys.last?.owner)
-        let ourHash   = (try? Manager.Key().retrieveIdentity())?.sha256
-        
-        guard let ownerHash, let ourHash, !ownerHash.isEmpty else { return .unverified }
-        
-        return ownerHash == ourHash ? .verified : .unverified
+
+        // No usable key: only a card can make the contact Not verified (Q-14). It's read here and not before,
+        // so a contact with keys never pays for the card field's decryption.
+        guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else {
+            let card = self.cardState
+            return (CardRules.tier(card, hasInPersonKeys: false) == .notVerified ? .unverified : .pending, card)
+        }
+
+        return (self.hasInPersonKeys ? .verified : .unverified, nil)
     }
 
     var fingerprintPreview: String? {

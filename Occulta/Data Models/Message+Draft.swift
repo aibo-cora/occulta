@@ -6,6 +6,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
+import OccultaFormats
 
 // MARK: - Message
 
@@ -75,7 +76,7 @@ extension Message {
         /// yet committed to anything; `basket.files` is every already-committed
         /// item, in order — attachments *and*, in thread compose mode, already-
         /// "sent"-into-thread text bubbles (`ComposeViewModel.addText()` appends
-        /// a `.text`-formatted `Occulta.File` per bubble; a single draft can
+        /// a `.text`-formatted `OccultaFormats.File` per bubble; a single draft can
         /// hold several). Trying to tell those apart by position in one flat
         /// array (e.g. "the last `.text` entry is the input field") is exactly
         /// the kind of implicit convention this codebase has already been
@@ -122,7 +123,7 @@ extension Message {
         /// isn't queryable (it's ciphertext), so this decrypts and compares every row —
         /// acceptable because draft count is bounded by contact count, not message volume.
         static func find(recipientID: String, in context: ModelContext) -> Message.Draft? {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return nil }
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return nil }
             let rows = (try? context.fetch(FetchDescriptor<Message.Draft>())) ?? []
             return rows.first { row in
                 guard let box     = try? AES.GCM.SealedBox(combined: row.encryptedRecipientID),
@@ -139,7 +140,7 @@ extension Message {
         /// list deciding whether to show a "Draft" indicator — stay reactive to
         /// `Message.Draft` changes without a second, non-reactive fetch.
         static func allRecipientIdentifiers(from drafts: [Message.Draft]) -> Set<String> {
-            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
             return Set(drafts.compactMap { draft -> String? in
                 guard let box     = try? AES.GCM.SealedBox(combined: draft.encryptedRecipientID),
                       let opened  = try? AES.GCM.open(box, using: key, authenticating: draft.aad(for: .recipientID)),
@@ -153,15 +154,18 @@ extension Message {
 
         /// `Application Support/Drafts/<id>/` — one folder per draft, named by the
         /// row's own opaque id, never by the recipient's identifier. Holds each
-        /// attachment as its own file, named by its `Occulta.File.id`, still sealed
+        /// attachment as its own file, named by its `OccultaFormats.File.id`, still sealed
         /// under the contact's per-contact key (see FINDINGS.md, "Key" and
         /// "Attachment storage" — attachment bytes are never re-sealed under the
         /// canonical DB key that protects this row).
         static func attachmentsFolder(for id: UUID) -> URL {
+            self.attachmentsRoot.appendingPathComponent(id.uuidString, isDirectory: true)
+        }
+
+        /// `Application Support/Drafts/` — parent of every draft's folder.
+        static var attachmentsRoot: URL {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            return appSupport
-                .appendingPathComponent("Drafts", isDirectory: true)
-                .appendingPathComponent(id.uuidString, isDirectory: true)
+            return appSupport.appendingPathComponent("Drafts", isDirectory: true)
         }
 
         /// On-disk filename for a given attachment within its draft's folder —
@@ -176,7 +180,7 @@ extension Message {
         /// to) and the load side (to reconstruct a fresh, correct URL rather than
         /// trusting one persisted at save time — see `attachmentsFolder(for:)`
         /// callers in `DraftStore`).
-        static func attachmentFilename(for file: Occulta.File) -> String {
+        static func attachmentFilename(for file: OccultaFormats.File) -> String {
             guard case .file(let meta) = file.format,
                   let ext = meta.extension, !ext.isEmpty
             else { return file.id.uuidString }
@@ -212,12 +216,13 @@ extension Message {
         /// Removal Stage 0) — nothing needs re-sealing under a new key, because there is
         /// no new key; a surviving draft is left completely untouched.
         ///
-        /// Same survive/purge semantics as `reKeyOrPurgeAll`: a draft survives if its
-        /// recipient is a known group or a contact visible at the current depth; anything
-        /// undecryptable under `key`, or whose recipient doesn't match, is purged.
+        /// A draft survives only if its recipient is a contact visible at the current depth;
+        /// anything undecryptable under `key`, or whose recipient doesn't match, is purged.
+        /// That includes every group draft (Bug 178): groups are not depth-filtered, so a
+        /// group's compose screen is open to whoever holds the phone at any depth, and it
+        /// loads whatever draft is keyed by the group's id.
         static func purgeUnsafe(
             safeContactIdentifiers: Set<String>,
-            allGroupIdentifiers:    Set<String>,
             using key: SymmetricKey,
             in modelContext: ModelContext
         ) throws {
@@ -231,8 +236,7 @@ extension Message {
                     continue
                 }
 
-                let survives = allGroupIdentifiers.contains(recipientID) || safeContactIdentifiers.contains(recipientID)
-                if !survives {
+                if !safeContactIdentifiers.contains(recipientID) {
                     delete(draft, in: modelContext)
                 }
             }

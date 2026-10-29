@@ -5,6 +5,7 @@
 
 import Foundation
 import CryptoKit
+import OccultaFormats
 
 // MARK: - GroupRecipient
 
@@ -17,9 +18,13 @@ struct GroupRecipient {
     /// Used for fingerprinting and ECDH on the longTermFallback path.
     let publicKey: Data
     let quantumMaterial: QuantumKeyMaterial?
-    /// Contact's oldest stored inbound prekey, popped by the caller before this call.
+    /// Contact's oldest stored inbound prekey, popped by the caller before this call, or their last-resort key.
     /// Non-nil → forward-secret path; nil → longTermFallback.
     let contactPrekey: Prekey?
+    /// Whether `contactPrekey` is the contact's last-resort key (prekey continuity §3.1): its ID is then never
+    /// written in the slot's `prekeyID`, a value derived from it and the ephemeral key is. Defaults to `false`,
+    /// a one-time key.
+    let contactPrekeyIsLastResort: Bool
     /// Outbound prekey batch to include in this recipient's `RecipientPayload`, or nil.
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
 
@@ -44,20 +49,28 @@ struct GroupRecipient {
     /// verify it renders the message unopenable.
     let prefixesEphemeralSignature: Bool
 
+    /// Non-nil for a card conversation's recipient (`CardSlot`): `publicKey` is then the peer's card agreement key
+    /// and the slot is built by `wrapCardRecipient`. Nil for every other recipient.
+    let card: CardSlot?
+
     init(
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
         contactPrekey: Prekey?,
+        contactPrekeyIsLastResort: Bool = false,
         pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?,
         shardOperations: [OccultaBundle.ShardOperation] = [],
-        prefixesEphemeralSignature: Bool = false
+        prefixesEphemeralSignature: Bool = false,
+        card: CardSlot? = nil
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
         self.contactPrekey           = contactPrekey
+        self.contactPrekeyIsLastResort = contactPrekeyIsLastResort
         self.pendingBatch            = pendingBatch
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
+        self.card                    = card
     }
 }
 
@@ -103,22 +116,137 @@ extension Manager.Crypto {
     /// identity is included — receivers find their slot by trial-decryption, preventing
     /// passive observers from confirming membership without the wrapping key.
     ///
+    /// `blind` doesn't bind the slot to the body, which every recipient can re-encrypt: the
+    /// slot's `RecipientPayload.bodyDigest` does (`bugs.md` Bug 165).
+    ///
     /// ## Per-recipient key path
     /// `contactPrekey != nil` → FS: ECDH(senderEphemeral, contactPrekey.publicKey) [+ ML-KEM]
     /// `contactPrekey == nil` → fallback: ECDH(senderLongTerm, r.publicKey) [+ ML-KEM]
     ///
     /// The caller is responsible for enforcing FS when required (e.g. shard ops).
+    ///
+    /// `senderIdentity` replaces the long-term identity key in `senderFingerprint` and `senderProof`; a card
+    /// conversation passes the sender's card agreement key (`SPEC.md` §3).
     func seal(
         sealedPayload: OccultaBundle.SealedPayload,
         groupID: UUID,
-        recipients: [GroupRecipient]
+        recipients: [GroupRecipient],
+        senderIdentity: Data? = nil
     ) throws -> OccultaBundle {
+        let context = try self.groupSealContext(
+            sealedPayload: sealedPayload, groupID: groupID, recipients: recipients, senderIdentity: senderIdentity
+        )
+
+        var outerAAD = try OccultaBundle.computeAdditionalAuthentication(version: .v4, secrecy: context.outerSecrecy)
+        outerAAD.append(context.blind)
+
+        let payloadData = try WireHandle.encode(payload: context.payload)
+
+        guard let ciphertext = try AES.GCM.seal(
+            payloadData, using: context.sessionKey, nonce: AES.GCM.Nonce(), authenticating: outerAAD
+        ).combined else { throw EncryptionError.sealFailed }
+
+        // Every recipient holds the session key, so each slot commits to the body it unlocks; without this a
+        // recipient could put a body of their own behind the others' slots (bugs.md Bug 165).
+        let bodyDigest = Data(SHA256.hash(data: ciphertext))
+
+        return OccultaBundle(
+            version: .v4,
+            secrecy: context.outerSecrecy,
+            ciphertext: ciphertext,
+            fingerprintNonce: context.outerNonce,
+            senderFingerprint: context.senderFingerprint,
+            group: try self.groupEnvelope(for: recipients, context: context, bodyDigest: bodyDigest)
+        )
+    }
+
+    /// The streamed layout's seal (`STREAMING_SPEC.md` §8.3): the same steps as `seal(sealedPayload:...)`, but the
+    /// body is a chunk stream written to `files.destination` as it is sealed, so it is never in memory whole.
+    ///
+    /// `sealedPayload.message` is the basket with each streamed file's `streamedLength` and no content (or the
+    /// message of a bundle that carries no basket); `files.sources` are the streamed files' bytes, in the order
+    /// the basket lists them. The file is written in full or not at all: a failure removes it.
+    func sealStreamed(
+        sealedPayload: OccultaBundle.SealedPayload,
+        groupID: UUID,
+        recipients: [GroupRecipient],
+        senderIdentity: Data? = nil,
+        files: StreamedFiles
+    ) throws {
+        let context = try self.groupSealContext(
+            sealedPayload: sealedPayload, groupID: groupID, recipients: recipients, senderIdentity: senderIdentity
+        )
+
+        // The manifest, framed, and the length of everything the stream will hold.
+        let manifest = try BodyStream.Manifest.frame(payload: context.payload)
+        var plaintextLength = UInt64(manifest.count)
+        for source in files.sources { plaintextLength += source.length }
+        let layout = try BodyStream.Layout(plaintextLength: plaintextLength)
+
+        // The header first: it names the stream's length. The slots need the digest, so they and the sections
+        // come last, after the stream.
+        let envelope = OccultaBundle(
+            version: .streamedBodyCapable, secrecy: context.outerSecrecy, ciphertext: Data(),
+            fingerprintNonce: context.outerNonce, senderFingerprint: context.senderFingerprint
+        )
+        let writer = try NoCacheFile.writer(files.destination)
+        do {
+            try writer.write(try WireHandle.encodeHeader(envelope, ciphertextLength: layout.streamLength))
+
+            var sealer = BodyStream.Sealer(
+                sessionKey: context.sessionKey,
+                header: try BodyStream.headerAAD(secrecy: context.outerSecrecy, blind: context.blind),
+                layout: layout
+            )
+            try sealer.append(manifest) { try writer.write($0) }
+            for source in files.sources {
+                var delivered: UInt64 = 0
+                try source.feed { piece in
+                    delivered += UInt64(piece.count)
+                    guard delivered <= source.length else { throw BodyStream.StreamError.lengthMismatch }
+                    try sealer.append(piece) { try writer.write($0) }
+                }
+                // A file that changed under us, or one whose header lied, must not become a bundle that fails to open.
+                guard delivered == source.length else { throw BodyStream.StreamError.lengthMismatch }
+            }
+            let digest = try sealer.finish { try writer.write($0) }
+
+            let bundle = OccultaBundle(
+                version: .streamedBodyCapable, secrecy: context.outerSecrecy, ciphertext: Data(),
+                fingerprintNonce: context.outerNonce, senderFingerprint: context.senderFingerprint,
+                group: try self.groupEnvelope(for: recipients, context: context, bodyDigest: digest)
+            )
+            try writer.write(try WireHandle.encodeSections(bundle))
+            try writer.finish()
+        } catch {
+            writer.abandon()
+            throw error
+        }
+    }
+
+    /// What both layouts' seals start from: a fresh session key, the sender proof and the per-bundle blind.
+    private struct GroupSealContext {
+        let sessionKey: SymmetricKey
+        let senderPublicKey: Data
+        let blindNonce: Data
+        let blind: Data
+        let payload: OccultaBundle.SealedPayload
+        let outerSecrecy: OccultaBundle.SecrecyContext
+        let outerNonce: Data
+        let senderFingerprint: Data
+    }
+
+    private func groupSealContext(
+        sealedPayload: OccultaBundle.SealedPayload,
+        groupID: UUID,
+        recipients: [GroupRecipient],
+        senderIdentity: Data?
+    ) throws -> GroupSealContext {
         guard !recipients.isEmpty else { throw EncryptionError.noRecipients }
 
-        let sessionKey     = SymmetricKey(size: .bits256)
-        let sessionKeyData = sessionKey.withUnsafeBytes { Data($0) }
+        let sessionKey = SymmetricKey(size: .bits256)
 
-        let senderPub = try self.keyManager.retrieveIdentity()
+        let senderPub = try senderIdentity ?? self.keyManager.retrieveIdentity()
         let senderProof = Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
 
         // Per-bundle group blind: HMAC(key: groupID.rawBytes, msg: blindNonce).
@@ -145,43 +273,39 @@ extension Manager.Crypto {
         let outerSecrecy = OccultaBundle.SecrecyContext(
             mode: .group, ephemeralPublicKey: Data(), prekeyID: nil
         )
-
-        var outerAAD = try OccultaBundle.computeAdditionalAuthentication(version: .v4, secrecy: outerSecrecy)
-        outerAAD.append(blind)
-
-        let payloadData = try WireHandle.encode(payload: authenticatedPayload)
-
-        guard let ciphertext = try AES.GCM.seal(
-            payloadData, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: outerAAD
-        ).combined else { throw EncryptionError.sealFailed }
-
         let outerNonce = try OccultaBundle.SecrecyContext.generateNonce()
-        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
 
-        let recipientEntries = try recipients.map { r in
-            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: blind)
-        }
-
-        let envelope = OccultaBundle.GroupEnvelope(blind: blind, blindNonce: blindNonce, recipients: recipientEntries)
-        return OccultaBundle(
-            version: .v4,
-            secrecy: outerSecrecy,
-            ciphertext: ciphertext,
-            fingerprintNonce: outerNonce,
-            senderFingerprint: senderFingerprint,
-            group: envelope
+        return GroupSealContext(
+            sessionKey: sessionKey, senderPublicKey: senderPub, blindNonce: blindNonce, blind: blind,
+            payload: authenticatedPayload, outerSecrecy: outerSecrecy, outerNonce: outerNonce,
+            senderFingerprint: OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
         )
     }
 
-    private func wrapRecipient(
+    private func groupEnvelope(
+        for recipients: [GroupRecipient], context: GroupSealContext, bodyDigest: Data
+    ) throws -> OccultaBundle.GroupEnvelope {
+        let sessionKeyData = context.sessionKey.withUnsafeBytes { Data($0) }
+        let entries = try recipients.map { r in
+            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: context.blind, bodyDigest: bodyDigest)
+        }
+        return OccultaBundle.GroupEnvelope(blind: context.blind, blindNonce: context.blindNonce, recipients: entries)
+    }
+
+    func wrapRecipient(
         _ r: GroupRecipient,
         sessionKeyData: Data,
-        blind: Data
+        blind: Data,
+        bodyDigest: Data
     ) throws -> OccultaBundle.Recipient {
         guard r.publicKey.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
+        if let card = r.card {
+            return try self.wrapCardRecipient(r, card: card, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: bodyDigest)
+        }
 
         let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(
             contactPrekey: r.contactPrekey,
+            isLastResort: r.contactPrekeyIsLastResort,
             recipientPublicKey: r.publicKey,
             quantumMaterial: r.quantumMaterial
         )
@@ -219,9 +343,15 @@ extension Manager.Crypto {
             // Always false: a v1.10.3 receiver reads true with no expected-shards list
             // as "delete every piece you hold from me" (bugs.md Bug 141).
             shardMetadataAttempted:   false,
-            senderEphemeralSignature: senderEphemeralSignature
+            senderEphemeralSignature: senderEphemeralSignature,
+            bodyDigest:               bodyDigest
         )
-        let encodedPayload = try JSONEncoder().encode(payload)
+        // Sorted keys, so the same payload always encodes to the same bytes. It is sealed, so
+        // the order was never observable, but a default JSONEncoder's order changes with every
+        // app launch and can't be pinned by the interop vectors.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let encodedPayload = try encoder.encode(payload)
 
         guard let wrappedPayload = try AES.GCM.seal(
             encodedPayload, using: wrappingKey, nonce: AES.GCM.Nonce(), authenticating: blind
@@ -267,8 +397,24 @@ extension Manager.Crypto {
     /// encoder in `WireHandle`, used for v4 baskets — the 70/71/72 spread becomes directly
     /// observable and this filler stops doing its job. Pad to the real signature's length at
     /// that point, or keep the encoding.
-    private static func randomEphemeralSignatureFiller() -> Data {
+    static func randomEphemeralSignatureFiller() -> Data {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<72).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }
+}
+
+// MARK: - Streamed files
+
+/// A streamed bundle's destination, and the files whose bytes follow its manifest.
+struct StreamedFiles {
+    let destination: URL
+    /// In the order the basket lists the streamed files.
+    let sources: [StreamedFileSource]
+}
+
+/// One streamed file: how long it is, and a way to read it a piece at a time.
+struct StreamedFileSource {
+    /// Plaintext bytes `feed` delivers. A source that delivers any other count fails the send.
+    let length: UInt64
+    let feed: (_ emit: (Data) throws -> Void) throws -> Void
 }

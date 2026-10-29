@@ -424,13 +424,10 @@ struct VaultTab: View {
                                         .font(.system(size: 15))
                                         .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
                                 }
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(row.ownerName)
-                                        .font(.system(size: 16, weight: .medium))
-                                    Text("\(row.count) piece\(row.count == 1 ? "" : "s") held for them")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
+                                // No piece count: it would tell how many of the owner's depths have a
+                                // backup (`bugs.md` Bug 162).
+                                Text(row.ownerName)
+                                    .font(.system(size: 16, weight: .medium))
                                 Spacer()
                             }
                             .padding(.vertical, 3)
@@ -457,7 +454,6 @@ struct VaultTab: View {
     private struct CustodianRow {
         let ownerIdentifier: String
         let ownerName: String
-        let count: Int
     }
 
     /// Filtered by current-depth visibility — a hidden owner's row disappears
@@ -468,9 +464,9 @@ struct VaultTab: View {
     /// at depth 0, matching prior behavior).
     private var custodianRows: [CustodianRow] {
         guard let mgr = self.shardCustodyManager else { return [] }
-        return mgr.heldShards(from: self.rawCustodyShards)
-            .compactMap { info -> CustodianRow? in
-                let identifier = info.ownerContactIdentifier ?? ""
+        return mgr.heldShardOwners(from: self.rawCustodyShards)
+            .compactMap { owner -> CustodianRow? in
+                let identifier = owner ?? ""
                 let contact = self.allContacts.first { $0.identifier == identifier }
                 let name: String
                 if let c = contact {
@@ -482,7 +478,7 @@ struct VaultTab: View {
                     guard self.security.currentDepth == 0 else { return nil }
                     name = identifier.isEmpty ? "Unknown" : identifier
                 }
-                return CustodianRow(ownerIdentifier: identifier, ownerName: name, count: info.count)
+                return CustodianRow(ownerIdentifier: identifier, ownerName: name)
             }
             .sorted { $0.ownerName < $1.ownerName }
     }

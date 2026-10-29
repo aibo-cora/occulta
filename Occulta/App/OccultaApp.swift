@@ -12,6 +12,7 @@ import Combine
 import ImageIO
 import SQLite3
 import UniformTypeIdentifiers
+import OccultaFormats
 
 // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
 
@@ -20,7 +21,7 @@ struct OccultaApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     @State private var contactManager: ContactManager
-    @State private var identityChallenge = IdentityChallenge.Coordinator()
+    @State private var identityChallenge: IdentityChallenge.Coordinator
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var security: Manager.Security
@@ -30,6 +31,8 @@ struct OccultaApp: App {
     /// SwiftData store URL. Retained so `reapplyFileProtection()` can stamp
     /// fresh -wal/-shm files that SQLite creates after the initial attributes call.
     private let storeURL: URL
+    /// The app, or the storage error of a blocked launch (Bug 171, Stage 2c).
+    private let launchScreen: LaunchScreen
 
     /// Every persisted model. Extracted from `init()` as its own static property rather than
     /// left inline, so it can be read (not just constructed) from outside `init()` — load-bearing
@@ -64,9 +67,9 @@ struct OccultaApp: App {
         let schema = Self.schema
 
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
-        let sharedModelContainer: ModelContainer
+        let realContainer: ModelContainer
         do {
-            sharedModelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            realContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
@@ -83,9 +86,37 @@ struct OccultaApp: App {
         Self.applySecureDeletePragma(at: url)
         Self.walCheckpoint(at: url)
 
+        // The key reseal and the migration passes (Bug 171, Stage 2), before anything reads the store or derives a key:
+        // `Manager.Security.init` reads `persistedDepth` and `pinEnabledPerDepth`, and has to read them under the key
+        // they are sealed under. The sequence also tells the process which keys tier U's accessors return.
+        //
+        // Not in a test host (`#if DEBUG`): tests run in this process, and the sequence would decide its keys from the
+        // Simulator's real store, which keeps an epoch from run to run. The tests that bind no key manager of their
+        // own expect the default, the legacy keys. The sequence has its own tests.
+        #if DEBUG
+        let hostsTests = NSClassFromString("XCTestCase") != nil
+        #else
+        let hostsTests = false
+        #endif
+        var launch: LaunchSequence.Report?
+        if !hostsTests {
+            launch = LaunchSequence.run(context: ModelContext(realContainer), locations: .production(store: url), staging: ShareStagingKeyManager())
+        }
+        let screen = launch?.screen ?? .app
+
+        // A blocked launch (a reseal that stopped partway, Stage 2c) builds everything below over an empty in-memory
+        // store, with Secure Mode off, so that nothing it constructs can read, write or create a key. `RootView` shows
+        // the storage error and goes no further.
+        let sharedModelContainer: ModelContainer
+        do {
+            sharedModelContainer = try launch?.container(real: realContainer) ?? realContainer
+        } catch {
+            fatalError("Could not create ModelContainer: \(error)")
+        }
+
         let security = Manager.Security(modelContainer: sharedModelContainer,
                                         storeURL: url,
-                                        enabled: FeatureFlags.isEnabled(.secureMode))
+                                        enabled: FeatureFlags.isEnabled(.secureMode) && screen == .app)
 
         self.security = security
 
@@ -93,116 +124,19 @@ struct OccultaApp: App {
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
 
         self.sharedModelContainer = sharedModelContainer
+        self.launchScreen         = screen
         self.contactManager       = contactManager
+        self.identityChallenge    = IdentityChallenge.Coordinator(ledger: contactManager, sealer: contactManager)
         self.vaultManager         = vaultManager
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
 
-        self.migrate()
         FileManager.default.clearTemporaryDirectory()
-    }
-
-    /// Run migration before any UI accesses contacts.
-    ///
-    /// Migrate our local database encryption scheme to a PQ resistant variant.
-    private func migrate() {
-        let context = ModelContext(self.sharedModelContainer)
-        let legacyCrypto = LegacyCryptoManager()
-        let newCrypto = Manager.Crypto()
-
-        // Every migration below relies on its own explicit save() being the only write it
-        // makes — `migrateDepthFieldsToFixedWidth` accumulates into `didChange` and saves
-        // once at the end precisely so a failure part-way leaves the original bytes for the
-        // next launch. A RunLoop- or backgrounding-triggered autosave breaks that: it can
-        // commit a partially-applied pass before the function decides whether to.
-        //
-        // Same idiom and same reason as `activateSecureMode`, `deactivateSecureMode` and
-        // `Message.Draft`'s purge, all of which suspend autosave for a multi-step sequence
-        // and restore it after. Doing it once here covers every migration rather than asking
-        // each to defend itself.
-        context.autosaveEnabled = false
-        defer { context.autosaveEnabled = true }
-
-        do {
-            try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
-        } catch {
-            // Migration failure is not recoverable — the DB is in a known state
-            // because migration saves per-record. Log and continue; un-migrated
-            // records will be retried on next launch.
-            #if DEBUG
-            debugPrint("Migration error: \(error)")
-            #endif
-        }
-
-        // Independent of the v1→v2 migration above — runs regardless of Secure Mode
-        // configuration status, since legacy nil rows can exist either way.
-        do {
-            try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("visibleThroughDepth backfill error: \(error)")
-            #endif
-        }
-
-        do {
-            try DatabaseMigration.migrateRetireGlobalTrustees(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("Global Trustees retirement error: \(error)")
-            #endif
-        }
-
-        do {
-            try DatabaseMigration.migrateOriginDepthBackfill(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("originDepth backfill error: \(error)")
-            #endif
-        }
-
-        // Must run after the three backfills above: they own the nil case, and this pass
-        // deliberately leaves nil alone rather than manufacturing a value of its own.
-        do {
-            try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("depth field fixed-width normalisation error: \(error)")
-            #endif
-        }
-
-        // After the fixed-width pass, not before: that pass converts what it can read, and
-        // this one scrubs what is left on rows whose content is already erased (Bug 89).
-        do {
-            try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("soft-deleted depth stamp scrub error: \(error)")
-            #endif
-        }
-
-
-        // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
-        // this runs (Bug 133). Independent of every pass above.
-        do {
-            try DatabaseMigration.migrateVaultEntryDeletionTokens(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("VaultEntry deletionToken backfill error: \(error)")
-            #endif
-        }
-
-        do {
-            try DatabaseMigration.migrateDeleteGlobalShardConfig(modelContext: context)
-        } catch {
-            #if DEBUG
-            debugPrint("GlobalShardConfig deletion error: \(error)")
-            #endif
-        }
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(storeURL: self.storeURL)
+            RootView(storeURL: self.storeURL, launchScreen: self.launchScreen)
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
@@ -239,7 +173,7 @@ struct OccultaApp: App {
         sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
     }
 
-    private static func walCheckpoint(at url: URL) {
+    static func walCheckpoint(at url: URL) {
         var db: OpaquePointer?
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
         defer { sqlite3_close(db) }
@@ -252,6 +186,7 @@ struct OccultaApp: App {
 struct RootView: View {
 
     let storeURL: URL
+    let launchScreen: LaunchScreen
 
     @EnvironmentObject private var appScreen: AppScreen
     @Environment(Manager.Security.self) private var security
@@ -261,12 +196,17 @@ struct RootView: View {
     @Environment(ShardCustodyManager.self) private var shardCustodyManager
 
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
+    /// Last release notes the user acknowledged. Persisted, not `@State`, so `WhatsNew` stays a
+    /// function of state that is the same at every depth and there is nothing for `endSession()`
+    /// to clear.
+    @AppStorage(WhatsNew.lastSeenKey) private var whatsNewLastSeen = ""
     @Environment(\.scenePhase) private var scenePhase
 
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
-    /// Raw encrypted `.occ` bytes queued while the app is locked.
-    /// Held without any processing until a PIN unlocks the app.
+    /// A raw encrypted `.occ` queued while the app is locked: its mapped bytes, or for a streamed bundle the
+    /// open file, unlinked already and readable only through the handle. Held without any processing until a
+    /// PIN unlocks the app.
     ///
     /// Drained by the shared `.onChange(of: appScreen.phase)` handler on **any** unlock, normal
     /// or duress alike. `onDuress` used to discard this instead — that discard was the last place
@@ -277,7 +217,7 @@ struct RootView: View {
     ///
     /// So reaching `processInboundFile` does **not** imply depth 0. Anything downstream that needs
     /// depth safety has to establish it for itself rather than inferring it from this path.
-    @State private var pendingFileData: Data?
+    @State private var pendingFileData: InboundFile?
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
@@ -309,10 +249,27 @@ struct RootView: View {
     /// PIN gate is up presents its picker once the PIN is answered. Nothing is decrypted and no
     /// key material moves until a recipient is chosen — which is the whole of Bug 84 Part A.
     @State private var pendingShareSession: PendingShareSession?
+    /// An introduction card that arrived as a file, waiting in the import sheet. Session state: cleared by
+    /// `endSession()`, unlike `pendingFileData`, which is the raw bytes queued before anyone authenticated.
+    @State private var cardImport: CardImportData?
+    /// Set when an import asks to open a contact; `ContactsV2` consumes it.
+    @State private var contactOpenRequest: ContactOpenRequest?
 
     // MARK: Body
 
+    @ViewBuilder
     var body: some View {
+        switch self.launchScreen {
+        case .storageError:
+            // Before the PIN flow, and without any of what the app view below does at launch: none of its tasks,
+            // handlers or observers is attached to this.
+            StorageErrorView()
+        case .app:
+            self.appBody
+        }
+    }
+
+    private var appBody: some View {
         self.phaseContent
             // No transitions between phases — content must never flash through states.
             .animation(.none, value: self.appScreen.phase)
@@ -329,6 +286,8 @@ struct RootView: View {
                 // Without a gate, `wire()` went straight to `.unlocked` and this call is what
                 // covers that case. Both may fire; the sweep is idempotent.
                 self.purgeOrphanedGroupsIfAtRealDepth()
+                self.sweepPrekeysIfUnlocked()
+                self.identityChallenge.sweepExpired()
 
                 // Unconditional, at every depth and on every launch, and deliberately not
                 // folded into the purge above: a checkpoint that fired only at depth 0 would
@@ -359,15 +318,17 @@ struct RootView: View {
                 // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
                 // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
                 self.purgeOrphanedGroupsIfAtRealDepth()
+                self.sweepPrekeysIfUnlocked()
+                self.identityChallenge.sweepExpired()
 
-                // Flushes the purge's delete records out of the WAL (`secure_delete` zeroes
+                // Flushes the purge's and the sweep's delete records out of the WAL (`secure_delete` zeroes
                 // them on the way), and runs on **every** unlock at every depth even though
-                // only a depth-0 unlock can have deleted anything — a checkpoint that followed
+                // only a depth-0 unlock can purge groups — a checkpoint that followed
                 // the deletion would otherwise announce it.
                 self.security.checkpointStore()
-                if let data = self.pendingFileData {
+                if let file = self.pendingFileData {
                     self.pendingFileData = nil
-                    Task { await self.processInboundFile(data) }
+                    Task { await self.processInboundFile(file) }
                 }
             }
             // A depth change while unlocked (`deactivateSecureMode` from Settings) has no PIN
@@ -380,6 +341,7 @@ struct RootView: View {
                 switch newPhase {
                 case .active:
                     self.contactManager.cleanupPendingSessions()
+                    self.identityChallenge.sweepExpired()
                 case .background:
                     // Every file delivered to the app has been read by now (Bug 101).
                     FileManager.default.clearInboxes()
@@ -436,6 +398,16 @@ struct RootView: View {
             SwiftUI.Group {
                 if !self.hasCompleted {
                     OnboardingView()
+                        // A fresh install has nothing new to read. Stamping here, not when
+                        // onboarding finishes, keeps it from looking like an update afterwards.
+                        .onAppear { self.whatsNewLastSeen = Bundle.main.appVersion }
+                } else if let release = WhatsNew.release(for: Bundle.main.appVersion, lastSeen: self.whatsNewLastSeen) {
+                    // In the tree, like onboarding, and not a `.sheet`: a file, share or challenge
+                    // sheet can present at the moment of unlock, and a second modal would be
+                    // dropped, losing whatever it carried. Those present over this instead.
+                    WhatsNewView(release: release) {
+                        self.whatsNewLastSeen = release.version
+                    }
                 } else {
                     self.tabContent
                 }
@@ -478,14 +450,25 @@ struct RootView: View {
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
             } content: { data in
-                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
+                let manager = self.contactManager.receivedAttachmentKey(for: data.owner)
                     .map { AttachmentManager(contactKey: $0) }
-                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
-                    .onDisappear {
-                        data.basket.files.forEach { file in
-                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
-                        }
+                // Messages on Bob's card get W-08 around them, the same at every depth; any other sender's don't.
+                CardFirstMessageFrame(owner: data.owner) {
+                    ComposableMessage.Conversation(
+                        mode: .read(messageOwner: data.owner),
+                        messages: .constant(data.receive?.files ?? data.basket.files),
+                        attachmentManager: manager,
+                        incomingIDs: data.receive?.incoming ?? [],
+                        receiveFailed: data.receive?.failed ?? false
+                    )
+                }
+                .onDisappear {
+                    // Stops pass 2 if it is running, and deletes what it wrote (STREAMING_SPEC §5.3).
+                    data.receive?.cancel()
+                    data.basket.files.forEach { file in
+                        if let url = file.url { try? FileManager.default.removeItem(at: url) }
                     }
+                }
             }
             .sheet(item: self.$shareResult) { result in
                 ShareActivityView(url: result.url)
@@ -496,7 +479,7 @@ struct RootView: View {
             // Recipient choice for a staged share-extension session. Reachable only from
             // here, which is why it cannot run before the PIN.
             .sheet(item: self.$pendingShareSession) { session in
-                ShareRecipientPicker { recipient in
+                ShareSessionEntry(sessionID: session.id) { recipient in
                     self.pendingShareSession = nil
                     self.encryptShareSession(session.id, to: recipient)
                 } onCancel: {
@@ -504,8 +487,18 @@ struct RootView: View {
                     if let container = ShareSession.sharedContainer {
                         ShareSession.delete(id: session.id, in: container)
                     }
+                } onCardFinished: { request in
+                    self.pendingShareSession = nil
+                    self.finishCardImport(request)
                 }
                 .environment(self.security)
+            }
+            // An introduction card that arrived as a file.
+            .sheet(item: self.$cardImport) { card in
+                CardImportSheet(data: card.data) { request in
+                    self.cardImport = nil
+                    self.finishCardImport(request)
+                }
             }
             // Identity-challenge outbound share (challenge OR response `.occ`).
             .sheet(item: Binding(
@@ -544,6 +537,13 @@ struct RootView: View {
         }
     }
 
+    /// After the import sheet: opens the contact it asked for, in the Contacts tab.
+    private func finishCardImport(_ request: ContactOpenRequest?) {
+        guard let request else { return }
+        self.selectedTab         = .contacts
+        self.contactOpenRequest  = request
+    }
+
     /// Ends the session's state held above the unlocked tree (`bugs.md` Bug 140): what this
     /// session presented or staged, and the vault's unlocked session, so a new depth needs its
     /// own Face ID. Queued pre-authentication input is left alone (see the list above).
@@ -562,6 +562,8 @@ struct RootView: View {
 
     private func endSession() {
         self.sessionEpoch           += 1
+        // A message still decrypting its attachments stops, and its files are deleted (STREAMING_SPEC §5.3).
+        self.openedFileContents?.receive?.cancel()
         self.openedFileContents      = nil
         self.shareResult             = nil
         self.pendingRestoreFile      = nil
@@ -571,6 +573,8 @@ struct RootView: View {
         self.identityChallenge.outboundShare       = nil
         self.identityChallenge.incomingChallenge   = nil
         self.identityChallenge.verificationOutcome = nil
+        self.cardImport              = nil
+        self.contactOpenRequest      = nil
         self.vaultManager.lock()
     }
 
@@ -579,7 +583,7 @@ struct RootView: View {
     @ViewBuilder
     private var tabContent: some View {
         TabView(selection: self.$selectedTab) {
-            ContactsV2()
+            ContactsV2(openRequest: self.$contactOpenRequest)
                 .tag(Tabs.contacts)
                 .tabItem {
                     Tabs.contacts.image
@@ -702,13 +706,23 @@ struct RootView: View {
                 /// Run off the main actor: `RootView` conforms to `View`, which is
                 /// `@MainActor`, and while mapping itself is nearly free, touching pages
                 /// later (or a cold/on-demand-downloaded file) can still block briefly.
-                let data = try await Task.detached(priority: .userInitiated) {
-                    try Data(contentsOf: fileLocation, options: .mappedIfSafe)
+                //
+                // A streamed bundle (wire version 0x0A) is opened as a read handle instead and never mapped
+                // (STREAMING_SPEC §5.1): it is read a chunk at a time, so it need not fit in memory.
+                let inbound = try await Task.detached(priority: .userInitiated) {
+                    try InboundFile.open(fileLocation)
                 }.value
+
+                // Bug 101 for a streamed bundle: the copy iOS made in our container is unlinked as soon as the
+                // handle is open, and the open handle keeps it readable. The `defer` above covers everything else.
+                if case .streamed = inbound,
+                   openedThroughShareExtension || FileManager.default.isInsideAppContainer(fileLocation) {
+                    try? FileManager.default.removeItem(at: fileLocation)
+                }
 
                 // .occbak — vault backup restore file. Opening one only stages it in memory;
                 // the restore happens in `restoreConfirmedFile`, behind the confirmation below.
-                if fileLocation.pathExtension == "occbak" {
+                if fileLocation.pathExtension == "occbak", case .mapped(let data) = inbound {
                     // Confirm before restoring. A layer with no backup key of its own will
                     // reconstruct whatever key the file's shards rebuild and import its entries,
                     // and nothing in the file authenticates who authored it.
@@ -727,11 +741,11 @@ struct RootView: View {
                 // processing. Both unlock paths then drain it identically — see
                 // `pendingFileData`; a duress unlock no longer discards it.
                 if self.appScreen.phase != .unlocked {
-                    self.pendingFileData = data
+                    self.pendingFileData = inbound
                     return
                 }
 
-                await self.processInboundFile(data)
+                await self.processInboundFile(inbound)
             } catch {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
@@ -796,20 +810,42 @@ struct RootView: View {
     /// second attempt would only fail. Reachable only if the app is backgrounded past the grace
     /// period mid-decryption; `AppScreen.lockIfGracePeriodExpired` closes the common case. Losing
     /// the message then is an accepted cost (`Docs/General/decisions.md`).
-    private func processInboundFile(_ data: Data) async {
+    private func processInboundFile(_ file: InboundFile) async {
         let epoch = self.sessionEpoch
         let result: Result<OwnedBasket?, Error>
-        do {
-            result = .success(try await self.buildOwnedBasket(from: data))
-        } catch {
-            result = .failure(error)
+        switch file {
+        case .mapped(let data):
+            // An introduction card goes to the import sheet, before any bundle decoding (SPEC §2). A card is exactly
+            // 1,768 bytes with a valid signature, which no bundle is, and a mismatch costs one length check.
+            if IntroductionCard.recognize(data) != nil {
+                guard self.appScreen.phase == .unlocked else { return }
+                self.cardImport = CardImportData(data: data)
+                return
+            }
+            do {
+                result = .success(try await self.buildOwnedBasket(from: data))
+            } catch {
+                result = .failure(error)
+            }
+        case .streamed(let reader):
+            do {
+                result = .success(try await self.buildStreamedMessage(from: reader))
+            } catch {
+                result = .failure(error)
+            }
         }
 
-        guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else { return }
+        guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else {
+            // Nothing is shown, so nothing will read the attachments: release the file and write none.
+            if case .success(let basket?) = result { basket.receive?.cancel() }
+            return
+        }
 
         do {
             if let ownedBasket = try result.get() {
                 self.openedFileContents = ownedBasket
+                // The message is on screen; now its attachments (STREAMING_SPEC §5.2 step 8).
+                ownedBasket.receive?.start()
             }
         } catch ContactManager.Errors.messageHasNoData {
             self.errorMessage = "This message contains no data."
@@ -820,6 +856,10 @@ struct RootView: View {
         } catch OccultaBundle.BundleError.unsupportedVersion,
                 OccultaBundle.BundleError.unsupportedMode {
             self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
+            self.showError = true
+        // Names no contact and no depth, and says the same at every depth (STREAMING_SPEC §7).
+        } catch OccultaBundle.BundleError.tooLargeForDevice {
+            self.errorMessage = "This message is too large to open on this iPhone."
             self.showError = true
         // ⚠️ One string for both, and it must stay that way. Splitting them is a duress oracle.
         //
@@ -871,9 +911,19 @@ struct RootView: View {
         // this device has never heard from, not one it is hiding — and a contact who has never
         // sent anything holds no prekey of ours and cannot send forward-secret traffic at all.
         // No duress state is recoverable from it.
+        //
+        // The body-digest refusals (`bugs.md` Bug 165) share it too: each says the same thing, that the
+        // message can't be tied to this contact, and a separate string would only add a third to tell apart.
         } catch GroupDecryptError.senderSignatureCapabilityUnknown,
-                GroupDecryptError.missingSenderEphemeralSignature {
+                GroupDecryptError.missingSenderEphemeralSignature,
+                GroupDecryptError.bodyDigestMismatch,
+                GroupDecryptError.missingBodyDigest {
             self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be using an older version — ask them to update, or verify them another way."
+            self.showError = true
+        // A bundle whose structure or chunks don't hold together. One string for every way that can happen:
+        // none of them depends on the depth, and none is worth telling apart to whoever holds the phone.
+        } catch OccultaBundle.BundleError.malformedBundle, is BodyStream.StreamError {
+            self.errorMessage = "This message couldn't be opened."
             self.showError = true
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
@@ -902,10 +952,24 @@ struct RootView: View {
     private func purgeOrphanedGroupsIfAtRealDepth() {
         guard self.appScreen.phase == .unlocked,
               self.security.currentDepth == 0,
-              let key = try? Manager.Key().createHybridLocalEncryptionKey()
+              let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
         else { return }
 
         try? self.contactManager.purgeUnreadableGroups(using: key)
+    }
+
+    /// Deletes prekeys past their grace period (D1, Bug 156), for the contacts visible at the authenticated depth.
+    /// Gated on the phase for the reason `purgeOrphanedGroupsIfAtRealDepth()` gives; runs at every depth.
+    private func sweepPrekeysIfUnlocked() {
+        guard self.appScreen.phase == .unlocked else { return }
+        // The launch pass again, which does nothing once it has succeeded. A launch while the local DB key was
+        // unavailable, such as in the background before the first unlock, leaves rows it has yet to convert.
+        try? DatabaseMigration.migratePrekeyRecords(modelContext: self.contactManager.modelContext)
+        try? DatabaseMigration.migrateCardFields(modelContext: self.contactManager.modelContext)
+        try? DatabaseMigration.migrateChallengeFields(modelContext: self.contactManager.modelContext)
+        try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
+        // Introduction cards (SPEC §6.4): every contact at every depth, unlike the prekey sweep above.
+        try? self.contactManager.sweepCards()
     }
 
     /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,
@@ -931,10 +995,70 @@ struct RootView: View {
     ) -> [OccultaBundle.ShardOperation]? {
         guard
             let sender   = try? self.contactManager.fetchContact(by: senderIdentifier),
-            let localKey = try? Manager.Key().createHybridLocalEncryptionKey(),
+            let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey(),
             sender.isVisible(atDepth: self.security.currentDepth, usingKey: localKey)
         else { return nil }
         return ops
+    }
+
+    /// What a group bundle's manifest asks of the app before any basket is shown: an identity challenge goes
+    /// to its coordinator, shard and custody operations to the shard manager. Returns the message bytes, or nil
+    /// when there is nothing to show (a challenge, or a shard-only bundle, whose message is empty).
+    ///
+    /// The same for both layouts: it sees only the opened manifest.
+    private func routeGroupOpening(_ opened: ContactManager.GroupOpening) -> Data? {
+        let (sealed, ownerID) = (opened.sealed, opened.ownerID)
+
+        // Identity-challenge traffic inside a group bundle, already authenticated by `openGroup`
+        // (prekey continuity §3.4). It sets `challenge` whenever the body carries one.
+        if let challenge = opened.challenge {
+            if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                _ = self.identityChallenge.handleAuthenticatedChallenge(challenge, sender: sender)
+            }
+            return nil
+        }
+
+        // Shard/custody ops. Per-recipient fields take priority; falling back
+        // to the shared sealed payload's own fields keeps the already-shipped
+        // 1:1-via-group-envelope shard path (single-recipient encryptBundle,
+        // which has no per-recipient content to pad) working unchanged.
+        if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+            _ = self.shardCustodyManager.handleInbound(
+                shardOperations:  self.filterShardOperations(
+                    opened.recipientShardOperations ?? sealed.shardOperations,
+                    from: ownerID
+                ),
+                custodyManifest:  opened.recipientCustodyManifest ?? sealed.custodyManifest,
+                senderPublicKey:  senderPublicKey,
+                senderIdentifier: ownerID,
+                vaultManager:     self.vaultManager
+            )
+            // Only a manifest can change a piece's status.
+            if (opened.recipientCustodyManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
+        }
+
+        // Shard-only bundle (empty message) — ops handled above, no basket.
+        return sealed.message.isEmpty ? nil : sealed.message
+    }
+
+    /// The streamed layout (`STREAMING_SPEC.md` §5.2), steps 1 to 7: open the manifest and return the message
+    /// with a placeholder for each streamed file. The attachments are not decrypted yet; `StreamedReceive.start`
+    /// does that, once the message is on screen.
+    ///
+    /// Nothing here depends on the depth, and a failure before step 5 has recorded no prekey as used.
+    private func buildStreamedMessage(from reader: NoCacheFile.Reader) async throws -> OwnedBasket? {
+        // 1–6. Parse, identify the sender, open our slot, check the digest and the header, open the manifest,
+        // and run every check `openGroup` runs on it.
+        let (body, opened) = try await self.contactManager.openStreamedBundle(reader)
+
+        guard let message = self.routeGroupOpening(opened) else { return nil }
+
+        // 7. The message: the inline files, and a placeholder for each streamed one.
+        let receive = try StreamedReceive.prepare(
+            message: message, opened: opened, body: body,
+            key: self.contactManager.receivedAttachmentKey(for: opened.ownerID)
+        )
+        return OwnedBasket(basket: receive.basket, owner: opened.ownerID, receive: receive)
     }
 
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
@@ -946,192 +1070,116 @@ struct RootView: View {
     /// After decryption, file-type attachments are written to a temporary directory
     /// so `AsyncImage` and `AVPlayer` can load them by URL.
     private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket? {
-        try await withThrowingTaskGroup(of: Occulta.File.self) { group in
-            let bundle = try? OccultaBundle.decoded(from: fileContents)
+        // Before the bundle is decoded, a key derived or a prekey touched: every layout still opens in
+        // memory, and a refusal must change nothing. The file's length bounds the body's (STREAMING_SPEC §7).
+        try MemoryGuard.system.checkReceive(bundleLength: fileContents.count)
 
-            debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
+        let bundle = try? OccultaBundle.decoded(from: fileContents)
 
-            let decrypted: (plaintext: Data, ownerID: String)
-            var decodedBundleVersion: OccultaBundle.Version = .v3fs
+        debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
 
-            switch bundle?.version {
-            case .v3fs, .v4:
-                guard let bundle else {
-                    throw ContactManager.Errors.messageHasNoData
-                }
-                let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
+        let decrypted: (plaintext: Data, ownerID: String)
+        var decodedBundleVersion: OccultaBundle.Version = .v3fs
 
-                // ⚠️ The envelope's presence reflects the **sender's view of us**, not the
-                // sender's own capability. `encryptBundle` picks the format from
-                // `resolveTargetVersion(for: recipient)`, so a current build sends the
-                // *non-group* format to anyone it resolves below `.groupCapable` — including
-                // every contact whose marker it has stranded, which is the whole Bug 77/80
-                // population. A non-group bundle therefore says nothing about how old the
-                // sender is, and no check here may infer that it does.
-                //
-                // Consequence worth knowing: `openGroup`'s sender-signature gate has no
-                // counterpart on the branch below, because `senderEphemeralSignature` lives on
-                // `RecipientPayload` and the non-group format has no such field. That asymmetry
-                // grants nothing today — the prekey store and the identity key sit behind
-                // identical access control (`.privateKeyUsage`, device-unlocked, no biometric),
-                // so anyone able to build a legacy FS bundle can equally sign a group one — but
-                // do not read the gate as covering both paths.
-                if bundle.group != nil {
-                    // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
-                    // (messages, shards, custody ops) use this path. Shard-only bundles signal
-                    // "no basket" via an empty message field.
-                    let (sealed, ownerID, _, recipShardOps, recipManifest) =
-                        try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
-                    decodedBundleVersion = bundle.version
-
-                    // Identity-challenge traffic inside a group bundle.
-                    if let identityEnvelope = sealed.identityChallenge {
-                        if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                            _ = self.identityChallenge.handleInboundChallenge(
-                                bundle:   bundle,
-                                envelope: identityEnvelope,
-                                sender:   sender
-                            )
-                        }
-                        return nil
-                    }
-
-                    // Shard/custody ops. Per-recipient fields take priority; falling back
-                    // to the shared sealed payload's own fields keeps the already-shipped
-                    // 1:1-via-group-envelope shard path (single-recipient encryptBundle,
-                    // which has no per-recipient content to pad) working unchanged.
-                    if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
-                        _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  self.filterShardOperations(
-                                recipShardOps ?? sealed.shardOperations,
-                                from: ownerID
-                            ),
-                            custodyManifest:  recipManifest ?? sealed.custodyManifest,
-                            senderPublicKey:  senderPublicKey,
-                            senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
-                        )
-                        // Only a manifest can change a piece's status.
-                        if (recipManifest ?? sealed.custodyManifest) != nil { self.reconcileBackupPieces() }
-                    }
-
-                    // Shard-only bundle (empty message) — ops handled above, no basket.
-                    guard !sealed.message.isEmpty else { return nil }
-                    decrypted = (sealed.message, ownerID)
-                } else {
-                    // ContactManager owns sender identification, prekey resolution,
-                    // consumed-key cleanup, inbound batch sync, and model persistence.
-                    //
-                    // We decrypt into the full SealedPayload (not just the message
-                    // bytes) so we can peek at the identity-challenge envelope and
-                    // route that traffic out of the basket pipeline entirely.
-                    let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
-
-                    // Identity-challenge traffic rides on .v3fs/.longTermFallback
-                    // but is NOT a basket — hand it to the coordinator and bail.
-                    if let identityEnvelope = sealed.identityChallenge {
-                        if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                            _ = self.identityChallenge.handleInboundChallenge(
-                                bundle:   bundle,
-                                envelope: identityEnvelope,
-                                sender:   sender
-                            )
-                        }
-
-                        return nil
-                    }
-
-                    #if DEBUG
-                    debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
-                    #endif
-
-                    // Handle shard operations and manifest reconciliation.
-
-                    if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
-                        _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  self.filterShardOperations(
-                                sealed.shardOperations,
-                                from: ownerID
-                            ),
-                            custodyManifest:  sealed.custodyManifest,
-                            senderPublicKey:  senderPublicKey,
-                            senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
-                        )
-                        // Only a manifest can change a piece's status.
-                        if sealed.custodyManifest != nil { self.reconcileBackupPieces() }
-                    }
-
-                    decodedBundleVersion = bundle.version
-                    decrypted = (sealed.message, ownerID)
-                }
-            case .unsupported:
-                throw OccultaBundle.BundleError.unsupportedVersion
-            default:
-                // Legacy path — nil, v1, v2, or pre-versioned files.
-                // Falls back to long-term ECDH trial decryption across all contacts.
-                decrypted = try self.contactManager.decrypt(data: fileContents)
+        switch bundle?.version {
+        case .v3fs, .v4:
+            guard let bundle else {
+                throw ContactManager.Errors.messageHasNoData
             }
+            let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
 
-            let basket: Basket
-            if decodedBundleVersion == .v4 {
-                basket = try WireHandle.decode(basket: decrypted.plaintext)
+            // ⚠️ The envelope's presence reflects the **sender's view of us**, not the
+            // sender's own capability. `encryptBundle` picks the format from
+            // `resolveTargetVersion(for: recipient)`, so a current build sends the
+            // *non-group* format to anyone it resolves below `.groupCapable` — including
+            // every contact whose marker it has stranded, which is the whole Bug 77/80
+            // population. A non-group bundle therefore says nothing about how old the
+            // sender is, and no check here may infer that it does.
+            //
+            // Consequence worth knowing: `openGroup`'s sender-signature gate has no
+            // counterpart on the branch below, because `senderEphemeralSignature` lives on
+            // `RecipientPayload` and the non-group format has no such field. That asymmetry
+            // grants nothing today — the prekey store and the identity key sit behind
+            // identical access control (`.privateKeyUsage`, device-unlocked, no biometric),
+            // so anyone able to build a legacy FS bundle can equally sign a group one — but
+            // do not read the gate as covering both paths.
+            if bundle.group != nil {
+                // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
+                // (messages, shards, custody ops) use this path. Shard-only bundles signal
+                // "no basket" via an empty message field.
+                let opened = try self.contactManager.openGroup(bundle: bundle, body: .inline(bundle), ownerID: knownOwnerID)
+                decodedBundleVersion = bundle.version
+
+                guard let message = self.routeGroupOpening(opened) else { return nil }
+                decrypted = (message, opened.ownerID)
             } else {
-                basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
-            }
+                // ContactManager owns sender identification, prekey resolution,
+                // consumed-key cleanup, inbound batch sync, and model persistence.
+                //
+                // We decrypt into the full SealedPayload (not just the message
+                // bytes) so we can peek at the identity-challenge envelope and
+                // route that traffic out of the basket pipeline entirely.
+                let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
 
-            // ── Write file attachments, photos, videos to temp directory ─────────────────
-
-            var processed: [Occulta.File] = []
-            let tempDir         = FileManager.default.temporaryDirectory
-            let attachmentManager = (try? self.contactManager.fileEncryptionKey(for: decrypted.ownerID))
-                .map { AttachmentManager(contactKey: $0) }
-
-            for file in basket.files {
-                switch file.format {
-                case .file(let metadata):
-                    // metadata.name/.extension come from the decrypted, sender-controlled
-                    // Basket — never trusted for path construction. The name is dropped
-                    // entirely in favor of a fresh UUID (matching the outbound share-extension
-                    // path's existing discipline); the extension is validated by
-                    // sanitizedFilesystemExtension since a crafted value like
-                    // "../../etc/passwd" could otherwise steer the write outside tempDir.
-                    // Rejecting anything unsafe doesn't lose real data — the file's display
-                    // name/extension in the UI still comes from the untouched `metadata` in
-                    // `file.format` below, only the on-disk path changes.
-                    let fileURL = tempDir
-                        .appendingPathComponent(UUID().uuidString)
-                        .appendingPathExtension(Occulta.File.Metadata.sanitizedFilesystemExtension(metadata.extension))
-                    let content = file.content ?? Data()
-
-                    group.addTask {
-                        if let manager = attachmentManager {
-                            try manager.encrypt(content, to: fileURL)
-                        } else {
-                            try content.writeProtected(to: fileURL)
-                        }
-                        return Occulta.File(url: fileURL, format: file.format, date: file.date)
+                // Identity-challenge traffic rides on .v3fs/.longTermFallback
+                // but is NOT a basket — hand it to the coordinator and bail.
+                if let identityEnvelope = sealed.identityChallenge {
+                    if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                        _ = self.identityChallenge.handleInboundChallenge(
+                            bundle:   bundle,
+                            envelope: identityEnvelope,
+                            sender:   sender
+                        )
                     }
 
-                default:
-                    processed.append(file)
+                    return nil
                 }
+
+                #if DEBUG
+                debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
+                #endif
+
+                // Handle shard operations and manifest reconciliation.
+
+                if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                    _ = self.shardCustodyManager.handleInbound(
+                        shardOperations:  self.filterShardOperations(
+                            sealed.shardOperations,
+                            from: ownerID
+                        ),
+                        custodyManifest:  sealed.custodyManifest,
+                        senderPublicKey:  senderPublicKey,
+                        senderIdentifier: ownerID,
+                        vaultManager:     self.vaultManager
+                    )
+                    // Only a manifest can change a piece's status.
+                    if sealed.custodyManifest != nil { self.reconcileBackupPieces() }
+                }
+
+                decodedBundleVersion = bundle.version
+                decrypted = (sealed.message, ownerID)
             }
-
-            for try await file in group {
-                processed.append(file)
-            }
-
-            let sorted = processed.sorted { ($0.date ?? .now) < ($1.date ?? .now) }
-            let modifiedBasket = Basket(
-                id:    basket.id,
-                files: sorted,
-                date:  basket.date,
-                owner: basket.owner
-            )
-
-            return OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
+        case .unsupported:
+            throw OccultaBundle.BundleError.unsupportedVersion
+        case .streamedBodyCapable:
+            // A streamed bundle is opened through its file handle (`buildStreamedMessage`), never from bytes in memory.
+            throw OccultaBundle.BundleError.malformedBundle
+        default:
+            // Legacy path — nil, v1, v2, or pre-versioned files.
+            // Falls back to long-term ECDH trial decryption across all contacts.
+            decrypted = try self.contactManager.decrypt(data: fileContents)
         }
+
+        let basket: Basket
+        if decodedBundleVersion == .v4 {
+            basket = try WireHandle.decode(basket: decrypted.plaintext)
+        } else {
+            basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+        }
+
+        // ── Write file attachments, photos, videos to temp directory ─────────────────
+
+        return try await self.contactManager.sealReceivedFiles(of: basket, owner: decrypted.ownerID)
     }
 
     // MARK: Share Extension Processing
@@ -1151,48 +1199,52 @@ struct RootView: View {
         defer { ShareSession.delete(id: sessionID, in: container) }
 
         do {
-            var files = try ShareSession.load(
-                id: sessionID, in: container, keyManager: ShareIndexKeyManager()
+            // Read, not decrypted: a file the extension staged as `.eatt` stays on disk and is streamed from there.
+            var staged = try ShareSession.staged(
+                id: sessionID, in: container, keyManager: ShareStagingKeyManager()
             )
 
-            // files holds decrypted attachment content. Zero it on every exit from here on —
-            // the success path included, where it is dead the moment the bundle is sealed.
+            // Whatever is held in memory — an image, whose EXIF is stripped, or a file staged by the build before
+            // this one — is zeroed on every exit from here on, the success path included, where it is dead the
+            // moment the bundle is sealed.
             defer {
-                for i in files.indices {
-                    _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                for i in staged.files.indices {
+                    _ = staged.files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
                 }
             }
 
-            let basket = Basket(files: files, date: Date())
-            let occData: Data
+            let basket = Basket(files: staged.files, date: Date())
+            let occID  = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
+            let occURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(occID).occ")
+            // The layout is the recipient's to choose, and a file is read into memory only if it is inline,
+            // under the guard (STREAMING_SPEC §3, §7).
+            let output = BundleOutput.file(destination: occURL, attachments: staged.attachments, memoryGuard: .system)
 
             switch recipient {
             case .contact(let contactID):
                 let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
-                let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
-                let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
+                let isCard     = try self.contactManager.isCardContact(identifier: contactID)
+                let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub, isCardContact: isCard)
+                let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID, isCardContact: isCard)
 
-                occData = try self.contactManager.encryptBundle(
+                try self.contactManager.encryptBundle(
                     basket:          basket,
                     for:             contactID,
                     shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: custody
+                    custodyManifest: custody,
+                    output:          output
                 )
 
             case .group(let groupID):
                 // Depth filtering of the membership is encryptGroupBundle's own — it reads
                 // members(atDepth: currentDepth) and re-filters by each member's isVisible.
-                occData = try self.contactManager.encryptGroupBundle(
+                try self.contactManager.encryptGroupBundle(
                     basket:              basket,
                     groupID:             groupID,
-                    shardCustodyManager: self.shardCustodyManager
+                    shardCustodyManager: self.shardCustodyManager,
+                    output:              output
                 )
             }
-
-            let occID = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
-            let occURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(occID).occ")
-            try occData.writeProtected(to: occURL)
 
             self.shareResult = ShareResult(url: occURL)
         } catch {
@@ -1230,6 +1282,34 @@ struct RootView: View {
         }
     }
 
+}
+
+// MARK: - InboundFile
+
+/// A file handed to the app, as it is held until it is processed.
+enum InboundFile {
+    /// Memory-mapped bytes: every layout but the streamed one, and every other kind of file.
+    case mapped(Data)
+    /// A streamed bundle, open for positioned reads and never mapped (STREAMING_SPEC §5.1).
+    case streamed(NoCacheFile.Reader)
+
+    /// Opens `url`: as a read handle when it is a streamed bundle, which its first bytes say, otherwise mapped.
+    ///
+    /// Memory-mapped rather than eagerly read into a heap buffer: a file can legitimately be large (photo/video
+    /// attachments, vault backups), and mapping lets the OS page it in lazily and reclaim pages under memory
+    /// pressure instead of committing the whole file to RSS upfront (SecurityReview2026-07-24, finding #11 —
+    /// unbounded inbound file read).
+    nonisolated static func open(_ url: URL) throws -> InboundFile {
+        if url.pathExtension != "occbak",
+           let reader = try? NoCacheFile.reader(url),
+           reader.size >= UInt64(WireHandle.headerLength),
+           let head = try? reader.read(at: 0, count: WireHandle.headerLength), head.count == WireHandle.headerLength,
+           head.prefix(WireHandle.magic.count).elementsEqual(WireHandle.magic),
+           head[4] == WireHandle.streamedVersionByte {
+            return .streamed(reader)
+        }
+        return .mapped(try Data(contentsOf: url, options: .mappedIfSafe))
+    }
 }
 
 // MARK: - Tabs
@@ -1279,6 +1359,49 @@ private struct ShareResult: Identifiable {
 /// already validated as a UUID by `handleOpenURL` before it reaches a path component.
 private struct PendingShareSession: Identifiable {
     let id: String
+}
+
+/// What a staged share session opens: the recipient picker, or the card import sheet when the one file shared
+/// is an introduction card (it has no extension, so the extension can't route it). Checked here, after the PIN,
+/// since reading a staged file needs the share staging key; nothing is decrypted before the session is unlocked.
+private struct ShareSessionEntry: View {
+    let sessionID: String
+    let onSelect: (ShareRecipientPicker.Recipient) -> Void
+    let onCancel: () -> Void
+    let onCardFinished: (ContactOpenRequest?) -> Void
+
+    private enum Phase {
+        case checking
+        case picker
+        case card(Data)
+    }
+
+    @State private var phase = Phase.checking
+
+    var body: some View {
+        switch self.phase {
+        case .checking:
+            ProgressView()
+                .task { self.check() }
+        case .picker:
+            ShareRecipientPicker(onSelect: self.onSelect, onCancel: self.onCancel)
+        case .card(let data):
+            CardImportSheet(data: data, onFinish: self.onCardFinished)
+        }
+    }
+
+    private func check() {
+        guard
+            let container = ShareSession.sharedContainer,
+            let data = ShareSession.introductionCard(id: self.sessionID, in: container, keyManager: ShareStagingKeyManager())
+        else {
+            self.phase = .picker
+            return
+        }
+        // The card is held in memory now; the staged copy has no further use.
+        ShareSession.delete(id: self.sessionID, in: container)
+        self.phase = .card(data)
+    }
 }
 
 /// Wraps `UIActivityViewController` for SwiftUI. Presents the system share sheet

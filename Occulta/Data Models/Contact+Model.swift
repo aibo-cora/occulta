@@ -2,6 +2,7 @@ import SwiftData
 import Contacts
 import Foundation
 import CryptoKit
+import OccultaFormats
 
 // MARK: - Main Contact Model
 
@@ -50,8 +51,38 @@ extension Contact {
         @Relationship(deleteRule: .cascade, inverse: \Key.profile)
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key]? = []
-        /// Encrypted forward secrecy metadata.
-        var forwardSecrecyEncrypted: Data?
+        /// Encrypted forward secrecy metadata: the JSON `ForwardSecrecy` stored before prekey continuity stage 1.
+        /// Retired: `DatabaseMigration.migratePrekeyRecords` carries it into `prekeyRecordEncrypted` and sets it
+        /// to nil on every row, so it is uniformly empty and says nothing. Kept only because dropping a column
+        /// relies on SwiftData's inferred migration.
+        ///
+        /// Private so that nothing uses it again: the migrations reach it through `retiredForwardSecrecyEncrypted`.
+        /// Not `@available(*, deprecated)`, which was the first plan: `@Model`'s generated schema names every stored
+        /// property, so the warning would fire on every build and be ignored.
+        private var forwardSecrecyEncrypted: Data?
+
+        /// The sealed `PrekeyRecord` for this contact: always `PrekeyRecordCodec.capacity` bytes of plaintext,
+        /// so its length says nothing about either side's keys (Bug 161). Read and written only by
+        /// `ContactManager`.
+        var prekeyRecordEncrypted: Data?
+
+        /// The sealed `CardState` for this contact (`CardStateCodec`): always `CardStateCodec.capacity` bytes of
+        /// plaintext, so its length says nothing about whether the contact has an introduction card or what kind.
+        /// Written at creation and by `DatabaseMigration.migrateCardFields`, so it is never nil in steady state;
+        /// overwritten with the sealed empty state at deletion, which also drops the Enclave key blobs a card holds.
+        /// Read through `Contact.Profile.cardState` and written by `ContactManager.store(_:for:)`, nowhere else.
+        /// SwiftData lightweight migration: new optional column, no plan required.
+        var introductionCardEncrypted: Data?
+
+        /// The sealed `ChallengeState` for this contact (`ChallengeStateCodec`): the identity challenge we issued
+        /// to them and when we last verified them, one slot per depth. Always `ChallengeStateCodec.capacity` bytes
+        /// of plaintext, so its length says nothing about whether a challenge was ever made or at what depth.
+        /// Written at creation and by `DatabaseMigration.migrateChallengeFields`, so it is never nil in steady
+        /// state; overwritten with the sealed empty state at deletion. Lives at most an hour (the sweep clears
+        /// what has expired). Read through `Contact.Profile.challengeState` and written by
+        /// `ContactManager.store(_:for:)` and the ledger in `ContactManager+ChallengeLedger.swift`, nowhere else
+        /// (`bugs.md` Bug 180). SwiftData lightweight migration: new optional column, no plan required.
+        var challengeStateEncrypted: Data?
 
         /// Encrypted JSON-encoded [SignedAttribute] blob (Issue #6).
         /// nil until the contact has shared at least one signed attribute.
@@ -383,4 +414,12 @@ enum Scopes: Codable {
     /// Key was acquired through `Nearby Interaction` and we have full confidence who it belongs to.
     case sign
     case none
+}
+
+extension Contact.Profile {
+    /// The retired `forwardSecrecyEncrypted`, for the migrations that re-encrypt and empty it, and nothing else.
+    var retiredForwardSecrecyEncrypted: Data? {
+        get { self.forwardSecrecyEncrypted }
+        set { self.forwardSecrecyEncrypted = newValue }
+    }
 }

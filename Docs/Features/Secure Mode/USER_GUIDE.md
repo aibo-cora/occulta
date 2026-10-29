@@ -64,10 +64,10 @@ When you turn on Secure Mode, Occulta:
    - Create a list that looks normal to someone forcing access
    - The decoy list can include people you actually know but aren't sensitive
 
-3. **Encrypts everything securely** — your phone's built-in security features protect the data
-   - Real contacts are encrypted and locked away
-   - Only accessible with your master PIN
-   - The phone's secure storage keeps the encryption keys safe
+3. **Hides your sensitive contacts in the app** — they are filtered out of every screen in the decoy view
+   - Nothing is moved or re-encrypted; activation only saves your PINs
+   - The hiding is done by the app itself, not by separate encryption keys
+   - Only your master PIN opens the real view
 
 4. **Sets your duress PIN** — the emergency access password
    - Different from your normal PIN
@@ -163,13 +163,13 @@ Think of it like Russian nesting dolls:
 - Someone can still steal your phone, damage it, or use other methods
 - Secure Mode is protection from **coerced access** (forced unlocking), not from theft
 
-### Secure Mode Activation Takes Time
+### Secure Mode Activation Is Quick
 
 When you set up Secure Mode:
-- Your phone will re-encrypt all your contact data
-- This process is secure but takes a few moments
-- Don't interrupt it (no force-closing the app)
-- When it's done, a confirmation appears
+- Activation only saves your PINs; your contacts are not re-encrypted
+- It takes a moment, so let it finish before closing the app
+- Deleting the app while Secure Mode is active is unrecoverable
+- Don't activate under pressure (setup requires focus)
 
 ---
 
@@ -194,11 +194,11 @@ Plan a fake contact list that will be convincing:
 
 In the app:
 1. Go to Settings → Security
-2. Tap "Set Up Protection"
+2. Tap "Learn more"
 3. Follow the prompts to:
+   - Enter your current PIN
+   - Create and confirm your duress PIN
    - Classify your contacts (sensitive vs. visible)
-   - Configure your decoy contact list
-   - Create your duress PIN
 4. Review the summary
 5. Tap "Activate"
 6. Wait for the activation to complete
@@ -228,12 +228,10 @@ Even if they have the phone and know the duress PIN, they only see the decoy lis
 
 ### "What If I Forget My Master PIN?"
 
-Unfortunately, the encryption is designed so that **nobody** can decrypt your data without the correct PIN—not even Occulta developers. If you forget:
-- Your sensitive contacts are permanently inaccessible
-- The phone will need to be erased
+Occulta has no account or server, so **nobody** can reset your PIN for you—not even Occulta developers. If you forget:
+- You'll be locked out of the app
+- Deleting the app while Secure Mode is active is unrecoverable
 - Only keep Secure Mode active if you can reliably remember your PIN
-
-This is a feature, not a bug: it ensures your data is truly safe.
 
 ### "What If Someone Watches Me Enter the PIN?"
 
@@ -259,35 +257,32 @@ Your vault (secure storage) is also protected by Secure Mode:
 
 ### "How Many Layers Can I Add?"
 
-Technically, unlimited. Practically:
+Up to 32 layers in total: your real one plus 31 nested duress layers. Practically:
 - 1 layer: You + 1 attacker who might not know about the feature
 - 2 layers: Protects against an attacker who knows about one duress layer
 - 3+ layers: For very sophisticated threat models
-
-Each layer takes up secure storage on your phone (~32 KB per layer).
 
 ### "If I Add a Layer While in Duress Mode, Will They Know?"
 
 Yes, if they're watching. Adding a layer requires:
 - Navigating to Settings
-- Tapping "Add Layer" 
+- Tapping "Learn more" under Security
 - Following the setup process
 
 Someone observing would see these actions. However, they can't see *what* you're configuring, only that you're in the Settings app.
 
 ### "Can I Change My PINs?"
 
-- **Master PIN:** Change it anytime (like your app PIN)
-- **Duress PIN:** Can be changed, but the process is security-sensitive
-- **When in duress mode:** You can only change the duress PIN for your current layer
-
-Changing a PIN requires re-entering your sensitive contact data, so plan ahead.
+Occulta has no "change PIN" screen. To use different PINs:
+- Deactivate Secure Mode (Settings → Security → Deactivate Protection)
+- Turn the PIN off and back on to set a new master PIN
+- Set up Secure Mode again to create a new duress PIN
 
 ### "What Happens If Activation Fails?"
 
 If Secure Mode activation is interrupted or fails:
 - Your data remains unchanged
-- No encryption has happened
+- Nothing is saved, so Secure Mode stays as it was
 - You can try again
 - Contact support if errors persist
 
@@ -298,10 +293,8 @@ Yes, but it's a deliberate process:
 2. Tap "Deactivate Protection"
 3. Enter your master PIN
 4. Confirm you want to deactivate
-5. Your real contacts re-appear in the main contact list
-6. The decoy contacts are removed
-
-This process also takes a few moments while the phone re-encrypts everything.
+5. That layer's duress PIN stops working
+6. Contacts are not deleted or re-encrypted; vault entries created inside the removed layer are no longer reachable
 
 ---
 

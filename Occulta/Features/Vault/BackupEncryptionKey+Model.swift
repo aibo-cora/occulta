@@ -38,7 +38,7 @@
 //
 //  Privacy model — encryption at rest:
 //  - `id` (plaintext) — random per row, bound into AAD.
-//  - `depth`, `deletionToken` — sealed under the **local DB key** (`Manager.Key()`'s ambient
+//  - `depth`, `deletionToken` — sealed under the **local DB key** (`Manager.Ambient`'s
 //    hybrid key), not the vault key. Forced, not a style choice: orphaning has to run from
 //    `Manager.Security.deactivateSecureMode`/`forceDeactivateForRecovery`, neither of which
 //    ever derives the vault key. If these fields were vault-key-sealed, orphaning a freed

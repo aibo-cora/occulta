@@ -177,6 +177,8 @@ Vault trustee designation and payment-card signing are the two places where D-06
 
 Sweep 4's item 4 (introductions by a verified mutual) is flagged as *"a product-owner call, not an engineering one"* and remains open (D1). The no-vouching invariant is settled for own-device keys (`Multi-Device Contacts/ROADMAP.md`, Design Session 3, *"Rejected: self-vouching device certs"*). A Confirmed rung is **not** vouching — no third party asserts anything — so this is adjacent, not the same question. Recorded so the two are not merged during scoping, in either direction.
 
+> **Addendum (2026-10-14):** the introductions question now has a worked proposal: [Introduction Cards](../Introduction%20Cards/FINDINGS.md). The owner issues single-use cards with their own key, and a mutual contact may carry one but asserts nothing. Card keys are stored outside `contactPublicKeys`, so D-06's dependents refuse card contacts by default, and Q-04's hard block becomes the default rather than a check each feature must remember. Q-01 here applies to it unchanged.
+
 ---
 
 ## Recommendation

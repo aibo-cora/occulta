@@ -29,13 +29,6 @@ private func makeDraftContainer() throws -> ModelContainer {
     )
 }
 
-/// Returns true if Manager.Key can derive the hybrid local key in this environment.
-/// DraftStore always uses the real SE-backed key (never TestKeyManager) — these
-/// tests skip gracefully wherever that's unavailable.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 @MainActor
 @Suite("DraftStore — stale isSensitive race")
 struct DraftStoreRaceTests {
@@ -44,12 +37,7 @@ struct DraftStoreRaceTests {
     /// contact is not sensitive; before the debounce fires, something (Trust Check, in
     /// production) marks it sensitive. The closure must observe that change and the
     /// draft must never be written.
-    @Test func staleSensitivity_doesNotWriteWhenMarkedSensitiveDuringDebounce() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
+    @Test(.ambientTestKeyManager) func staleSensitivity_doesNotWriteWhenMarkedSensitiveDuringDebounce() async throws {
         let container = try makeDraftContainer()
         let context   = ModelContext(container)
         let store     = DraftStore(debounceDelay: .milliseconds(200))
@@ -88,12 +76,7 @@ struct DraftStoreRaceTests {
 
     /// Control case: if sensitivity never changes, the draft must still be written
     /// normally. Confirms the fix didn't just make scheduleSave a no-op.
-    @Test func stillNotSensitive_writesNormallyAfterDebounce() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
+    @Test(.ambientTestKeyManager) func stillNotSensitive_writesNormallyAfterDebounce() async throws {
         let container = try makeDraftContainer()
         let context   = ModelContext(container)
         let store     = DraftStore(debounceDelay: .milliseconds(200))
@@ -117,12 +100,7 @@ struct DraftStoreRaceTests {
     /// A contact already sensitive from the very start (not just mid-debounce) must
     /// never get a draft written at all — the baseline "Option E" behavior, still
     /// correct after this change.
-    @Test func alreadySensitiveFromTheStart_neverWrites() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
+    @Test(.ambientTestKeyManager) func alreadySensitiveFromTheStart_neverWrites() async throws {
         let container = try makeDraftContainer()
         let context   = ModelContext(container)
         let store     = DraftStore(debounceDelay: .milliseconds(200))
@@ -149,12 +127,7 @@ struct DraftStoreRaceTests {
     /// isSensitive does a DB fetch + Secure Enclave decrypt, so evaluating it on every
     /// keystroke (as the old Bool-parameter design did) wastes SE round-trips on
     /// snapshots that get thrown away by the next keystroke's cancellation anyway.
-    @Test func isSensitiveClosure_evaluatedOnlyOnce_acrossARapidKeystrokeBurst() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
+    @Test(.ambientTestKeyManager) func isSensitiveClosure_evaluatedOnlyOnce_acrossARapidKeystrokeBurst() async throws {
         let container = try makeDraftContainer()
         let context   = ModelContext(container)
         let store     = DraftStore(debounceDelay: .milliseconds(200))

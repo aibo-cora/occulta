@@ -51,15 +51,26 @@ final class ParticleCanvas: UIView {
         self.backgroundColor = .clear
         self.clearsContextBeforeDrawing = true
         self.initParticles()
-        let dl = CADisplayLink(target: self, selector: #selector(self.step))
-        dl.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
-        dl.add(to: .main, forMode: .common)
-        self.displayLink = dl
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit { self.displayLink?.invalidate() }
+    /// Runs the display link only while on screen. A display link retains its target, so one
+    /// invalidated in `deinit` kept every canvas alive, still stepping at 60 Hz, after its screen
+    /// closed (Bug 153).
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+
+        if self.window == nil {
+            self.displayLink?.invalidate()
+            self.displayLink = nil
+        } else if self.displayLink == nil {
+            let dl = CADisplayLink(target: self, selector: #selector(self.step))
+            dl.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+            dl.add(to: .main, forMode: .common)
+            self.displayLink = dl
+        }
+    }
 
     private func initParticles() {
         let w = Float(max(self.bounds.width, 390))

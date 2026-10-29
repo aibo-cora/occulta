@@ -22,14 +22,8 @@ import Foundation
 import CryptoKit
 @testable import Occulta
 
-/// True when this host can derive the real hybrid local DB key. False on CI runners, which
-/// have no Secure Enclave.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
-
 private func canonicalKey() -> SymmetricKey? {
-    try? Manager.Key().createHybridLocalEncryptionKey()
+    try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 }
 
 private func makeProbeProfile() -> Contact.Profile {
@@ -40,7 +34,7 @@ private func makeProbeProfile() -> Contact.Profile {
     )
 }
 
-@Suite("Bug 80 — stranded vs never-seen bundle version", .enabled(if: secureEnclaveAvailable()))
+@Suite("Bug 80 — stranded vs never-seen bundle version", .ambientTestKeyManager)
 struct EncryptedFieldRotationTests {
 
     /// Why `maxBundleVersion` must distinguish "present but unreadable" from "never seen":

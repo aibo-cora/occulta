@@ -12,6 +12,7 @@ import Security
 import Foundation
 
 @testable import Occulta
+@testable import OccultaFormats
 
 // MARK: - Helpers
 

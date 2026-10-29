@@ -2,7 +2,7 @@
 **Date:** May 2026 · **Revised:** June 2026 — incorporates review findings (see `SPEC_REVIEW_FINDINGS.md`)
 **Scope:** `occulta-protocol`, `occulta-crypto`, `occulta-ffi`, iOS (SPM) + Android (AAR) build scripts
 **Source:** Existing Swift codebase — `Key+Manager.swift`, `Crypto+Manager.swift`,
-`OccultaBundle.swift`, `IdentityChallenge+*`, `VAULT_SSS_GUIDE.md`, `CLAUDE.md`
+`OccultaBundle.swift`, `IdentityChallengeEnvelope.swift`, `IdentityChallenge+*`, `VAULT_SSS_GUIDE.md`, `CLAUDE.md`
 
 ---
 
@@ -527,7 +527,7 @@ pub struct WirePrekey {
 /// Old builds silently ignore this type.
 ///
 /// ⚠️ `attribute` is a **nested `SignedAttribute` JSON object** in Swift
-/// (`Features/Vault/SignedAttribute.swift` — Category enum, value, signature, …),
+/// (`OccultaCore/Sources/OccultaFormats/SignedAttribute.swift` — Category enum, value, signature, …),
 /// NOT base64 `Data`. Mirror the full Codable shape at scaffold time; the
 /// struct below references it as a placeholder.
 ///
@@ -557,7 +557,7 @@ pub enum ShardOperationKind {
 /// Identity-challenge sub-envelope inside SealedPayload.
 ///
 /// ## Wire format
-/// Matches `IdentityChallengeEnvelope` in Swift (`IdentityChallenge+Envelope.swift`).
+/// Matches `IdentityChallengeEnvelope` in Swift (`IdentityChallengeEnvelope.swift`).
 /// The binary challenge or response data is carried as an opaque `payload` field —
 /// NOT decomposed into nonce/timestamp/fingerprint. Those fields live inside the
 /// 72-byte binary `ChallengePayload` struct serialised manually in Swift.
@@ -1174,7 +1174,7 @@ pub fn x963_kdf_sha256(
 ### `mlkem.rs` — Android only (feature `mlkem`)
 
 iOS performs ML-KEM-1024 in CryptoKit (`SecureEnclave.MLKEM1024`, iOS 26+,
-gated in `PQProvider.swift`) — the decapsulation key never leaves the SE, and
+gated in `PostQuantumProvider.swift`) — the decapsulation key never leaves the SE, and
 iOS never calls this module. Android has no platform or hardware ML-KEM, so the
 lattice operations live here, implemented by `libcrux-ml-kem` (formally
 verified, FIPS 203 final — encapsulation keys and ciphertexts are
