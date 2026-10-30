@@ -38,7 +38,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - the spec's own 2026-10-15 sub-items, most of which belonged to the storage design that is gone (spec §2 needs
   rewriting);
 - the photo table's noise rows and size buckets (§1.5);
-- the unlock cost, to be measured on a device (waits on decision 6).
+- the unlock cost, to be measured on a device (waits on decision 6);
+- 20, what the identifier's references hold once the identifier moves into the contact's blob.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -513,6 +514,24 @@ keys.
 **What that means for the call sites.** Most field-level calls on contacts become one blob decode. The 175
 sites are the scope to sweep, together with requirement 5's "not swept yet" list.
 
+**`Contact.Profile.identifier` is a reference, not only a field** (`bugs.md` Bug 171, "What stays open" item 4;
+`decisions.md`, 2026-10-21). Its base64 ciphertext is stored as a value in `Group` member slots,
+`Draft.encryptedRecipientID`, the custody and shard payloads and the legacy keychain prekey tags
+`prekey.<identifier>.<uuid>`, and hashed into `TrusteeTag`
+([KeyReseal+Inventory.swift](../../Occulta/Services/KeyReseal+Inventory.swift), `Profile.identifier`). Bug 171's
+reseal left it and every copy byte-identical under the legacy local DB key, which a holder of Q can compute. For
+contacts imported from the address book its plaintext is the iOS Contacts entry ID, so each one links to a card in
+the phone's Contacts. This migration is where that closes:
+- Stage 4 moves the identifier into the contact's blob and rewrites the group slots and drafts that refer to it,
+  in the same migration.
+- Stage 5 does the same for the custody and shard payloads and `TrusteeTag`. Whether a changed `TrusteeTag` still
+  matches what a trustee holds needs checking first.
+- What the references hold instead is open, needs a decision. It must not be anything that decrypts to the
+  identifier outside the contact's own depth.
+- Not closed by it, each open, needs a decision: images taken before the migration, the old store until
+  graduation (§1.2), and the legacy prekey tags in older keychain images, which outlive an app deletion (Bug 170,
+  decision 19).
+
 **Register C1 comes first.** `Data.decrypt()` turns any failure into `nil`, and `String.decrypt()` into `""`.
 That is how Bugs 75–78 and 80 became silent loss. The reseal's reads must fail loudly before it ships.
 
@@ -620,7 +639,7 @@ more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ agains
   - **15d.** Erase All Data deletes the share staging key, which stays a keychain item. This doesn't depend on the
     passphrase work. Built and merged 2026-10-19 (PR #118, with #119), so it ships in 2.0.0.
 
-  So per-install keys keep outliving an app deletion, with their creation dates. Still open in Bug 170: the
+  So per-install keys keep outliving an app deletion, with their creation dates. Open, needs a decision (Bug 170): the
   legacy keychain prekeys, and the shard custody key, which waits on stage 5.
 - **Device Migration** (`Docs/Features/Device Migration/FINDINGS.md`, exploratory) means a new Enclave, so
   phrases are set up again on the new phone. Out of scope here.
@@ -679,8 +698,8 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
-| 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4 | 4–7 |
-| 5 | Remaining records | Backup keys, custody shards, restore records; the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
+| 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
+| 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
 | 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); Erase All Data scoped to one space; deleting the old store once every layer has migrated; no old-PIN fallback and no graduation | 2.5–4 |
 | 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several spaces | 1, plus ~1 calendar week: a 7-day phased release |
 
@@ -750,6 +769,9 @@ there and aren't repeated here.
 19. ~~**Bug 170's leftovers** (added 2026-10-24; §6, `bugs.md` Bug 170): the legacy keychain prekeys, whose tags name
     contacts and outlive an app deletion until they retire, and the shard custody key, which waits on ROLLOUT_PLAN
     stage 4.~~ **Decided 2026-10-29:** left in Bug 170.
+20. **What the identifier's references hold** (added 2026-10-30; §4, `bugs.md` Bug 171 item 4) once
+    `Contact.Profile.identifier` moves into the contact's blob: group slots, drafts, custody and shard payloads and
+    `TrusteeTag` hold its legacy ciphertext today, which a holder of Q can decrypt.
 
 ---
 
@@ -773,7 +795,7 @@ depends on or changes.
 | Bug 148 | A file opened from outside shows before the PIN screen | Fixed 2026-09-28 | A file arriving behind the lock must still wait, and with phrases it also has no key to open with |
 | Bug 162 | A trustee's piece count shows how many depths have a backup | On-screen count and manifest size fixed (PR #114); stored rows and piece dates open, needs a decision | Stage 5 |
 | Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; a new store file for the passphrase migration proposed, not decided | §1.2, stage 0 |
-| Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open | §6, decision 15 |
+| Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open, needs a decision | §6, decision 15 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
 | Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |
 | Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |
