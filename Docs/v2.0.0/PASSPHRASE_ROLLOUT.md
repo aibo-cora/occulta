@@ -39,7 +39,9 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   rewriting);
 - the photo table's noise rows and size buckets (§1.5);
 - the unlock cost, to be measured on a device (waits on decision 6);
-- 20, what the identifier's references hold once the identifier moves into the contact's blob.
+- 20, what the identifier's references hold once the identifier moves into the contact's blob;
+- 21, how many noise rows there are, and when they are written;
+- 22, the table only grows, and unlock pays for every row ever written.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -307,7 +309,10 @@ Decision 1 is closed by it.
   corrupt or misaddressed file. It reveals nothing about another space, and the file opens when the right space is
   open. No notice is shown, since a notice would name a contact the open space can't see.
 
-**Proposed in the brainstorm, not decided:** uniform records and noise rows (Bug 120).
+~~**Proposed in the brainstorm, not decided:** uniform records and noise rows (Bug 120).~~ **Decided 2026-10-29**
+(§5, Bug 120): one sealed record per contact in one table, a few fixed sizes with noise rows in the same sizes, no
+space tag, and every change written as "append a new row, shred the old". Open, needs a decision: how many noise
+rows there are, and a table that only grows (§8, 21 and 22).
 
 **Unverified estimates:** unlock is about 1 s of KDF, 50–200 ms to fetch 10k rows and 10–20 ms to trial-decrypt
 10k small headers. Not measured on a device.
@@ -701,7 +706,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 |---|---|---|---|
 | 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the model sweep for requirement 5 | 1–2 |
+| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
 | 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
@@ -783,6 +788,17 @@ there and aren't repeated here.
 20. **What the identifier's references hold** (added 2026-10-30; §4, `bugs.md` Bug 171 item 4) once
     `Contact.Profile.identifier` moves into the contact's blob: group slots, drafts, custody and shard payloads and
     `TrusteeTag` hold its legacy ciphertext today, which a holder of Q can decrypt.
+21. **How many noise rows there are, and when they are written** (added 2026-10-30; §1.5, §5). The migration has to
+    write noise rows, or a table's total shows how many contacts every space holds together: an install with 40
+    contacts and no duress space must look like one with 30 visible and 10 hidden. Nothing says how many, whether
+    the count is drawn per install, or whether it changes after migration. The prekey dummies had the same question
+    ("a range of 32–128… not decided", spec §2); D9 made that one moot, but not this one.
+22. **The table only grows** (added 2026-10-30; §1.5). "Append a new row, shred the old" keeps every shredded row
+    as noise, and no space can remove one, since nothing tells it from another space's row. So every edit adds a
+    row for good. If consuming a prekey rewrites the contact's record (D9, stage 4), every message received does
+    too. Unlock trial-decrypts every row, so its cost and the store's size grow with every write ever made, not with
+    the contact count; the "10k rows" estimate counts contacts. The locator tag (§1.5) makes each check cheaper but
+    doesn't reduce the count.
 
 ---
 

@@ -10531,6 +10531,8 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   can't tell noise from real rows, so it can't safely rewrite either.
 - **Stated limit, owner 2026-10-29:** a duress space protects against one image, not a series, and the setup
   guidance (step 16) says so. The append-only log stays a possible later release, not planned.
+- **Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
+  grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
 - **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
 
 ---

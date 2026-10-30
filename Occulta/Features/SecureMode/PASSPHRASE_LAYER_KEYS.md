@@ -241,6 +241,8 @@ the 2026-10-15 proposal:
   locator tag per row as the fallback.
 - **The finding of 2026-10-15 stands, and is now a stated limit** (Bug 120): a duress space protects against
   one image, not a series. Noise rows don't close it.
+- **Open, needs a decision (2026-10-30):** how many noise rows there are and when they are written, and a table
+  that only grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
 
 This is the part that isn't settled, and it's the crux of whether this proposal is simpler than what
 it replaces or just differently shaped.
