@@ -61,7 +61,8 @@ restate it:
 - holding the key until the device locks (§4).
 
 It also builds on the 2026-10-16 decisions (`bugs.md` Bug 168): the prekey refactor ships in 2.0.0 without
-waiting for this work, and a downgrade must lose nothing, through a new store file (proposed, not decided).
+waiting for this work, and a downgrade must lose nothing, through a new store file (proposed then).
+*2026-10-29:* the reseal writes a new store file, but a downgrade after migration is not supported (decision 18).
 
 **What is new here.**
 - Phrase entry and learning (§2).
@@ -126,8 +127,9 @@ and no mainstream app holds old data for days pending proof of recall. What rema
 of the earlier design. The deletion list in §3.2 still applies, at the end of the reseal instead of at graduation.
 
 **Decided 2026-10-19 by the owner: adopted as proposed below,** both the new store file and the old store as
-the way back (`decisions.md`, 2026-10-19). Still open: what a newer build does with a store an older build wrote
-to in the meantime (ROLLOUT_PLAN, "A downgrade loses nothing").
+the way back (`decisions.md`, 2026-10-19). ~~Still open: what a newer build does with a store an older build wrote
+to in the meantime (ROLLOUT_PLAN, "A downgrade loses nothing").~~ **Decided 2026-10-29 (decision 18):** a downgrade
+after migration is not supported.
 
 Rule 4 keeps a way back until every phrase is proven. The migration requirement of 2026-10-16 proposes
 writing the migrated data to a new store file and removing the old store only after the switch (ROLLOUT_PLAN,
@@ -150,7 +152,7 @@ writing the migrated data to a new store file and removing the old store only af
 - The old store stays as exposed as today's data until graduation.
 
 **Compared with device slots (§1.1),** this leaves nothing that opens the new store once graduation is done.
-**Open, needs a decision.**
+~~**Open, needs a decision.**~~ **Decided 2026-10-19, superseded 2026-10-29** (top of this section).
 
 ### 1.3 The coercion gate under phrases
 
@@ -170,8 +172,8 @@ identifies duress.
   first. A coercer is never at the real depth without its phrase, so the refusal is never observed.
 - **7c, lock on in a decoy: a new depth below it.** A new phrase means a new key, which the parent's chain copy
   can't follow. Requirement: it takes the same steps and time, and shows the same contacts, as an ordinary
-  install's lock-on, which reseals depth 0 under the new phrase. How is design work, **open, needs a
-  decision.** The real user doesn't need this flow to accept an existing phrase: once the lock is on, the lock
+  install's lock-on, which reseals depth 0 under the new phrase. ~~How is design work, open, needs a
+  decision.~~ *Superseded 2026-10-29: no new depth (below).* The real user doesn't need this flow to accept an existing phrase: once the lock is on, the lock
   screen does that.
 - **7d:** below, under "Depths a coercer created".
 
@@ -204,7 +206,7 @@ depth with no PIN.
 - The two options both have a cost. Warning the user leaves the protection in place but exposed. Allowing
   the switch only at duress depths makes the depths behave differently.
 
-**Open, needs a decision.**
+~~**Open, needs a decision.**~~ **Decided 2026-10-19 (7a, 7b), and 7b changed 2026-10-29** (above).
 
 **Re-enabling the gate** (`reEnablePIN`,
 [Manager+Security.swift:898](../../Occulta/Features/SecureMode/Manager+Security.swift)). The Bug 37 fix accepts
@@ -224,8 +226,8 @@ depth's phrase in one sitting. **Decided 2026-10-19 by the owner (7d): dropped a
 - **The contacts those depths created go with them,** as deletions (orphan-in-place). Under the 2026-10-15
   storage, a contact created at a duress depth stays hidden from the depths above only through that depth's
   origin list. Dropping the list without the contacts would put them in the real user's contact list.
-- **A returning coercer** finds their PIN dead, as everyone's is after the release. During the probation week
-  the old store still opens with it, as it was at setup.
+- **A returning coercer** finds their PIN dead, as everyone's is after the release. ~~During the probation week
+  the old store still opens with it, as it was at setup.~~ *Superseded 2026-10-29: no probation week (§1.2).*
 - `decisions.md`, 2026-10-19.
 
 
@@ -249,7 +251,7 @@ Either way:
 - an install with no lock keeps today's protection;
 - whether an install has a lock stays visible, as it is today through `sealedNormalVerifier`.
 
-**Open, needs a decision.**
+~~**Open, needs a decision.**~~ **Decided 2026-10-19: option 2** (above).
 
 ### 1.5 Independent spaces
 
@@ -427,7 +429,7 @@ Assuming §1.2: the reseal happens at phrase setup, into a new store.
 | Today | At phrase setup | Notes |
 |---|---|---|
 | No lock | The reseal, with depth 0's key from an empty phrase; no probation week | The old store and its keys go once the reseal checks out (§1.4) |
-| PIN only | 1 phrase; the reseal into the new store | The old store stays until graduation |
+| PIN only | 1 phrase; the reseal into the new store | ~~The old store stays until graduation~~ The old store goes once the reseal is verified (2026-10-29, §3.2) |
 | Secure Mode with K duress layers | At the real depth, after the master PIN: K+1 phrases in one sitting (Rule 2), then one reseal of every depth | Only the real user can give every phrase |
 | Unlocked at duress depth N | The same prompt as everywhere. Setup there sets up that depth for real: its phrase, and the data it can see, in the new store. The real user finishes the other depths later from the real depth, typing the decoy's phrase again | **Decided 2026-10-19** (8a, below) |
 | Gate lowered at depth N | Behaves like an install with no lock: silent migration, no prompt, the depth's key under a device-only key (7a). The real user gets back by turning the lock on (7c) and using the lock screen, then finishes setup | **Decided 2026-10-19** (8b, below) |
@@ -451,7 +453,8 @@ Assuming §1.2: the reseal happens at phrase setup, into a new store.
   and its key stays under a device-only key (7a).
   - The real user gets back by turning the lock on (7c) and typing the real phrase or PIN at the lock screen,
     then finishes setup.
-  - The depth 7c creates on the way is removed later (decision 9).
+  - ~~The depth 7c creates on the way is removed later (decision 9).~~ *Superseded 2026-10-29: 7c creates no
+    depth, and there is no remove action (§1.3, decision 9).*
 
 ### 3.2 Probation and graduation
 
@@ -480,7 +483,8 @@ the two, which says no more than today's verifier scalar about whether there is 
 **Setup deadline. Decided 2026-10-19 by the owner (decision 10): required at the first unlock after the update,**
 with no "Later" (`decisions.md`, 2026-10-19).
 - There is no opt-in period, so setting up early marks no one (Rule 3).
-- After the update, no install keeps the PIN path beyond the probation week.
+- After the update, no install keeps the PIN path ~~beyond the probation week~~ once its reseal is verified
+  (2026-10-29: no probation week).
 - The cost: after the update, a lock user can't use the app until setup and its learning steps are done, even
   at a bad moment.
 - A decoy is no different (8a).
@@ -529,7 +533,7 @@ the phone's Contacts. This migration is where that closes:
 - What the references hold instead is open, needs a decision. It must not be anything that decrypts to the
   identifier outside the contact's own depth.
 - Not closed by it, each open, needs a decision: images taken before the migration, the old store until
-  graduation (§1.2), and the legacy prekey tags in older keychain images, which outlive an app deletion (Bug 170,
+  the reseal is verified (§1.2), and the legacy prekey tags in older keychain images, which outlive an app deletion (Bug 170,
   decision 19).
 
 **Register C1 comes first.** `Data.decrypt()` turns any failure into `nil`, and `String.decrypt()` into `""`.
@@ -668,7 +672,8 @@ weeks from a settled design to merged. Weeks below are build time at that pace.
 ### 7.1 Two release orders
 
 **A. One passphrase release.** Every data slice ships in one release. The reseal runs at phrase setup, into a
-new store, with the old store as Rule 4's way back (§1.2).
+new store, with the old store as Rule 4's way back (§1.2). *(2026-10-29: no way back; the old store goes once the
+reseal is verified.)*
 - One reseal, and no key escrowed anywhere.
 - Matches the owner's 2026-10-15 lean towards shipping all slices together (ROLLOUT_PLAN, release mechanics).
 - Stages 0 and 1 can ship earlier: stage 1 through Bug 92's export passphrase.
@@ -718,23 +723,29 @@ there and aren't repeated here.
 1. ~~**Adopt the 2026-10-15 storage design** (spec §2) as the shape to build.~~ **Decided 2026-10-29:** not
    adopted. Independent spaces instead (§1.5).
 2. ~~**Key slots,** or rows directly under `layerKey_D` (§1.1).~~ **Decided 2026-10-19:** direct derivation.
-3. ~~**Which release carries the work** (§7.1).~~ **Decided 2026-10-19:** the release after 2.0.0. Whether
-   the data slices ship together stays open (ROLLOUT_PLAN, release mechanics).
-4. ~~**Rule 4's way back** through the old store (§1.2).~~ **Decided 2026-10-19:** adopted, with a new store
-   file.
+3. ~~**Which release carries the work** (§7.1).~~ **Decided 2026-10-19:** the release after 2.0.0. ~~Whether
+   the data slices ship together stays open (ROLLOUT_PLAN, release mechanics).~~ **Decided 2026-10-29:** they ship
+   together, in one reseal (§7.1).
+4. ~~**Rule 4's way back** through the old store (§1.2).~~ ~~**Decided 2026-10-19:** adopted, with a new store
+   file.~~ **Superseded 2026-10-29:** no probation week and no way back. The reseal writes a new store file, and the
+   old store is deleted once the reseal is verified (§1.2, §3.2).
 5. ~~**Installs with no lock** (§1.4).~~ **Decided 2026-10-19:** migrate everyone, with an empty phrase for
    depth 0.
 6. **A test phone with no real data.** Which one? As of 2026-10-19 none is cleared: the iPhone 11 still holds real
    data. Stage 0's timing and every stage from 3 on wait for one.
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
-   - 7b: ~~lowering it at the real depth~~ **Decided:** refused while duress depths exist.
-   - 7c: ~~turning it back on~~ **Decided:** a new depth below, behaving like an ordinary lock-on; how is open.
+   - 7b: ~~lowering it at the real depth~~ ~~**Decided:** refused while duress depths exist.~~ **Superseded
+     2026-10-29:** allowed in every space and on every install, with one warning, the same everywhere.
+   - 7c: ~~turning it back on~~ ~~**Decided:** a new depth below, behaving like an ordinary lock-on; how is open.~~
+     **Superseded 2026-10-29:** no new depth. Lock-on reseals the current space under a new phrase, as an ordinary
+     install's lock-on does.
    - 7d: depths a coercer created. ~~Open~~ **Decided 2026-10-19:** dropped at setup, with the contacts they
-     created.
+     created. **Changed 2026-10-29:** at migration only; after it a coercer-created space is just another space.
 8. ~~**Phrase setup seen from a duress depth**, and from a depth with the gate lowered (§3.1).~~ **Decided
    2026-10-19:** a decoy's setup is real and the real depth finishes later (8a); a decoy with its lock off migrates
-   like an install with no lock (8b).
+   like an install with no lock (8b). **Changed 2026-10-29:** both kept, but the old store waits until every layer
+   has migrated; Rule 2 stands for the migration (§3.1).
 9. ~~**Removing a depth** (§5).~~ **Superseded 2026-10-29:** no remove action; Erase All Data erases the current
    space only (install-wide keys stay). ~~**Decided 2026-10-19:** any depth removes the depths below it, cascading;
    their data becomes unopenable and the contacts they created are deleted. How it shows across images stays
@@ -783,18 +794,18 @@ depends on or changes.
 | Item | Summary | Status | Here |
 |---|---|---|---|
 | Bug 37 | Re-enable PIN fails silently at a lowered gate with an unknown PIN | Closed (fixed) | §1.3: the fix has no phrase equivalent yet |
-| Bug 62 | `pinCollision` PIN oracle | Open | Gone with the old store at graduation (§3.2) |
+| Bug 62 | `pinCollision` PIN oracle | Open | Gone with the old store once the reseal is verified (§3.2) |
 | Bug 92 | Exported backup opens with the backup key alone; opt-in export passphrase unbuilt | Open, re-scoped 2026-09-24 | §6: shares the keyboard |
 | Bug 109 | Per-depth keys leave an authentication-failure tell | Closed moot, 2026-09-10; spec §2 (2026-10-15) argues an all-or-nothing row isn't this tell | §4, §5 |
 | Bug 119 | Vault key is device-level; one key opens every depth | Open | The whole plan |
-| Bug 120 | Write frequency across images shows the real depth | Open; can't be closed with per-depth keys against a surrendered phrase, needs a decision (2026-10-15) | §5 |
+| Bug 120 | Write frequency across images shows the real depth | Open in the register; recorded 2026-10-29 as a stated limit under independent spaces: a duress space protects against one image, not a series | §5 |
 | Bug 123 | Small sealed fields share one AAD | Closed, subsumed into 119 | Stage 3 (step 5) |
-| Bug 138 | A migration destroyed the only copy before saving the replacement | Fixed 2026-09-26 | §1.2: the old store survives until graduation |
+| Bug 138 | A migration destroyed the only copy before saving the replacement | Fixed 2026-09-26 | §1.2: the old store survives until the reseal is verified |
 | Bug 139 | Keys from an interrupted rotation never deleted | Fixed 2026-09-26 (wipe) | The reseal's rule: interruption leaves nothing |
 | Bug 141 | Depth-blind owner queue and watch rows | Fixed 2026-09-27; sealing per depth open | Stage 5 |
 | Bug 148 | A file opened from outside shows before the PIN screen | Fixed 2026-09-28 | A file arriving behind the lock must still wait, and with phrases it also has no key to open with |
 | Bug 162 | A trustee's piece count shows how many depths have a backup | On-screen count and manifest size fixed (PR #114); stored rows and piece dates open, needs a decision | Stage 5 |
-| Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; a new store file for the passphrase migration proposed, not decided | §1.2, stage 0 |
+| Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; for the passphrase migration, a new store file with no way back, and a downgrade after migration not supported (decision 18, 2026-10-29) | §1.2, stage 0 |
 | Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open, needs a decision | §6, decision 15 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
 | Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |

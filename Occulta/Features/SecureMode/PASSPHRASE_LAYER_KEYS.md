@@ -113,7 +113,7 @@ extract from the device, full stop). Losing either half is enough to prevent der
 needs *both* the physical device (or its SE, which cannot leave it) *and* the phrase.
 
 **Found 2026-10-21 (`Docs/Features/Secure Mode/bugs.md` Bug 171): the SE half above is not device-binding.
-Fixed for the keys that exist today in 2.0.0 (Stages 1 to 7). For the layer keys here it is open, needs a decision (D2).** `ECDH(SE_priv, G)` is `d·G`, which is the Enclave key's public point Q, so
+Fixed for the keys that exist today in 2.0.0 (Stages 1 to 7). For the layer keys here it was open (D2); decided 2026-10-29: they take the `ECDH(d, P)` term.** `ECDH(SE_priv, G)` is `d·G`, which is the Enclave key's public point Q, so
 the half is the X9.63 KDF of x(Q). Anyone with Q computes it off the device, with no Enclave call and no
 biometric. Tested on the Simulator for the keys the app derives this way today, and on an iPhone 15 Pro
 for a key with the vault's biometric-or-passcode access control: Q came back with no authentication,
@@ -160,13 +160,13 @@ unless the SEP itself is broken. At 90 bits this is margin rather than the thing
 is exactly the margin that matters if the SEP does fall, and it costs one SE call per unlock. (`s_D` outside
 the P-256 scalar range fails `rawRepresentation:`; probability ~2⁻³², handle by re-deriving with a counter.)
 
-**This fix does not do what it says. Open, needs a decision (Bug 171, 2026-10-21; D2 below).** With `Q_D = s_D·G`,
+**This fix does not do what it says. ~~Open, needs a decision~~ Decided 2026-10-29: the requirement is dropped (Bug 171, 2026-10-21; D2 below).** With `Q_D = s_D·G`,
 `ECDH(SE_priv, Q_D) = s_D·d·G = s_D·Q`. An attacker holding the guess `s_D` and the public Q computes that
 in software, so the Enclave takes no part in a guess. Tested on the Simulator: Enclave `ECDH(d, s·G)` equals
 software `ECDH(s, Q)`. The requirement stands; this construction doesn't meet it. A peer point whose
 discrete log the guess doesn't reveal would (Bug 171, "Fix").
 
-**What Bug 171's fix changes for this design, and what it recommends. Recommended; open, needs a decision (D2, not decided).**
+**What Bug 171's fix changes for this design, and what it recommends. Recommended 2026-10-21; decided 2026-10-29 (D2).**
 - The ECDH term that exists today is now `ECDH(SE_priv, P)` with P a compiled-in point nobody knows the discrete log of
   (`Manager.Key.enclaveBoundKey(_:)`), so the "device-binding" half is real: the key needs this phone's Enclave, once per
   derivation, plus a Keychain secret per access tier and, on iOS 26+, an Enclave ML-KEM secret. The layer keys can take that
@@ -200,7 +200,7 @@ layerKey_D = HKDF-SHA256(IKM: s ‖ ECDH(SE_priv, Q), …) — one Enclave key p
 Each attempt is one PBKDF2 run and one Enclave call, then a trial open of the 32 header slots (§2,
 2026-10-15), which is cheap. *(Superseded 2026-10-29: no header slots. The KDF input is the phrase's word
 indices, not text. Unlock derives one key and trial-decrypts the contact and group records whole, so the
-"5 bits off 90" cost below, which came from testing each guess against 32 slots, does not arise.)* *The Enclave call buys nothing per guess as written: open, needs a decision (Bug 171, D2); with the fix it is one real call per unlock.* The cost: each guess is tested against every depth at once, about 5 bits off
+"5 bits off 90" cost below, which came from testing each guess against 32 slots, does not arise.)* *The Enclave call buys nothing per guess as written, which D2 accepted on 2026-10-29 (Bug 171); with the fix it is one real call per unlock.* The cost: each guess is tested against every depth at once, about 5 bits off
 90 at 32 slots. The salt only has to be unique per install, which is what defeats precomputation.
 
 **Proposed 2026-10-19: key slots** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1). **Not adopted, decided

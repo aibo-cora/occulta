@@ -81,7 +81,7 @@ Enclave exploit, which at this level has to be assumed.
 
 **Ships with 1, not after it.** Adding it later changes the key, which forces a second full reseal.
 
-**Found 2026-10-21 (`bugs.md` Bug 171), and what the fix changes. Recommended; open, needs a decision (D2, not decided).**
+**Found 2026-10-21 (`bugs.md` Bug 171), and what the fix changes. Recommended; decided 2026-10-29 (D2, above).**
 The construction this step names does not meet it: `ECDH(SE_priv, s·G)` equals `ECDH(s, Q)`, which an attacker computes in
 software, so the Enclave takes no part in a guess. The fix that landed in 2.0.0 gives the keys that exist today an Enclave term
 that is real (`ECDH(SE_priv, P)`, P a point nobody knows the discrete log of) plus a Keychain secret per access tier and, on
