@@ -9,6 +9,7 @@
 
 import Testing
 import Foundation
+import CryptoKit
 import OccultaCore
 
 @Suite("OccultaCore public API — Shamir")
@@ -61,5 +62,41 @@ struct PostQuantumProviderPublicAPITests {
 
         #expect(sent.sharedSecret.count == 32)
         #expect(received == sent.sharedSecret)
+    }
+}
+
+@Suite("OccultaCore public API — ML-KEM key check")
+struct MLKEMKeyCheckPublicAPITests {
+
+    /// An all-zero key with coefficient 0 (bytes 0 and the low nibble of 1) set to `value`.
+    private func key(firstCoefficient value: UInt16) -> Data {
+        var bytes = [UInt8](repeating: 0, count: 1_568)
+        bytes[0] = UInt8(value & 0xFF)
+        bytes[1] = UInt8(value >> 8)
+        return Data(bytes)
+    }
+
+    @available(iOS 26, *)
+    @Test("A key CryptoKit generated passes",
+          .enabled(if: ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))))
+    func realKeyPasses() throws {
+        #expect(MLKEMKeyCheck.isValidEncapsulationKey1024(try MLKEM1024.PrivateKey().publicKey.rawRepresentation))
+    }
+
+    @Test("A key of the wrong length fails")
+    func wrongLengthFails() {
+        #expect(!MLKEMKeyCheck.isValidEncapsulationKey1024(Data(count: 1_567)))
+        #expect(!MLKEMKeyCheck.isValidEncapsulationKey1024(Data(count: 1_569)))
+    }
+
+    @Test("A key of all 0xFF fails")
+    func allOnesFails() {
+        #expect(!MLKEMKeyCheck.isValidEncapsulationKey1024(Data(repeating: 0xFF, count: 1_568)))
+    }
+
+    @Test("A key with one coefficient equal to q = 3329 fails, and 3328 in its place passes")
+    func coefficientAtModulusFails() {
+        #expect(!MLKEMKeyCheck.isValidEncapsulationKey1024(self.key(firstCoefficient: 3_329)))
+        #expect(MLKEMKeyCheck.isValidEncapsulationKey1024(self.key(firstCoefficient: 3_328)))
     }
 }
