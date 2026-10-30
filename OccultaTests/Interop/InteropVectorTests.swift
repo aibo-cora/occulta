@@ -69,6 +69,23 @@ struct InteropVectorTests {
         #expect(recipientSide == (try vector.compute()), "\(vector.name): the two sides disagree")
     }
 
+    /// The `ltKey` and `diceware` vectors run on a software identity key, because `Manager.Key` keeps its identity
+    /// in the Enclave. This ties the two together: an Enclave identity and the vector's software peer derive the
+    /// same key with each other, so what the vectors pin is what `Manager.Key` produces.
+    @Test("The Enclave identity derives the same long-term key as the software one",
+          .enabled(if: TestSupport.secureEnclaveAvailable()),
+          arguments: try loadVectors().filter { $0.kind == "ltKey" || $0.kind == "diceware" })
+    func enclaveIdentityAgrees(_ vector: Vector) throws {
+        let tag = UUID().uuidString
+        let enclave = Manager.Key(testingTag: tag)
+        defer { enclave.delete(using: tag) }
+        let enclaveSide = try vector.longTermKey(enclave, peerPublicKey: try Vector.publicMaterial(vector.peerScalar), fromPeer: false)
+        let softwareSide = try vector.longTermKey(
+            Vector.softwareIdentity(vector.peerScalar), peerPublicKey: try enclave.retrieveIdentity(), fromPeer: true
+        )
+        #expect(enclaveSide == softwareSide, "\(vector.name): Manager.Key and the software copy disagree")
+    }
+
     @Test("Vector names are unique")
     func namesAreUnique() throws {
         let names = try loadVectors().map(\.name)
@@ -150,6 +167,14 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let recipientScalar: String?
     let encapsulatedSecret: String?
     let decapsulatedSecret: String?
+
+    // ltKey, diceware, cardLongTermKey (with encapsulatedSecret and decapsulatedSecret in the hybrid forms)
+    let ownScalar: String?
+    let peerScalar: String?
+
+    // diceware
+    let ourNonce: String?
+    let peerNonce: String?
 
     // gcm, streamBody
     let key: String?
@@ -367,6 +392,39 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                 key = Manager.Key().createSharedSecret(ephemeralPrivateKey: ephemeral, recipientMaterial: recipient)
             }
             return try #require(key).withUnsafeBytes { Data($0) }
+
+        case "ltKey", "diceware":
+            // The long-term identity derivations. `Manager.Key` holds its identity in the Enclave, so these run on
+            // TestKeyManager's software identity, and `enclaveIdentityAgrees` checks `Manager.Key` lands on the same
+            // bytes. Both phones derive the key, each with itself as "own": the two must agree.
+            let key = try self.longTermKey(
+                Self.softwareIdentity(self.ownScalar), peerPublicKey: try Self.publicMaterial(self.peerScalar), fromPeer: false
+            )
+            let otherSide = try self.longTermKey(
+                Self.softwareIdentity(self.peerScalar), peerPublicKey: try Self.publicMaterial(self.ownScalar), fromPeer: true
+            )
+            #expect(key == otherSide, "\(self.name): the two sides disagree")
+            return key
+
+        case "cardLongTermKey":
+            // The long-term slot key between two card agreement keys (SPEC §3), from production's own ECDH step.
+            let ownPublicKey = try Self.publicMaterial(self.ownScalar), peerPublicKey = try Self.publicMaterial(self.peerScalar)
+            let encapsulated = try #require(self.encapsulatedSecret)
+            let key = try #require(Manager.Crypto.cardLongTermKey(
+                ecdhOutput:      try Manager.Crypto.ephemeralECDHOutput(try Self.privateKey(self.ownScalar), peerPublicKey: peerPublicKey),
+                ownPublicKey:    ownPublicKey,
+                peerPublicKey:   peerPublicKey,
+                quantumMaterial: try self.quantumMaterial(encapsulated)
+            ))
+            let otherSide = try #require(Manager.Crypto.cardLongTermKey(
+                ecdhOutput:      try Manager.Crypto.ephemeralECDHOutput(try Self.privateKey(self.peerScalar), peerPublicKey: ownPublicKey),
+                ownPublicKey:    peerPublicKey,
+                peerPublicKey:   ownPublicKey,
+                quantumMaterial: try self.quantumMaterial(encapsulated, swapped: true)
+            ))
+            let bytes = key.withUnsafeBytes { Data($0) }
+            #expect(bytes == otherSide.withUnsafeBytes { Data($0) }, "\(self.name): the two sides disagree")
+            return bytes
 
         case "gcm":
             // AES-GCM is standard, so CryptoKit seals with a fixed nonce; what the vector pins is
@@ -655,12 +713,47 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         try #require(UUID(uuidString: string ?? ""))
     }
 
-    private func quantumMaterial(_ encapsulated: String) throws -> QuantumKeyMaterial {
-        QuantumKeyMaterial(
-            encapsulatedSecret: try Self.bytes(encapsulated),
-            decapsulatedSecret: try Self.bytes(self.decapsulatedSecret),
+    /// `swapped` is the other phone's view: what one side encapsulated, the other decapsulated.
+    private func quantumMaterial(_ encapsulated: String, swapped: Bool = false) throws -> QuantumKeyMaterial {
+        let encapsulated = try Self.bytes(encapsulated), decapsulated = try Self.bytes(self.decapsulatedSecret)
+        return QuantumKeyMaterial(
+            encapsulatedSecret: swapped ? decapsulated : encapsulated,
+            decapsulatedSecret: swapped ? encapsulated : decapsulated,
             ourCiphertext:      Data(),
             peerCiphertext:     Data()
+        )
+    }
+
+    /// The `ltKey` or `diceware` key `manager`'s identity derives with `peerPublicKey`. `fromPeer` takes the other
+    /// phone's view, with the ML-KEM secrets and the nonces the other way round.
+    @MainActor
+    func longTermKey(_ manager: any KeyManagerProtocol, peerPublicKey: Data, fromPeer: Bool) throws -> Data {
+        let key: SymmetricKey?
+        if self.kind == "diceware" {
+            let ours = try Self.bytes(self.ourNonce), theirs = try Self.bytes(self.peerNonce)
+            key = manager.createDicewareKey(
+                peerP256Material: peerPublicKey,
+                quantumMaterial:  try self.quantumMaterial(try #require(self.encapsulatedSecret), swapped: fromPeer),
+                ourNonce:         fromPeer ? theirs : ours,
+                peerNonce:        fromPeer ? ours : theirs
+            )
+        } else if let encapsulated = self.encapsulatedSecret {
+            key = manager.createHybridSharedSecret(
+                peerP256Material: peerPublicKey, quantumMaterial: try self.quantumMaterial(encapsulated, swapped: fromPeer)
+            )
+        } else {
+            key = manager.createSharedSecret(using: peerPublicKey)
+        }
+        return try #require(key).withUnsafeBytes { Data($0) }
+    }
+
+    /// A TestKeyManager whose identity key is `scalar`. Only the identity takes part in a transport key, so the
+    /// other four keys are the same scalar.
+    @MainActor
+    static func softwareIdentity(_ scalar: String?) throws -> TestKeyManager {
+        TestKeyManager(
+            scalars: Array(repeating: try Self.bytes(scalar), count: 5),
+            tierSecretU: nil, tierSecretB: nil, tierPQRecordU: nil, tierPQRecordB: nil
         )
     }
 
