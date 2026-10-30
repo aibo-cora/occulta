@@ -97,13 +97,15 @@ public enum DepthCodec {
     /// security decisions belonging to the call sites, not to the format. Bug 87 is what
     /// happens when one of them resolves an unknown in the permissive direction.
     public static func decode(_ plain: Data) -> Int? {
-        guard plain.count == 2, plain[0] == Self.tag else {
-            return try? JSONDecoder().decode(Int.self, from: plain)   // legacy row
+        // Indexed from `startIndex`: a `Data` slice doesn't begin at 0, and `plain[0]` on one traps.
+        let first = plain.startIndex
+        guard plain.count == 2, plain[first] == Self.tag else {
+            return try? BoundedJSON.decode(Int.self, from: plain)   // legacy row
         }
-        switch plain[1] {
+        switch plain[first + 1] {
         case Self.alwaysVisible: return Int.max
         case Self.notATrustee:   return -1
-        default:                 return Int(plain[1])
+        default:                 return Int(plain[first + 1])
         }
     }
 }

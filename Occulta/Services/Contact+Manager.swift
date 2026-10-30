@@ -1934,7 +1934,7 @@ extension ContactManager {
         if version == .v4 {
             return try WireHandle.decode(payload: data)
         } else {
-            return try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: data)
+            return try BoundedJSON.decode(OccultaBundle.SealedPayload.self, from: data)
         }
     }
 

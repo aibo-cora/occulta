@@ -411,7 +411,7 @@ extension Manager.Crypto {
         guard
             let innerKey,
             let plain = try? CardBootstrap.openInner(layer.inner, mlkemCiphertext: layer.mlkemCiphertext, innerKey: innerKey, blind: blind),
-            let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+            let payload = try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
         else { return nil }
         return (payload, true, derived)
     }
@@ -421,6 +421,6 @@ extension Manager.Crypto {
             let box = try? AES.GCM.SealedBox(combined: wrapped),
             let plain = try? AES.GCM.open(box, using: key, authenticating: blind)
         else { return nil }
-        return try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+        return try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
     }
 }

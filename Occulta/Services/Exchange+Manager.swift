@@ -444,9 +444,11 @@ class ExchangeManager: NSObject {
         }
     }
 
-    private func handleReceivedData(_ data: Data, from peerID: MCPeerID) {
+    /// Not `private`, like `multipeerSession` above: the decoder-fuzzing tests call it directly, on the main thread, since the
+    /// delegate's `session(_:didReceive:fromPeer:)` only hops to the main queue and then calls this.
+    func handleReceivedData(_ data: Data, from peerID: MCPeerID) {
         do {
-            let decoded = try JSONDecoder().decode(Exchange.self, from: data)
+            let decoded = try BoundedJSON.decode(Exchange.self, from: data)
 
             // MARK: Meeting-check proof (before discovery: it has no identity and no ciphertext either)
 

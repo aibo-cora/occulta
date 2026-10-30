@@ -76,6 +76,9 @@ extension IdentityChallenge {
         ///
         /// - Throws: `PayloadError.invalidLength` if `data.count ≠ 72`.
         init(from data: Data) throws {
+            // Rebased: the ranges below are absolute, and a `Data` slice doesn't start at 0, so on one they trap or
+            // read the wrong bytes. A no-op for a `Data` that starts at 0, which is every one the app passes.
+            let data = Data(data)
             guard data.count == Self.encodedLength else {
                 throw IdentityChallenge.PayloadError.invalidLength(
                     expected: Self.encodedLength,
@@ -131,6 +134,8 @@ extension IdentityChallenge {
         ///
         /// - Throws: `PayloadError.dataTooShort` if `data.count < 33`.
         init(from data: Data) throws {
+            // Rebased, for the reason `ChallengePayload.init(from:)` gives.
+            let data = Data(data)
             guard data.count >= Self.noncePrefixLength + 1 else {
                 throw IdentityChallenge.PayloadError.dataTooShort
             }
@@ -159,6 +164,7 @@ extension IdentityChallenge {
                 actual: data.count
             )
         }
-        return data.withUnsafeBytes { $0.load(as: UInt64.self) }.bigEndian
+        // Not `load(as:)`: it traps on a pointer that isn't 8-aligned, which the start of a `Data` slice needn't be.
+        return data.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
     }
 }
