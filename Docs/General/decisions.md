@@ -1275,7 +1275,7 @@ the share staging key.
 
 **Consequences:**
 - Deleting the app still leaves per-install keys and their creation dates, which show the app was set up and when.
-- Still open in Bug 170: the legacy keychain prekeys, whose tags name contacts, and the shard custody key (stage 5).
+- Open, needs a decision (Bug 170): the legacy keychain prekeys, whose tags name contacts, and the shard custody key (stage 5).
 - The erase fix can ship in 2.0.0. *2026-10-19:* built and merged in PR #118, with #119's sweep of unread
   `inbound/` handoffs.
 
@@ -1302,7 +1302,7 @@ the share staging key.
 - **D8. Vault rewrap timing.** At the first vault unlock. The window until then, with the per-entry keys still under the legacy vault key, is open, needs a decision.
 - **D9. Removing the v1 read path.** Keep it, migration-only: App Store updates jump straight to the newest version, so removing it loses data for installs that skipped versions.
 
-**Also decided by the user, 2026-10-21:** `Contact.Profile.identifier` stays byte-identical on every row, along with every record that stores it as a value. For contacts imported from the address book its plaintext is the iOS Contacts entry ID, so a holder of Q can still link each imported contact to its address-book entry until the passphrase migration reseals each contact as one record. Open, needs a decision.
+**Also decided by the user, 2026-10-21:** `Contact.Profile.identifier` stays byte-identical on every row, along with every record that stores it as a value. For contacts imported from the address book its plaintext is the iOS Contacts entry ID, so a holder of Q can still link each imported contact to its address-book entry until the passphrase migration reseals each contact as one record. Open, needs a decision. The migration's part is tracked in `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §4, stages 4 and 5 and decision 20.
 
 **Stage 2 rule (the plan, at the Stage 2a review; recommended; open, needs a decision): the keys follow the epoch.** The three tier U accessors return the Enclave-bound derivation only once `AppLayerConfig.keyEpoch` exists, and the legacy one before, decided once per process by the launch sequence after the reseal. The alternative, switching the keys as soon as the code ships, writes over data it can't read whenever the pass aborts (a background launch with the device locked, a missing secret, a failed read-back): prekey records, restore slots and `ReconstructShard` rows are the known cases. The cost is that an aborted pass leaves the session on the legacy keys until the next launch.
 
