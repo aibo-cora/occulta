@@ -490,7 +490,7 @@ more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ agains
   - **15d.** Erase All Data deletes the share staging key, which stays a keychain item. This doesn't depend on the
     passphrase work. Built and merged 2026-10-19 (PR #118, with #119), so it ships in 2.0.0.
 
-  So per-install keys keep outliving an app deletion, with their creation dates. Still open in Bug 170: the
+  So per-install keys keep outliving an app deletion, with their creation dates. Open, needs a decision (Bug 170): the
   legacy keychain prekeys, and the shard custody key, which waits on stage 5.
 - **Device Migration** (`Docs/Features/Device Migration/FINDINGS.md`, exploratory) means a new Enclave, so
   phrases are set up again on the new phone. Out of scope here.
@@ -632,7 +632,7 @@ depends on or changes.
 | Bug 148 | A file opened from outside shows before the PIN screen | Fixed 2026-09-28 | A file arriving behind the lock must still wait, and with phrases it also has no key to open with |
 | Bug 162 | A trustee's piece count shows how many depths have a backup | On-screen count and manifest size fixed (PR #114); stored rows and piece dates open, needs a decision | Stage 5 |
 | Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; a new store file for the passphrase migration proposed, not decided | §1.2, stage 0 |
-| Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open | §6, decision 15 |
+| Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open, needs a decision | §6, decision 15 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
 | Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |
 | Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |
