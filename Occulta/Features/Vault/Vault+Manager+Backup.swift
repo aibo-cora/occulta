@@ -255,7 +255,7 @@ extension VaultManager {
         }
         defer { json.resetBytes(in: json.startIndex..<json.endIndex) }
 
-        var backup = try JSONDecoder().decode(VaultBackup.self, from: json)
+        var backup = try BoundedJSON.decode(VaultBackup.self, from: json)
 
         // Checked before zeroing, not inside a loop over the entries: the loop would hold its own
         // reference to the array, so zeroing from inside it would zero a copy.
