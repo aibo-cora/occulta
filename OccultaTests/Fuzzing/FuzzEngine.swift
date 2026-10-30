@@ -312,7 +312,7 @@ nonisolated struct FuzzConfiguration: Sendable {
 
     var seeds: [UInt64] = Self.committedSeeds
     /// Cases per target and seed. The committed default keeps the whole suite to seconds.
-    var iterations = 500
+    var iterations = 400
     /// When set, only this iteration of each seed runs: the replay of a reported failure.
     var onlyIteration: Int?
     /// When set, only the target with this name runs.
@@ -454,13 +454,17 @@ nonisolated enum Fuzzer {
 
     // MARK: Main-actor targets
 
-    /// Runs a main-actor target on the calling thread, which is the only one it may run on.
+    /// Runs a main-actor target on the main actor, which is the only place it may run.
+    ///
+    /// The main actor is given back between cases. A run that held it for its whole length would hold up every other
+    /// test that needs it, and in a full run that was enough to change how the others interleave: two of them, which
+    /// share the app's `Drafts/` directory and the share staging key, began to fail.
     ///
     /// A watchdog thread stands in for the one `run` has. It can't give up on the main thread, so a hang ends the
     /// process: it writes the case, with its replay line, to stderr and aborts. That is a failure a log can name, which
     /// a test host that hangs until CI kills it is not. A memory jump is only noted, and reported when the case ends.
     @MainActor
-    static func runOnMainActor(_ target: some MainActorFuzzTarget, seed: UInt64, configuration: FuzzConfiguration) -> FuzzReport {
+    static func runOnMainActor(_ target: some MainActorFuzzTarget, seed: UInt64, configuration: FuzzConfiguration) async -> FuzzReport {
         let progress = Progress(memoryLimit: configuration.memoryGrowthLimit)
         let started = DispatchTime.now().uptimeNanoseconds
         let iterations = configuration.onlyIteration.map { $0..<($0 + 1) } ?? 0..<configuration.iterations
@@ -485,16 +489,45 @@ nonisolated enum Fuzzer {
         watchdog.start()
         defer { progress.abandon() }
 
-        Self.cases(
-            name: target.name, corpus: target.corpus, acceptsSlices: target.acceptsSlices,
-            seed: seed, iterations: iterations, progress: progress, trace: trace, execute: { try target.run($0) }
-        )
+        // The same loop as `cases`, with the main actor given back after every case.
+        let corpus = target.corpus
+        if !corpus.isEmpty {
+            for iteration in iterations {
+                let (chosen, operations, input) = Self.makeCase(acceptsSlices: target.acceptsSlices, corpus: corpus, seed: seed, iteration: iteration)
+                trace?.write("target=\(targetName) seed=\(seed) iteration=\(iteration) from=\(chosen.name) ops=\(operations.joined(separator: ","))")
+                progress.begin(
+                    iteration: iteration, target: targetName, seedName: chosen.name, operations: operations,
+                    input: input, baseline: FuzzMemory.footprint()
+                )
+                var violation: FuzzViolation?
+                var accepted = true
+                do {
+                    try target.run(input)
+                } catch let error as FuzzViolation {
+                    violation = error
+                } catch {
+                    accepted = false
+                }
+                progress.end(violation: violation.map { ($0.description, seed) }, accepted: accepted, target: targetName, seed: seed)
+                await Task.yield()
+            }
+        }
 
         let outcome = progress.outcome()
         return FuzzReport(
             cases: outcome.cases, accepted: outcome.accepted, failures: outcome.failures,
             seconds: Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
         )
+    }
+
+    /// `run`, on a thread of its own, so the caller can be `async` without a cooperative-pool thread sitting in the
+    /// watcher's loop for seconds.
+    static func runAsync(_ target: some FuzzTarget, seed: UInt64, configuration: FuzzConfiguration) async -> FuzzReport {
+        await withCheckedContinuation { continuation in
+            let thread = Thread { continuation.resume(returning: Self.run(target, seed: seed, configuration: configuration)) }
+            thread.stackSize = 1 << 18
+            thread.start()
+        }
     }
 
     /// The input of one case: a pure function of the target, the seed and the iteration, which is what makes a

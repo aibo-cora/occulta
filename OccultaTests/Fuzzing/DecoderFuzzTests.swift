@@ -50,9 +50,9 @@ struct DecoderFuzzTests {
     // MARK: - The committed fuzz
 
     @Test("OccultaCore and OccultaFormats decoders survive mutated input", arguments: DecoderFuzzTests.configuration.seeds)
-    func formats(seed: UInt64) {
+    func formats(seed: UInt64) async {
         for target in FormatFuzzTargets.all where Self.selected(target.name) {
-            let report = Fuzzer.run(target, seed: seed, configuration: Self.configuration)
+            let report = await Fuzzer.runAsync(target, seed: seed, configuration: Self.configuration)
             Self.record(report, for: target.name, seed: seed)
             #expect(report.cases > 0, "\(target.name) ran no cases")
         }
@@ -60,9 +60,9 @@ struct DecoderFuzzTests {
 
     @Test("The app's decoders and sealed-field codecs survive mutated input", arguments: DecoderFuzzTests.configuration.seeds)
     @MainActor
-    func app(seed: UInt64) {
+    func app(seed: UInt64) async {
         for target in AppFuzzTargets.all where Self.selected(target.name) {
-            let report = Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.configuration)
+            let report = await Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.configuration)
             Self.record(report, for: target.name, seed: seed)
             #expect(report.cases > 0, "\(target.name) ran no cases")
         }
@@ -73,10 +73,10 @@ struct DecoderFuzzTests {
 
     @Test("A shared file, however malformed, is read or removed", arguments: DecoderFuzzTests.configuration.seeds)
     @MainActor
-    func shareExtension(seed: UInt64) {
+    func shareExtension(seed: UInt64) async {
         let targets: [any MainActorFuzzTarget] = [ShareSessionTarget(), ShareManifestSessionTarget()]
         for target in targets where Self.selected(target.name) {
-            let report = Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.stateful)
+            let report = await Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.stateful)
             Self.record(report, for: target.name, seed: seed)
         }
     }
@@ -87,20 +87,20 @@ struct DecoderFuzzTests {
         let target = ExchangeSessionTarget()
         guard Self.selected(target.name) else { return }
         await target.pin()
-        let report = Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.stateful)
+        let report = await Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.stateful)
         Self.record(report, for: target.name, seed: seed)
     }
 
     @Test("A streamed .occ is refused without a trace", .ambientTestKeyManager, arguments: DecoderFuzzTests.configuration.seeds)
     @MainActor
-    func streamedReceive(seed: UInt64) throws {
+    func streamedReceive(seed: UInt64) async throws {
         let target = try StreamedReceiveTarget()
         guard Self.selected(target.name) else { return }
         // The pristine seeds open, or the run would only be testing refusals.
         for seed in target.corpus where seed.isValid {
             try target.run(seed.bytes)
         }
-        let report = Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.stateful)
+        let report = await Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.stateful)
         Self.record(report, for: target.name, seed: seed)
     }
 
