@@ -28,7 +28,8 @@ applies and logged in `decisions.md`.
   guess, which its construction doesn't meet, and keep the `ECDH(d, P)` device-binding term (spec §1; open there);
 - 17, the version number of the release after 2.0.0;
 - 18, what a newer build does with a store an older build wrote to;
-- 19, Bug 170's leftovers: the legacy keychain prekeys and the shard custody key.
+- 19, Bug 170's leftovers: the legacy keychain prekeys and the shard custody key;
+- 20, what the identifier's references hold once the identifier moves into the contact's blob.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -410,6 +411,24 @@ keys.
 **What that means for the call sites.** Most field-level calls on contacts become one blob decode. The 175
 sites are the scope to sweep, together with requirement 5's "not swept yet" list.
 
+**`Contact.Profile.identifier` is a reference, not only a field** (`bugs.md` Bug 171, "What stays open" item 4;
+`decisions.md`, 2026-10-21). Its base64 ciphertext is stored as a value in `Group` member slots,
+`Draft.encryptedRecipientID`, the custody and shard payloads and the legacy keychain prekey tags
+`prekey.<identifier>.<uuid>`, and hashed into `TrusteeTag`
+([KeyReseal+Inventory.swift](../../Occulta/Services/KeyReseal+Inventory.swift), `Profile.identifier`). Bug 171's
+reseal left it and every copy byte-identical under the legacy local DB key, which a holder of Q can compute. For
+contacts imported from the address book its plaintext is the iOS Contacts entry ID, so each one links to a card in
+the phone's Contacts. This migration is where that closes:
+- Stage 4 moves the identifier into the contact's blob and rewrites the group slots and drafts that refer to it,
+  in the same migration.
+- Stage 5 does the same for the custody and shard payloads and `TrusteeTag`. Whether a changed `TrusteeTag` still
+  matches what a trustee holds needs checking first.
+- What the references hold instead is open, needs a decision. It must not be anything that decrypts to the
+  identifier outside the contact's own depth.
+- Not closed by it, each open, needs a decision: images taken before the migration, the old store until
+  graduation (§1.2), and the legacy prekey tags in older keychain images, which outlive an app deletion (Bug 170,
+  decision 19).
+
 **Register C1 comes first.** `Data.decrypt()` turns any failure into `nil`, and `String.decrypt()` into `""`.
 That is how Bugs 75–78 and 80 became silent loss. The reseal's reads must fail loudly before it ships.
 
@@ -548,8 +567,8 @@ needs a decision.
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8, plus the spec's own open items: padding range, blob sizes, depth creation across images, the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, headers, chain, shared key; vault into the new store | Spec §1 and §2 (2026-10-15); row AAD (step 5) | 2–3 |
-| 4 | Contacts into the new store | One padded blob per contact; groups per depth; origin lists; padding rows; stamps dropped; prekey blobs (D9); the ~175 sites in §4 | 4–7 |
-| 5 | Remaining records | Backup keys, custody shards, restore records; the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
+| 4 | Contacts into the new store | One padded blob per contact; groups per depth; origin lists; padding rows; stamps dropped; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
+| 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
 | 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the old-PIN fallback (§1.2); the coercion gate without absolute depths (§1.3); adding and removing depths; graduation | 2.5–4 |
 | 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several depths | 1, plus ~3 calendar weeks: the probation week and a 7-day phased release |
 
@@ -609,6 +628,9 @@ there and aren't repeated here.
 19. **Bug 170's leftovers** (added 2026-10-24; §6, `bugs.md` Bug 170): the legacy keychain prekeys, whose tags name
     contacts and outlive an app deletion until they retire, and the shard custody key, which waits on ROLLOUT_PLAN
     stage 4.
+20. **What the identifier's references hold** (added 2026-10-30; §4, `bugs.md` Bug 171 item 4) once
+    `Contact.Profile.identifier` moves into the contact's blob: group slots, drafts, custody and shard payloads and
+    `TrusteeTag` hold its legacy ciphertext today, which a holder of Q can decrypt.
 
 ---
 
