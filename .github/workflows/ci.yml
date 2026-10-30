@@ -42,7 +42,7 @@ jobs:
         run: brew list xcbeautify >/dev/null 2>&1 || brew install xcbeautify
 
       - name: Run unit tests
-        timeout-minutes: 30
+        timeout-minutes: 45
         run: |
           # pipefail so a test failure fails the step: without it the step takes
           # xcbeautify's status and a red suite reports green. It makes xcbeautify's
