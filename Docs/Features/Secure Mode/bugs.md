@@ -10537,6 +10537,9 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   guidance (step 16) says so. The append-only log stays a possible later release, not planned.
 - **Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
   grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+- **Also open, needs a decision (2026-10-31):** a write that reseals all of one space's rows at once (a rekey,
+  removing a space, a migration batch) shows across images which rows make up that space, with no phrase
+  (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25).
 - **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
 
 ---

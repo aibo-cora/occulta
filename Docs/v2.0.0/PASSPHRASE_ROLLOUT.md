@@ -45,7 +45,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 20, what the identifier's references hold once the identifier moves into the contact's blob;
 - 21, how many noise rows there are, and when they are written;
 - 22, the table only grows, and unlock pays for every row ever written;
-- 23, SwiftData's own columns and history tell shredded rows from the rest and log every write (Bug 190).
+- 23, SwiftData's own columns and history tell shredded rows from the rest and log every write (Bug 190);
+- 25, any write that reseals all of one space's rows at once groups them across images.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -713,7 +714,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 |---|---|---|---|
 | 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); SwiftData's columns and history (§8, 23); the model sweep for requirement 5 | 1–2 |
+| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); SwiftData's columns and history (§8, 23); whole-space reseals (§8, 25); the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
 | 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
@@ -838,6 +839,17 @@ there and aren't repeated here.
       demand (its 2026-10-23 case A).
     - **It may be forced:** the duress space holds neither the sender's public key nor its prekey blobs (D9), so
       it may have no way to open the bundle at all. Not checked against the long-term slot's derivation.
+25. **A write that reseals all of one space's rows at once groups them** (added 2026-10-31; §1.1, §1.5, Bug 120).
+    Rows that change together across two images belong together. With no phrase, an examiner gets which rows make
+    up a space and how many it has, which §1.5's "no space tag" is meant to hide. Raised by the owner while ruling
+    out a field inside the blob that every unlock changes, which would do this on every use; that idea is dropped.
+    The design already has writes of this shape, each open, needs a decision:
+    - a rekey, which §1.1 says regenerating an exposed phrase and graduation each need;
+    - removing a space, which shreds all its rows in one pass;
+    - the migration, if each space's rows are written as one batch (§8, 23 on `Z_PK`).
+
+    Spreading such a write over time, or doing it together with writes to other rows, would blur the group.
+    Neither is designed.
 
 ---
 
