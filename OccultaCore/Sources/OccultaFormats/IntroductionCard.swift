@@ -23,6 +23,7 @@
 
 import Foundation
 import CryptoKit
+import OccultaCore
 
 /// A card as it travels: the issuer's card keys, an expiry and a signature by the card signing key.
 public struct IntroductionCard: Equatable, Sendable {

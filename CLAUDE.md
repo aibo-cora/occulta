@@ -72,13 +72,16 @@ BoringSSL bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
 
 The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
 holds the code being extracted for reuse in two modules. `OccultaCore` is the API other apps can
-use: `ShamirSecretSharing`, `PostQuantumProvider` and `TransportKeyDerivation` (the one HKDF every
-transport key goes through; the caller passes the label, Occulta its `SaltInfo` ones). `OccultaFormats` is Occulta's own wire and
-at-rest formats (`OccultaBundle`, `WireHandle`, `DepthCodec`, `SignedAttribute`,
-`IdentityChallengeEnvelope`, `Basket`/`File`), for the app only: they carry Occulta-identifying
-constants that are wire format, such as the `OCCB` magic. The package must stay dependency-free:
-its `Package.swift` declares none, and adding one is the same supply-chain change as adding it to
-the app. It is nonisolated by default and builds in Swift 6 mode, unlike the app's `MainActor`.
+use: `ShamirSecretSharing`, `PostQuantumProvider`, `MLKEMKeyCheck` and `TransportKeyDerivation`
+(the one HKDF every transport key goes through; the caller passes the label, Occulta its `SaltInfo`
+ones). `OccultaFormats` is Occulta's own wire and at-rest formats (`OccultaBundle`, `WireHandle`,
+`BodyStream`, `DepthCodec`, `SignedAttribute`, `IdentityChallengeEnvelope`, `IntroductionCard`,
+`CardIntroduction`, `CardBootstrap`, `CardMeeting`, `Basket`/`File`), for the app only: they carry
+Occulta-identifying constants that are wire format, such as the `OCCB` magic. `OccultaFormats`
+depends on `OccultaCore` (the card formats use `MLKEMKeyCheck`), never the reverse. The package must
+stay dependency-free: its `Package.swift` declares no package dependency, and adding one is the same
+supply-chain change as adding it to the app. It is nonisolated by default and builds in Swift 6
+mode, unlike the app's `MainActor`.
 Its tests stay in `OccultaTests` (`@testable import OccultaCore` or `OccultaFormats`) so the one
 test command below still runs them — except `OccultaCore/Tests/OccultaCoreAPITests`, which uses
 `OccultaCore` as another app would (plain `import`, no `OccultaFormats`) and so can't live in the
