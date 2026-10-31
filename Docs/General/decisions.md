@@ -1399,7 +1399,7 @@ the share staging key.
 
 ## Slices ship together; a file for a contact in another space is treated as corrupt
 
-**Status:** Decided 2026-10-29 by the owner.
+**Status:** Decided 2026-10-29 by the owner. The screen in (2) is the not-found message decided 2026-10-31 (below).
 
 **Decision:** (1) The data slices (vault, contacts, remaining records) move to the new store together, in one reseal at phrase setup (release order A). (2) The app ignores a bundle whose blinded sender tag matches no contact in the open space, with the same screen, wording and timing as for a corrupt or misaddressed file. No notice is shown.
 
@@ -1422,6 +1422,25 @@ the share staging key.
 **Decision:** Unlock trial-decrypts the contact and group records whole, since they are text-only sealed records of a few KB. Photos live in their own table, one sealed row each, linked only by row IDs listed inside the sealed contact record. A photo row names no contact. Unlock never reads them, and a retired photo is shredded like any deleted row. Vault entries keep their wrapped entry key as the cheap check. A 16-byte locator tag per row stays as the fallback if a device measurement shows unlock is too slow.
 
 **Why:** A clear photo-to-contact column would make an unopenable contact with photos attached visibly real. Text-only records are cheap to decrypt whole, so a header adds format for no measured gain. The photo table shows how many photo rows exist but not whose or which are active, and noise rows in the same size buckets keep the total from tracking real photos.
+
+## A hidden contact's bundle is refused, with the same message as a deleted contact's
+
+**Status:** Decided 2026-10-31 by the owner. Not implemented. Replaces the 2026-08-13 decision in `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md` ("the flow is left exactly as it is"), and closes `PASSPHRASE_ROLLOUT.md` §8, item 24.
+
+**Decision:** At a duress depth, a bundle whose sender is a contact hidden at that depth is not decrypted. The app shows "The contact who sent this message was deleted or cannot be found." The same message shows at every depth for every bundle whose sender matches no contact, a deleted contact's included. Under independent spaces the same holds for a contact in another space.
+
+**Why:**
+- The duress list already lacks the contact, so the user's answer is "I deleted them" whether the file opens or not. A refusal that says so agrees with the list. Opening it with the sender's name contradicts the list, which is the 2026-08-13 presence oracle.
+- The same screen is reachable at depth 0, from a deleted contact. The 2026-08-08 analysis that counted a rejection as a tell didn't weigh deletion as the explanation.
+- A hidden contact's content is never decrypted under duress (C1), and retained files can't be re-opened there (2026-10-23 case A).
+- The check runs before decryption, so no prekey is consumed and the file still opens at the real depth.
+
+**Consequences:** what the implementation has to hold.
+- **One code path.** Hidden contacts are left out of `identifyOwner`'s sender scan, so a hidden sender follows the unknown-sender path, the card redemption attempt included, with the same timing and no writes. Contacts created at a duress depth stay visible there.
+- **One message for every no-sender outcome.** It replaces today's "Could not find this file's owner's public key…" at every depth, and covers a matched sender with no openable slot (2026-10-23 case B), the queued-file drain and group bundles.
+- **Neighbouring paths follow.** Identity challenges from a hidden contact (Bug 173) get the same rule; shard operations from one are already dropped.
+- **Tests.** At a duress depth, a hidden and a deleted contact's bundles give the same error, the same alert and no writes. The hidden one opens at depth 0, with its prekey unconsumed.
+- **Not changed.** The raw store shows a hidden contact isn't deleted (`deletionToken` is a plain field; `forensic-trace-avoidance.md` §S5) until crypto-shredding in 2.1.0. The transport's thread can still show recent traffic with the "deleted" contact, the same strain the missing list entry already puts on the story.
 
 ---
 

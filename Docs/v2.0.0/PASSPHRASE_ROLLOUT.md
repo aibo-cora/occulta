@@ -29,6 +29,9 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 19, Bug 170's leftovers stay in Bug 170;
 - no typo check: no checksum and no retype before the first write (§1.5);
 - a bundle for a contact in another space is handled exactly like a corrupt file (§1.5);
+- 24, that screen says "The contact who sent this message was deleted or cannot be found", the same message as
+  for a deleted contact, and today's app refuses a hidden contact's bundle the same way (decided 2026-10-31, not
+  implemented);
 - the data slices ship together, in one reseal (§7.1);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
@@ -308,7 +311,10 @@ Decision 1 is closed by it.
 - **A bundle for a contact in another space** (decided 2026-10-29): the app ignores a bundle whose blinded
   `senderFingerprint` matches no contact in the open space, with the same screen, wording and timing as for a
   corrupt or misaddressed file. It reveals nothing about another space, and the file opens when the right space is
-  open. No notice is shown, since a notice would name a contact the open space can't see.
+  open. No notice is shown, since a notice would name a contact the open space can't see. ~~Open, needs a
+  decision (2026-10-31): a known person's file that won't open is the rejection oracle `b1f9045` removed (§8, 24).~~
+  **Decided 2026-10-31:** the screen says "The contact who sent this message was deleted or cannot be found", the
+  same as for a deleted contact, so "I deleted them" covers it (§8, 24).
 
 ~~**Proposed in the brainstorm, not decided:** uniform records and noise rows (Bug 120).~~ **Decided 2026-10-29**
 (§5, Bug 120): one sealed record per contact in one table, a few fixed sizes with noise rows in the same sizes, no
@@ -809,6 +815,29 @@ there and aren't repeated here.
 
     The options are in Bug 190: drop the history, shred by delete and insert in a random order, or keep these tables
     outside SwiftData.
+24. **A known contact's bundle failing to open is the rejection oracle again** (added 2026-10-31; §1.5,
+    `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). The 2026-10-29 rule above
+    doesn't cite that document's inbound-path analysis, which removed exactly this behaviour in `b1f9045`. Today a bundle from a contact
+    hidden at the current depth opens and shows the sender's name (`identifyOwner` reads `fetchAllContacts()`,
+    which filters on `deletionToken` only).
+    - **What returns:** a coercer sends, or re-opens, a file from someone they know you paired in the real space.
+      The transport names the sender before Occulta runs. In the duress space the file shows the corrupt-file
+      screen; in the real space it would open. A file from a known person that won't open is the signal the
+      2026-08-08 decision removed, and identical wording didn't stop it being one then.
+    - **What is different now:** the same screen appears in every space for a file from a deleted contact, so "I
+      deleted them" covers it. ~~Whether that cover is enough is the decision; the 2026-08-08 analysis had the same
+      cover available (a hidden contact was absent from the list) and still counted rejection as a tell.~~
+      **Decided 2026-10-31 by the owner: the cover is enough** (`decisions.md`, 2026-10-31). The duress list already
+      lacks the contact, so the story is needed either way, and a refusal that says "deleted" agrees with the
+      list. The screen reads "The contact who sent this message was deleted or cannot be found" at every depth,
+      for every bundle whose sender matches no contact. Today's app adopts the same refusal for a contact hidden at
+      the current depth; not implemented.
+    - **What the rule fixes:** three things that document accepts or leaves open today. The hidden contact's
+      content is never decrypted under duress (C1). The name no longer renders for a contact missing from the
+      list (the 2026-08-13 presence oracle). Retained `.occ` files from a hidden contact can't be re-opened on
+      demand (its 2026-10-23 case A).
+    - **It may be forced:** the duress space holds neither the sender's public key nor its prekey blobs (D9), so
+      it may have no way to open the bundle at all. Not checked against the long-term slot's derivation.
 
 ---
 
