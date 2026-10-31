@@ -707,7 +707,7 @@ extension ContactManager {
             let ss1 = postQuantum.decapsulate(ciphertext: layer.mlkemCiphertext, keyBlob: mlkemBlob),
             let innerKey = CardBootstrap.carolInnerKey(ecdhOutput: ecdhOutput, ownPublicKey: card.agreementKey, peerPublicKey: ephemeral, ss1: ss1),
             let plain = try? CardBootstrap.openInner(layer.inner, mlkemCiphertext: layer.mlkemCiphertext, innerKey: innerKey, blind: blind),
-            let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+            let payload = try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
         else { return nil }
 
         // 1. The introduction's signature, against this card's digest.

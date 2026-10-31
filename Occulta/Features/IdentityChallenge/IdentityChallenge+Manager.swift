@@ -561,7 +561,7 @@ extension IdentityChallenge {
             }
             let sealed: OccultaBundle.SealedPayload
             do {
-                sealed = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
+                sealed = try BoundedJSON.decode(OccultaBundle.SealedPayload.self, from: plaintext)
             } catch {
                 throw ManagerError.malformedBundle
             }

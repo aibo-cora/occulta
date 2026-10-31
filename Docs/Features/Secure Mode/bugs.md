@@ -14819,3 +14819,281 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 ### Guard
 
 `VaultRewrapUnlockTests.rowsOnNewKeyWithEpochOneAreRepaired`: a vault rewrapped, its epoch reset to `1 classical`, then unlocked: the epoch becomes 2, the process derives the Enclave-bound key, and every label and every real backup key reads back. It failed before the change.
+
+---
+
+## Bug 186 — Decoders that read a `Data` slice by absolute position or at an assumed alignment trap on one
+
+**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged. Found 2026-10-30 by the decoder fuzzer (hardening step 12,
+register D6): the first case it ran against `DepthCodec` crashed, and the first run of the app's targets crashed in
+the identity-challenge payload.
+
+**Target:** `v2.1.0`, and every build with these types.
+
+### Severity: Low (nothing reaches it today: every caller passes a `Data` that starts at index 0)
+
+### What happens
+
+A `Data` slice keeps its parent's indices: `buffer[14...]` starts at 14, and `slice[0]` is out of range. Three
+decoders read with literal positions:
+
+- `DepthCodec.decode(_:)` reads `plain[0]` and `plain[1]`.
+- `IdentityChallenge.ChallengePayload.init(from:)` reads `data[0..<32]`, `data[32..<40]`, `data[40..<72]`
+  (`IdentityChallenge+Payload.swift:85`).
+- `IdentityChallenge.ResponsePayload.init(from:)` reads `data[..<32]` and `data[32...]`.
+
+On a slice, each traps (`EXC_BREAKPOINT` in `Data._Representation.subscript.getter`), or reads bytes offset from where it
+meant to when the range happens to fall inside the slice.
+
+A fourth, `IdentityChallenge.decodeTimestamp(_:)`, takes no index but reads with `load(as: UInt64.self)`, which wants an
+address that is a multiple of 8 and traps otherwise (`Fatal error: load from misaligned raw pointer`). A slice starts
+wherever its parent's index puts it.
+
+Every caller today passes a buffer that starts at 0: `AES.GCM.open`'s result for the depth fields and
+`JSONDecoder`'s decoded `Data` for the two payloads (`IdentityChallenge+Manager.swift:282`, `:393`). So no file and no
+peer reaches the trap. It is a defect in the decoders' contract, and a refactor that hands one a `dropFirst(n)` or a
+sub-range of a decrypted body would meet it. The depth decoder is the one to fear: the depth fields are read on every
+launch and unlock, so a trap there is a crash on every start, with a crash report that names the app.
+
+### Verified, 2026-10-30
+
+- `DepthCodec.decode`: the standalone harness, seed 1, iteration 1 of the depth target. The input is the two bytes
+  `ff fe` as a slice starting at index 14. Exit 133 (`SIGTRAP`).
+- `ChallengePayload.init(from:)`: the same fuzzer in the Simulator, on the main-actor targets. The crash report names `ChallengePayload.init(from:)`
+  at line 85 under `IdentityChallengePayloadTarget.run`.
+- `decodeTimestamp`: the same fuzzer, after the fix above let it get that far. `Fatal error: load from misaligned raw
+  pointer`, from `IdentityChallengePayloadTarget`.
+- `ResponsePayload.init(from:)` has the same shape as the challenge payload and was fixed with it. The fuzzer never
+  reached it, because the process died first in the challenge decoder; `SliceIndexRegressionTests` covers it.
+
+### Fix
+
+`DepthCodec.decode` reads from `plain.startIndex`. The two payload initialisers rebase their input
+(`let data = Data(data)`) before indexing, which changes nothing for a `Data` that starts at 0. `decodeTimestamp` builds
+the number from its eight bytes instead of loading it, which gives the same value on every input it accepted. No
+accepted encoding changes, and no `InteropVectors.json` vector moves.
+
+### Guard
+
+`SliceIndexRegressionTests` (`OccultaTests/Fuzzing/DecoderRegressionTests.swift`): the exact two bytes above, as a slice
+at index 14; every depth value and the legacy JSON spelling as slices; both payloads as slices, with the fields and the
+re-encoded bytes checked against the unsliced result; a timestamp as a slice at 17 different offsets; a slice of the wrong
+length still refused. The fuzzer hands a
+slice to every target one case in four, so a fourth decoder with the same habit fails the suite.
+
+---
+
+## Bug 187 — A shared image can make ImageIO allocate gigabytes, by its declared size or by a chunk length
+
+**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged; four residuals open, needs a decision (below). The size
+mechanism was found 2026-10-30 from reading `ShareSession.stripEXIF` while listing the share extension's input path for
+hardening step 12; the chunk mechanism by the fuzzer the same day (seed 1, iteration 151 of the staged-file target).
+Both confirmed by standalone probes.
+
+**Target:** `v2.1.0`, and every build with EXIF stripping (1.x).
+
+### Severity: Medium (proposed; the app is killed by an image the user was sent, with no key or contact needed, and the kill leaves a record naming Occulta)
+
+### What happens
+
+`ShareSession.staged` strips every shared image by handing it to ImageIO, and ImageIO's cost is set by what the image
+*declares*, not by how many bytes it has. Two ways, measured with probes (`swiftc -O`):
+
+**1. Declared dimensions.** The strip decodes the image and encodes it again. A one-bit grayscale PNG of zeros, on a Mac:
+
+| Declared size | File | Time | Peak resident |
+|---|---|---|---|
+| 2,000 × 2,000 | 566 bytes | 0.06 s | 19 MiB |
+| 10,000 × 10,000 | 12,227 bytes | 0.34 s | 213 MiB |
+| 30,000 × 30,000 | 109,445 bytes | 4.2 s | 1,590 MiB |
+
+**2. A declared chunk length.** A PNG chunk header gives the chunk's length, and ImageIO allocates it when it reads the
+header, before it finds the file doesn't hold that many bytes. A 79-byte PNG (signature, a 2 × 2 IHDR, and an `iTXt`
+header declaring 2,000,000,000 bytes) makes `CGImageSourceCopyPropertiesAtIndex`, which decodes nothing:
+
+| Runtime | Result |
+|---|---|
+| macOS 26 | the process holds 1.9 GiB afterwards |
+| iOS 26.2 Simulator runtime | a transient peak of 2.0 GB resident, freed when the call returns |
+
+Of the chunk types tried, `iTXt`, `zTXt` and `sPLT` do it; `tEXt`, `iCCP`, `eXIf` and `tRNS` do not. The fuzzer's input
+was a 574-byte PNG whose `iTXt` length had been set to 1,676,476,820: the process grew by 1,032 MiB, and its watchdog
+ended the run.
+
+Either way a file of a few hundred bytes to a few hundred kilobytes costs more than a phone gives an app. The path: the
+user shares an image into Occulta from another app (one a contact sent them, say); the extension only seals the bytes;
+the app picks a recipient after the PIN and calls `ShareSession.staged`, which reads it. iOS ends the app for the memory.
+What is left is the system's jetsam record naming Occulta, a trace outside every depth, and the staged session in the App
+Group (sealed; the next sweep removes it).
+
+Not measured on a phone, and the limit varies by model.
+
+### Fix
+
+Two checks before ImageIO is given anything, both throwing, so `staged` deletes the session and zeroes what it decoded, as
+it does on any throw:
+
+- `ShareSession.pngChunkOverruns` walks a PNG's chunks by their length fields (a few comparisons, no decoding) and
+  refuses one with a chunk that runs past the end of the file, or that is longer than the format allows (2^31 - 1):
+  `Errors.imageMalformed`. A well-formed PNG, truncated or not, never does.
+- `stripEXIF` reads the declared size from the header (`CGImageSourceCopyPropertiesAtIndex`, which after the check above
+  is safe on a PNG) and refuses width × height over `ShareSession.maxImagePixels`, 100 million, about twice an iPhone's
+  48-megapixel photo: `Errors.imageTooLarge`.
+
+Both refuse rather than send the image as it is. A format ImageIO can't parse is passed through, with its metadata inside
+the sealed bundle; doing that here would send an oversized photo's location, which is what stripping is for, and would
+pass the weapon on to the recipient. The user sees "Failed to encrypt shared content. This image is too large to share."
+or "...is damaged and can't be shared."
+
+### Residuals — all open, needs a decision
+
+1. **The pixel limit.** 100 megapixels is a judgment. An image at the limit can still take several hundred megabytes to
+   decode (a 16-bit RGBA one 800 MB), and a lower limit would refuse photos from cameras above 64 or 100 megapixels,
+   which some Android phones take. The number needs an owner; the check does not depend on it.
+2. **Images from a contact are decoded unchecked, by both mechanisms.** A received attachment and a contact photo in an
+   imported draft are read with `UIImage(data:)` and SwiftUI's image views (`ComposableMessage.swift`,
+   `Contact+Photo.swift`, `Import+View.swift`), with no size check. The same file reaches them from a paired contact. Not
+   tested; the same two checks where a received file is written, or shown, would close it.
+3. **Only PNG's chunk layout is checked.** Other formats declare sizes too: a TIFF's tag counts and offsets, an
+   ISO-BMFF (HEIC) box's size, WebP's chunks. The fuzzer ran mutated JPEG, GIF and TIFF files through the same path and
+   found none over its limit, but a mutation of a two-by-two image rarely sets those fields to a hostile value. Not
+   examined by hand.
+4. **Only the first frame is checked.** A GIF or TIFF with more frames is read at frame 0 only, which is also all
+   `stripEXIF` encodes, so no later frame is decoded here.
+
+### Guard
+
+`ImageSizeRegressionTests` (`OccultaTests/Fuzzing/DecoderRegressionTests.swift`), on the Simulator: the exact 79-byte PNG
+and the fuzzer's 574-byte one are refused with `imageMalformed`, no session left, and `pngChunkOverruns` agrees; it passes
+a well-formed PNG, reads a slice, refuses a length of 2^31, and ignores what is not a PNG; a PNG of 400 million declared
+pixels (valid, about 300 KB, its IDAT written out in the test) and one of 100,001,000 pixels in a shape neither side of
+which is large are refused with `imageTooLarge`; an ordinary JPEG and the well-formed PNG are still stripped and returned. Each refusal comes before any
+decode, so a regression allocates what the probes did. The memory figures above are from the probes, not from a test.
+
+---
+
+## Bug 188 — The share extension reads a whole inbound `.occ` into memory
+
+**Status:** Open, needs a decision. Found 2026-10-30 by reading `ShareViewController` for hardening step 12. Not
+reproduced: the extension can't be driven from the test host, and no device was used.
+
+**Target:** `v2.1.0`, and every build with the inbound handoff (1.x).
+
+### Severity: Medium (proposed; a legitimate large bundle, or any large file named `.occ`, can't be handed over, and the failure is a crash)
+
+### What happens
+
+`handoffInboundOCC` loads the file with `provider.loadDataRepresentation`, which returns all of it as one `Data`, and
+writes that to the App Group. There is no size check on it. The outbound path next to it has both: a 100 MB cap
+(`maxFileBytes`) and a streamed copy (`copyFileRepresentation`, with the reason written beside it: bytes flow through the
+kernel, not app memory).
+
+A share extension has a small memory limit from iOS (roughly 120 MB, from Apple's documentation; not measured here).
+A bundle with a large attachment is a legitimate input and is what Bug 183 was about (about 800 MB). So tapping Occulta
+in a messaging app's share sheet on such a bundle should end the extension, and the file never reaches the app. The
+crash is the system's: a report that names the Occulta share extension, outside every depth. A hostile large file named
+`.occ` does the same to anyone who opens it through the share sheet.
+
+Opened through Files or "Open in", the file doesn't go through the extension and is mapped, not read
+(`InboundFile.open`), so only the share-sheet route is affected.
+
+### Candidate fix, not made
+
+Take a file representation instead (`loadFileRepresentation`) and copy it to `inbound/<uuid>.occ` with
+`FileManager.copyItem`, which clones on APFS and holds nothing in memory, as the outbound path already does. The app's
+`InboundFile.open` then maps or streams it like any other file. It isn't made here because the extension can't be run in
+a test, and a change there should be tried on a device. The alternative, a size cap, would refuse exactly the bundles
+Bug 183 made it possible to open.
+
+### Guard
+
+None yet. `Docs/Features/Bundle/STREAMING_SPEC.md` §8.4 already says the extension's peak memory has not been
+measured on a device; this would be the second thing to measure there.
+
+---
+
+## Bug 189 — 513 bytes of `[` end the app: a JSON document Foundation's scanner traps on
+
+**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged; two residuals open, needs a decision (below). Found 2026-10-30
+by the decoder fuzzer's standalone run: seed 12, iteration 98773 of the depth target, a 513-byte input, exit 133.
+
+**Target:** `v2.1.0`, and every build that decodes JSON from outside the device: the legacy bundle (1.x) and the
+exchange's messages.
+
+### Severity: High (proposed; before any authentication, no key, contact or depth needed, and it leaves a crash report outside every depth; the same class as Bug 174)
+
+### What happens
+
+`JSONDecoder` on a document that is exactly 513 `[` and nothing else traps inside Foundation, in
+`JSONScanner.scanArray()` (`EXC_BREAKPOINT`). Its limit is 512 levels and it should throw past it. Probes, `swiftc -O`,
+on macOS 26 and on the iOS 26.2 Simulator runtime (the same result on both):
+
+| Input | Result |
+|---|---|
+| 512 `[` | throws, exit 0 |
+| **513 `[`** | **exit 133** |
+| 514, 600, 1,000, 20,000 `[` | throws, exit 0 |
+| 513 `[` and any byte after them | throws, exit 0 |
+| 513 `{"a":` or `[{"a":` pairs; 513 `[` then `]` | throws, exit 0 |
+
+It is the same for `Int`, a struct, `[Data]` or `[[Int]]`: the scan comes before the type is looked at. A trap is not a
+throw, so no `try?` and no `catch` sees it.
+
+Where Occulta hands outside bytes to `JSONDecoder`, before anything is authenticated:
+
+- **Any file.** `OccultaBundle.decoded(from:)` sends a file without the `OCCB` magic to `JSONDecoder` (the legacy format),
+  from `buildOwnedBasket` inside a `try?`. A 513-byte file of `[` is enough.
+- **A binary bundle's group section.** It is a cleartext JSON block after the ciphertext, read by
+  `OccultaBundle(wireBundle:)`, for the inline layout and the streamed one (`StreamedBody.init`). The sections are not
+  authenticated.
+- **A nearby phone.** `ExchangeManager.handleReceivedData` decodes the message first and checks the peer after, and
+  `advertiser(_:didReceiveInvitationFromPeer:)` accepts every invitation, so a phone that sees the advertisement during
+  an exchange can send it. By code reading; not exercised over a radio.
+
+After authentication, so a contact's message or someone holding their keys: `WireHandle.decode(payload:)` and
+`decode(basket:)`, the recipient payload, the legacy sealed payload, an identity challenge's payload, imported contacts,
+a vault backup once its key opens it. Same trap.
+
+A file opened while the app is locked is queued and read after the PIN, so the crash follows a PIN entry at any depth. The
+queued bytes are cleared before the parse (Bug 174 notes the same), so there is no crash loop. The cost is a crash on
+each open of the file, and the crash report iOS writes.
+
+### Verified, 2026-10-30
+
+The standalone harness, real `OccultaFormats` sources: with the fix taken out of a copy, the fuzzer finds it at iteration
+3,202 of seed 1 on the bundle decoder and at iteration 244 on the recipient payload (`bareNesting`, the mutation added
+for this). The probes above are the table. Not reproduced by opening a file in the app or by a radio message: the
+trapping call is the `JSONDecoder` one each of those makes.
+
+### Fix
+
+`BoundedJSON.decode(_:from:)` (`OccultaFormats`) counts the nesting of `[` and `{` outside strings in one pass over the
+bytes and throws `DecodingError.dataCorrupted` past 64 levels, as it would for any malformed document. Anything within
+the limit is handed to `JSONDecoder` unchanged, so what decoded before decodes the same. It replaces `JSONDecoder` at
+every call that reads bytes from outside the device: the legacy bundle and the group section, the payload, basket and
+file entries, the exchange's message, the recipient payload (five call sites: group slots, card slots, a card's redemption), the
+legacy sealed payload, the identity challenge's payload, the legacy basket, imported contacts, the vault backup JSON, the
+share manifest and the legacy depth row. It is not applied to a field this device sealed under its own key and no one
+outside can write: stored contact key material, settings, drafts, custody and buffer rows.
+
+64 is far above anything Occulta writes: the deepest document in the tests, a basket with every kind of file, nests six
+levels, and every recorded JSON vector nests four or fewer. No wire format changes and no
+`InteropVectors.json` vector moves. A document nested between 65 and 512 levels, which decoded before, is now refused;
+no encoder in the app can produce one.
+
+### Residuals — open, needs a decision
+
+1. **The bug is Apple's, and is not reported from here.** Foundation should throw. Another JSON decoder, or another
+   entry in the app, that reaches the same scanner is not covered by anything but the check below.
+2. **Nothing stops a new `JSONDecoder` call on outside bytes.** `JSONDecoderUseTests` fails on a `JSONDecoder` in any file
+   not on its list of files that decode only what the device sealed. A listed file that gains an outside-facing decode
+   passes. Reviewing that list is the control.
+
+### Guard
+
+`NestingRegressionTests` (`OccultaTests/Fuzzing/DecoderRegressionTests.swift`), which only has to return, since a trap
+ends the test host: the 513-byte file; a binary bundle whose group section is 513 `[` (its sections still parse, so the
+refusal is `BoundedJSON`'s); a payload, a basket and a file entry whose JSON block is 513 `[`; a depth row; a message
+from a pinned peer, with a valid one after it to show the manager still reads messages. The guard itself: nesting counted
+outside strings and across escapes, 63 and 64 levels decode and 65 are refused, and what Occulta writes decodes to the
+same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of files described above.

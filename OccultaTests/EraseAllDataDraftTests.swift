@@ -8,6 +8,9 @@
 //  in-memory container. The full `eraseAllData` also calls the real `Manager.Key().deleteAllKeys()`,
 //  so it stays out of the suite.
 //
+//  Each test wipes a `Drafts/` directory of its own: the real one holds drafts other tests are writing
+//  while these run, and deleting it under them failed those tests.
+//
 
 import Testing
 import Foundation
@@ -34,36 +37,37 @@ struct EraseAllDataDraftTests {
         return (ContactManager(modelContainer: container, security: security), container)
     }
 
-    /// A draft row plus one attachment file in its folder. The ciphertext is opaque filler: the wipe
-    /// must not need to open it.
-    private func insertDraftWithAttachment(in container: ModelContainer) throws -> UUID {
+    /// A draft row plus one attachment file in its folder under `draftsRoot`. The ciphertext is opaque
+    /// filler: the wipe must not need to open it.
+    private func insertDraftWithAttachment(in container: ModelContainer) throws -> URL {
         let id = UUID()
         let context = ModelContext(container)
         context.insert(Message.Draft(id: id, encryptedRecipientID: Data(repeating: 1, count: 60), encryptedContent: Data(repeating: 2, count: 90)))
         try context.save()
 
-        let folder = Message.Draft.attachmentsFolder(for: id)
+        let folder = self.draftsRoot.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data("sealed".utf8).write(to: folder.appendingPathComponent("\(UUID().uuidString).jpg"))
-        return id
+        return folder
     }
 
-    private var draftsRoot: URL { Message.Draft.attachmentsRoot }
+    /// This test's stand-in for `Message.Draft.attachmentsRoot`.
+    private let draftsRoot = FileManager.default.temporaryDirectory.appendingPathComponent("Drafts-\(UUID().uuidString)", isDirectory: true)
 
     @Test("Erase All Data deletes draft rows, their attachment folders and the Drafts directory")
     func wipeDeletesDrafts() throws {
         let (contacts, container) = try self.makeContactManager()
-        let id = try self.insertDraftWithAttachment(in: container)
+        let folder = try self.insertDraftWithAttachment(in: container)
         // A folder whose row is already gone: nothing else would ever remove it.
-        let orphan = Message.Draft.attachmentsFolder(for: UUID())
+        let orphan = self.draftsRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
         try Data("sealed".utf8).write(to: orphan.appendingPathComponent("a.mp4"))
 
         try contacts.deleteAllContacts()
-        try contacts.deleteAllDrafts()
+        try contacts.deleteAllDrafts(root: self.draftsRoot)
 
         #expect(try ModelContext(container).fetchCount(FetchDescriptor<Message.Draft>()) == 0, "draft rows survived the wipe")
-        #expect(!FileManager.default.fileExists(atPath: Message.Draft.attachmentsFolder(for: id).path), "the draft's attachment folder survived")
+        #expect(!FileManager.default.fileExists(atPath: folder.path), "the draft's attachment folder survived")
         #expect(!FileManager.default.fileExists(atPath: orphan.path), "an orphan attachment folder survived")
         #expect(!FileManager.default.fileExists(atPath: self.draftsRoot.path), "the Drafts directory survived")
     }
@@ -71,9 +75,8 @@ struct EraseAllDataDraftTests {
     @Test("Erase All Data with no drafts succeeds")
     func wipeWithNoDrafts() throws {
         let (contacts, _) = try self.makeContactManager()
-        try? FileManager.default.removeItem(at: self.draftsRoot)
 
-        try contacts.deleteAllDrafts()
+        try contacts.deleteAllDrafts(root: self.draftsRoot)
 
         #expect(!FileManager.default.fileExists(atPath: self.draftsRoot.path))
     }
