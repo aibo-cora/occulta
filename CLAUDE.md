@@ -72,15 +72,16 @@ BoringSSL bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
 
 The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
 holds the code being extracted for reuse in two modules. `OccultaCore` is the API other apps can
-use: `ShamirSecretSharing`, `PostQuantumProvider` and `MLKEMKeyCheck`. `OccultaFormats` is Occulta's
-own wire and at-rest formats (`OccultaBundle`, `WireHandle`, `BodyStream`, `DepthCodec`,
-`SignedAttribute`, `IdentityChallengeEnvelope`, `IntroductionCard`, `CardIntroduction`,
-`CardBootstrap`, `CardMeeting`, `Basket`/`File`), for the app only: they carry Occulta-identifying
-constants that are wire format, such as the `OCCB` magic. `OccultaFormats` depends on `OccultaCore`
-(the card formats use `MLKEMKeyCheck`), never the reverse. The package must stay dependency-free:
-its `Package.swift` declares no package dependency, and adding one is the same supply-chain change
-as adding it to the app. It is nonisolated by default and builds in Swift 6 mode, unlike the app's
-`MainActor`.
+use: `ShamirSecretSharing`, `PostQuantumProvider`, `MLKEMKeyCheck` and `TransportKeyDerivation`
+(the one HKDF every transport key goes through; the caller passes the label, Occulta its `SaltInfo`
+ones). `OccultaFormats` is Occulta's own wire and at-rest formats (`OccultaBundle`, `WireHandle`,
+`BodyStream`, `DepthCodec`, `SignedAttribute`, `IdentityChallengeEnvelope`, `IntroductionCard`,
+`CardIntroduction`, `CardBootstrap`, `CardMeeting`, `Basket`/`File`), for the app only: they carry
+Occulta-identifying constants that are wire format, such as the `OCCB` magic. `OccultaFormats`
+depends on `OccultaCore` (the card formats use `MLKEMKeyCheck`), never the reverse. The package must
+stay dependency-free: its `Package.swift` declares no package dependency, and adding one is the same
+supply-chain change as adding it to the app. It is nonisolated by default and builds in Swift 6
+mode, unlike the app's `MainActor`.
 Its tests stay in `OccultaTests` (`@testable import OccultaCore` or `OccultaFormats`) so the one
 test command below still runs them — except `OccultaCore/Tests/OccultaCoreAPITests`, which uses
 `OccultaCore` as another app would (plain `import`, no `OccultaFormats`) and so can't live in the
@@ -148,6 +149,8 @@ private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `PrekeyGenerationMeasurementTests`, `IdentityChallengeGroupForwardSecretTests` (a challenge on a forward-secret
 slot needs a prekey this device holds), `PrekeyConversationTests` (two phones generating real prekeys), `IntroCardEnclaveKeyPersistenceTests` and the Enclave test in `PostQuantumPersistenceTests` (an introduction card's ML-KEM key kept as an Enclave blob), the introduction-card suites whose phones import or redeem a card, which generates prekeys (`CardConversationTests`, `CardRedemptionRejectionTests`, `CardHardBlockTests`, `CardNonCardRegressionTests`, `CardMeetingTableTests`, `CardMeetingConversationSaveTests`, and the import and crossing-card tests in `CardImportTests` and `CardScreenBehaviourTests`), the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
+`enclaveIdentityAgrees` in `InteropVectorTests` (the long-term transport vectors run on a software identity; it
+checks `Manager.Key`'s Enclave identity derives the same keys),
 the Bug 171 suites that use the real `Manager.Key` and its Enclave keys (`EnclaveGeneratorECDHTests`,
 `KeyResealEnclaveTests`, `HybridUpgradeEnclaveTests`, and the real-Enclave ML-KEM tests in
 `TierPQRecordKeychainTests` and `StagingPostQuantumTests`, which also need iOS 26's ML-KEM),
