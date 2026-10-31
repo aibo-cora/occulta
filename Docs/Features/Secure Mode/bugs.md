@@ -5424,6 +5424,10 @@ Whatever it suggests, it suggests about rows `deletionToken` already flags. Set 
 declining to act leaves a 29-byte value that says a contact was classified as sensitive — a concrete
 inference about the feature, traded away for a hypothetical one with no channel.
 
+**Corrected 2026-10-31 (Bug 190):** the store does keep a time for every write. SwiftData's persistent history
+(`ATRANSACTION`, `ACHANGE`) records each insert, update and delete with the row's primary key, the columns it
+changed and a timestamp. The scrub itself is logged there as one transaction updating these rows.
+
 **Note the interaction with the 50-row cap.** Soft-deleted rows are capped at 50, with one
 hard-deleted to make room when full, so the affected population is bounded and churns. That limits
 the exposure but does not remove it: a device that classified contacts and then deleted some will
@@ -15115,3 +15119,80 @@ refusal is `BoundedJSON`'s); a payload, a basket and a file entry whose JSON blo
 from a pinned peer, with a valid one after it to show the manager still reads messages. The guard itself: nesting counted
 outside strings and across escapes, 63 and 64 levels decode and 65 are refused, and what Occulta writes decodes to the
 same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of files described above.
+
+---
+
+## Bug 190 — SwiftData's persistent history logs every write to the store, with a timestamp, the row and the columns changed
+
+**Status:** Open, needs a decision. Found 2026-10-31 while describing the contact table after the passphrase
+rollout (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23).
+
+**Target:** None yet. It is in every shipped build, and the passphrase rollout's storage relies on it being gone.
+
+### Severity: High (proposed; one image, no key, every install, and it is a log of the writes Bug 120 needs two images for)
+
+### What happens
+
+SwiftData turns on Core Data's persistent history tracking, and nothing in the app turns it off or prunes it: there is
+no `deleteHistory`, `HistoryDescriptor` or `NSPersistentHistory` anywhere in `Occulta/`. The store
+(`OccultaApp.swift:69`, `ModelConfiguration(… cloudKitDatabase: .none)`) therefore carries three tables of its own:
+
+- `ATRANSACTION`: one row per save, with a timestamp, and the bundle ID and process name through `ATRANSACTIONSTRING`.
+- `ACHANGE`: one row per inserted, updated or deleted object, with its entity, its `Z_PK`, the change type, the
+  transaction, and a bitmask of the columns an update changed.
+- `Z_PRIMARYKEY`'s `CHANGE` and `TRANSACTION` counters: how many of each were ever written.
+
+So one image holds, in the clear and from install onwards, when each row of each table was written and which of its
+columns changed. That includes:
+
+- **Secure Mode activation and classification**, as one transaction updating the depth columns of a set of rows;
+- **Bug 89's scrub**, which assumed no timestamp exists;
+- **every write made in a duress session and every write made outside it**, by time, for a coercer who knows when
+  the duress session was open.
+
+Two more per-row traces, outside the history tables:
+
+- `Z_OPT`, the optimistic-locking counter, goes up by one on every update of a row, so it counts how often each row
+  was rewritten in place.
+- `Z_PK` is assigned in insertion order, so a row's position says when it was inserted relative to the others.
+
+### Verified, 2026-10-31
+
+- **A test store** (`swiftc`, macOS 26.6.2, SwiftData, one model of a UUID and a `Data`): four inserts, one row
+  updated once, one updated twice, one deleted and replaced. `ACHANGE` lists all nine changes with their `Z_PK` and a
+  column bitmask on the updates; `ATRANSACTION` has five timestamps; `Z_OPT` reads 2 and 3 on the updated rows and 1
+  on the rest; the replacement row took a new, higher `Z_PK`.
+- **Two of the app's Simulator stores**, read-only. One holds 34 changes in 3 transactions, which are the store's
+  whole history (32 backup-key rows, the vault and `AppLayerConfig`, matching `Z_MAX`). The other logs two `Profile`
+  inserts and one `Profile` update with times four minutes apart, and the updated row has `Z_OPT` 2.
+- **Not checked:** a device store; whether iOS prunes history on its own over months; whether SwiftData can open a
+  store with history tracking off.
+
+### Why it matters to the passphrase rollout
+
+The independent-spaces design (`PASSPHRASE_ROLLOUT.md` §1.5) says a deleted row, another space's row and a noise row
+look the same. In a SwiftData table they don't:
+
+- **Shredding in place is an update.** The shredded row gets `Z_OPT` 2 and an `ACHANGE` update, while live rows of
+  every space and noise rows stay at 1. Deleted rows stand apart from the other two in one image, which breaks the
+  "I deleted everything" story.
+- **Noise rows written in one batch** at migration take one run of `Z_PK` values, before or after the real rows.
+- **The history tables** list every append and every shred with its time, which is the series Bug 120 says a duress
+  space can't survive, in one image.
+
+### Fix — open, needs a decision
+
+- **Drop the history** after each save, or open the store with history tracking off if SwiftData allows it (not
+  checked). After a deletion, the freed pages need `secure_delete` and a checkpoint, as purges do today. The
+  `CHANGE` and `TRANSACTION` counters in `Z_PRIMARYKEY` would still count every write ever made.
+- **Make the per-row columns uniform** in the new contact and photo tables. Shred by deleting and inserting a new
+  random row instead of updating in place, so `Z_OPT` stays 1, and insert the migration's real and noise rows in a
+  random order. `Z_PK` still orders rows by insertion.
+- **Leave SwiftData for these tables.** A plain SQLite table or a file of fixed-size records has no history, no
+  `Z_OPT` and no insertion counter.
+- **Images already taken** keep the history up to that point, whatever is chosen.
+
+### Guard
+
+None yet. A test that saves, updates and deletes, then reads the store file and finds no `ACHANGE` or `ATRANSACTION`
+rows, and the same `Z_OPT` on every row of the new tables.

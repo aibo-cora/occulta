@@ -41,7 +41,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - the unlock cost, to be measured on a device (waits on decision 6);
 - 20, what the identifier's references hold once the identifier moves into the contact's blob;
 - 21, how many noise rows there are, and when they are written;
-- 22, the table only grows, and unlock pays for every row ever written.
+- 22, the table only grows, and unlock pays for every row ever written;
+- 23, SwiftData's own columns and history tell shredded rows from the rest and log every write (Bug 190).
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -706,7 +707,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 |---|---|---|---|
 | 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); the model sweep for requirement 5 | 1–2 |
+| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); SwiftData's columns and history (§8, 23); the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
 | 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
@@ -799,6 +800,15 @@ there and aren't repeated here.
     too. Unlock trial-decrypts every row, so its cost and the store's size grow with every write ever made, not with
     the contact count; the "10k rows" estimate counts contacts. The locator tag (§1.5) makes each check cheaper but
     doesn't reduce the count.
+23. **SwiftData's own columns and history** (added 2026-10-31; §1.5, `bugs.md` Bug 190). §1.5 says a deleted row,
+    another space's row and a noise row look the same. In a SwiftData table they don't:
+    - Shredding in place is an update, so it raises the row's `Z_OPT` to 2 while live and noise rows stay at 1.
+    - Noise rows written in one batch at migration take one run of `Z_PK` values.
+    - The persistent history tables (`ACHANGE`, `ATRANSACTION`) log every append and every shred with its time. That
+      is the series Bug 120 says a duress space can't survive, in one image. They are in every shipped store today.
+
+    The options are in Bug 190: drop the history, shred by delete and insert in a random order, or keep these tables
+    outside SwiftData.
 
 ---
 
@@ -823,6 +833,7 @@ depends on or changes.
 | Bug 162 | A trustee's piece count shows how many depths have a backup | On-screen count and manifest size fixed (PR #114); stored rows and piece dates open, needs a decision | Stage 5 |
 | Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; for the passphrase migration, a new store file with no way back, and a downgrade after migration not supported (decision 18, 2026-10-29) | §1.2, stage 0 |
 | Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open, needs a decision | §6, decision 15 |
+| Bug 190 | SwiftData's persistent history logs every write with a time; `Z_OPT` marks rows updated in place | Open, needs a decision; filed 2026-10-31 | §8, 23 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
 | Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |
 | Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |

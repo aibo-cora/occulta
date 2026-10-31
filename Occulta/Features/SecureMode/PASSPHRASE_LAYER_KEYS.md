@@ -243,6 +243,9 @@ the 2026-10-15 proposal:
   one image, not a series. Noise rows don't close it.
 - **Open, needs a decision (2026-10-30):** how many noise rows there are and when they are written, and a table
   that only grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+- **Open, needs a decision (2026-10-31):** SwiftData's `Z_OPT` marks a row shredded in place, and its persistent
+  history logs every write with a time, so "look alike" doesn't hold in a SwiftData table (`bugs.md` Bug 190;
+  `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23).
 
 This is the part that isn't settled, and it's the crux of whether this proposal is simpler than what
 it replaces or just differently shaped.
