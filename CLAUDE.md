@@ -70,13 +70,13 @@ Carthage. All crypto is CryptoKit and Security.framework, ML-KEM included. Don't
 particular not `apple/swift-crypto`, which on Apple platforms only re-exports CryptoKit but ships
 BoringSSL bundles with it; see §7 of `Docs/Audit/SECURITY_CHECKLIST.md`.
 
-The one package is `OccultaCore/`, first-party and in this repo, linked to the app target only. It
-holds the code being extracted for reuse in two modules. `OccultaCore` is the API other apps can
-use: `ShamirSecretSharing`, `PostQuantumProvider`, `MLKEMKeyCheck` and `TransportKeyDerivation`
+The one package is `OccultaCore/`, first-party and in this repo, linked to the app target and, for
+`OccultaFormats`, the share extension. It holds the code being extracted for reuse in two modules.
+`OccultaCore` is the API other apps can use: `ShamirSecretSharing`, `PostQuantumProvider`, `MLKEMKeyCheck` and `TransportKeyDerivation`
 (the one HKDF every transport key goes through; the caller passes the label, Occulta its `SaltInfo`
 ones). `OccultaFormats` is Occulta's own wire and at-rest formats (`OccultaBundle`, `WireHandle`,
-`BodyStream`, `DepthCodec`, `SignedAttribute`, `IdentityChallengeEnvelope`, `IntroductionCard`,
-`CardIntroduction`, `CardBootstrap`, `CardMeeting`, `Basket`/`File`), for the app only: they carry
+`BodyStream`, `DepthCodec`, `BoundedJSON`, `SignedAttribute`, `IdentityChallengeEnvelope`,
+`IntroductionCard`, `CardIntroduction`, `CardBootstrap`, `CardMeeting`, `Basket`/`File`), for the app only: they carry
 Occulta-identifying constants that are wire format, such as the `OCCB` magic. `OccultaFormats`
 depends on `OccultaCore` (the card formats use `MLKEMKeyCheck`), never the reverse. The package must
 stay dependency-free: its `Package.swift` declares no package dependency, and adding one is the same
@@ -91,6 +91,13 @@ That scheme builds every package target into one directory, so an undeclared
 `import OccultaFormats` there still compiles; `swift build --build-tests
 --explicit-target-dependency-import-check error --triple arm64-apple-ios18.6-simulator --sdk
 "$(xcrun --sdk iphonesimulator --show-sdk-path)"` is the check that catches it. CI runs both.
+
+With local Xcode 27.x the simulator destination needs `OS=26.2` (e.g. `-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2'`) and the
+SDK path must come from `xcrun --sdk iphonesimulator --show-sdk-path`; CI uses Xcode 26.2, where
+the commands work as written. The package is documented in `Docs/Features/OccultaCore/` and
+`OccultaCore/README.md`; the README's examples are mirrored by `ReadmeExamplesTests`, so change
+them together.
+
 `OccultaTests/Interop/InteropVectors.json` pins the formats byte for byte; a change that alters a
 recorded vector breaks compatibility with existing contacts.
 

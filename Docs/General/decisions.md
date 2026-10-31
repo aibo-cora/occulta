@@ -1318,3 +1318,19 @@ the share staging key.
 - The tier secrets are never created by a read. A missing one is nil, a loud failure, once data is sealed under it.
 
 **Full reasoning:** `bugs.md` Bug 171 (Fix, with the stages; Guard).
+
+---
+
+## OccultaCore: AGPL-3.0, primitives only, two modules
+
+**Status:** Decided, 2026-10-05; step 3 deferred and step 6 verified, 2026-10-31. Built.
+
+**Context:** Modularization Phase 3 extracted the code that is not Occulta-specific into `OccultaCore/` so a second app can use it.
+
+**Decision:** The license stays AGPL-3.0, so closed-source and App Store adopters are ruled out. The public product `OccultaCore` holds primitives only (`ShamirSecretSharing`, `PostQuantumProvider`, `MLKEMKeyCheck`, `TransportKeyDerivation`); Occulta's wire and at-rest formats stay app-only in `OccultaFormats`, a second module and not `@_spi`. A host app chooses its own HKDF labels and key tags, and Occulta's `SaltInfo` labels are wire format that never changes. There is no public signer, and hybrid seal/open is deferred until a host app needs it.
+
+**Why:** The formats carry Occulta-identifying constants (the `OCCB` magic, the `occulta-signed-attribute-v2` prefix), and a host app manages its own keys and does not interoperate with Occulta.
+
+**Consequences:** `TransportKeyDerivation` does not check `ecdhOutput`'s length; open, needs a decision (`OC-1`).
+
+**Full reasoning:** `Docs/Features/OccultaCore/decisions.md`; what exists: `SPEC.md`; open items: `bugs.md`.
