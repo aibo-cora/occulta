@@ -6,8 +6,12 @@
 
 **Output:** a comment block at the top of the file or immediately above the function that owns the path, in the format under [Recording the review](#recording-the-review). Two exemplars are live in the codebase and are the reference for tone and depth:
 
-- `OccultaCore/Sources/OccultaCore/ShamirSecretSharing.swift:9-48` — SSS Math Path
-- `Occulta/Services/Key+Manager.swift:615-644` — Vault Key Derivation Path (v2)
+- `OccultaCore/Sources/OccultaCore/ShamirSecretSharing.swift:9-56` — SSS Math Path
+- `Occulta/Services/Key+Manager.swift:805-846` — Vault Key Derivation Path (v2)
+
+`OccultaCore/Sources/OccultaCore/TransportKeyDerivation.swift:9-80` carries a third, for the HKDF every
+transport key goes through. The package as a whole is described in
+[`Docs/Features/OccultaCore/SPEC.md`](../Features/OccultaCore/SPEC.md).
 
 ---
 
