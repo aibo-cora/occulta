@@ -33,6 +33,11 @@ struct QuantumKeyMaterial: Codable, Equatable {
         self.encapsulatedSecret.count == 32 && self.decapsulatedSecret.count == 32
     }
 
+    /// Both shared secrets, as `TransportKeyDerivation` takes them. It sorts them, so the order doesn't matter.
+    var sharedSecrets: (Data, Data) {
+        (self.encapsulatedSecret, self.decapsulatedSecret)
+    }
+
     // MARK: - Convenience initializer from exchange result
 
     @MainActor

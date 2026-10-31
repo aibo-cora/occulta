@@ -152,6 +152,46 @@
       "expected": "bf1a5edcf4bda38e8eab10512ea0e9ef6393046cbe8d0401eace3cf0e21ef396"
     },
     {
+      "name": "ltKey.classical",
+      "kind": "ltKey",
+      "note": "Long-term identity key: HKDF-SHA256(ikm: ecdhOutput, salt: own XOR peer public key (x963), info: 'Occulta-v1-transport-2025'). ecdhOutput is the X9.63-KDF output, as for fsKey.",
+      "ownScalar": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "peerScalar": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+      "expected": "b819c1e58d190c42513396858675d6d6766ca383363627736182f8a8d64032a8"
+    },
+    {
+      "name": "ltKey.hybrid",
+      "kind": "ltKey",
+      "note": "As ltKey.classical, with ikm: ecdhOutput || sorted(encapsulatedSecret, decapsulatedSecret) and info: 'Occulta-v2-hybrid-pq-transport-2026'.",
+      "ownScalar": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "peerScalar": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+      "encapsulatedSecret": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "decapsulatedSecret": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "expected": "735b53e127ae5fb9189e89db7448e518fed659adab9d391f1a02a2c3ec418be6"
+    },
+    {
+      "name": "diceware",
+      "kind": "diceware",
+      "note": "As ltKey.hybrid, with info: 'Occulta-v2-diceware-2026' || sorted(ourNonce, peerNonce).",
+      "ownScalar": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "peerScalar": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+      "encapsulatedSecret": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "decapsulatedSecret": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "ourNonce": "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0",
+      "peerNonce": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "expected": "29bb50a83051b066e9f7d573361f00ca758f83ffaf0003dd1a3d41f9c19f947a"
+    },
+    {
+      "name": "card.v1.longTermKey",
+      "kind": "cardLongTermKey",
+      "note": "SPEC §3. The long-term slot key between two card agreement keys: the derivation of ltKey.hybrid, with the card keys in place of the identity keys.",
+      "ownScalar": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c",
+      "peerScalar": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d",
+      "encapsulatedSecret": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "decapsulatedSecret": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "expected": "5bd4782db4b4830ad456603dc8c7ee61609a0669d77f55937adadb0208ab96b6"
+    },
+    {
       "name": "gcm.v4.forwardSecret",
       "kind": "gcm",
       "key": "4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
