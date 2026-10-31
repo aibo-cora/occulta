@@ -357,6 +357,48 @@ code running there can use every key.
 
 **Tracked:** register D5, D6 (P2). Given the above, P2 is low for this threat model.
 
+**Status, 2026-10-30.** Built on `v2.1.0/decoder-fuzzing`: `OccultaTests/Fuzzing/`, run by `DecoderFuzzTests` inside the
+existing `OccultaTests` command, so CI needs no new step. It found real bugs (below). D6 is addressed for the entry points
+listed; D5 is not: see "What is not covered".
+- **How it works.** A deterministic fuzzer with no dependency. Seeds are the encodings recorded in
+  `InteropVectors.json` and ones built with the real encoders and keys (a card whose signature verifies, a signed shard).
+  Mutations are bit flips, boundary bytes, truncation, extension, copied and deleted ranges, splicing two seeds, length
+  and count fields set to 0, max, the high bit and one past the bytes left, and in JSON a number or string swapped for an
+  extreme, brackets nested around the parser's limits. A decoder may return, throw or answer nil. A case fails on a
+  property break (an accepted input must re-encode to a stable encoding), five seconds without a result, a 1 GiB jump
+  in memory, or a trap. A case is a function of (target, seed, iteration), so a failure replays alone with
+  `TEST_RUNNER_OCCULTA_FUZZ_*` variables, and `OCCULTA_FUZZ_TRACE` names the case a trap killed. One case in four is
+  handed a `Data` slice that doesn't start at 0.
+- **The fuzzer is checked.** It rediscovered Bugs 174, 176 and 189 when their fixes were taken out of a copy of the
+  sources, within 1, 6,777 and 3,202 cases. Calibration tests show a property break, a hang and a memory jump are
+  reported, that a case replays, and that every valid seed is accepted by its own target.
+- **Covered.** The binary and JSON bundle envelope, the header and the sections; the sealed payload, the basket (inline
+  and streamed) and the legacy JSON forms; `DepthCodec`; the recipient payload, group envelope, signed attribute and
+  identity-challenge envelope and payloads; the introduction card (also re-signed, to get past the signature), the card
+  introduction, the bootstrap layers and the meeting proof; the body stream's layout, opener and manifest; Shamir
+  reconstruction from shares of any shape; the ML-KEM key check and the provider fed a peer's key and ciphertext; the
+  exchange's JSON, the discovery token's `NSKeyedUnarchiver`, and `ExchangeManager.handleReceivedData`, which the
+  `MCSessionDelegate` calls; imported-contact JSON;
+  the vault backup JSON; the sealed-field codecs; the share extension's staged files (ImageIO included) and manifest; and
+  a file through `InboundFile.open`, the streamed header and body, sender identification and slot opening, with a check
+  that a refused file left the sender's record and the store unchanged.
+- **What is not covered.** What runs after a slot opens (prekey acceptance, the shard handlers, `acceptReturnedShard`):
+  it needs a contact with keys, and only a paired contact reaches it, so its decoders are fuzzed and its consumers
+  (`receivedManifest`, `verify`) are called, but the handlers are not run on hostile content. `ShareViewController` can't
+  be driven from the test host (D5). The pasteboard is never read, and there is no QR input. Images and photos a contact
+  sends are decoded by the system with no check (Bug 187, residual 2).
+- **What it found.** Bug 189, 513 bytes of `[` in a file or a nearby phone's message end the app inside Foundation's JSON
+  scanner (fixed, `BoundedJSON`); Bug 187, a shared image makes ImageIO allocate gigabytes by its declared size or a chunk
+  length (fixed for PNG chunks and for dimensions); Bug 186, decoders that trap on a `Data` slice, not reachable today
+  (fixed). Bug 188, the extension reads a whole inbound `.occ` into memory, is open, needs a decision. No decoder of
+  `OccultaFormats` crashed on any other input in 200,000 cases per target and seed on seeds 11 and 12, run in a
+  standalone harness, or in the committed seeds.
+- **Cost.** The committed run is four seeds of 400 cases per target, about 30 seconds in the Simulator in a Debug build.
+  `TEST_RUNNER_OCCULTA_FUZZ_ITERATIONS=50000` is a local run; `TEST_RUNNER_OCCULTA_FUZZ_SEED=<n>` picks another seed.
+- **Open, needs a decision.** The 100-megapixel limit of Bug 187 and the unchecked decode of received images; the
+  share extension's inbound read (Bug 188); the extension itself (D5); that nothing but a list reviewed by hand stops a
+  new `JSONDecoder` call on outside bytes (Bug 189, residual 2).
+
 ### 13. Keep keys in memory only briefly
 
 **Why.** Keys cached for a session can be read by a live exploit while the phone is unlocked. Drop them

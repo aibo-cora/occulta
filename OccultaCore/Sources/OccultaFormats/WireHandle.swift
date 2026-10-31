@@ -285,7 +285,7 @@ public struct WireHandle {
         let msgLen   = try r.uint64BE()
         let message  = try r.read(length: msgLen)
 
-        let meta = try JSONDecoder().decode(PayloadMeta.self, from: metaJSON)
+        let meta = try BoundedJSON.decode(PayloadMeta.self, from: metaJSON)
 
         return OccultaBundle.SealedPayload(
             message:           message,
@@ -373,7 +373,7 @@ public struct WireHandle {
         let metaJSON  = try r.read(metaLen)
         let fileCount = Int(try r.uint32BE())
 
-        let meta = try JSONDecoder().decode(BasketMeta.self, from: metaJSON)
+        let meta = try BoundedJSON.decode(BasketMeta.self, from: metaJSON)
 
         var files: [File] = []
         var streamedLengths: [UInt64?] = []
@@ -384,7 +384,7 @@ public struct WireHandle {
             let ctLen     = try r.uint64BE()
             let content   = ctLen > 0 ? try r.read(length: ctLen) : nil
 
-            let fMeta = try JSONDecoder().decode(FileMeta.self, from: fMetaJSON)
+            let fMeta = try BoundedJSON.decode(FileMeta.self, from: fMetaJSON)
             files.append(File(id: fMeta.id, content: content, format: fMeta.format, date: fMeta.date))
             streamedLengths.append(fMeta.streamedLength)
             inlineContentLengths.append(ctLen)

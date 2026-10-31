@@ -82,9 +82,11 @@ private func replacing(_ index: Int, in stream: Data, layout: BodyStream.Layout,
 @Suite("BodyStream — layout")
 struct BodyStreamLayoutTests {
 
-    @Test("P and T convert both ways at every boundary", arguments: [
-        5, C - 1, C, C + 1, 2 * C, 3 * C, 3 * C + 17, 10 * C + 1
-    ])
+    /// A named constant, not the literal in `arguments:`. Xcode 27.2's compiler gives up on that array ("unable to
+    /// type-check this expression in reasonable time"), inside the `@Test` macro's expansion.
+    private static let boundaries: [Int] = [5, C - 1, C, C + 1, 2 * C, 3 * C, 3 * C + 17, 10 * C + 1]
+
+    @Test("P and T convert both ways at every boundary", arguments: BodyStreamLayoutTests.boundaries)
     func layoutRoundTrips(p: Int) throws {
         let fromP = try BodyStream.Layout(plaintextLength: UInt64(p))
         let fromT = try BodyStream.Layout(streamLength: fromP.streamLength)

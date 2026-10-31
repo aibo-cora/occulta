@@ -163,7 +163,7 @@ extension Manager.Crypto {
             
             guard let box   = try? AES.GCM.SealedBox(combined: entry.wrappedPayload),
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),
-                  let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+                  let payload = try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
             else { continue }
 
             // Our slot. A body other than the one the sender sealed fails here, before the prekey is
@@ -212,7 +212,7 @@ extension Manager.Crypto {
     ) throws -> OccultaBundle.RecipientPayload {
         let box = try AES.GCM.SealedBox(combined: entry.wrappedPayload)
         let plain = try AES.GCM.open(box, using: wrappingKey, authenticating: blind)
-        return try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+        return try BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
     }
 
     /// Open the shared outer ciphertext of a group bundle with the extracted session key.

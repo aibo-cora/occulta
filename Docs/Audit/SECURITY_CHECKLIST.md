@@ -568,7 +568,10 @@ sign-off block, not against project settings alone.
       returns nothing; the only `XCLocalSwiftPackageReference` is `relativePath = OccultaCore`;
       `OccultaCore/Package.swift` declares no `dependencies`; and no `Package.resolved` exists.
       The archive re-check below (zero bundles, CryptoKit the only crypto link) still applies —
-      a static Swift package with no resources adds neither.
+      a static Swift package with no resources adds neither. `Package.swift` declares no
+      `resources`, and `OccultaCore/README.md` and `Docs/` sit outside every folder the project
+      synchronizes into a target ([`Docs/Features/OccultaCore/SPEC.md`](../Features/OccultaCore/SPEC.md),
+      "Not in the bundle").
 - [x] All crypto uses Apple frameworks only (`CryptoKit`, `Security.framework`) — no vendored
       crypto code
       — **was FAIL for 1.10.2, fixed on `release/v1.10.3` (2026-08-14).** 1.10.2 shipped five

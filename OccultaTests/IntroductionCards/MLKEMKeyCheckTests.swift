@@ -10,7 +10,7 @@ import CryptoKit
 import Foundation
 
 @testable import Occulta
-@testable import OccultaFormats
+@testable import OccultaCore
 
 @Suite("ML-KEM key check — FIPS 203 modulus check")
 struct MLKEMKeyCheckTests {

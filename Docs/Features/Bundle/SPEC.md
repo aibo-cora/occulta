@@ -196,6 +196,8 @@ Offset  Size  Field
 
 Duplicate sections of the same type are a protocol error — parsers must throw `BundleError.malformedBundle` on the second occurrence. Unknown types are silently skipped.
 
+A JSON section, like every JSON block in the format, is read as untrusted bytes: it is cleartext and nothing authenticates it before it is parsed. A reader refuses JSON nested more than 64 levels (`BoundedJSON`, `bugs.md` Bug 189). Foundation's own limit is 512, and it traps on a document of exactly 513 `[`. Nothing a writer produces nests more than ten.
+
 ---
 
 ## 5. Additional Authenticated Data (AAD)
@@ -394,6 +396,7 @@ These rules apply to all current and future implementations of the binary format
 4. **Unknown mode bytes must be decoded as `.unsupported`** and rejected before key derivation.
 5. **`fingerprintNonce` and `senderFingerprint` are routing-only.** They are not in the AAD. Tampered values make the bundle unroutable; they cannot compromise the ciphertext.
 6. **Version numbers are monotonically increasing and never reused.** Even retired versions (v2, never shipped) retain their slot.
+7. **JSON nested more than 64 levels is refused**, in every JSON block (§4.2.1, §4.3.1, §4.4). A writer never produces it, so no existing bundle is affected.
 
 ---
 

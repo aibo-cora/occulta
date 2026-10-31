@@ -1174,7 +1174,7 @@ struct RootView: View {
         if decodedBundleVersion == .v4 {
             basket = try WireHandle.decode(basket: decrypted.plaintext)
         } else {
-            basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+            basket = try BoundedJSON.decode(Basket.self, from: decrypted.plaintext)
         }
 
         // ── Write file attachments, photos, videos to temp directory ─────────────────
