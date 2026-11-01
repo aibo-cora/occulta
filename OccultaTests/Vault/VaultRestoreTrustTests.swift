@@ -30,7 +30,7 @@ import SwiftData
 /// changes there, these tests go quietly wrong rather than failing — the AAD would
 /// produce `decryptionFailed`.
 private let backupFileAAD = Data("occulta-backup-v1".utf8)
-private let appSupport    = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+private let appSupport    = Manager.Paths.applicationSupport
 
 /// Where older builds held a pending restore (`bugs.md` Bug 127). Nothing writes these any
 /// more; `deleteLegacyRestoreState` removes them. Duplicated from there, like the AAD above.
