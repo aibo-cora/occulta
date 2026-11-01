@@ -966,7 +966,7 @@ struct VaultRewrapUnlockTests {
           arguments: KeyForm.allCases)
     func backupsSurvive(form: KeyForm) throws {
         let (keys, store) = try prepareVault(form, entries: 0, backupDepths: [], file: false, epoch: nil)
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupport = Manager.Paths.applicationSupport
         try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
         // The previous release: a backup key split two ways, an entry, and an export. No epoch yet, so nothing moves on unlock.
@@ -1017,7 +1017,7 @@ struct VaultRewrapUnlockTests {
         vault.unlock(context: LAContext())
         #expect(store.epoch() == 2)
 
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupport = Manager.Paths.applicationSupport
         try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
         let leftover = KeyReseal.exportMetadataTemporaryURL(in: appSupport)
         try Sealing.random(924).write(to: leftover)
