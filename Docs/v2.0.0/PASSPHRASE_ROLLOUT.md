@@ -32,6 +32,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 24, that screen says "The contact who sent this message was deleted or cannot be found", the same message as
   for a deleted contact, and today's app refuses a hidden contact's bundle the same way (decided 2026-10-31, not
   implemented);
+- 23, the new store file is plain SQLite: every table sealed under a space key, each `WITHOUT ROWID` with a random
+  16-byte key and the sealed record, and no SwiftData (decided 2026-11-01, not built; Bug 190);
 - the data slices ship together, in one reseal (§7.1);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
@@ -45,7 +47,6 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 20, what the identifier's references hold once the identifier moves into the contact's blob;
 - 21, how many noise rows there are, and when they are written;
 - 22, the table only grows, and unlock pays for every row ever written;
-- 23, SwiftData's own columns and history tell shredded rows from the rest and log every write (Bug 190);
 - 25, any write that reseals all of one space's rows at once groups them across images.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
@@ -712,9 +713,9 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
+| 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); SwiftData's columns and history (§8, 23); whole-space reseals (§8, 25); the model sweep for requirement 5 | 1–2 |
+| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); whole-space reseals (§8, 25); the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
 | 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
@@ -814,8 +815,16 @@ there and aren't repeated here.
     - The persistent history tables (`ACHANGE`, `ATRANSACTION`) log every append and every shred with its time. That
       is the series Bug 120 says a duress space can't survive, in one image. They are in every shipped store today.
 
-    The options are in Bug 190: drop the history, shred by delete and insert in a random order, or keep these tables
-    outside SwiftData.
+    ~~The options are in Bug 190: drop the history, shred by delete and insert in a random order, or keep these tables
+    outside SwiftData.~~ **Decided 2026-11-01 by the owner: the new store file is plain SQLite** (`decisions.md`,
+    2026-11-01). It holds every table sealed under a space key (vault entries, contacts, photos, groups, and the
+    backup-key, custody and restore records) through the `sqlite3` C API. Each table is `WITHOUT ROWID`, keyed by a
+    random 16-byte ID, with the sealed record as its only other column. That removes `Z_OPT`, insertion order, the
+    write counters and the history by construction, and keeps an append and its shred in one transaction.
+    Install-wide state stays in SwiftData, where Bug 190 stays open. Measured first: opening, changing and resealing
+    100 records takes about 9 ms, plus about 1.6 ms for the Enclave derivation, on the iPhone 17 Pro Simulator
+    (`ContactRecordCryptoMeasurementTests`). Open, needs a decision: whether the SQLite header or page placement
+    says anything about write order; not checked.
 24. **A known contact's bundle failing to open is the rejection oracle again** (added 2026-10-31; §1.5,
     `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). The 2026-10-29 rule above
     doesn't cite that document's inbound-path analysis, which removed exactly this behaviour in `b1f9045`. Today a bundle from a contact
@@ -846,7 +855,8 @@ there and aren't repeated here.
     The design already has writes of this shape, each open, needs a decision:
     - a rekey, which §1.1 says regenerating an exposed phrase and graduation each need;
     - removing a space, which shreds all its rows in one pass;
-    - the migration, if each space's rows are written as one batch (§8, 23 on `Z_PK`).
+    - the migration, if each space's rows are written as one batch. Under the plain SQLite store (§8, 23) the
+      random key gives the batch no order, but where its pages land in the file isn't checked.
 
     Spreading such a write over time, or doing it together with writes to other rows, would blur the group.
     Neither is designed.
@@ -874,7 +884,7 @@ depends on or changes.
 | Bug 162 | A trustee's piece count shows how many depths have a backup | On-screen count and manifest size fixed (PR #114); stored rows and piece dates open, needs a decision | Stage 5 |
 | Bug 168 | A downgrade migrates the store back and drops what the older schema lacks | Accepted 2026-10-16 for the prekey records; for the passphrase migration, a new store file with no way back, and a downgrade after migration not supported (decision 18, 2026-10-29) | §1.2, stage 0 |
 | Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open, needs a decision | §6, decision 15 |
-| Bug 190 | SwiftData's persistent history logs every write with a time; `Z_OPT` marks rows updated in place | Open, needs a decision; filed 2026-10-31 | §8, 23 |
+| Bug 190 | SwiftData's persistent history logs every write with a time; `Z_OPT` marks rows updated in place | Filed 2026-10-31. For the new store, decided 2026-11-01: plain SQLite, so none of it applies there. For the SwiftData store that remains, and for today's app, open, needs a decision | §8, 23 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
 | Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |
 | Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |

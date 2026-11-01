@@ -1442,6 +1442,25 @@ the share staging key.
 - **Tests.** At a duress depth, a hidden and a deleted contact's bundles give the same error, the same alert and no writes. The hidden one opens at depth 0, with its prekey unconsumed.
 - **Not changed.** The raw store shows a hidden contact isn't deleted (`deletionToken` is a plain field; `forensic-trace-avoidance.md` §S5) until crypto-shredding in 2.1.0. The transport's thread can still show recent traffic with the "deleted" contact, the same strain the missing list entry already puts on the story.
 
+## The new store file is plain SQLite, not SwiftData
+
+**Status:** Decided 2026-11-01 by the owner. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, item 23. Bug 190 stays open for the SwiftData store that remains.
+
+**Decision:** The new store file the reseal writes holds every table sealed under a space key: vault entries, contacts, photos, groups, and the backup-key, custody and restore records. It is a plain SQLite file through the `sqlite3` C API, with no SwiftData or Core Data. Each table is `WITHOUT ROWID`, keyed by a random 16-byte ID, with the sealed record as its only other column. Install-wide state that no space key seals, such as `AppLayerConfig` and settings, stays in SwiftData.
+
+**Why:**
+- In a SwiftData table, `Z_OPT` marks a row shredded in place, `Z_PK` ranks every row by insertion, `Z_PRIMARYKEY` counts every change ever made, and the persistent history logs every write with its time (Bug 190). A plain table has none of them, so the design's "a deleted row, another space's row and a noise row look alike" holds by construction rather than by discipline on every save path.
+- A random key orders rows by nothing to do with time.
+- One file for every space-sealed table keeps "append a new row, shred the old" and a group's update in one SQLite transaction.
+- No dependency is added: the app already calls `sqlite3` for `PRAGMA secure_delete`.
+- The cost of sealing is the same either way: 100 records opened, changed and resealed in about 9 ms, plus about 1.6 ms for the Enclave derivation, on the iPhone 17 Pro Simulator (`ContactRecordCryptoMeasurementTests`).
+
+**Consequences:**
+- Stage 0 builds a small store layer (open, insert, delete, fetch all, its own schema version) as the new-store-file mechanics, with `secure_delete` on and a checkpoint after every shred.
+- A test opens the file and finds only the expected tables and columns.
+- **Open, needs a decision:** whether the SQLite file header or page placement says anything about write order. Not checked.
+- The SwiftData store keeps Bug 190's history for the tables that stay there, and today's app has it for every table.
+
 ---
 
 ## OccultaCore: AGPL-3.0, primitives only, two modules

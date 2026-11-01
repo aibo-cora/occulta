@@ -15128,7 +15128,9 @@ same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of fil
 ## Bug 190 — SwiftData's persistent history logs every write to the store, with a timestamp, the row and the columns changed
 
 **Status:** Open, needs a decision. Found 2026-10-31 while describing the contact table after the passphrase
-rollout (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23).
+rollout (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23). **For the passphrase rollout's new store, decided
+2026-11-01:** plain SQLite, so none of this applies there (`decisions.md`, 2026-11-01). The SwiftData store that
+remains, and every store today's app writes, are still open.
 
 **Target:** None yet. It is in every shipped build, and the passphrase rollout's storage relies on it being gone.
 
@@ -15193,6 +15195,9 @@ look the same. In a SwiftData table they don't:
   random order. `Z_PK` still orders rows by insertion.
 - **Leave SwiftData for these tables.** A plain SQLite table or a file of fixed-size records has no history, no
   `Z_OPT` and no insertion counter.
+- **Decided 2026-11-01 for the new store:** the third option. Every table sealed under a space key goes into a
+  plain SQLite file, each `WITHOUT ROWID` with a random 16-byte key and the sealed record. The first option is still
+  needed for the SwiftData store that remains and for today's app.
 - **Images already taken** keep the history up to that point, whatever is chosen.
 
 ### Guard
