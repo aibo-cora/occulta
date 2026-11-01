@@ -69,7 +69,7 @@ private func makeVault() throws -> (VaultManager, ModelContainer) {
     // app always has but an in-memory test store does not. Create it rather than skip the
     // write — the staleness snapshot is part of what export does, and stubbing it out would
     // make the round trip less faithful than the thing it is pinning.
-    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    let appSupport = Manager.Paths.applicationSupport
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
     let vault = VaultManager(
@@ -337,8 +337,7 @@ struct VaultBackupRoundTripTests {
             plain, using: vaultKey, nonce: AES.GCM.Nonce(),
             authenticating: Data("occulta.backup-export-meta-v1".utf8)
         )
-        let url = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let url = Manager.Paths.applicationSupport
             .appendingPathComponent("backup-export-meta.dat")
         try sealed.combined!.write(to: url, options: [.atomic, .completeFileProtection])
 
@@ -451,7 +450,7 @@ struct VaultBackupRoundTripTests {
         let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
         vault.unlock(context: LAContext())
 
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupport = Manager.Paths.applicationSupport
         try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
         let files = ["backup-import-cache.occbak", "pending-restore.occbak", "pending-restore-shards.dat", "backup-export-meta.dat"]
             .map { appSupport.appendingPathComponent($0) }
