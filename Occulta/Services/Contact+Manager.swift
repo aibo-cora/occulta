@@ -779,6 +779,8 @@ extension ContactManager {
         /// An identity challenge or response in group format, to a contact below `.bodyDigestCapable`, whose build
         /// would refuse it. Those get the long-term format (prekey continuity §3.4).
         case identityChallengeBelowTier
+        /// `purgeUnreadableGroups` was given a key that doesn't open the rest of the store (Bug 191).
+        case keyDoesNotOpenStore
     }
 }
 
