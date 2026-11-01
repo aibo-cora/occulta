@@ -15216,12 +15216,14 @@ rows, and the same `Z_OPT` on every row of the new tables.
 
 ## Bug 191 — A hosted test run on a device reads the real store under the legacy keys, and can purge every group
 
-**Status:** Open, needs a decision. Found 2026-11-01, when a device run of `ContactRecordCryptoMeasurementTests` on a
-phone with real data made its contacts and groups disappear from the app. They came back after a normal launch.
+**Status:** Fix in review, [PR #152](https://github.com/aibo-cora/occulta/pull/152) to `develop` (not merged). Found 2026-11-01, when two device runs of `ContactRecordCryptoMeasurementTests` on
+a phone with real data made its contacts and groups disappear from the app. The contacts came back after a normal
+launch; the groups were deleted for good.
 
-**Target:** None yet. Debug builds hosting tests only; no shipped build runs this path.
+**Target:** `develop` via PR #152. Debug builds hosting tests are where it was seen; the purge guard also covers any
+shipped path that reaches the purge with the wrong key.
 
-### Severity: Low for users, High for any development phone that holds data (proposed)
+### Severity: Low for users, Critical for any development phone that holds data (proposed; it destroyed a phone's groups)
 
 ### What happens
 
@@ -15232,20 +15234,42 @@ phone with real data made its contacts and groups disappear from the app. They c
 - A store the launch sequence has resealed (Bug 171, stage 2) does not decrypt under the legacy keys, so the app shows
   no contacts and no groups. That is what was seen. Nothing was lost: the next normal launch ran the sequence and the
   data reappeared.
-- **Not seen here, but the code allows it:** the app body's `.task` calls `purgeOrphanedGroupsIfAtRealDepth()`
-  (`OccultaApp.swift:952`). Once the phase is `.unlocked` at depth 0, it derives the key from `Manager.Ambient`, which is
-  the legacy key here, and `purgeUnreadableGroups` (`Contact+Manager+Groups.swift:108`) deletes every group that key
-  fails to open: all of them. On this phone the groups survived, probably because a lock kept the phase at
-  `.pinRequired` (not checked). On a phone with no lock, one device test run would delete every group.
-  `sweepPrekeysIfUnlocked()` runs under the same gate with the same keys and wasn't checked either.
+- **Every group was deleted (seen 2026-11-01, after a first note here said they survived).** The app body's `.task`
+  calls `purgeOrphanedGroupsIfAtRealDepth()` (`OccultaApp.swift:952`). On a phone with no Occulta PIN,
+  `requiresPIN` is false (`Manager+Security.swift:78`, a nil check that needs no key), so `evaluate(coldLaunch:)`
+  goes straight to `.unlocked` at depth 0 (`AppScreen.swift:171`), and the purge derives its key from
+  `Manager.Ambient`: the legacy key, which `legacyKey` creates if it is missing (`Key+Manager.swift:570`), so it is
+  never nil. `purgeUnreadableGroups` (`Contact+Manager+Groups.swift:108`) then finds no group that key opens and
+  deletes all of them, and the `checkpointStore()` right after flushes the deletion with `secure_delete` on, so the
+  rows are zeroed. Contacts survive only because nothing purges them. That the phone had no PIN is inferred, not
+  checked: the contact list showed during the run, which a PIN gate would have hidden. A phone with a PIN keeps the
+  phase at `.pinRequired` and the purge doesn't run.
+- **The purge is the only destructive step** (checked by the fix's session). The other launch-time sweeps and
+  migrations skip rows they can't read, which is why the contacts came back, and the legacy derivation reuses the
+  keychain and Enclave items that still exist on a resealed phone, so no fresh keys were created.
+- **No recovery from the app:** the vault backup doesn't hold groups, and the store is excluded from device backups.
 
-### Fix (open, needs a decision)
+### Fix (PR #152, commit `261e6024`)
 
-- Run none of the launch-time sweeps in a test host, the same way the launch sequence is skipped.
-- Or refuse the purge whenever the launch sequence hasn't established the process's keys, which also covers any other
-  path that skips it.
-- Or keep device measurements out of the app host altogether, in a package test target with its own bundle ID.
+- **The test host gets an in-memory store.** `OccultaApp.init` builds an in-memory container in a test host, as a
+  blocked launch does, and its file-level calls point at a path that doesn't exist. A hosted run never opens the real
+  store, so no sweep, today's or a later one, can touch it.
+- **The purge refuses a key that doesn't open the store.** `purgeUnreadableGroups` first decrypts
+  `AppLayerConfig.persistedDepth` with the key it was given. If that fails, or the config row or `persistedDepth` is
+  missing, it throws `keyDoesNotOpenStore` and deletes nothing. With the right key, Bug 75's cleanup of genuinely
+  stranded groups still runs.
+- **Rejected:** skipping the sweeps in a test host (a guard at each call site, and the real store still open); a flag
+  set once the launch sequence has set up the keys (no unit test reaches it); refusing only when nothing decrypts (it
+  breaks Bug 75's all-stranded case and can't tell a wrong key from unreadable groups).
+- **Duress and forensics:** no change. With the right key the behaviour is the same, and the checkpoint still runs at
+  every depth.
+- **Still open, not in the PR:** a hosted test can still reach real Keychain and Enclave items, the App Group and
+  `UserDefaults`, and the `HybridUpgradeTests.swift:101` helper defaults to `KeyReseal.Locations.production`. Device
+  runs stay off every phone with real data.
 
 ### Guard
 
-None yet. A test that launches the scene under a test host with a resealed store and finds every group still there.
+`GroupOrphanPurgeTests`: a purge under a key that doesn't match the store, with no config row, and with no
+`persistedDepth` each delete nothing, and all three fail with the guard removed. A genuinely stranded group is still
+purged, and Bug 75's all-stranded case still clears. The in-memory test host has no test of its own:
+`OccultaApp.init` can't be unit-tested, so only a full hosted run covers it.
