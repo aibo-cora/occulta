@@ -15211,3 +15211,41 @@ look the same. In a SwiftData table they don't:
 
 None yet. A test that saves, updates and deletes, then reads the store file and finds no `ACHANGE` or `ATRANSACTION`
 rows, and the same `Z_OPT` on every row of the new tables.
+
+---
+
+## Bug 191 — A hosted test run on a device reads the real store under the legacy keys, and can purge every group
+
+**Status:** Open, needs a decision. Found 2026-11-01, when a device run of `ContactRecordCryptoMeasurementTests` on a
+phone with real data made its contacts and groups disappear from the app. They came back after a normal launch.
+
+**Target:** None yet. Debug builds hosting tests only; no shipped build runs this path.
+
+### Severity: Low for users, High for any development phone that holds data (proposed)
+
+### What happens
+
+- `OccultaTests` is hosted in Occulta.app, so a device run installs a Debug build over the app and launches it against
+  the real store.
+- In a test host, `OccultaApp.init` skips `LaunchSequence.run` (`OccultaApp.swift:96-104`, the same in `v2.0.0`). The
+  process's tier-U keys then stay `.legacy` (`Manager+Ambient.swift:70-79`).
+- A store the launch sequence has resealed (Bug 171, stage 2) does not decrypt under the legacy keys, so the app shows
+  no contacts and no groups. That is what was seen. Nothing was lost: the next normal launch ran the sequence and the
+  data reappeared.
+- **Not seen here, but the code allows it:** the app body's `.task` calls `purgeOrphanedGroupsIfAtRealDepth()`
+  (`OccultaApp.swift:952`). Once the phase is `.unlocked` at depth 0, it derives the key from `Manager.Ambient`, which is
+  the legacy key here, and `purgeUnreadableGroups` (`Contact+Manager+Groups.swift:108`) deletes every group that key
+  fails to open: all of them. On this phone the groups survived, probably because a lock kept the phase at
+  `.pinRequired` (not checked). On a phone with no lock, one device test run would delete every group.
+  `sweepPrekeysIfUnlocked()` runs under the same gate with the same keys and wasn't checked either.
+
+### Fix (open, needs a decision)
+
+- Run none of the launch-time sweeps in a test host, the same way the launch sequence is skipped.
+- Or refuse the purge whenever the launch sequence hasn't established the process's keys, which also covers any other
+  path that skips it.
+- Or keep device measurements out of the app host altogether, in a package test target with its own bundle ID.
+
+### Guard
+
+None yet. A test that launches the scene under a test host with a resealed store and finds every group still there.

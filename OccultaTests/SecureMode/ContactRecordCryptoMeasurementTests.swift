@@ -2,7 +2,7 @@
 //  ContactRecordCryptoMeasurementTests.swift
 //  OccultaTests
 //
-//  ⚠️  The second test requires a Secure Enclave.
+//  ⚠️  The second and third tests require a Secure Enclave.
 //
 //  Supports `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23: what it costs to open 100 sealed contact records,
 //  change a few fields in each and seal them again, as stage 4's one-record-per-contact design does.
@@ -14,6 +14,8 @@
 //      and leave no keychain item. PBKDF2 is left out: it is tuned to a target time (~1 s on an iPhone 11, spec
 //      §4), so its cost is set, not measured. For comparison, it also times one Enclave ECDH per record, which
 //      the design doesn't do.
+//    - the same at 100, 1,000 and 5,000 records, with 1,000 noise rows (§8, 21's cap) tried and rejected first, as
+//      unlock tries every row. Meant for a device: the Simulator's Enclave is the Mac's.
 //
 //  The mock record is sized from measured values: a P-256 identity and agreement key (65 bytes each), an
 //  ML-KEM-1024 public key (1,568 bytes, `bugs.md` Bug 171), and 23 prekey blobs of 143 bytes, the 15/5 peak
@@ -22,8 +24,8 @@
 //
 //  Asserted: every record round-trips with its changes, every sealed record has the same size, and the Enclave
 //  derivation gives the same key every time.
-//  Measured and attached as `contact-record-measurement.txt` and `contact-record-enclave-measurement.txt`, not
-//  asserted, because the numbers belong to the hardware they ran on.
+//  Measured and attached as `contact-record-measurement.txt`, `contact-record-enclave-measurement.txt` and
+//  `contact-record-scale-<count>.txt`, not asserted, because the numbers belong to the hardware they ran on.
 //
 //  ⚠️  Never run this on a phone that holds real Occulta data. The suite is hosted in Occulta.app, so a device run
 //  installs a Debug build over the real install. To read the numbers:
@@ -46,12 +48,15 @@ private func transientEnclaveKeyAvailable() -> Bool {
     ContactRecordCryptoMeasurementTests.transientEnclaveKey() != nil
 }
 
-@Suite("Contact record — open, change and seal 100 records")
+// Serialized: run in parallel, the tests queue for the one Enclave and time each other.
+@Suite("Contact record — open, change and seal sealed records", .serialized)
 struct ContactRecordCryptoMeasurementTests {
 
     static let contactCount = 100
     static let passes = 20
     static let paddingStep = 4_096
+    static let scalePasses = 5
+    static let noiseRows = 1_000
 
     let clock = ContinuousClock()
 
@@ -95,37 +100,11 @@ struct ContactRecordCryptoMeasurementTests {
         var report = ["device: \(Self.deviceModel()), \(ProcessInfo.processInfo.operatingSystemVersionString)"]
         defer { Attachment.record(report.joined(separator: "\n"), named: "contact-record-enclave-measurement.txt") }
 
-        let enclaveKey = try #require(Self.transientEnclaveKey())
-        let peer = try #require(Self.publicKey(x963: ShareStagingKeyManager.numsX963))
-        let salt = try #require(SecKeyCopyPublicKey(enclaveKey).flatMap { SecKeyCopyExternalRepresentation($0, nil) as Data? })
-        let tierSecret = Self.random(32)
-
-        // On iOS 26 the tier record is hybrid: an Enclave ML-KEM key kept as a blob and a ciphertext to it.
-        let provider = PostQuantumProviderFactory.create()
-        var postQuantum: (keyBlob: Data, ciphertext: Data)?
-        if let provider {
-            let pair = try #require(provider.generatePersistentKeyPair())
-            let encapsulated = try #require(provider.encapsulate(peerPublicKeyData: pair.publicKeyData))
-            postQuantum = (pair.keyBlob, encapsulated.ciphertext)
-        }
-        report.append("ML-KEM in the derivation: \(postQuantum == nil ? "no (below iOS 26)" : "yes, Enclave ML-KEM-1024")")
-
-        func deriveKey() throws -> SymmetricKey {
-            var error: Unmanaged<CFError>?
-            let exchange = try #require(SecKeyCopyKeyExchangeResult(
-                enclaveKey, .ecdhKeyExchangeCofactorX963SHA256, peer,
-                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary, &error
-            ) as Data?)
-            var ikm = exchange
-            var info = Data("Occulta-measurement-space-key".utf8)
-            if let provider, let postQuantum {
-                ikm.append(try #require(provider.decapsulate(ciphertext: postQuantum.ciphertext, keyBlob: postQuantum.keyBlob)))
-                info.append(Data(SHA256.hash(data: postQuantum.ciphertext)))
-            }
-            ikm.append(tierSecret)
-            return HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: ikm), salt: salt, info: info,
-                                          outputByteCount: 32)
-        }
+        let derivation = try Self.enclaveDerivation()
+        let enclaveKey = derivation.enclaveKey
+        let peer = derivation.peer
+        let deriveKey = derivation.derive
+        report.append("ML-KEM in the derivation: \(derivation.postQuantum ? "yes, Enclave ML-KEM-1024" : "no (below iOS 26)")")
 
         var rows = try Self.makeRows(key: try deriveKey())
 
@@ -159,6 +138,68 @@ struct ContactRecordCryptoMeasurementTests {
         report.append("for comparison, one Enclave ECDH per record (\(Self.contactCount) calls): \(Self.stats(perRecord))")
     }
 
+    /// The same derivation and pass at the sizes a real space reaches, plus item 21's noise cap: unlock tries every
+    /// row, and a noise row fails its tag check.
+    @Test("Derive the key in the Enclave, then open, change and seal many records among noise rows, attached",
+          .enabled(if: transientEnclaveKeyAvailable()),
+          arguments: [100, 1_000, 5_000])
+    func measureAtScale(contactCount: Int) throws {
+        var report = ["device: \(Self.deviceModel()), \(ProcessInfo.processInfo.operatingSystemVersionString)"]
+        defer { Attachment.record(report.joined(separator: "\n"), named: "contact-record-scale-\(contactCount).txt") }
+
+        let derivation = try Self.enclaveDerivation()
+        report.append("ML-KEM in the derivation: \(derivation.postQuantum ? "yes, Enclave ML-KEM-1024" : "no (below iOS 26)")")
+
+        var rows = try Self.makeRows(key: try derivation.derive(), count: contactCount)
+        let recordSize = try #require(rows.first?.sealed.count)
+        let noise = (0..<Self.noiseRows).map { _ in (id: UUID(), sealed: Self.random(recordSize)) }
+
+        var derive: [Duration] = []
+        var trial: [Duration] = []
+        var open: [Duration] = []
+        var change: [Duration] = []
+        var seal: [Duration] = []
+        var total: [Duration] = []
+        for pass in 0..<Self.scalePasses {
+            var key = SymmetricKey(size: .bits256)
+            let deriveTime = try self.clock.measure { key = try derivation.derive() }
+            var rejected = 0
+            let trialTime = self.clock.measure {
+                for row in noise where (try? Self.open(row.sealed, rowID: row.id, key: key)) == nil {
+                    rejected += 1
+                }
+            }
+            #expect(rejected == Self.noiseRows, "no noise row may open")
+            let times = try self.runPass(pass, rows: &rows, key: key)
+            derive.append(deriveTime)
+            trial.append(trialTime)
+            open.append(times.open)
+            change.append(times.change)
+            seal.append(times.seal)
+            total.append(deriveTime + trialTime + times.open + times.change + times.seal)
+        }
+        let finalKey = try derivation.derive()
+        let final = try rows.map { try Self.open($0.sealed, rowID: $0.id, key: finalKey) }
+        #expect(final.enumerated().allSatisfy { $1.note == "Pass \(Self.scalePasses - 1), contact \($0)" },
+                "every record must keep the last pass's change")
+
+        let perRecord = try self.clock.measure {
+            for _ in 0..<contactCount {
+                _ = try derivation.exchange()
+            }
+        }
+
+        report.append("\(contactCount) records of \(recordSize) bytes and \(Self.noiseRows) noise rows, " +
+                      "\(Self.scalePasses) passes; each figure is one pass")
+        report.append("derive the key (Enclave ECDH + ML-KEM decapsulation + HKDF): \(Self.stats(derive))")
+        report.append("try \(Self.noiseRows) noise rows (each fails AES-GCM): \(Self.stats(trial))")
+        report.append("open (AES-GCM open + JSON decode): \(Self.stats(open))")
+        report.append("change three fields: \(Self.stats(change))")
+        report.append("seal (JSON encode + pad + AES-GCM seal): \(Self.stats(seal))")
+        report.append("total: \(Self.stats(total))")
+        report.append("for comparison, one Enclave ECDH per record (\(contactCount) calls, once): \(Self.stats([perRecord]))")
+    }
+
     // MARK: - Pass
 
     private func runPass(_ pass: Int, rows: inout [(id: UUID, sealed: Data)], key: SymmetricKey) throws
@@ -184,8 +225,8 @@ struct ContactRecordCryptoMeasurementTests {
         return (open, change, seal)
     }
 
-    private static func makeRows(key: SymmetricKey) throws -> [(id: UUID, sealed: Data)] {
-        try (0..<Self.contactCount).map { index in
+    private static func makeRows(key: SymmetricKey, count: Int = Self.contactCount) throws -> [(id: UUID, sealed: Data)] {
+        try (0..<count).map { index in
             let id = UUID()
             return (id, try Self.seal(MockContactRecord.make(index), rowID: id, key: key))
         }
@@ -262,6 +303,55 @@ struct ContactRecordCryptoMeasurementTests {
     }
 
     // MARK: - Enclave
+
+    private struct EnclaveDerivation {
+        let enclaveKey: SecKey
+        let peer: SecKey
+        let postQuantum: Bool
+        let exchange: () throws -> Data
+        let derive: () throws -> SymmetricKey
+    }
+
+    /// A transient Enclave key, and the space-key derivation over it: one ECDH against P, on iOS 26 one ML-KEM
+    /// decapsulation of an Enclave key kept as a blob, and HKDF with a tier secret.
+    private static func enclaveDerivation() throws -> EnclaveDerivation {
+        let enclaveKey = try #require(Self.transientEnclaveKey())
+        let peer = try #require(Self.publicKey(x963: ShareStagingKeyManager.numsX963))
+        let salt = try #require(SecKeyCopyPublicKey(enclaveKey).flatMap { SecKeyCopyExternalRepresentation($0, nil) as Data? })
+        let tierSecret = Self.random(32)
+
+        // On iOS 26 the tier record is hybrid: an Enclave ML-KEM key kept as a blob and a ciphertext to it.
+        let provider = PostQuantumProviderFactory.create()
+        var postQuantum: (keyBlob: Data, ciphertext: Data)?
+        if let provider {
+            let pair = try #require(provider.generatePersistentKeyPair())
+            let encapsulated = try #require(provider.encapsulate(peerPublicKeyData: pair.publicKeyData))
+            postQuantum = (pair.keyBlob, encapsulated.ciphertext)
+        }
+
+        func exchange() throws -> Data {
+            var error: Unmanaged<CFError>?
+            return try #require(SecKeyCopyKeyExchangeResult(
+                enclaveKey, .ecdhKeyExchangeCofactorX963SHA256, peer,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary, &error
+            ) as Data?)
+        }
+
+        func derive() throws -> SymmetricKey {
+            var ikm = try exchange()
+            var info = Data("Occulta-measurement-space-key".utf8)
+            if let provider, let postQuantum {
+                ikm.append(try #require(provider.decapsulate(ciphertext: postQuantum.ciphertext, keyBlob: postQuantum.keyBlob)))
+                info.append(Data(SHA256.hash(data: postQuantum.ciphertext)))
+            }
+            ikm.append(tierSecret)
+            return HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: ikm), salt: salt, info: info,
+                                          outputByteCount: 32)
+        }
+
+        return EnclaveDerivation(enclaveKey: enclaveKey, peer: peer, postQuantum: postQuantum != nil,
+                                 exchange: exchange, derive: derive)
+    }
 
     /// A P-256 Enclave key with the access control production gives its keys, not stored in the keychain.
     static func transientEnclaveKey() -> SecKey? {

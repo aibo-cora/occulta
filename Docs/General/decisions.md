@@ -1488,7 +1488,21 @@ the share staging key.
 - With a uniform draw, every count of rows a surrendered phrase can't open, up to 1,000, is equally likely with or without a hidden space. The code is public, so the range is too; only the cap says anything. A hidden space of H contacts stays unprovable right after migration on (951 − H) / 951 of installs: 95% at 50, 79% at 200, 58% at 400.
 - The range is absolute: one scaled with contact counts would let a large real space show behind a small decoy.
 - Shredded rows (item 22) grow the unopened set with use, so later noise adds nothing but size.
-- At the cap the noise costs about 8 MB and 47 ms of extra trial decryption on the iPhone 17 Pro Simulator (`ContactRecordCryptoMeasurementTests`); a device is unmeasured.
+- At the cap the noise costs about 8 MB, and about 4 ms to try and reject on an iPhone 15 Pro (`ContactRecordCryptoMeasurementTests.measureAtScale`); an iPhone 11 is unmeasured.
+
+## The key cache: memory only, dropped when the app goes to the background
+
+**Status:** Decided 2026-11-01 by the owner. Not built. Stage 0 of `PASSPHRASE_ROLLOUT.md`, §8 item 27; register C2. The grace period is open, needs a decision.
+
+**Decision:** A derived key, today's local DB key or a space key, is kept in memory only, as a `SymmetricKey`, never on disk and never copied into `Data`. The key and every decrypted record are dropped when the app goes to the background, when it locks itself and when the space changes. Not on device lock.
+
+**Why:**
+- One Enclave ECDH costs about 4.6 ms on an iPhone 15 Pro, and a phrase-derived key can't be re-derived without the phrase, so a key per operation isn't an option.
+- A cache is no weaker than re-deriving: code running in the app while the phone is unlocked can ask the Enclave at will.
+- A suspended app runs no code, so "drop on device lock" would leave the key in RAM on a locked phone, readable by an after-first-unlock memory dump. Going to the background is the last moment the app surely runs.
+- Unlock opens every record, so the plaintext has to go with the key. Re-opening is cheap: 37 ms for 1,000 records on the iPhone 15 Pro.
+
+**Open:** a grace period could keep, in memory only, a copy of the space key wrapped by an Enclave key usable only while the phone is unlocked. On disk it would be §1.1's device slot.
 
 ---
 

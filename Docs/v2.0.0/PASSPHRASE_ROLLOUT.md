@@ -40,6 +40,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 21, the contact table's noise count: drawn per install, uniformly from 50–1,000, never stored, written at
   migration, at a fresh install's first launch and with a late migration batch, and never after (decided
   2026-11-01);
+- 27, the key cache: memory only, and the key and every decrypted record dropped when the app goes to the
+  background, locks or changes space, not on device lock (decided 2026-11-01);
 - the data slices ship together, in one reseal (§7.1);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
@@ -52,7 +54,9 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - the unlock cost, to be measured on a device (waits on decision 6);
 - 20, what the identifier's references hold once the identifier moves into the contact's blob;
 - 21's remainder: noise rows' sizes, and the noise for the other space-sealed tables;
-- 22, the table only grows, and unlock pays for every row ever written.
+- 22, the table only grows, and unlock pays for every row ever written;
+- 26, whether an overwritten row is gone below SQLite (APFS free blocks, flash), not verified;
+- 27's grace period: an Enclave-wrapped copy of the space key in memory while the app is in the background.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -332,6 +336,20 @@ only grows (§8, 22), and the noise for the other space-sealed tables (§8, 21).
 
 **Unverified estimates:** unlock is about 1 s of KDF, 50–200 ms to fetch 10k rows and 10–20 ms to trial-decrypt
 10k small headers. Not measured on a device.
+
+**Measured 2026-11-01 on an iPhone 15 Pro, iOS 26.7.1** (`ContactRecordCryptoMeasurementTests`, mock 8,220-byte
+records, crypto and encoding only, no store read; median of 5 passes):
+
+| Records | Derive the space key (Enclave ECDH, ML-KEM, HKDF) | Reject 1,000 noise rows | Open all | Seal all | Total |
+|---|---|---|---|---|---|
+| 100 | 6.8 ms | 3.6 ms | 3.8 ms | 3.4 ms | 18 ms |
+| 1,000 | 6.8 ms | 3.7 ms | 37 ms | 33 ms | 82 ms |
+| 5,000 | 13 ms | 3.7 ms | 183 ms | 166 ms | 370 ms |
+
+- One Enclave ECDH costs about 4.6 ms here against 0.23 ms on the Simulator, so one per record would cost 4.6 s at
+  1,000 records. The design's one derivation per unlock stays.
+- Opening is mostly JSON decoding: a noise row fails its tag check in under 4 µs.
+- Still unmeasured: PBKDF2, reading the rows from the store, and an iPhone 11 (decision 6).
 
 ---
 
@@ -720,7 +738,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
+| 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; noise for the other space-sealed tables and the table's growth (§8, 21 and 22); the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
@@ -822,8 +840,9 @@ there and aren't repeated here.
       1,000 unopened rows proves a hidden space. A hidden space of H contacts stays unprovable on (951 − H) / 951 of
       installs: 95% at 50, 79% at 200, 58% at 400. Shredded rows blur it further once the phone is used.
     - **Why absolute:** a range scaled with contact counts would let a large real space show behind a small decoy.
-    - **Cost at the cap:** about 8 MB and 47 ms of extra trial decryption on the iPhone 17 Pro Simulator (8,220-byte
-      records, `ContactRecordCryptoMeasurementTests`). Not measured on a device (decision 6).
+    - **Cost at the cap:** about 8 MB, and about 4 ms to try and reject 1,000 noise rows on an iPhone 15 Pro (5 ms on
+      the iPhone 17 Pro Simulator; 8,220-byte records, `ContactRecordCryptoMeasurementTests.measureAtScale`, §1.5); a
+      failed tag check skips the JSON decode that dominates a real open. An iPhone 11 is unmeasured (decision 6).
     - **Still open, needs a decision:** noise rows' sizes have to follow how real records spread over the size
       buckets, decided with the blob sizes; the other space-sealed tables (vault entries, groups, the backup-key,
       custody and restore records) each show their own count and need their own draw and range. The photo table is
@@ -906,6 +925,44 @@ there and aren't repeated here.
       isn't checked (item 23's open sub-question).
 
     Spreading these writes over time was not adopted: it keeps erased or exposed data readable for longer.
+26. **Whether an overwritten row is gone below SQLite** (added 2026-11-01; §1.5, §5; not verified). A shred
+    overwrites a row with random bytes, and under independent spaces that is the only way a row goes: the key it was
+    sealed under comes from a phrase and the device's Enclave key, and neither can be destroyed (Erase keeps the
+    install-wide keys, §5). So an old copy of the ciphertext anywhere on the phone still opens with the phrase on
+    this phone. Today's rows are under the local DB key, which a rotation or a full erase does destroy.
+    - **SQLite: covered as today's app does it.** `secure_delete` zeroes the freed cell, and
+      `PRAGMA wal_checkpoint(TRUNCATE)` (`OccultaApp.swift:180`) moves the WAL's frames into the file and truncates
+      it. The new store layer needs a test that, after a shred and a checkpoint, finds the old ciphertext in neither
+      the file nor its `-wal`.
+    - **APFS: not checked.** Truncating the WAL and rewriting a page free blocks without overwriting them. A logical
+      or full-file-system extraction reads files and doesn't see free space; a raw volume image with the file's key
+      might. Whether a truncated file's freed blocks stay under its own key, and whether deleting the `-wal` and
+      letting SQLite recreate it would discard that key, isn't known.
+    - **Flash: not checked.** Stale NAND pages need a chip-level read and the device's keys.
+    - **Open, needs a decision:** what to verify, and whether the store deletes its `-wal` rather than truncating it.
+      A destroyable per-space secret would close it, but it would be a per-space record, which §1.5 rules out.
+27. **What the key cache holds, and when it drops it** (added 2026-11-01; stage 0, register C2, §1.5). One Enclave
+    ECDH costs about 4.6 ms on an iPhone 15 Pro (§1.5's measurements), and a phrase-derived key can't be re-derived
+    without the phrase, so a key is derived once and kept for the session. Caching is no weaker than today's
+    re-derivation: code running in the app while the phone is unlocked can ask the Enclave for the key at will.
+
+    **Decided 2026-11-01 by the owner:**
+    - **Memory only,** as a `SymmetricKey`: never on disk and never copied into `Data`. Swift can't promise a copy is
+      wiped, so there are as few copies as possible.
+    - **Dropped when the app goes to the background,** not on device lock. iOS suspends a backgrounded app, and a
+      suspended app runs no code, so it can't react to the lock; the key would stay in RAM on a locked phone, where an
+      after-first-unlock memory dump reads it. Also dropped when the app locks itself and when the space changes, so a
+      space's key never outlives its session.
+    - **Every decrypted record goes with the key.** Unlock opens every record (§1.5), so a dropped key with the
+      plaintext left in memory protects nothing. Re-opening on return is cheap: 37 ms for 1,000 records on the
+      iPhone 15 Pro.
+    - **The same holds for today's local DB key** (C2).
+
+    **Open, needs a decision:** a grace period, returning to the app without the phrase. It would keep only a copy of
+    the space key wrapped by an Enclave key usable only while the phone is unlocked, in memory, and unwrap it on
+    return (one Enclave call). A locked phone's Enclave refuses, so a memory dump gets nothing. On disk the same copy
+    would be §1.1's device slot, which older images unwrap, so it never reaches disk. Without it, every return to the
+    app asks for the phrase.
 
 ---
 
@@ -932,6 +989,6 @@ depends on or changes.
 | Bug 170 | Deleting the app leaves its keychain items, including prekey tags that name contacts | Keys stay in the keychain by decision 15 (2026-10-19); the share key's erase fix built and merged (PR #118, 2026-10-19); legacy prekeys and the custody key open, needs a decision | §6, decision 15 |
 | Bug 190 | SwiftData's persistent history logs every write with a time; `Z_OPT` marks rows updated in place | Filed 2026-10-31. For the new store, decided 2026-11-01: plain SQLite, so none of it applies there. For the SwiftData store that remains, and for today's app, open, needs a decision | §8, 23 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
-| Register C2 | Local DB key re-derived per operation; no cache | Open, P1 | Stage 0 |
+| Register C2 | Local DB key re-derived per operation; no cache | Open, P1. One Enclave ECDH measured at about 4.6 ms on an iPhone 15 Pro (2026-11-01); the cache's rules decided 2026-11-01 | Stage 0; §8, 27 |
 | Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |
 | Register §G | No `VersionedSchema` | Open | Stage 0 |
