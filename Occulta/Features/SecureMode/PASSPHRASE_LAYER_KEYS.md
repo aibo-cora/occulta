@@ -20,7 +20,17 @@ below. It covers:
 - stages and effort.
 
 It proposed one change to §1, key slots, which was not adopted on 2026-10-19. It also touches §4's entry and
-recovery requirements and §5. Until decided, this document stands as written.
+recovery requirements and §5.
+
+**Decided 2026-10-29 by the owner: independent spaces.** The 2026-10-15 storage design in §2 (header slots with
+a canary, the chain, the shared key, origin lists) is not adopted. A space is a key plus whatever rows decrypt
+under it, with no pointers between spaces, no canary and no common pool. The decision and the ones that follow
+from it (no typo checksum, no probation week, lock-off for everyone, Erase All Data scoped to the current space,
+the vault's own key, the Enclave not in every guess, Bug 120 as a stated limit) are in
+[`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md) §1.5 and
+`Docs/General/decisions.md`, 2026-10-29. Where this document still describes depths, canaries, header slots or
+the per-guess Enclave requirement, those parts are superseded and each carries a note. The rest stands as
+written.
 
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
 shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
@@ -103,7 +113,7 @@ extract from the device, full stop). Losing either half is enough to prevent der
 needs *both* the physical device (or its SE, which cannot leave it) *and* the phrase.
 
 **Found 2026-10-21 (`Docs/Features/Secure Mode/bugs.md` Bug 171): the SE half above is not device-binding.
-Fixed for the keys that exist today in 2.0.0 (Stages 1 to 7). For the layer keys here it is open, needs a decision (D2).** `ECDH(SE_priv, G)` is `d·G`, which is the Enclave key's public point Q, so
+Fixed for the keys that exist today in 2.0.0 (Stages 1 to 7). For the layer keys here it was open (D2); decided 2026-10-29: they take the `ECDH(d, P)` term.** `ECDH(SE_priv, G)` is `d·G`, which is the Enclave key's public point Q, so
 the half is the X9.63 KDF of x(Q). Anyone with Q computes it off the device, with no Enclave call and no
 biometric. Tested on the Simulator for the keys the app derives this way today, and on an iPhone 15 Pro
 for a key with the vault's biometric-or-passcode access control: Q came back with no authentication,
@@ -118,10 +128,18 @@ an attacker who's captured `seComponent_D` (trivial under AFU, as always) brute-
 *cheap* comparison instead of against Argon2id's deliberately expensive one. Authentication instead
 works the way LUKS/VeraCrypt volumes do: derive `layerKey_D` and attempt to open a small known-format
 canary (or the depth's own header record); success means the phrase was right, failure means it wasn't.
+**Superseded 2026-10-29: there is no canary and no header.** Any generated phrase derives a key. A phrase that
+decrypts nothing opens a new, empty space, and a typo can't be told from one. The phrase is not checked
+(decided: no checksum, no retype).
 This also removes the current design's dependency on lockout/rate-limiting *for security* — with ~78–90
 bits of entropy behind a slow KDF, offline brute force is infeasible even with unlimited attempts and no
 rate limit at all. (Lockout can still exist for UX/anti-shoulder-surfing reasons; it stops being the
 thing actually holding the line.)
+
+**Dropped 2026-10-29 by the owner (D2 of Bug 171): the per-guess requirement below no longer stands.** The Enclave
+doesn't take part in every guess, and the construction below doesn't achieve it. The `ECDH(d, P)` device-binding
+term stays, one Enclave call per unlock. Strength rests on 7 words through PBKDF2 (§4), sized to hold with the
+Enclave broken. The text is kept as the record.
 
 **Requirement, added 2026-09-29 (threat review): the SE must take part in every guess, not once.** As
 written above, `seComponent_D = ECDH(SE_priv, G)` is a constant. Under AFU the attacker calls the SE once,
@@ -142,13 +160,13 @@ unless the SEP itself is broken. At 90 bits this is margin rather than the thing
 is exactly the margin that matters if the SEP does fall, and it costs one SE call per unlock. (`s_D` outside
 the P-256 scalar range fails `rawRepresentation:`; probability ~2⁻³², handle by re-deriving with a counter.)
 
-**This fix does not do what it says. Open, needs a decision (Bug 171, 2026-10-21; D2 below).** With `Q_D = s_D·G`,
+**This fix does not do what it says. ~~Open, needs a decision~~ Decided 2026-10-29: the requirement is dropped (Bug 171, 2026-10-21; D2 below).** With `Q_D = s_D·G`,
 `ECDH(SE_priv, Q_D) = s_D·d·G = s_D·Q`. An attacker holding the guess `s_D` and the public Q computes that
 in software, so the Enclave takes no part in a guess. Tested on the Simulator: Enclave `ECDH(d, s·G)` equals
 software `ECDH(s, Q)`. The requirement stands; this construction doesn't meet it. A peer point whose
 discrete log the guess doesn't reveal would (Bug 171, "Fix").
 
-**What Bug 171's fix changes for this design, and what it recommends. Recommended; open, needs a decision (D2, not decided).**
+**What Bug 171's fix changes for this design, and what it recommends. Recommended 2026-10-21; decided 2026-10-29 (D2).**
 - The ECDH term that exists today is now `ECDH(SE_priv, P)` with P a compiled-in point nobody knows the discrete log of
   (`Manager.Key.enclaveBoundKey(_:)`), so the "device-binding" half is real: the key needs this phone's Enclave, once per
   derivation, plus a Keychain secret per access tier and, on iOS 26+, an Enclave ML-KEM secret. The layer keys can take that
@@ -157,6 +175,8 @@ discrete log the guess doesn't reveal would (Bug 171, "Fix").
   with a phrase-independent peer holds the constant and can guess phrases offline against it. The per-guess requirement
   needs a peer that depends on the phrase and whose discrete log the guess doesn't reveal, which is a hash-to-curve or
   similar construction the app would have to design and nobody independent has reviewed (Bug 171, option 4).
+- **Decided 2026-10-29: the recommendation below is taken.** The requirement is out of this section and out of
+  step 2 of `HARDENING_STEPS.md`.
 - **Recommendation: drop the per-guess requirement and keep the `ECDH(d, P)` device-binding term.** The spec already sizes 7
   words with PBKDF2 to hold with the Secure Enclave broken (§4), so the ~90 bits and the KDF are the line, and the Enclave
   term is margin on top of them, as step 2 of `HARDENING_STEPS.md` already says. The alternative is a bespoke construction
@@ -178,7 +198,9 @@ layerKey_D = HKDF-SHA256(IKM: s ‖ ECDH(SE_priv, Q), …) — one Enclave key p
 ```
 
 Each attempt is one PBKDF2 run and one Enclave call, then a trial open of the 32 header slots (§2,
-2026-10-15), which is cheap. *The Enclave call buys nothing per guess as written: open, needs a decision (Bug 171, D2); with the fix it is one real call per unlock.* The cost: each guess is tested against every depth at once, about 5 bits off
+2026-10-15), which is cheap. *(Superseded 2026-10-29: no header slots. The KDF input is the phrase's word
+indices, not text. Unlock derives one key and trial-decrypts the contact and group records whole, so the
+"5 bits off 90" cost below, which came from testing each guess against 32 slots, does not arise.)* *The Enclave call buys nothing per guess as written, which D2 accepted on 2026-10-29 (Bug 171); with the fix it is one real call per unlock.* The cost: each guess is tested against every depth at once, about 5 bits off
 90 at 32 slots. The salt only has to be unique per install, which is what defeats precomputation.
 
 **Proposed 2026-10-19: key slots** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.1). **Not adopted, decided
@@ -197,6 +219,30 @@ every install has the same storage. Turning a lock on reseals depth 0 under the 
 ---
 
 ## 2. The open structural question: what does `layerKey_D` actually protect?
+
+**Closed 2026-10-29 by the owner: independent spaces** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5;
+`decisions.md`, 2026-10-29). The sections below are the design history. What the decision keeps and drops from
+the 2026-10-15 proposal:
+
+- **Kept:** each contact is one sealed record, text-only, padded to a few fixed sizes (requirements 3 and 4);
+  every sealed record is bound to its row with an AAD built from the row's `id` (requirement 6, Bug 123);
+  nothing inside a space names an absolute depth (requirement 1); a row a space can open never refers to one it
+  can't (requirement 5, which independent spaces satisfy by having no cross-references); nothing per space
+  changes together with the space count (requirement 7).
+- **Dropped:** the 32 header slots and the canary, the chain between depths, the shared key, the origin lists,
+  and the idea that a real depth can classify contacts into a decoy without its phrase. A decoy goes stale
+  unless it is used.
+- **Changed:** deletion crypto-shreds a row into noise. A deleted row, another space's row and a noise row look
+  alike, which replaces requirement 2's "orphan in place". The deletion marker moves inside the sealed record,
+  since `Contact.Profile.deletionToken` is a plain optional field today that queries read without a key.
+- **Added:** photos in their own table, referenced only by row IDs inside the sealed contact record, with noise
+  rows in the same size buckets. Vault entries keep their wrapped entry key as the cheap check. Unlock decrypts
+  contact and group records whole (a few KB each; an estimate to be measured on a device), with a 16-byte
+  locator tag per row as the fallback.
+- **The finding of 2026-10-15 stands, and is now a stated limit** (Bug 120): a duress space protects against
+  one image, not a series. Noise rows don't close it.
+- **Open, needs a decision (2026-10-30):** how many noise rows there are and when they are written, and a table
+  that only grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
 
 This is the part that isn't settled, and it's the crux of whether this proposal is simpler than what
 it replaces or just differently shaped.
@@ -645,6 +691,9 @@ clear user-facing warning copy. A forgotten depth-2 phrase does not need to enda
 ---
 
 ## 5. Sequencing
+
+**2026-10-29:** the passphrase work ships in 2.1.0, the release after 2.0.0, with all data slices in one reseal
+and no probation week (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §7.1; `decisions.md`, 2026-10-29).
 
 Not started. Depends on the current removal-stages plan (`plan.md`) landing first — building this on
 top of the still-present blob/rotation machinery would mean maintaining two parallel key-hierarchy

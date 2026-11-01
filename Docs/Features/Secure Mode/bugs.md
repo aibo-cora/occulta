@@ -10517,6 +10517,24 @@ document's "Finding, 2026-10-15".
 `Docs/v2.0.0` step 4 is marked not achievable as written, the assessment's repeated-images row is
 corrected, and step 16's guidance has to tell at-risk users.
 
+### Re-examined 2026-10-29: independent spaces change nothing about the second case
+
+The owner adopted independent spaces (`PASSPHRASE_ROLLOUT.md` §1.5), which drop the chain and the shared key.
+The finding above stands. It is slightly worse, since no space can reseal another's rows, and a decoy changes
+only when someone uses it (the "decoys go stale" cost, accepted).
+
+- **Fixed in one image, with no phrase:** per-type row counts (one sealed blob per contact in one table, spec §2
+  requirement 3), row sizes (a few fixed sizes, noise rows included), and no space tag on any row. Every change
+  is written as "append a new row, shred the old", so an edit, an addition and a deletion look alike.
+- **Not fixed:** rows a surrendered space can't open changing between images. Noise rows don't help. A key that
+  recognises noise would let anyone holding it count the real unopenable rows, and without one a duress session
+  can't tell noise from real rows, so it can't safely rewrite either.
+- **Stated limit, owner 2026-10-29:** a duress space protects against one image, not a series, and the setup
+  guidance (step 16) says so. The append-only log stays a possible later release, not planned.
+- **Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
+  grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+- **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
+
 ---
 
 ## Bug 121 — Backup key rotation has no UX, and no caller at all — `Backup.rotate()` is unreachable dead code
