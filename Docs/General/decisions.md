@@ -1478,6 +1478,18 @@ the share staging key.
 - A late migration batch adds only new rows, so appended noise does hide its size, cheaply.
 - Spreading a write keeps erased or exposed data readable for longer.
 
+## The contact table's noise rows: 50–1,000 per install, uniform, never stored
+
+**Status:** Decided 2026-11-01 by the owner. Not built. Closes the contact table's part of `PASSPHRASE_ROLLOUT.md` §8, item 21. Open, needs a decision: noise rows' sizes across the size buckets, and the noise for the other space-sealed tables.
+
+**Decision:** Each install draws its contact-table noise count uniformly from 50–1,000 and stores it nowhere. The rows are written in the migration's one sitting, at first launch on a fresh install, and as a fresh draw from the same range with a space that migrates later (8a, 8b). None are written after that.
+
+**Why:**
+- With a uniform draw, every count of rows a surrendered phrase can't open, up to 1,000, is equally likely with or without a hidden space. The code is public, so the range is too; only the cap says anything. A hidden space of H contacts stays unprovable right after migration on (951 − H) / 951 of installs: 95% at 50, 79% at 200, 58% at 400.
+- The range is absolute: one scaled with contact counts would let a large real space show behind a small decoy.
+- Shredded rows (item 22) grow the unopened set with use, so later noise adds nothing but size.
+- At the cap the noise costs about 8 MB and 47 ms of extra trial decryption on the iPhone 17 Pro Simulator (`ContactRecordCryptoMeasurementTests`); a device is unmeasured.
+
 ---
 
 ## OccultaCore: AGPL-3.0, primitives only, two modules

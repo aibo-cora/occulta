@@ -37,6 +37,9 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - 25, whole-space writes: Erase shows nothing about data still held; a rekey and lock-on are part of Bug 120's
   stated limit; a space that migrates later appends noise rows with its batch, how many settled with 21 (decided
   2026-11-01);
+- 21, the contact table's noise count: drawn per install, uniformly from 50–1,000, never stored, written at
+  migration, at a fresh install's first launch and with a late migration batch, and never after (decided
+  2026-11-01);
 - the data slices ship together, in one reseal (§7.1);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
@@ -48,7 +51,7 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - the photo table's noise rows and size buckets (§1.5);
 - the unlock cost, to be measured on a device (waits on decision 6);
 - 20, what the identifier's references hold once the identifier moves into the contact's blob;
-- 21, how many noise rows there are, and when they are written;
+- 21's remainder: noise rows' sizes, and the noise for the other space-sealed tables;
 - 22, the table only grows, and unlock pays for every row ever written.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
@@ -322,8 +325,10 @@ Decision 1 is closed by it.
 
 ~~**Proposed in the brainstorm, not decided:** uniform records and noise rows (Bug 120).~~ **Decided 2026-10-29**
 (§5, Bug 120): one sealed record per contact in one table, a few fixed sizes with noise rows in the same sizes, no
-space tag, and every change written as "append a new row, shred the old". Open, needs a decision: how many noise
-rows there are, and a table that only grows (§8, 21 and 22).
+space tag, and every change written as "append a new row, shred the old". ~~Open, needs a decision: how many noise
+rows there are, and a table that only grows (§8, 21 and 22).~~ **Decided 2026-11-01:** the contact table's noise
+count is drawn per install, uniformly from 50–1,000, and never stored (§8, 21). Open, needs a decision: a table that
+only grows (§8, 22), and the noise for the other space-sealed tables (§8, 21).
 
 **Unverified estimates:** unlock is about 1 s of KDF, 50–200 ms to fetch 10k rows and 10–20 ms to trial-decrypt
 10k small headers. Not measured on a device.
@@ -717,7 +722,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 |---|---|---|---|
 | 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache that drops on device lock (C2); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; the noise row count and the table's growth (§8, 21 and 22); the model sweep for requirement 5 | 1–2 |
+| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; noise for the other space-sealed tables and the table's growth (§8, 21 and 22); the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
 | 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
@@ -801,11 +806,28 @@ there and aren't repeated here.
     `TrusteeTag` hold its legacy ciphertext today, which a holder of Q can decrypt.
 21. **How many noise rows there are, and when they are written** (added 2026-10-30; §1.5, §5). The migration has to
     write noise rows, or a table's total shows how many contacts every space holds together: an install with 40
-    contacts and no duress space must look like one with 30 visible and 10 hidden. Nothing says how many, whether
-    the count is drawn per install, or whether it changes after migration. The prekey dummies had the same question
+    contacts and no duress space must look like one with 30 visible and 10 hidden. ~~Nothing says how many, whether
+    the count is drawn per install, or whether it changes after migration.~~ The prekey dummies had the same question
     ("a range of 32–128… not decided", spec §2); D9 made that one moot, but not this one. A space that migrates
     later than the others (8a, 8b) appends noise rows with its batch too (item 25, decided 2026-11-01); how many is
     part of this item.
+
+    **Decided 2026-11-01 by the owner for the contact table:** the count is drawn per install, uniformly from
+    50–1,000, and never stored.
+    - **When:** in the migration's one sitting; at first launch on a fresh install, so the two look alike; and as a
+      fresh draw from the same range with a space that migrates later (item 25). Never after that: shredded rows
+      (item 22) already grow the unopened set with use.
+    - **Why uniform:** every count of unopened rows up to 1,000 is then equally likely with or without a hidden
+      space. The range is public with the code, so only the cap says anything: right after migration, more than
+      1,000 unopened rows proves a hidden space. A hidden space of H contacts stays unprovable on (951 − H) / 951 of
+      installs: 95% at 50, 79% at 200, 58% at 400. Shredded rows blur it further once the phone is used.
+    - **Why absolute:** a range scaled with contact counts would let a large real space show behind a small decoy.
+    - **Cost at the cap:** about 8 MB and 47 ms of extra trial decryption on the iPhone 17 Pro Simulator (8,220-byte
+      records, `ContactRecordCryptoMeasurementTests`). Not measured on a device (decision 6).
+    - **Still open, needs a decision:** noise rows' sizes have to follow how real records spread over the size
+      buckets, decided with the blob sizes; the other space-sealed tables (vault entries, groups, the backup-key,
+      custody and restore records) each show their own count and need their own draw and range. The photo table is
+      its own item (§1.5).
 22. **The table only grows** (added 2026-10-30; §1.5). "Append a new row, shred the old" keeps every shredded row
     as noise, and no space can remove one, since nothing tells it from another space's row. So every edit adds a
     row for good. If consuming a prekey rewrites the contact's record (D9, stage 4), every message received does

@@ -241,8 +241,10 @@ the 2026-10-15 proposal:
   locator tag per row as the fallback.
 - **The finding of 2026-10-15 stands, and is now a stated limit** (Bug 120): a duress space protects against
   one image, not a series. Noise rows don't close it.
-- **Open, needs a decision (2026-10-30):** how many noise rows there are and when they are written, and a table
+- **Open, needs a decision (2026-10-30):** ~~how many noise rows there are and when they are written, and~~ a table
   that only grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+  **Decided 2026-11-01 for the contact table:** a per-install count drawn uniformly from 50–1,000, never stored,
+  written at migration, at a fresh install's first launch and with a late migration batch (§8, 21).
 - ~~**Open, needs a decision (2026-10-31):**~~ SwiftData's `Z_OPT` marks a row shredded in place, and its persistent
   history logs every write with a time, so "look alike" doesn't hold in a SwiftData table (`bugs.md` Bug 190;
   `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23). **Decided 2026-11-01:** the new store file is plain SQLite. Every

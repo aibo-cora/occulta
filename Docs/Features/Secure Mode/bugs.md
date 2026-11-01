@@ -10535,8 +10535,11 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   can't tell noise from real rows, so it can't safely rewrite either.
 - **Stated limit, owner 2026-10-29:** a duress space protects against one image, not a series, and the setup
   guidance (step 16) says so. The append-only log stays a possible later release, not planned.
-- **Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
+- **Also open, needs a decision (2026-10-30):** ~~how many noise rows the migration writes, and~~ a table that only
   grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+  **Decided 2026-11-01 for the contact table (§8, 21):** the noise count is drawn per install, uniformly from
+  50–1,000, and never stored, so up to 1,000 unopened rows say nothing; more than that right after migration proves
+  a hidden space. Noise sizes and the other space-sealed tables stay open.
 - ~~**Also open, needs a decision (2026-10-31):**~~ a write that reseals all of one space's rows at once (a rekey,
   removing a space, a migration batch) shows across images which rows make up that space, with no phrase
   (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25). **Decided 2026-11-01 by the owner:** Erase All Data's group is a
