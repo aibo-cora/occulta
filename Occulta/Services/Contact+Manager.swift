@@ -892,6 +892,8 @@ extension ContactManager {
         /// A re-exchange gave no pair keys to a contact whose current pairing has them. Saving it would overwrite the Enclave
         /// blobs of the better pairing with a plainer one.
         case pairingWouldBeWeaker
+        /// `purgeUnreadableGroups` was given a key that doesn't open the rest of the store (Bug 191).
+        case keyDoesNotOpenStore
     }
 }
 
