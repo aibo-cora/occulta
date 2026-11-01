@@ -10537,9 +10537,13 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   guidance (step 16) says so. The append-only log stays a possible later release, not planned.
 - **Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
   grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
-- **Also open, needs a decision (2026-10-31):** a write that reseals all of one space's rows at once (a rekey,
+- ~~**Also open, needs a decision (2026-10-31):**~~ a write that reseals all of one space's rows at once (a rekey,
   removing a space, a migration batch) shows across images which rows make up that space, with no phrase
-  (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25).
+  (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25). **Decided 2026-11-01 by the owner:** Erase All Data's group is a
+  space that no longer exists, so nothing to fix. A rekey after an exposed phrase and lock-on (7c) are part of the
+  stated limit above, which now also covers the space's size: a rekey must overwrite rows the exposed phrase still
+  opens, and while a lock was off anyone who could unlock the phone read the space. A space that migrates later
+  than the others (8a, 8b) appends a random number of noise rows with its batch, how many settled with §8, 21.
 - **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
 
 ---

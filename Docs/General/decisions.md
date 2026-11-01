@@ -1461,6 +1461,23 @@ the share staging key.
 - **Open, needs a decision:** whether the SQLite file header or page placement says anything about write order. Not checked.
 - The SwiftData store keeps Bug 190's history for the tables that stay there, and today's app has it for every table.
 
+## Whole-space writes: part of Bug 120's stated limit, with noise on a late migration
+
+**Status:** Decided 2026-11-01 by the owner. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, item 25. Bug 120 stays open in the register; the noise row count is §8, item 21.
+
+**Decision:**
+- **Erase All Data:** nothing to fix. Its group is a space that no longer exists.
+- **A rekey after an exposed phrase, and lock-on (7c):** part of Bug 120's stated limit, which now also covers the space's size and its set of rows.
+- **The migration:** under Rule 2 every space is written in one sitting into a new file, so there is no group. A space that migrates later (8a, 8b) appends a random number of noise rows with its batch; how many is settled with item 21.
+- Spreading these writes over time is not adopted.
+
+**Why:**
+- Any edit in a hidden space already shows across images that one exists (Bug 120). A whole-space write adds the space's size and rows, and only where it hits a space still holding data does that matter.
+- A rekey has to overwrite rows the exposed phrase and this phone still open, so the count is exact. Appended noise can't hide it, and no space can tell noise rows from another space's rows to replace them.
+- While a lock is off, anyone who can unlock the phone reads the whole space, as the lock-off warning says. Leaving the old rows as noise at lock-on would hide the size only from someone with an image from then who couldn't unlock the phone, at the cost of a table that grows by the whole space.
+- A late migration batch adds only new rows, so appended noise does hide its size, cheaply.
+- Spreading a write keeps erased or exposed data readable for longer.
+
 ---
 
 ## OccultaCore: AGPL-3.0, primitives only, two modules
