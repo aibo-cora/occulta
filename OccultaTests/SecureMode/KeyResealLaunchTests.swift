@@ -190,7 +190,7 @@ struct KeyResealBackupKeySplitTests {
 
         // `exportBackup` seals an export-metadata snapshot into Application Support, which the app always has and a
         // test host may not.
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupport = Manager.Paths.applicationSupport
         try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
         // The owner: a backup key split two ways, one entry, and a backup file. As a trustee it also holds two

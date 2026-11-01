@@ -164,7 +164,7 @@ extension Message {
 
         /// `Application Support/Drafts/` — parent of every draft's folder.
         static var attachmentsRoot: URL {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            let appSupport = Manager.Paths.applicationSupport
             return appSupport.appendingPathComponent("Drafts", isDirectory: true)
         }
 
