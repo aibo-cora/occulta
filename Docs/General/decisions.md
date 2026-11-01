@@ -1331,6 +1331,6 @@ the share staging key.
 
 **Why:** The formats carry Occulta-identifying constants (the `OCCB` magic, the `occulta-signed-attribute-v2` prefix), and a host app manages its own keys and does not interoperate with Occulta.
 
-**Consequences:** `TransportKeyDerivation` does not check `ecdhOutput`'s length; open, needs a decision (`OC-1`).
+**Consequences:** `TransportKeyDerivation` did not check `ecdhOutput`'s length (`OC-1`); it now throws a typed error for it, fixed 2026-11-01 (Bug 191; `Docs/Features/OccultaCore/decisions.md`).
 
 **Full reasoning:** `Docs/Features/OccultaCore/decisions.md`; what exists: `SPEC.md`; open items: `bugs.md`.

@@ -181,7 +181,7 @@ extension Manager.Crypto {
     /// The long-term slot key between the two card agreement keys: the derivation of `createHybridSharedSecret`
     /// (SPEC §3), with the card keys in place of the identity keys.
     static func cardLongTermKey(ecdhOutput: Data, ownPublicKey: Data, peerPublicKey: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey? {
-        TransportKeyDerivation.sessionKey(
+        try? TransportKeyDerivation.sessionKey(
             ecdhOutput: ecdhOutput, ownPublicKey: ownPublicKey, peerPublicKey: peerPublicKey,
             postQuantumSecrets: quantumMaterial.sharedSecrets, info: SaltInfo.kHybridTransportKeyInfo
         )

@@ -768,7 +768,7 @@ final class TestKeyManager: KeyManagerProtocol, LegacyLocalKeyProviding {
             let material,
             let rawECDH = self.deriveRawECDH(privateKey: self.identityPrivateKey, peerMaterial: material)
         else { return nil }
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: rawECDH, ownPublicKey: self.identityPublicKeyData, peerPublicKey: material,
             postQuantumSecrets: nil, info: SaltInfo.kTransportKeyInfo
         )
@@ -1027,7 +1027,7 @@ extension TestKeyManager {
         guard let rawECDH = self.deriveRawECDH(privateKey: self.identityPrivateKey, peerMaterial: peerP256Material) else {
             return nil
         }
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: rawECDH, ownPublicKey: self.identityPublicKeyData, peerPublicKey: peerP256Material,
             postQuantumSecrets: quantumMaterial.sharedSecrets, info: SaltInfo.kHybridTransportKeyInfo
         )
@@ -1065,7 +1065,7 @@ extension TestKeyManager {
         info.append(contentsOf: sortedNonces[0])
         info.append(contentsOf: sortedNonces[1])
 
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: rawECDH, ownPublicKey: self.identityPublicKeyData, peerPublicKey: peerP256Material,
             postQuantumSecrets: quantumMaterial.sharedSecrets, info: info
         )

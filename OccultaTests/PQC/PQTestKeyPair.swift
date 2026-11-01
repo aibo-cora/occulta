@@ -42,7 +42,7 @@ struct PQTestKeyPair {
 
     func createClassicalSharedSecret(peerPublicKeyData: Data) -> SymmetricKey? {
         guard let rawECDH = self.rawECDH(peerPublicKeyData: peerPublicKeyData) else { return nil }
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: rawECDH, ownPublicKey: self.publicKeyData, peerPublicKey: peerPublicKeyData,
             postQuantumSecrets: nil, info: SaltInfo.kTransportKeyInfo
         )
@@ -52,7 +52,7 @@ struct PQTestKeyPair {
 
     func createHybridSharedSecret(peerPublicKeyData: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey? {
         guard let rawECDH = self.rawECDH(peerPublicKeyData: peerPublicKeyData) else { return nil }
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: rawECDH, ownPublicKey: self.publicKeyData, peerPublicKey: peerPublicKeyData,
             postQuantumSecrets: quantumMaterial.sharedSecrets, info: SaltInfo.kHybridTransportKeyInfo
         )
@@ -69,7 +69,7 @@ struct PQTestKeyPair {
         info.append(contentsOf: sortedNonces[0])
         info.append(contentsOf: sortedNonces[1])
 
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: rawECDH, ownPublicKey: self.publicKeyData, peerPublicKey: peerPublicKeyData,
             postQuantumSecrets: quantumMaterial.sharedSecrets, info: info
         )

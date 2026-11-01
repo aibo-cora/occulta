@@ -81,7 +81,7 @@ private struct ReadmePeer {
     var postQuantumSecrets: (Data, Data)?               // nil: this peer is classical-only
 }
 
-private enum ReadmeTransportError: Error { case badKeyMaterial, malformed }
+private enum ReadmeTransportError: Error { case malformed }
 
 /// One label per purpose, chosen by the host app. The version is part of it.
 private let readmeLabel = Data("com.example.myapp.message.v1".utf8)
@@ -95,14 +95,13 @@ private func readmeSessionKey(
         .x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32)
         .withUnsafeBytes { Data($0) }
 
-    guard let key = TransportKeyDerivation.sessionKey(
+    return try TransportKeyDerivation.sessionKey(
         ecdhOutput: ecdhOutput,
         ownPublicKey: own.publicKey.x963Representation,
         peerPublicKey: peer.publicKey,
         postQuantumSecrets: peer.postQuantumSecrets,
         info: readmeLabel
-    ) else { throw ReadmeTransportError.badKeyMaterial }
-    return key
+    )
 }
 
 /// `header` is whatever else the receiver acts on (a message ID, the sender, a timestamp). It travels
@@ -169,12 +168,14 @@ struct ReadmeTransportTests {
 
     @Test("A public key that is not 65 bytes is refused rather than repaired")
     func malformedPeerKeyIsRefused() {
-        #expect(TransportKeyDerivation.sessionKey(
-            ecdhOutput: Data(repeating: 0x9a, count: 32),
-            ownPublicKey: self.alice.publicKey.x963Representation,
-            peerPublicKey: Data(self.bob.publicKey.x963Representation.dropFirst()),   // 64 bytes: the 0x04 prefix gone
-            postQuantumSecrets: nil,
-            info: readmeLabel
-        ) == nil)
+        #expect(throws: TransportKeyDerivation.Error.invalidPeerPublicKeyLength) {
+            try TransportKeyDerivation.sessionKey(
+                ecdhOutput: Data(repeating: 0x9a, count: 32),
+                ownPublicKey: self.alice.publicKey.x963Representation,
+                peerPublicKey: Data(self.bob.publicKey.x963Representation.dropFirst()),   // 64 bytes: the 0x04 prefix gone
+                postQuantumSecrets: nil,
+                info: readmeLabel
+            )
+        }
     }
 }
