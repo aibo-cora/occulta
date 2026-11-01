@@ -6,9 +6,16 @@ here. "Open, needs a decision" means nobody has decided it: it is not accepted.
 
 ---
 
-## OC-1: `TransportKeyDerivation` does not check `ecdhOutput`'s length
+## OC-1: `TransportKeyDerivation` does not check `ecdhOutput`'s length (fixed)
 
-**Status:** Open, needs a decision. Found when the function was extracted (step 2); recorded 2026-10-31.
+**Status:** Fixed 2026-11-01, on `v2.1.0/transport-key-derivation-throws`, not merged. Recorded as Bug 191 in
+`Docs/Features/Secure Mode/bugs.md`; the entry below is what was found. Found when the function was extracted
+(step 2); recorded 2026-10-31.
+
+**Fix.** `sessionKey` now `throws(TransportKeyDerivation.Error)` instead of returning `nil`. It rejects
+`ecdhOutput.count != 32` with `invalidECDHOutputLength`, and the other three checks each throw their own case, so a
+caller sees which input was wrong. The app's callers use `try?` and are unchanged. Why it throws, and what it
+costs: `decisions.md`, 2026-11-01.
 
 **What happens.** `sessionKey` checks both public keys (65 bytes) and, in the hybrid form, both ML-KEM secrets
 (32 bytes), and returns `nil` otherwise. `ecdhOutput` it takes as given. HKDF accepts any input length, so an
@@ -31,9 +38,9 @@ host app to pass exactly 32 bytes, which is a comment standing in for a check.
 change (the callers already handle `nil` for the other inputs) has not been checked beyond the call sites listed
 in SPEC §6.
 
-**Test to add with the fix.** In `OccultaCoreAPITests/TransportKeyDerivationTests.swift`, next to the existing
-length rejections: `ecdhOutput` of 0, 16, 31, 33 and 64 bytes returns `nil`, classical and hybrid, and the
-`ReadmeExamplesTests` transport example still passes.
+**Test added with the fix.** In `OccultaCoreAPITests/TransportKeyDerivationTests.swift`, next to the existing
+length rejections: `ecdhOutput` of 0, 16, 31, 33 and 64 bytes throws `invalidECDHOutputLength`, classical and
+hybrid, and the `ReadmeExamplesTests` transport example still passes.
 
 ---
 

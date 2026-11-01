@@ -366,7 +366,7 @@ extension Manager {
                 let ourData  = self.convert(key: self.retrivePublicKey(using: ourPriv))
             else { return nil }
 
-            return TransportKeyDerivation.sessionKey(
+            return try? TransportKeyDerivation.sessionKey(
                 ecdhOutput: rawSecret, ownPublicKey: ourData, peerPublicKey: peerData,
                 postQuantumSecrets: nil, info: SaltInfo.kTransportKeyInfo
             )
@@ -1675,7 +1675,7 @@ extension Manager.Key {
     ) -> SymmetricKey? {
         guard let ecdh = self.identityECDH(peerP256Material: peerP256Material) else { return nil }
 
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: ecdh.rawECDH, ownPublicKey: ecdh.ownPublicKey, peerPublicKey: peerP256Material,
             postQuantumSecrets: quantumMaterial.sharedSecrets, info: SaltInfo.kHybridTransportKeyInfo
         )
@@ -1757,7 +1757,7 @@ extension Manager.Key {
         peerMaterial: Data,
         quantumMaterial: QuantumKeyMaterial?
     ) -> SymmetricKey? {
-        TransportKeyDerivation.sessionKey(
+        try? TransportKeyDerivation.sessionKey(
             ecdhOutput: ecdhOutput, ownPublicKey: ownPublicKey, peerPublicKey: peerMaterial,
             postQuantumSecrets: quantumMaterial?.sharedSecrets,
             info: quantumMaterial == nil ? SaltInfo.kTransportKeyInfo : SaltInfo.kHybridFSTransportKeyInfo
@@ -1785,7 +1785,7 @@ extension Manager.Key {
         info.append(contentsOf: sortedNonces[0])
         info.append(contentsOf: sortedNonces[1])
 
-        return TransportKeyDerivation.sessionKey(
+        return try? TransportKeyDerivation.sessionKey(
             ecdhOutput: ecdh.rawECDH, ownPublicKey: ecdh.ownPublicKey, peerPublicKey: peerP256Material,
             postQuantumSecrets: quantumMaterial.sharedSecrets, info: info
         )

@@ -84,7 +84,7 @@ the bytes once and traps on no input. It needs no iOS 26: it is arithmetic on `D
 
 ### 2.4 `TransportKeyDerivation`
 
-`sessionKey(ecdhOutput:ownPublicKey:peerPublicKey:postQuantumSecrets:info:) -> SymmetricKey?`, the one HKDF every
+`sessionKey(ecdhOutput:ownPublicKey:peerPublicKey:postQuantumSecrets:info:) throws(TransportKeyDerivation.Error) -> SymmetricKey`, the one HKDF every
 Occulta transport key goes through:
 
 ```
@@ -95,8 +95,11 @@ key  = HKDF-SHA256(IKM, Salt, info, 32 bytes)
 ```
 
 - `ecdhOutput` is the caller's: the X9.63 KDF output (SHA-256, no shared info, 32 bytes) of an ECDH it ran with its
-  own key. No private key reaches the file. **The length is not checked** (bugs.md OC-1).
-- The public keys are x963 P-256, 65 bytes each; the secrets are 32 bytes each. Anything else returns `nil`.
+  own key, exactly 32 bytes. No private key reaches the file.
+- The public keys are x963 P-256, 65 bytes each; the secrets are 32 bytes each. Anything else throws the case that
+  names it, the first that fails in this order: `invalidOwnPublicKeyLength`, `invalidPeerPublicKeyLength`,
+  `invalidECDHOutputLength`, `invalidPostQuantumSecretLength`. The cases carry no data. Occulta's callers use
+  `try?` and keep their `nil` (bugs.md OC-1, fixed; `decisions.md`, 2026-11-01).
 - The salt is XOR, so it binds the two keys in no order, which makes both sides' salts equal. The ECDH output is
   what binds the pair.
 - `info` is the caller's label and the only domain separation. Occulta passes its `SaltInfo` constants (wire

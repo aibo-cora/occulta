@@ -9,7 +9,7 @@
 - `OccultaCore/Sources/OccultaCore/ShamirSecretSharing.swift:9-56` — SSS Math Path
 - `Occulta/Services/Key+Manager.swift:805-846` — Vault Key Derivation Path (v2)
 
-`OccultaCore/Sources/OccultaCore/TransportKeyDerivation.swift:9-80` carries a third, for the HKDF every
+`OccultaCore/Sources/OccultaCore/TransportKeyDerivation.swift:9-82` carries a third, for the HKDF every
 transport key goes through. The package as a whole is described in
 [`Docs/Features/OccultaCore/SPEC.md`](../Features/OccultaCore/SPEC.md).
 

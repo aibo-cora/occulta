@@ -15097,3 +15097,43 @@ refusal is `BoundedJSON`'s); a payload, a basket and a file entry whose JSON blo
 from a pinned peer, with a valid one after it to show the manager still reads messages. The guard itself: nesting counted
 outside strings and across escapes, 63 and 64 levels decode and 65 are refused, and what Occulta writes decodes to the
 same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of files described above.
+
+---
+
+## Bug 191 — `TransportKeyDerivation.sessionKey` takes an `ecdhOutput` of any length, and says nothing about which input was wrong
+
+**Status:** Fixed on `v2.1.0/transport-key-derivation-throws`, not merged. Filed as `OC-1` in `Docs/Features/OccultaCore/bugs.md`
+(found 2026-10-31 when the function was extracted); recorded here when it was fixed. Numbered 191 because 190 is taken on
+`v2.1.0/passphrase-independent-spaces`, not merged.
+
+**Target:** `v2.1.0`, `OccultaCore`. No shipped build of Occulta is affected: every app caller passes 32 bytes.
+
+### Severity: Low (proposed; reachable only by a host app of the package, none yet, and not by any Occulta path)
+
+### What happens
+
+`sessionKey` checked both public keys (65 bytes) and, in the hybrid form, both ML-KEM secrets (32 bytes), and returned `nil`
+otherwise. It never looked at `ecdhOutput`. HKDF takes any input length, so an empty `ecdhOutput` in the classical form made
+the IKM empty and the key a function of the salt (the two public keys) and the label alone, which an observer can compute.
+In the hybrid form the key rested on the ML-KEM secrets alone. A host app is exposed if its ECDH call yields something other
+than the 32-byte X9.63 output: an error path that returns empty `Data`, the raw shared point, a different requested size.
+The README asked for exactly 32 bytes, a sentence standing in for a check. Separately, `nil` did not say which input was wrong.
+
+### Fix
+
+`sessionKey(...)` is now `throws(TransportKeyDerivation.Error) -> SymmetricKey`. `Error` has one case per check, none with an
+associated value, so no key bytes can reach an error: `invalidOwnPublicKeyLength`, `invalidPeerPublicKeyLength`,
+`invalidECDHOutputLength` (new: not 32 bytes) and `invalidPostQuantumSecretLength`. Checked in that order; the first
+failure is thrown. The derivation is unchanged: same IKM, salt, info and output, and no `InteropVectors.json` vector moves.
+
+The app's eleven call sites (`Key+Manager.swift` 4, `KeyManagerProtocol.swift` 3, `Crypto+Manager+Cards.swift` 1,
+`PQTestKeyPair.swift` 3) use `try?` and keep the `nil` they returned, so no new text reaches the UI or a log and nothing
+a coercer could read changes. This is a public API break, taken while no host app uses the package
+(`Docs/Features/OccultaCore/decisions.md`, 2026-11-01).
+
+### Guard
+
+`TransportKeyDerivationPublicAPITests` (`OccultaCore/Tests/OccultaCoreAPITests`): each wrong length throws the named case;
+`ecdhOutput` of 0, 16, 31, 33 and 64 bytes throws `invalidECDHOutputLength` in the classical and the hybrid form; with every
+input wrong, the own-key error comes first, and each later check is reached only once the earlier ones pass.
+`ReadmeExamplesTests` mirrors the README's now-throwing example. The interop vectors are unchanged.
