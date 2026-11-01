@@ -66,14 +66,27 @@ struct OccultaApp: App {
     init() {
         let schema = Self.schema
 
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
+        // A test host skips the launch sequence below, so its process stays on the legacy keys, which a store the sequence
+        // has resealed doesn't open (Bug 191). It is never given the real store: it gets an empty one in memory, as a
+        // blocked launch does.
+        #if DEBUG
+        let hostsTests = NSClassFromString("XCTestCase") != nil
+        #else
+        let hostsTests = false
+        #endif
+
+        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: hostsTests, cloudKitDatabase: .none)
         let realContainer: ModelContainer
         do {
             realContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
-        let url = modelConfiguration.url
+        // The file-level calls below (attributes, pragma, checkpoint) open the path they are given and never create it, so
+        // a test host points them at a file that doesn't exist rather than at the real store.
+        let url = hostsTests
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("occulta-test-host.store")
+            : modelConfiguration.url
         let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
         
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path)
@@ -90,14 +103,9 @@ struct OccultaApp: App {
         // `Manager.Security.init` reads `persistedDepth` and `pinEnabledPerDepth`, and has to read them under the key
         // they are sealed under. The sequence also tells the process which keys tier U's accessors return.
         //
-        // Not in a test host (`#if DEBUG`): tests run in this process, and the sequence would decide its keys from the
-        // Simulator's real store, which keeps an epoch from run to run. The tests that bind no key manager of their
+        // Not in a test host (`#if DEBUG` above): tests run in this process, and the sequence would decide its keys from
+        // the Simulator's real store, which keeps an epoch from run to run. The tests that bind no key manager of their
         // own expect the default, the legacy keys. The sequence has its own tests.
-        #if DEBUG
-        let hostsTests = NSClassFromString("XCTestCase") != nil
-        #else
-        let hostsTests = false
-        #endif
         var launch: LaunchSequence.Report?
         if !hostsTests {
             launch = LaunchSequence.run(context: ModelContext(realContainer), locations: .production(store: url), staging: ShareStagingKeyManager())
