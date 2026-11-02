@@ -74,7 +74,7 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   (its open sub-items were closed 2026-11-02);
 - the photo table has no noise: right after migration, a photo row the open space can't read proves another space
   (§1.5);
-- the unlock cost, to be measured on a device, by the measuring app of decision 6 (not built);
+- the unlock cost, to be measured on a device, by the measuring app of decision 6 (PR #155; not run on a device);
 - 26's remainder: stale copies of the main store file's pages in APFS free blocks and flash, readable with a raw
   image, the file's key and the phrase;
 
@@ -888,7 +888,8 @@ there and aren't repeated here.
      SQLite reads and trial decryption at scale. It uses throwaway keys and its own files, links no Occulta code
      that touches the store or keychain, and is never a test host for Occulta. iOS keeps its container and
      keychain apart from Occulta's, so it can run on a phone with real data, but each install is asked for first,
-     naming the phone. Not built.
+     naming the phone. ~~Not built.~~ *Built 2026-11-02 as `Tools/OccultaMeasure`, PR #155 to `develop` (not
+     merged): run on the iPhone 17 Pro Simulator only, not on a device.*
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ ~~**Decided:** refused while duress depths exist.~~ **Superseded
@@ -1130,6 +1131,10 @@ there and aren't repeated here.
       key (Apple's documented design, not verified here).
     - **A second test:** after closing, the `-wal` file doesn't exist. It catches a persistent WAL, which Apple's
       SQLite build may default to; if it does, the store turns it off.
+      *Simulator, 2026-11-02 (`Tools/OccultaMeasure`, PR #155):* it does. Persistent WAL is already on before any
+      PRAGMA, and the `-wal` and `-shm` stay after the last connection closes (the `-wal` at 0 bytes after a
+      `TRUNCATE` checkpoint). The store has to turn it off (`SQLITE_FCNTL_PERSIST_WAL`). Not yet confirmed on a
+      device.
     - **Open, needs a decision:** stale copies of the main file's pages in APFS free blocks and flash stay under the
       file's key until reused. Reading them takes a raw volume or chip-level image, the file's key and the space's
       phrase; logical and full-file-system extractions read files, not free space.
