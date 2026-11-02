@@ -160,6 +160,10 @@ matter while code on the phone can forge these values outright. It becomes a rea
 make forging impossible. Use an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)`
 already does. Doing it in the same migration costs nothing extra.
 
+**Under independent spaces** (2026-11-02, proposed, not decided; `PASSPHRASE_ROLLOUT.md` §1.6): none of these
+fields stays a field of its own. The depth stamps are dropped and the rest move inside each record's seal, so the
+binding is of whole records to their row's ID, with a table label, in the store layer.
+
 **Tracked:** Bug 123 (subsumed into 119); spec §2, requirement of 2026-09-26.
 
 ---

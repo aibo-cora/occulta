@@ -385,6 +385,71 @@ records, crypto and encoding only, no store read; median of 5 passes):
 - Opening is mostly JSON decoding: a noise row fails its tag check in under 4 µs.
 - Still unmeasured: PBKDF2, reading the rows from the store, and an iPhone 11 (decision 6).
 
+### 1.6 Binding each sealed record to its row (step 5)
+
+**The requirement is decided** (2026-09-26, `bugs.md` Bug 123; spec §2, requirement 6): every sealed blob is bound
+to its row with an AAD built from the row's ID. **How it applies under independent spaces is proposed 2026-11-02,
+not decided.**
+
+**What happens to the fields Bug 123 named.** Each one was sealed on its own with one fixed AAD byte, so a value
+copied from one row to another opened cleanly. Under §1.5 and §8, 21 none stays a field of its own:
+
+| Field | Today | Under spaces |
+|---|---|---|
+| `Contact.Profile.originDepth`, `.visibleThroughDepth`; `VaultEntry.visibleThroughDepth`; `BackupEncryptionKey.depth` | Depth stamps | Dropped (requirement 1): the key that opens a row is its space |
+| `Contact.Profile.globalTrusteeDepth` | Always an encrypted −1 since Global Trustees retired; nothing reads it | Dropped; already due to leave the schema |
+| `deletionToken` on `Contact.Profile`, `VaultEntry`, `BackupEncryptionKey`, `PendingShamirSecretRestore` | A sealed sentinel; the contact's is a plain optional that queries filter on | Inside the record's seal; a deletion crypto-shreds the row (§1.5) |
+| `PendingShamirSecretRestore.attributeID` | Sealed on its own | Inside the record's seal, in the small-record table (§8, 21) |
+
+So step 5 becomes binding whole records, not fields. Each row of the new store is a random 16-byte ID and one
+sealed record (§8, 23); a vault entry's row holds two seals, its wrapped entry key and its content.
+
+**Construction.**
+- **AAD = a table label ‖ the row's 16-byte ID**, plus a field tag only where a row holds more than one seal (a
+  vault entry's key and content, as `VaultEntry.aad(for:)` does today).
+- **The label** is a constant per table: small records, photos, vault entries. It is never stored, so it leaves
+  nothing in the file, and it makes a record moved between tables fail whatever the row sizes are.
+- **Not in it:**
+  - the record's type, which is inside the seal (§8, 21); unlock doesn't know it before opening;
+  - a creation date, since the new store has no plaintext column to take it from (today's `VaultEntry.aad(for:)`
+    uses `createdAt`);
+  - any space identifier, since none exists, and another space's key already fails.
+- **In the store layer, not at call sites.** Stage 0's store layer seals and opens only through calls that take the
+  table and the row ID, so no caller can seal without them. The binding then costs nothing extra in stage 3 or 4.
+- **The layout is a sealed contract,** like `Message.Draft.aad(for:)`: changing it makes every row unreadable. Pin
+  it with a test vector.
+
+**What it gains.** Within one space, a record copied onto another row fails to open and reads as noise. Without it,
+the copy opens as that row:
+- a photo copied onto another contact's photo row shows on the wrong contact;
+- a contact's record copied onto a noise row makes a second live copy, so deleting the contact leaves one behind.
+
+It costs no stored bytes and no measurable time, since the row ID is read with the row.
+
+**What it doesn't stop.**
+- Anyone holding the space's key, who can seal anything they like. Nothing binds against that.
+- **Rolling a row back to an older version of itself. Open, needs a decision.** An edit rewrites a row in place
+  under the same ID (§8, 22), so an older ciphertext of that row from an earlier image still opens (§8, 26).
+  Someone who can write the store can bring back a deleted contact's record, or a contact's earlier keys. Closing
+  it needs something per space that changes with every write, which §1.5's "no per-space record" rules out (§8,
+  28).
+
+**Tests, before stage 3 counts as done:**
+- A record copied from one row to another in the same table and space fails, and unlock skips it exactly as it
+  skips noise: same path, no separate error.
+- Two photo rows' ciphertexts swapped: both fail, and neither contact shows the other's photo.
+- A record moved into another table fails, from the label.
+- A vault entry's wrapped key or content swapped with another entry's fails (true today; carried over).
+- Every migrated record opens under its new row ID, as part of C3's "data survives" test.
+- The AAD layout matches its pinned vector.
+
+**Still to sweep (stage 2):**
+- sealed fields that stay in SwiftData's install-wide state;
+- drafts, which hold contact references sealed under the space key (§8, 20) but have no table assigned yet. Today
+  they bind to their row ID and a field tag (`Message.Draft.aad(for:)`).
+
+Each gets the same rule.
+
 ---
 
 ## 2. Typing the phrase
@@ -780,7 +845,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 | 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
-| 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
+| 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; each record bound to its row (step 5, §1.6) | 2–3 |
 | 4 | Contacts into the new store | One padded text record per contact; photos in their own table at one size, re-encoded, with no noise rows; vault entries in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
 | 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); Erase All Data scoped to one space; deleting the old store once every layer has migrated; no old-PIN fallback and no graduation | 2.5–4 |
@@ -1104,6 +1169,12 @@ there and aren't repeated here.
       see a device lock, so the grace counts time in the background, not locks. If the last space was the real one,
       it is exposed; step 16's guidance should say so.
     - **Not adopted:** no grace, which asks for 7 words on every return to the app.
+28. **Rolling a row back to an older version of itself** (added 2026-11-02; §1.6, step 5). Binding a record to its
+    row ID stops it being copied onto another row, not onto its own row from an earlier image. An edit rewrites a
+    row in place under the same ID (item 22), and the older ciphertext still opens (item 26). Someone who can write
+    the store can bring back a deleted contact's record, or a contact's earlier keys, with no phrase. Closing it
+    needs something per space that changes with every write, which §1.5's "no per-space record" rules out. Open,
+    needs a decision.
 
 ---
 
@@ -1120,7 +1191,7 @@ depends on or changes.
 | Bug 109 | Per-depth keys leave an authentication-failure tell | Closed moot, 2026-09-10; spec §2 (2026-10-15) argues an all-or-nothing row isn't this tell | §4, §5 |
 | Bug 119 | Vault key is device-level; one key opens every depth | Open | The whole plan |
 | Bug 120 | Write frequency across images shows the real depth | Open in the register; recorded 2026-10-29 as a stated limit under independent spaces: a duress space protects against one image, not a series | §5 |
-| Bug 123 | Small sealed fields share one AAD | Closed, subsumed into 119 | Stage 3 (step 5) |
+| Bug 123 | Small sealed fields share one AAD | Closed, subsumed into 119 | Stage 3 (step 5, §1.6) |
 | Bug 138 | A migration destroyed the only copy before saving the replacement | Fixed 2026-09-26 | §1.2: the old store survives until the reseal is verified |
 | Bug 139 | Keys from an interrupted rotation never deleted | Fixed 2026-09-26 (wipe) | The reseal's rule: interruption leaves nothing |
 | Bug 141 | Depth-blind owner queue and watch rows | Fixed 2026-09-27; sealing per depth open | Stage 5 |
