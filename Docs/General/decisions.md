@@ -1409,7 +1409,7 @@ the share staging key.
 
 **Status:** Recorded 2026-10-29 by the owner. Still open in the register, needs a decision.
 
-**Decision:** A duress space protects against one image, not a series, and the setup guidance (step 16) says so. In one image and with no phrase the design fixes per-type row counts (one sealed blob per contact), row sizes (a few fixed sizes, noise rows included) and space tags (none), and writes every change as "append a new row, shred the old". Rows a surrendered space can't open changing between images are not fixed. The append-only log stays a possible later release, not planned.
+**Decision:** A duress space protects against one image, not a series, and the setup guidance (step 16) says so. In one image and with no phrase the design fixes per-type row counts (one sealed blob per contact), row sizes (a few fixed sizes, noise rows included) and space tags (none), and writes every change as "append a new row, shred the old" *(changed 2026-11-01: an edit rewrites the row in place; see below)*. Rows a surrendered space can't open changing between images are not fixed. The append-only log stays a possible later release, not planned.
 
 **Why:** Noise rows don't close it. A key that recognises noise lets its holder count the real unopenable rows, and without one a duress session can't tell noise from real rows, so rewriting them could destroy real data. Independent spaces drop the chain, so no space can reseal another's rows.
 
@@ -1417,7 +1417,7 @@ the share staging key.
 
 ## No per-row key header; photos in their own table, found by ID
 
-**Status:** Decided 2026-10-29 by the owner. Replaces the brainstorm's per-row key header. The photo table's noise rows and size buckets are open, needs a decision, and the unlock cost is an estimate to be measured on a device.
+**Status:** Decided 2026-10-29 by the owner. Replaces the brainstorm's per-row key header. ~~The photo table's noise rows and size buckets are open, needs a decision,~~ *(decided 2026-11-02: one size, no noise)* and the unlock cost is an estimate to be measured on a device.
 
 **Decision:** Unlock trial-decrypts the contact and group records whole, since they are text-only sealed records of a few KB. Photos live in their own table, one sealed row each, linked only by row IDs listed inside the sealed contact record. A photo row names no contact. Unlock never reads them, and a retired photo is shredded like any deleted row. Vault entries keep their wrapped entry key as the cheap check. A 16-byte locator tag per row stays as the fallback if a device measurement shows unlock is too slow.
 
@@ -1451,7 +1451,7 @@ the share staging key.
 **Why:**
 - In a SwiftData table, `Z_OPT` marks a row shredded in place, `Z_PK` ranks every row by insertion, `Z_PRIMARYKEY` counts every change ever made, and the persistent history logs every write with its time (Bug 190). A plain table has none of them, so the design's "a deleted row, another space's row and a noise row look alike" holds by construction rather than by discipline on every save path.
 - A random key orders rows by nothing to do with time.
-- One file for every space-sealed table keeps "append a new row, shred the old" and a group's update in one SQLite transaction.
+- One file for every space-sealed table keeps a contact's write and a group's update in one SQLite transaction.
 - No dependency is added: the app already calls `sqlite3` for `PRAGMA secure_delete`.
 - The cost of sealing is the same either way: 100 records opened, changed and resealed in about 9 ms, plus about 1.6 ms for the Enclave derivation, on the iPhone 17 Pro Simulator (`ContactRecordCryptoMeasurementTests`).
 
@@ -1480,14 +1480,14 @@ the share staging key.
 
 ## The contact table's noise rows: 50–1,000 per install, uniform, never stored
 
-**Status:** Decided 2026-11-01 by the owner. Not built. Closes the contact table's part of `PASSPHRASE_ROLLOUT.md` §8, item 21. Open, needs a decision: noise rows' sizes across the size buckets, and the noise for the other space-sealed tables.
+**Status:** Decided 2026-11-01 by the owner. Not built. Closes the contact table's part of `PASSPHRASE_ROLLOUT.md` §8, item 21. ~~Open, needs a decision: noise rows' sizes across the size buckets, and the noise for the other space-sealed tables.~~ Decided 2026-11-02: one table and one row size (below).
 
 **Decision:** Each install draws its contact-table noise count uniformly from 50–1,000 and stores it nowhere. The rows are written in the migration's one sitting, at first launch on a fresh install, and as a fresh draw from the same range with a space that migrates later (8a, 8b). None are written after that.
 
 **Why:**
 - With a uniform draw, every count of rows a surrendered phrase can't open, up to 1,000, is equally likely with or without a hidden space. The code is public, so the range is too; only the cap says anything. A hidden space of H contacts stays unprovable right after migration on (951 − H) / 951 of installs: 95% at 50, 79% at 200, 58% at 400.
 - The range is absolute: one scaled with contact counts would let a large real space show behind a small decoy.
-- Shredded rows (item 22) grow the unopened set with use, so later noise adds nothing but size.
+- Deleted rows, shredded in place (item 22), grow the unopened set with use, so later noise adds nothing but size.
 - At the cap the noise costs about 8 MB, and about 4 ms to try and reject on an iPhone 15 Pro (`ContactRecordCryptoMeasurementTests.measureAtScale`); an iPhone 11 is unmeasured.
 
 ## The key cache: memory only, dropped when the app goes to the background
@@ -1502,7 +1502,121 @@ the share staging key.
 - A suspended app runs no code, so "drop on device lock" would leave the key in RAM on a locked phone, readable by an after-first-unlock memory dump. Going to the background is the last moment the app surely runs.
 - Unlock opens every record, so the plaintext has to go with the key. Re-opening is cheap: 37 ms for 1,000 records on the iPhone 15 Pro.
 
-**Open:** a grace period could keep, in memory only, a copy of the space key wrapped by an Enclave key usable only while the phone is unlocked. On disk it would be §1.1's device slot.
+~~**Open:** a grace period could keep, in memory only, a copy of the space key wrapped by an Enclave key usable only while the phone is unlocked. On disk it would be §1.1's device slot.~~ *Decided 2026-11-02: a 5-minute grace (below).*
+
+## An edit rewrites the row in place, not "append a new row, shred the old"
+
+**Status:** Decided 2026-11-01 by the owner. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, item 22, and changes part of the 2026-10-29 independent-spaces decision.
+
+**Decision:** In every table sealed under a space key, an edit overwrites the row under the same random ID with a fresh seal, in one transaction. A deletion overwrites it with random bytes, and an addition appends a row.
+
+**Why:**
+- No space can tell its own shredded rows from another space's or from noise, so under append-and-shred every edit added a row for good, and unlock tried every one. With prekeys in the contact's record (D9), every message received would have too: at 20 a day, about 60 MB and 30 ms of unlock a year, never reclaimed.
+- In one image nothing changes: the plain SQLite store has no `Z_OPT`, history or insertion order, so a rewritten row looks like any other.
+- Across images an edit shows one changed row instead of a changed row and a new one. Repeated changes to one row show it is live, but appended-and-shredded rows linked the same way; Bug 120's stated limit covers both.
+- Append-and-shred's stated reason, that edits, additions and deletions look alike, never held: an addition only appended and a deletion only shredded. Its other reason was SwiftData's `Z_OPT`.
+
+**Not adopted:** a sealed per-space free list for reusing shredded rows, and compaction, which no space can do.
+
+**Consequences:** the table grows only with rows ever added, plus noise. Shredded rows now come from deletions alone, so they blur item 21's noise count a little less over time.
+
+## A contact is referenced by a random ID, never by its address-book ID
+
+**Status:** Decided 2026-11-02 by the owner. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, item 20, and the address-book link left open by Bug 171's `identifier` decision of 2026-10-21.
+
+**Decision:** Every contact gets a random 16-byte ID when it is created, however it arrives; the migration gives each existing contact one. It is held inside the contact's sealed record, and every reference to the contact (group member slots, drafts, custody and shard payloads, the shard records, `TrusteeTag` as a hash of it) holds it only inside a row sealed under the same space key. An address-book import uses the card's Contacts ID once, to fetch it, and stores it nowhere.
+
+**Why:**
+- Today the identifier is the Contacts ID for imported contacts, so it links each one to a card in the phone's Contacts. Nothing reads it after import: there is no re-sync and no duplicate check.
+- A random ID makes an imported contact look like any other, and no space's records point at the phone's Contacts.
+- Every holder of the reference is on this phone (`TrusteeTag` matches local records against local contacts; a custody payload's owner ID is the trustee's own), so changing it breaks nothing anyone else holds.
+- A fixed 16 bytes removes the reasons for `Group`'s 128-byte slot padding and for `TrusteeTag`'s hashing (Bug 145).
+
+**Not adopted:** keeping the old identifier inside the sealed rows, which leaves the address-book link readable to anyone with a space's phrase.
+
+**Consequences:** stages 4 and 5 rewrite every reference in the same migration. Images from before it, and older keychain images with legacy prekey tags (Bug 170), keep the old ciphertext.
+
+## One table and one row size for every small space-sealed record
+
+**Status:** Decided 2026-11-02 by the owner. Not built. Closes the rest of `PASSPHRASE_ROLLOUT.md` §8, item 21, except photos and vault entries.
+
+**Decision:** Contacts, groups, backup keys, custody shards and the shard and restore queue records share one table in the new store. Every row is one size, about 8 KB, with the record's type inside the seal, and item 21's noise draw (50–1,000 per install) covers them all. Photos and vault entries, whose size is the user's content, stay in tables of their own.
+
+**Why:**
+- With one size, noise rows have no spread over size buckets to match; with buckets, any mismatch with an install's real records shows where hidden rows sit.
+- With one table, no per-type count shows. Several types hold zero to a few rows per space, so a table of their own would show another space's row by itself.
+- The fullest measured contact record (an ML-KEM-1024 key, two P-256 keys and 23 prekey blobs) encodes to about 5.5 KB, so 8 KB fits it with fields limited.
+- The cost is small: tens of groups and shards at 8 KB instead of about 1 KB, and unlock already tries every row.
+
+**Not adopted:** a table per type, each with its own size, draw and range.
+
+**Consequences:** fields get limits so no record overflows; the size is checked against the largest real record when it is built. The photo and vault-entry sizes and noise are the remaining open part. *(Decided 2026-11-02, below.)*
+
+## Photos: one size, re-encoded, no noise; vault entries: their own table with noise
+
+**Status:** Decided 2026-11-02 by the owner. Not built. Closes the photo table's and vault entries' part of `PASSPHRASE_ROLLOUT.md` §1.5. The photo table's leak is open, needs a decision.
+
+**Decision:**
+- **Photos** stay in their own table, one row per photo, at one fixed size of about 24 KB. A contact has none or one. At import a photo is re-encoded to about 360 px with its metadata stripped, its quality lowered until it fits; the original isn't kept, and the thumbnail is made from it in memory. The table gets no noise rows.
+- **Vault entries** get their own table of 4 KB rows. Entries are text only (seed phrases, notes, key tokens), and notes are limited to about 3.5 KB of text. Noise rows are drawn per install, uniformly from 10–200, never stored, and written at the same moments as the contact noise.
+
+**Why:**
+- One photo size leaves no spread to match. Nothing the app shows needs the original, which today is stored as picked, at full resolution and with its metadata (Bug 193).
+- The owner chose no photo noise: a contact may or may not have a photo, so the count varies anyway.
+- Vault entries in their own table keep the vault apart from contacts. A hidden space of 40 entries stays unprovable on 79% of installs, for about 0.8 MB of noise at the cap.
+
+**Open, needs a decision:** right after migration the photo table holds exactly every space's photos, so a photo row that no contact in the open space lists proves another space. Deleted and replaced photos cover it only once the user has made some.
+
+**Not adopted:** photos and vault entries in the shared 8 KB table as records spanning several rows.
+
+## The store closes when the app goes to the background, so its WAL file is deleted
+
+**Status:** Decided 2026-11-02 by the owner. Not built. Closes most of `PASSPHRASE_ROLLOUT.md` §8, item 26; stale copies of the main file's pages are open, needs a decision.
+
+**Decision:** The new store layer gets a test that, after a write, a shred and a checkpoint, the old ciphertext is in neither the file nor its `-wal`. The store's connection closes when the app goes to the background, when the key cache drops, so SQLite deletes the `-wal`; a second test checks it is gone, and a persistent WAL is turned off if the platform's SQLite defaults to one.
+
+**Why:**
+- A space key comes from a phrase and the Enclave, neither of which can be destroyed, so any old copy of a row's ciphertext, deleted or the old version of an edit, still opens with that phrase.
+- Truncating the `-wal` frees its blocks under a file key that still exists; deleting the file discards that key (iOS's per-file keys, Apple's documented design, not verified here).
+- Nothing can read the store without the key while the app is in the background, so closing it costs nothing.
+
+**Not adopted:** rotating the whole file after any write (`VACUUM INTO` a new file, delete the old). About 40 MB written per session at 5,000 contacts, against an attacker who needs a raw volume or chip-level image, the file's key and the phrase.
+
+## A 5-minute grace under the phrase, through an Enclave-wrapped copy of the space key
+
+**Status:** Decided 2026-11-02 by the owner. Not built. Closes the grace period left open in `PASSPHRASE_ROLLOUT.md` §8, item 27.
+
+**Decision:** Returning to the app within 5 minutes of going to the background needs no phrase, at every depth, as today's PIN grace (`AppScreen.swift:53`). The key and every decrypted record are still dropped on going to the background; only a copy of the space key stays in memory, wrapped by a per-session Enclave key that is never stored and works only while the phone is unlocked. One Enclave call unwraps it on return. After 5 minutes, after the app is killed, on the app's own lock and on a change of space, it is gone and the phrase is needed.
+
+**Why:**
+- Without it every return to the app, even from a two-second switch, asks for 7 words.
+- A memory dump of a locked phone gets only the wrapped copy, since the Enclave refuses then; kept off disk, it can't become §1.1's device slot.
+- Today's PIN grace already allows the same window, so nothing new is exposed.
+
+**Consequences:** someone who takes the phone unlocked, or compels its passcode, within 5 minutes of the user leaving Occulta opens the space last open. A suspended app can't see a device lock, so the grace counts time in the background. Step 16's guidance should say so.
+
+## A spare test phone, and a separate measuring app until it arrives
+
+**Status:** Decided 2026-11-02 by the owner. Neither exists yet. Closes `PASSPHRASE_ROLLOUT.md` §8, item 6.
+
+**Decision:** The passphrase work gets a spare iPhone with no real data, ideally an iPhone 11, for stage 3 on, the migration, several spaces and TestFlight. Until it arrives, device timings come from a measuring app with its own bundle ID: throwaway keys, its own files, no Occulta store or keychain code, never a test host for Occulta. Each install on a phone is asked for first, naming the phone.
+
+**Why:** Every phone on hand holds real data, and a hosted test run deleted one phone's groups (`bugs.md` Bug 192). A separate app's container and keychain are walled off from Occulta's by iOS, so the timings can be taken now; the release's device testing can't be done that way.
+
+## The phrase KDF is PBKDF2 through CommonCrypto, not Argon2id
+
+**Status:** Decided 2026-11-02 by the owner. Not built. Closes the KDF choice in `PASSPHRASE_LAYER_KEYS.md` §4 and the last of its 2026-10-15 sub-items.
+
+**Decision:** The space key's slow step is PBKDF2-HMAC-SHA256 over the phrase's word indices, through CommonCrypto's `CCKeyDerivationPBKDF`, with one salt per install. Its iteration count is tuned to about 1 s on an iPhone 11, measured by the measuring app, not taken from the spec's assumed constant.
+
+**Why:**
+- CommonCrypto is a system library; Argon2id would mean vendoring and auditing third-party crypto source, the supply-chain risk `CLAUDE.md` rules out.
+- At 7 words (90.5 bits) PBKDF2 holds without memory-hardness: about 27,000 years even with all of Bitcoin's SHA-256 throughput (spec §4). The Enclave adds nothing per guess (D2), so this figure is the one that stands.
+- One salt per install follows from independent spaces: a per-space salt would be a per-space record.
+
+**Not adopted:** Argon2id, vendored, which would allow 6 words.
+
+**Consequences:** it is the app's first CommonCrypto import, so `CLAUDE.md`'s "CryptoKit and Security.framework" line changes when it lands.
 
 ---
 

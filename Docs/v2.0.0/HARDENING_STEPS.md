@@ -132,7 +132,8 @@ survivors on deletion since Bug 130. Everything else per-depth touches only its 
 
 **Recorded 2026-10-29 as a stated limit (Bug 120).** A duress space protects against one image, not a series.
 In one image and with no phrase the design fixes per-type row counts, row sizes and space tags, and writes every
-change as "append a new row, shred the old". Rows a surrendered space can't open changing between images are not
+change as "append a new row, shred the old" *(changed 2026-11-01: an edit rewrites the row in place,
+`PASSPHRASE_ROLLOUT.md` §8, 22)*. Rows a surrendered space can't open changing between images are not
 fixed, and noise rows don't close it. Still open in the register.
 
 **Not achievable as written, 2026-10-15** (spec §2, "Finding, 2026-10-15"). Open, needs a decision.

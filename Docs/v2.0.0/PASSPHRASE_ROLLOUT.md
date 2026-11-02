@@ -42,21 +42,41 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   2026-11-01);
 - 27, the key cache: memory only, and the key and every decrypted record dropped when the app goes to the
   background, locks or changes space, not on device lock (decided 2026-11-01);
+- 22, an edit rewrites the contact's row in place, under the same ID, in place of "append a new row, shred the
+  old", so the table grows only with contacts ever added, plus noise (decided 2026-11-01);
+- 20, every contact gets a random 16-byte ID at creation (at migration for existing ones), held only inside its
+  sealed record and in rows sealed under the same space key; the address-book ID is used once at import and never
+  stored (decided 2026-11-02);
+- 21's remainder: one table and one row size, about 8 KB, for every small space-sealed record (contacts, groups,
+  backup keys, custody shards, the shard and restore queues), its type inside the seal, so item 21's one noise
+  draw covers them all and there is no size spread to match; photos and vault entries stay out (decided
+  2026-11-02);
+- photos: their own table, one row per photo of one fixed size, about 24 KB, re-encoded at about 360 px with its
+  metadata stripped, the original not kept, and no noise rows (decided 2026-11-02; the leak this leaves is open);
+- vault entries: their own table, 4 KB rows with notes limited to about 3.5 KB of text, and a noise count drawn per
+  install uniformly from 10–200, never stored, written when the contact noise is (decided 2026-11-02);
+- 26, a store-layer test that old ciphertext is gone from the file and its `-wal` after a write and a checkpoint,
+  and the store closed when the app goes to the background so SQLite deletes the `-wal` instead of truncating it,
+  with a test that it is gone (decided 2026-11-02);
+- 27's grace period: 5 minutes in the background, as today, at every depth, through a copy of the space key in
+  memory wrapped by a per-session Enclave key that works only while the phone is unlocked (decided 2026-11-02);
+- 6, a spare iPhone with no real data, ideally an iPhone 11, for stage 3 on, and until it arrives a measuring app
+  with its own bundle ID for the device timings (decided 2026-11-02; neither exists yet);
+- the spec's 2026-10-15 sub-items: one salt and one Enclave key per install (forced by §1.5), and PBKDF2-HMAC-SHA256
+  through CommonCrypto, not Argon2id, tuned to about 1 s on an iPhone 11; the rest were superseded or decided
+  above (decided 2026-11-02);
 - the data slices ship together, in one reseal (§7.1);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
 
 **Open, needs a decision:**
-- 6, a test phone;
-- the spec's own 2026-10-15 sub-items, most of which belonged to the storage design that is gone (spec §2 needs
-  rewriting);
-- the photo table's noise rows and size buckets (§1.5);
-- the unlock cost, to be measured on a device (waits on decision 6);
-- 20, what the identifier's references hold once the identifier moves into the contact's blob;
-- 21's remainder: noise rows' sizes, and the noise for the other space-sealed tables;
-- 22, the table only grows, and unlock pays for every row ever written;
-- 26, whether an overwritten row is gone below SQLite (APFS free blocks, flash), not verified;
-- 27's grace period: an Enclave-wrapped copy of the space key in memory while the app is in the background.
+- spec §2 still describes the 2026-10-15 storage design as history and needs rewriting for independent spaces
+  (its open sub-items were closed 2026-11-02);
+- the photo table has no noise: right after migration, a photo row the open space can't read proves another space
+  (§1.5);
+- the unlock cost, to be measured on a device, by the measuring app of decision 6 (not built);
+- 26's remainder: stale copies of the main store file's pages in APFS free blocks and flash, readable with a raw
+  image, the file's key and the phrase;
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -301,13 +321,23 @@ Decision 1 is closed by it.
   which hardware AES-GCM reads in tens of milliseconds (an estimate, to be measured on a device). It isn't the
   per-row-key variant the 2026-10-15 design rejected either, since there is no row key.
   - **Photos live in their own table,** one sealed row per photo. The link is not a column: the sealed contact
-    record lists its photos' row IDs, and a photo row names nothing. A contact can have none, one or two. Unlock
+    record lists its photos' row IDs, and a photo row names nothing. A contact can have none, one or two
+    *(2026-11-02: none or one)*. Unlock
     never reads photos; they are fetched by ID once the contact opens. A retired photo is shredded like any
-    deleted row. The table shows how many photo rows exist, not whose or which are active. It needs noise rows
+    deleted row. The table shows how many photo rows exist, not whose or which are active. ~~It needs noise rows
     in the same size buckets, and photos stored at bounded sizes, or the total would track the real photos of
-    every space. The bucket sizes are open, needs a decision.
+    every space. The bucket sizes are open, needs a decision.~~ **Decided 2026-11-02 by the owner:** one fixed
+    size, about 24 KB. A photo is re-encoded at import to about 360 px (3× a 120-pt avatar) with its metadata
+    stripped, its quality lowered until it fits, and the original isn't kept; the thumbnail is made from it in
+    memory. **No noise rows.** *Open, needs a decision:* right after migration the table holds exactly every
+    space's photos, so a photo row that no contact in the open space lists proves another space. Deleted and
+    replaced photos give cover only once the user has made some. The count also tracks every space's photos
+    together.
   - **Vault entries keep their wrapped entry key** (`VaultEntry.encryptedEntryKey`), which is a cheap check of
-    its own, so they need no new header.
+    its own, so they need no new header. **Decided 2026-11-02:** their own table, 4 KB rows (an entry is text
+    only: a seed phrase, a note or a key token, with notes limited to about 3.5 KB of text), and noise rows drawn
+    per install uniformly from 10–200, never stored, written at the same moments as the contact noise (§8, 21).
+    A hidden space of 40 entries stays unprovable on 79% of installs. At the cap the noise is about 0.8 MB.
   - **Fallback:** a 16-byte locator tag per row (an HMAC under a subkey of the space key), if a device
     measurement shows unlock is too slow.
 - **Removing a space:** unlock it, crypto-shred its rows into noise, and forget the phrase. The app keeps no record
@@ -329,10 +359,14 @@ Decision 1 is closed by it.
 
 ~~**Proposed in the brainstorm, not decided:** uniform records and noise rows (Bug 120).~~ **Decided 2026-10-29**
 (§5, Bug 120): one sealed record per contact in one table, a few fixed sizes with noise rows in the same sizes, no
-space tag, and every change written as "append a new row, shred the old". ~~Open, needs a decision: how many noise
+space tag, and ~~every change written as "append a new row, shred the old"~~ *(2026-11-01: an edit rewrites the
+row in place, §8, 22)*. ~~Open, needs a decision: how many noise
 rows there are, and a table that only grows (§8, 21 and 22).~~ **Decided 2026-11-01:** the contact table's noise
-count is drawn per install, uniformly from 50–1,000, and never stored (§8, 21). Open, needs a decision: a table that
-only grows (§8, 22), and the noise for the other space-sealed tables (§8, 21).
+count is drawn per install, uniformly from 50–1,000, and never stored (§8, 21). ~~Open, needs a decision: a table
+that only grows (§8, 22),~~ **Decided 2026-11-01:** an edit rewrites the row in place, so the table grows only with
+contacts added (§8, 22). ~~Open, needs a decision: the noise for the other space-sealed tables (§8, 21).~~
+**Decided 2026-11-02:** one table and one row size for every small space-sealed record, so the contact noise
+covers them all (§8, 21); the "few fixed sizes" above become one.
 
 **Unverified estimates:** unlock is about 1 s of KDF, 50–200 ms to fetch 10k rows and 10–20 ms to trial-decrypt
 10k small headers. Not measured on a device.
@@ -567,10 +601,12 @@ contacts imported from the address book its plaintext is the iOS Contacts entry 
 the phone's Contacts. This migration is where that closes:
 - Stage 4 moves the identifier into the contact's blob and rewrites the group slots and drafts that refer to it,
   in the same migration.
-- Stage 5 does the same for the custody and shard payloads and `TrusteeTag`. Whether a changed `TrusteeTag` still
-  matches what a trustee holds needs checking first.
-- What the references hold instead is open, needs a decision. It must not be anything that decrypts to the
-  identifier outside the contact's own depth.
+- Stage 5 does the same for the custody and shard payloads and `TrusteeTag`. ~~Whether a changed `TrusteeTag` still
+  matches what a trustee holds needs checking first.~~ *Checked 2026-11-02:* nothing holding the reference leaves
+  the phone. `TrusteeTag` only matches this phone's records against its own contacts, and a custody payload's
+  `ownerContactIdentifier` is the trustee's own reference to the owner.
+- ~~What the references hold instead is open, needs a decision. It must not be anything that decrypts to the
+  identifier outside the contact's own depth.~~ **Decided 2026-11-02:** a random 16-byte contact ID (§8, 20).
 - Not closed by it, each open, needs a decision: images taken before the migration, the old store until
   the reseal is verified (§1.2), and the legacy prekey tags in older keychain images, which outlive an app deletion (Bug 170,
   decision 19).
@@ -624,7 +660,10 @@ Rule 3 allows only two visible states: lock off and lock on.
   - **One table, one row shape:** each contact is one sealed blob (no per-type tables whose counts show), padded
     to a few fixed sizes, with noise rows in the same sizes (spec §2, requirements 3 and 4).
   - **No space tag on any row.**
-  - **Every change is "append a new row, shred the old",** so edits, additions and deletions look alike.
+  - ~~**Every change is "append a new row, shred the old",** so edits, additions and deletions look alike.~~
+    **Changed 2026-11-01 (§8, 22):** an edit rewrites the contact's row in place under the same ID, a deletion
+    overwrites it with random bytes, and an addition appends a row. Under the old scheme they never looked alike
+    either: an addition only appended and a deletion only shredded.
   - It stays open in the register, as a limit and not as accepted.
 
 **One addition to the spec's ruled-out option.** The spec names public keys with append-only storage as the
@@ -738,11 +777,11 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| 0 | Groundwork | The reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
+| 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the photo table's noise rows and size buckets; blob sizes; noise for the other space-sealed tables and the table's growth (§8, 21 and 22); the model sweep for requirement 5 | 1–2 |
+| 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; row AAD (step 5) | 2–3 |
-| 4 | Contacts into the new store | One padded text record per contact; photos in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
+| 4 | Contacts into the new store | One padded text record per contact; photos in their own table at one size, re-encoded, with no noise rows; vault entries in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part (ROLLOUT_PLAN stage 4) | 1–2 |
 | 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); Erase All Data scoped to one space; deleting the old store once every layer has migrated; no old-PIN fallback and no graduation | 2.5–4 |
 | 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several spaces | 1, plus ~1 calendar week: a 7-day phased release |
@@ -772,6 +811,19 @@ there and aren't repeated here.
    depth 0.
 6. **A test phone with no real data.** Which one? As of 2026-10-19 none is cleared: the iPhone 11 still holds real
    data. Stage 0's timing and every stage from 3 on wait for one.
+   *2026-11-01: a hosted test run on the iPhone 15 Pro, which also holds real data, deleted its groups (`bugs.md`
+   Bug 192). Nothing hosted in Occulta.app runs on either phone.*
+
+   **Decided 2026-11-02 by the owner: a spare phone, and a measuring app until it arrives** (`decisions.md`,
+   2026-11-02).
+   - **A spare iPhone with no real data,** ideally an iPhone 11, the slowest phone the app supports (it needs the U1
+     chip). Stages 3 on, the migration, several spaces and stage 7's TestFlight need it; none of that is safe on a
+     phone with real data.
+   - **A measuring app with its own bundle ID** for stage 0's device timings: PBKDF2, the Enclave derivation,
+     SQLite reads and trial decryption at scale. It uses throwaway keys and its own files, links no Occulta code
+     that touches the store or keychain, and is never a test host for Occulta. iOS keeps its container and
+     keychain apart from Occulta's, so it can run on a phone with real data, but each install is asked for first,
+     naming the phone. Not built.
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ ~~**Decided:** refused while duress depths exist.~~ **Superseded
@@ -822,6 +874,26 @@ there and aren't repeated here.
 20. **What the identifier's references hold** (added 2026-10-30; §4, `bugs.md` Bug 171 item 4) once
     `Contact.Profile.identifier` moves into the contact's blob: group slots, drafts, custody and shard payloads and
     `TrusteeTag` hold its legacy ciphertext today, which a holder of Q can decrypt.
+
+    **Decided 2026-11-02 by the owner: a random contact ID** (`decisions.md`, 2026-11-02).
+    - **The ID:** every contact gets a random 16-byte ID when it is created, however it arrives: imported, created by
+      hand, exchanged or from a card. The migration gives each existing contact one. It lives inside the contact's
+      sealed record.
+    - **References** (group member slots, drafts, custody and shard payloads, the shard records) hold that ID, and
+      only inside rows sealed under the same space key, so nothing outside the contact's own space decrypts to it.
+      `TrusteeTag` stays a hash, now of the ID, so its code doesn't change.
+    - **The address-book ID** is used once at import, to fetch the card (`ContactsListV2.swift:313`), and never
+      stored. Nothing reads it afterwards today either: there is no re-sync and no duplicate check. So no space's
+      records link a contact to a card in the phone's Contacts, and an imported contact can't be told from any
+      other.
+    - **Fixed width** removes the reason for `Group`'s 128-byte slot padding (address-book IDs run up to 88 bytes) and
+      for hashing into `TrusteeTag` (Bug 145).
+    - **Nothing leaves the phone:** every holder of the reference is local, so changing it breaks nothing a
+      trustee or contact holds.
+    - **Not adopted:** keeping the old identifier, decrypted at migration, inside the sealed rows. Less rewriting, but
+      the address-book link would survive for anyone holding a space's phrase, even for a contact renamed in Occulta.
+    - **Still open, as before** (§4): images taken before the migration, and older keychain images with the legacy
+      prekey tags (Bug 170, decision 19).
 21. **How many noise rows there are, and when they are written** (added 2026-10-30; §1.5, §5). The migration has to
     write noise rows, or a table's total shows how many contacts every space holds together: an install with 40
     contacts and no duress space must look like one with 30 visible and 10 hidden. ~~Nothing says how many, whether
@@ -833,26 +905,66 @@ there and aren't repeated here.
     **Decided 2026-11-01 by the owner for the contact table:** the count is drawn per install, uniformly from
     50–1,000, and never stored.
     - **When:** in the migration's one sitting; at first launch on a fresh install, so the two look alike; and as a
-      fresh draw from the same range with a space that migrates later (item 25). Never after that: shredded rows
-      (item 22) already grow the unopened set with use.
+      fresh draw from the same range with a space that migrates later (item 25). Never after that: deleted rows,
+      shredded in place (item 22), grow the unopened set with use.
     - **Why uniform:** every count of unopened rows up to 1,000 is then equally likely with or without a hidden
       space. The range is public with the code, so only the cap says anything: right after migration, more than
       1,000 unopened rows proves a hidden space. A hidden space of H contacts stays unprovable on (951 − H) / 951 of
-      installs: 95% at 50, 79% at 200, 58% at 400. Shredded rows blur it further once the phone is used.
+      installs: 95% at 50, 79% at 200, 58% at 400. Deleted rows blur it further once the phone is used.
     - **Why absolute:** a range scaled with contact counts would let a large real space show behind a small decoy.
     - **Cost at the cap:** about 8 MB, and about 4 ms to try and reject 1,000 noise rows on an iPhone 15 Pro (5 ms on
       the iPhone 17 Pro Simulator; 8,220-byte records, `ContactRecordCryptoMeasurementTests.measureAtScale`, §1.5); a
       failed tag check skips the JSON decode that dominates a real open. An iPhone 11 is unmeasured (decision 6).
-    - **Still open, needs a decision:** noise rows' sizes have to follow how real records spread over the size
+    - ~~**Still open, needs a decision:** noise rows' sizes have to follow how real records spread over the size
       buckets, decided with the blob sizes; the other space-sealed tables (vault entries, groups, the backup-key,
       custody and restore records) each show their own count and need their own draw and range. The photo table is
-      its own item (§1.5).
+      its own item (§1.5).~~
+
+    **Decided 2026-11-02 by the owner: one table and one row size for every small space-sealed record**
+    (`decisions.md`, 2026-11-02).
+    - **One size, about 8 KB.** The fullest measured contact record fits with room: an ML-KEM-1024 key, two P-256
+      keys and the 23-prekey peak come to about 5.5 KB encoded. Fields get limits so no record overflows, and the
+      size is checked against the largest real record when it is built. With one size, noise rows have no spread
+      over buckets to match, so the sizes question goes away.
+    - **One table** holds contacts, groups, backup keys, custody shards and the shard and restore queue records
+      (`PendingShardDistribute`, `PendingShardStatusUpdate`, `PotentiallyLostShard`, `ReconstructShard`,
+      `PendingShamirSecretRestore`). A record's type is inside its seal, so no per-type count shows in an image, and
+      the noise draw above covers every type. Several of these hold zero to a few rows per space, so a table of
+      their own would show another space's row on its own.
+    - **Cost:** a group or custody shard takes 8 KB instead of about 1 KB; there are tens of them. Unlock already
+      tries every row.
+    - **Kept out:** photos and vault entries, whose size is the user's content. *Decided 2026-11-02 (§1.5):* photos
+      in a table of one size with no noise; vault entries in a table of 4 KB rows with noise drawn from 10–200.
+    - **Not adopted:** a table per type, each with its own size, draw and range: about seven ranges for tables
+      with small, uneven real counts, and each count still shows on its own.
 22. **The table only grows** (added 2026-10-30; §1.5). "Append a new row, shred the old" keeps every shredded row
     as noise, and no space can remove one, since nothing tells it from another space's row. So every edit adds a
     row for good. If consuming a prekey rewrites the contact's record (D9, stage 4), every message received does
     too. Unlock trial-decrypts every row, so its cost and the store's size grow with every write ever made, not with
     the contact count; the "10k rows" estimate counts contacts. The locator tag (§1.5) makes each check cheaper but
     doesn't reduce the count.
+
+    **Decided 2026-11-01 by the owner: an edit rewrites the row in place** (`decisions.md`, 2026-11-01). This
+    replaces "append a new row, shred the old" (§1.5, §5).
+    - **An edit** overwrites the contact's row under the same random ID with a fresh seal, in one transaction. **A
+      deletion** overwrites it with random bytes, as before. **An addition** appends a row. The same holds for every
+      space-sealed table.
+    - **Growth:** the table grows only with rows ever added, plus noise. Edits and received messages (D9) add
+      nothing. Under append-and-shred, 20 messages a day would have added about 7,300 rows, about 60 MB and 30 ms of
+      unlock a year, for good.
+    - **One image:** no difference. The plain SQLite store (item 23) has no `Z_OPT`, no history and no insertion
+      order, so a rewritten row looks like any other.
+    - **Across images:** an edit shows one changed row, where append-and-shred showed a changed row and a new one.
+      A row that changes repeatedly is live, but the chain of appended and shredded rows linked the same way. Part
+      of Bug 120's stated limit either way. A record that moves to another size bucket changes its row's size,
+      which says what a shred at one size and an append at another said.
+    - **What append-and-shred claimed:** that edits, additions and deletions look alike (§5). They didn't: an
+      addition only appended and a deletion only shredded. Its other reason was SwiftData's `Z_OPT`, which the plain
+      store doesn't have.
+    - **Item 21:** unchanged. Its numbers are for the state right after migration; deleted rows still blur it later,
+      edits no longer do.
+    - **Not adopted:** a free list sealed in each space, so a space reuses rows it shredded (more machinery, no gain
+      over rewriting in place), and compaction (no space can tell its own shredded rows from others).
 23. **SwiftData's own columns and history** (added 2026-10-31; §1.5, `bugs.md` Bug 190). §1.5 says a deleted row,
     another space's row and a noise row look the same. In a SwiftData table they don't:
     - Shredding in place is an update, so it raises the row's `Z_OPT` to 2 while live and noise rows stay at 1.
@@ -863,7 +975,8 @@ there and aren't repeated here.
     ~~The options are in Bug 190: drop the history, shred by delete and insert in a random order, or keep these tables
     outside SwiftData.~~ **Decided 2026-11-01 by the owner: the new store file is plain SQLite** (`decisions.md`,
     2026-11-01). It holds every table sealed under a space key (vault entries, contacts, photos, groups, and the
-    backup-key, custody and restore records) through the `sqlite3` C API. Each table is `WITHOUT ROWID`, keyed by a
+    backup-key, custody and restore records) through the `sqlite3` C API. *(2026-11-02: the small records share one
+    table, item 21.)* Each table is `WITHOUT ROWID`, keyed by a
     random 16-byte ID, with the sealed record as its only other column. That removes `Z_OPT`, insertion order, the
     write counters and the history by construction, and keeps an append and its shred in one transaction.
     Install-wide state stays in SwiftData, where Bug 190 stays open. Measured first: opening, changing and resealing
@@ -939,8 +1052,25 @@ there and aren't repeated here.
       might. Whether a truncated file's freed blocks stay under its own key, and whether deleting the `-wal` and
       letting SQLite recreate it would discard that key, isn't known.
     - **Flash: not checked.** Stale NAND pages need a chip-level read and the device's keys.
-    - **Open, needs a decision:** what to verify, and whether the store deletes its `-wal` rather than truncating it.
-      A destroyable per-space secret would close it, but it would be a per-space record, which §1.5 rules out.
+    - ~~**Open, needs a decision:** what to verify, and whether the store deletes its `-wal` rather than truncating it.
+      A destroyable per-space secret would close it, but it would be a per-space record, which §1.5 rules out.~~
+
+    **Decided 2026-11-02 by the owner** (`decisions.md`, 2026-11-02). Since item 22 this covers every edit too: the
+    old version of a rewritten row opens with the same phrase.
+    - **A store-layer test** (stage 0): after a write, a shred and a checkpoint, the old ciphertext is in neither
+      the file nor its `-wal`.
+    - **The store closes when the app goes to the background,** when the key cache drops (item 27); nothing can
+      read it without the key then. SQLite deletes the `-wal` when its last connection closes, so the WAL's blocks
+      go with its file's key instead of staying freed under a key that still exists. iOS gives each file its own
+      key (Apple's documented design, not verified here).
+    - **A second test:** after closing, the `-wal` file doesn't exist. It catches a persistent WAL, which Apple's
+      SQLite build may default to; if it does, the store turns it off.
+    - **Open, needs a decision:** stale copies of the main file's pages in APFS free blocks and flash stay under the
+      file's key until reused. Reading them takes a raw volume or chip-level image, the file's key and the space's
+      phrase; logical and full-file-system extractions read files, not free space.
+    - **Not adopted:** rotating the file on going to the background after any write (`VACUUM INTO` a new file and
+      delete the old one, discarding its key and every stale copy). About 40 MB written per session at 5,000
+      contacts, nearly every session since received messages rewrite records, against that narrow attacker.
 27. **What the key cache holds, and when it drops it** (added 2026-11-01; stage 0, register C2, §1.5). One Enclave
     ECDH costs about 4.6 ms on an iPhone 15 Pro (§1.5's measurements), and a phrase-derived key can't be re-derived
     without the phrase, so a key is derived once and kept for the session. Caching is no weaker than today's
@@ -958,11 +1088,22 @@ there and aren't repeated here.
       iPhone 15 Pro.
     - **The same holds for today's local DB key** (C2).
 
-    **Open, needs a decision:** a grace period, returning to the app without the phrase. It would keep only a copy of
-    the space key wrapped by an Enclave key usable only while the phone is unlocked, in memory, and unwrap it on
-    return (one Enclave call). A locked phone's Enclave refuses, so a memory dump gets nothing. On disk the same copy
-    would be §1.1's device slot, which older images unwrap, so it never reaches disk. Without it, every return to the
-    app asks for the phrase.
+    ~~**Open, needs a decision:** a grace period, returning to the app without the phrase.~~ **Decided 2026-11-02 by
+    the owner: a 5-minute grace, as today** (`AppScreen.swift:53`; `decisions.md`, 2026-11-02).
+    - **What stays:** on going to the background the key and every decrypted record are dropped as above. Only a
+      copy of the space key stays in memory, wrapped by an Enclave key made for the session, never stored, and usable
+      only while the phone is unlocked.
+    - **Return within 5 minutes** of going to the background: one Enclave call (about 4.6 ms) unwraps it, and the
+      records are re-opened (37 ms per 1,000). Later, or after iOS kills the app, the phrase is needed. The wrapped
+      copy is dropped when the 5 minutes run out on return, when the app locks itself and when the space changes.
+    - **Every depth alike** (Bug 41).
+    - **A memory dump of a locked phone** gets only the wrapped copy: the Enclave refuses while the phone is locked.
+      The copy never reaches disk, where it would be §1.1's device slot, which older images unwrap.
+    - **What it leaves, as today's PIN grace does:** someone who takes the phone unlocked, or compels its passcode,
+      within 5 minutes of the user leaving Occulta opens the space last open with no phrase. A suspended app can't
+      see a device lock, so the grace counts time in the background, not locks. If the last space was the real one,
+      it is exposed; step 16's guidance should say so.
+    - **Not adopted:** no grace, which asks for 7 words on every return to the app.
 
 ---
 

@@ -10528,18 +10528,26 @@ The finding above stands. It is slightly worse, since no space can reseal anothe
 only when someone uses it (the "decoys go stale" cost, accepted).
 
 - **Fixed in one image, with no phrase:** per-type row counts (one sealed blob per contact in one table, spec §2
-  requirement 3), row sizes (a few fixed sizes, noise rows included), and no space tag on any row. Every change
-  is written as "append a new row, shred the old", so an edit, an addition and a deletion look alike.
+  requirement 3), row sizes (a few fixed sizes, noise rows included), and no space tag on any row. ~~Every change
+  is written as "append a new row, shred the old", so an edit, an addition and a deletion look alike.~~ *Changed
+  2026-11-01 (§8, 22):* an edit rewrites the row in place, a deletion overwrites it with random bytes, and an
+  addition appends one. The old claim never held: an addition only appended and a deletion only shredded.
 - **Not fixed:** rows a surrendered space can't open changing between images. Noise rows don't help. A key that
   recognises noise would let anyone holding it count the real unopenable rows, and without one a duress session
   can't tell noise from real rows, so it can't safely rewrite either.
 - **Stated limit, owner 2026-10-29:** a duress space protects against one image, not a series, and the setup
   guidance (step 16) says so. The append-only log stays a possible later release, not planned.
-- **Also open, needs a decision (2026-10-30):** ~~how many noise rows the migration writes, and~~ a table that only
-  grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+- ~~**Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
+  grows, since no space can remove a shredded row~~ (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+  **Decided 2026-11-01 (§8, 22):** an edit rewrites the row in place, so the table grows only with rows added,
+  plus noise. Across images an edit shows one changed row, within this limit.
   **Decided 2026-11-01 for the contact table (§8, 21):** the noise count is drawn per install, uniformly from
   50–1,000, and never stored, so up to 1,000 unopened rows say nothing; more than that right after migration proves
-  a hidden space. Noise sizes and the other space-sealed tables stay open.
+  a hidden space. ~~Noise sizes and the other space-sealed tables stay open.~~ **Decided 2026-11-02:** every small
+  space-sealed record shares one table and one row size, about 8 KB, so the same noise covers them and no per-type
+  count shows. ~~Photos and vault entries stay open.~~ **Decided 2026-11-02:** vault entries get their own table of
+  4 KB rows with noise drawn from 10–200. Photos get one size and no noise rows, so right after migration a photo
+  row the open space can't read proves another space: open, needs a decision.
 - ~~**Also open, needs a decision (2026-10-31):**~~ a write that reseals all of one space's rows at once (a rekey,
   removing a space, a migration batch) shows across images which rows make up that space, with no phrase
   (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25). **Decided 2026-11-01 by the owner:** Erase All Data's group is a
@@ -14139,7 +14147,7 @@ Fixed means: every key the app derives today (the local DB, shard custody, resto
 1. **Data copied before the reseal, and images taken while a device was classical.** Ciphertext sealed under a legacy key, and anything sealed under the classical form on a device below iOS 26, stays readable to whoever holds Q (and, for the classical form, the tier secret). No reseal protects what is already copied. Stage 6 moves a device to hybrid when it reaches iOS 26.
 2. **Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer.** No primitive there closes it (D1, the user's, 2026-10-21). The passphrase release closes it for phrase-protected depths on every version, and Stage 6 when the device reaches 26.
 3. **Whether an image alone yields Q.** No cleartext column of the Simulator's keychain database does (it holds SHA-1(Q)); a device answer needs extraction tooling we don't have (D4).
-4. **`Contact.Profile.identifier` is left byte-identical** (the user's decision, 2026-10-21), so for contacts imported from the address book a holder of Q can link each one to its address-book entry until the passphrase migration reseals each contact as one record. That migration's part, and what it leaves open, is in `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §4 (stages 4 and 5, decision 20).
+4. **`Contact.Profile.identifier` is left byte-identical** (the user's decision, 2026-10-21), so for contacts imported from the address book a holder of Q can link each one to its address-book entry until the passphrase migration reseals each contact as one record. That migration's part, and what it leaves open, is in `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §4 (stages 4 and 5, decision 20). **Decided 2026-11-02:** every contact gets a random 16-byte ID, references hold only that inside rows sealed under the same space key, and the address-book ID is never stored.
 5. **The vault window (D8).** The per-entry keys stay under the legacy key until the first unlock after the upgrade, and the vault epoch shows anyone who holds the tier U key whether the vault has been opened since. A kill after the export file moved leaves the file under the new key and the rest under the old until the next unlock (nothing becomes unreadable except the backup staleness snapshot in that window).
 6. **A reseal or an upgrade that stopped partway, over a later launch that aborts before writing.** Stage 2c and Stage 6 block a launch that ended mixed; the report knows only its own launch, so a launch that aborts before writing over a store an earlier launch left mixed is not blocked. A marker written before the first batch would close it, and for the upgrade the pending record could serve, but an upgrade that fails for a lasting reason would then block every launch from the second on.
 7. **Share staging's legacy fallback.** While `decrypt` accepts the legacy key (one release), anyone holding Q who can write into the App Group container can plant a session the app opens. The fallbacks go one release after 2.0.0.
@@ -15214,13 +15222,18 @@ rows, and the same `Z_OPT` on every row of the new tables.
 
 ---
 
-## Bug 191 — A hosted test run on a device reads the real store under the legacy keys, and can purge every group
+## Bug 192 — A hosted test run on a device reads the real store under the legacy keys, and can purge every group
 
-**Status:** Fix in review, [PR #152](https://github.com/aibo-cora/occulta/pull/152) to `develop` (not merged). Found 2026-11-01, when two device runs of `ContactRecordCryptoMeasurementTests` on
+*Numbered 191 until 2026-11-02, and still called that in PRs #152–#154 and this branch's commit messages.
+`release/v2.1.0` took Bug 191 for `TransportKeyDerivation.sessionKey` (PR #151), so this one is 192.*
+
+**Status:** Fixed in `release/v2.1.0` by [PR #154](https://github.com/aibo-cora/occulta/pull/154), merged
+2026-11-02 as `ac2a5a67` (it replaces PRs #152 and #153, both closed). It merged before its CI check finished; the
+full Simulator run passed with only the 6 expected skips. Found 2026-11-01, when two device runs of `ContactRecordCryptoMeasurementTests` on
 a phone with real data made its contacts and groups disappear from the app. The contacts came back after a normal
 launch; the groups were deleted for good.
 
-**Target:** `develop` via PR #152. Debug builds hosting tests are where it was seen; the purge guard also covers any
+**Target:** `release/v2.1.0`. Debug builds hosting tests are where it was seen; the purge guard also covers any
 shipped path that reaches the purge with the wrong key.
 
 ### Severity: Low for users, Critical for any development phone that holds data (proposed; it destroyed a phone's groups)
@@ -15249,7 +15262,7 @@ shipped path that reaches the purge with the wrong key.
   keychain and Enclave items that still exist on a resealed phone, so no fresh keys were created.
 - **No recovery from the app:** the vault backup doesn't hold groups, and the store is excluded from device backups.
 
-### Fix (PR #152, commit `261e6024`)
+### Fix (PR #154, from PR #152's commit `261e6024` and PR #153)
 
 - **The test host gets an in-memory store.** `OccultaApp.init` builds an in-memory container in a test host, as a
   blocked launch does, and its file-level calls point at a path that doesn't exist. A hosted run never opens the real
@@ -15263,9 +15276,12 @@ shipped path that reaches the purge with the wrong key.
   breaks Bug 75's all-stranded case and can't tell a wrong key from unreadable groups).
 - **Duress and forensics:** no change. With the right key the behaviour is the same, and the checkpoint still runs at
   every depth.
-- **Still open, not in the PR:** a hosted test can still reach real Keychain and Enclave items, the App Group and
-  `UserDefaults`, and the `HybridUpgradeTests.swift:101` helper defaults to `KeyReseal.Locations.production`. Device
-  runs stay off every phone with real data.
+- **Tests use their own Application Support directory** (from PR #153). A source scan fails the run if anything
+  else names the system one.
+- **Still open, not in the PR:** a hosted test can still reach real Keychain and Enclave items (layer 3 of the
+  isolation plan, not started) and the App Group. `UserDefaults` is shared too; the PR leaves it, since
+  `OSTraceTests` bans a suite name and the one key tests touch is removed on every unlock. Device runs stay off
+  every phone with real data.
 
 ### Guard
 
@@ -15273,3 +15289,37 @@ shipped path that reaches the purge with the wrong key.
 `persistedDepth` each delete nothing, and all three fail with the guard removed. A genuinely stranded group is still
 purged, and Bug 75's all-stranded case still clears. The in-memory test host has no test of its own:
 `OccultaApp.init` can't be unit-tested, so only a full hosted run covers it.
+
+---
+
+## Bug 193 — A contact photo picked from Photos is stored as the original file, metadata included
+
+**Status:** Open, needs a decision. Found 2026-11-02 while deciding the photo table (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`
+§1.5). Read from the code; what the stored bytes hold was not checked on a device.
+
+**Target:** None yet. The passphrase migration re-encodes every photo (§1.5, decided 2026-11-02); today's app could do
+the same at pick time.
+
+### Severity: Medium (proposed)
+
+### What happens
+
+- Both contact forms store the picker's bytes as they come: `loadTransferable(type: Data.self)` into
+  `contact.imageData` (`ContactFormV2.swift:111`, `Contact+Photo.swift:40`). For a photo from the library that is
+  the original asset at full resolution, possibly several MB, with whatever metadata it carries: typically the
+  capture time, the device and, when location was on, where it was taken.
+- It is sealed under the local DB key, so it takes the key to read. Anyone who does (a forensic examiner with the
+  key, or the space's owner under coercion once the passphrase ships) gets that metadata about a photo the app only
+  ever shows as an avatar.
+- Only the 120×120 thumbnail is re-encoded.
+
+### Fix (open, needs a decision)
+
+- Re-encode at pick time to the size the app shows, from pixels only, so no metadata is carried over; keep no
+  original. The new store does this with its 24 KB photo row (§1.5).
+- Existing photos stay as stored until a migration re-encodes them.
+
+### Guard
+
+None yet. A test that picks a photo with GPS metadata and finds none in what the contact stores.
+
