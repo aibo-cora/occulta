@@ -369,7 +369,7 @@ Full entries in [`bugs.md`](../../../Docs/Features/Secure%20Mode/bugs.md). Earli
 
 | # | Summary | Status |
 |---|---|---|
-| 194 | After a contact's identity key changes, our sends go to their old phone's prekeys: the new phone can't open them, and in `.forwardSecretNoPQ` the old phone can | Open |
+| 194 | After a contact's identity key changes, our sends go to their old phone's prekeys: the new phone can't open them, and in `.forwardSecretNoPQ` the old phone can | Fixed 2026-11-03 (`release/v2.1.0`): `update(key:for:)` and `reset(identity:)` drop the contact's inbound prekeys, and a launch pass repairs contacts already stuck |
 
 ---
 

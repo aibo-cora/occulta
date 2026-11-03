@@ -15142,9 +15142,9 @@ input wrong, the own-key error comes first, and each later check is reached only
 
 ## Bug 194 — After a contact's identity key changes, our messages to them are sealed to their old phone's prekeys: the new phone can't open them, and without ML-KEM the old phone can
 
-**Status:** **Open.** Filed 2026-11-03 from audit lead 13 (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md` §13), confirmed by a code trace at `cea3927b` (`release/v2.1.0`). Not yet reproduced by a test or on a device. The trace widens the lead in two ways: it needs no introduction card and no revoke, only a contact whose identity key changes; and it finds a confidentiality case the lead ruled out.
+**Status:** **Fixed 2026-11-03** on branch `claude/bug-194-stale-inbound-prekeys-ee7f61` (PR to `release/v2.1.0` not yet opened). Filed 2026-11-03 from audit lead 13 (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md` §13), confirmed by a code trace at `cea3927b` (`release/v2.1.0`), then reproduced by `StaleInboundPrekeysConversationTests` on a real Enclave: with the fix removed, the new phone throws `recipientSlotNotFound` on every message sent after the key change. The trace widens the lead in two ways: it needs no introduction card and no revoke, only a contact whose identity key changes; and it finds a confidentiality case the lead ruled out.
 
-**Target:** Not set — open, needs a decision.
+**Target:** `release/v2.1.0` only, decided 2026-11-03. No 2.0.x backport: a 2.0.x user who needs the exposure closed sooner can delete the contact and exchange again, which starts a fresh record.
 
 ### Severity: High
 
@@ -15168,24 +15168,39 @@ The lead's statement that the old phone "can open the classical outer layer, but
 - **The contact's new phone** shows an error for each of our files.
 - **Their old phone**, in `.forwardSecretNoPQ`, opens them.
 
-### Fix — proposed, open, needs a decision
+### Fix — decided and done
 
-When the contact's key material changes in `update(key:for:)` (`keyRotated`), and in `reset(identity:)`, drop the inbound side of their record: `inboundBatches`, `inboundLastResort`, `acceptedBatchIDs`, `latestInboundGeneratedAt`. The next send then goes in long-term mode to the new key. The new phone opens it and issues a batch (`replenish`, `.longTerm`), and forward secrecy resumes. A re-exchange with unchanged material, such as a reinstall (Bug 82), keeps the record as today.
+Decided 2026-11-03: **inbound side only.** `PrekeyBookkeeper.dropInbound(from:)` clears `inboundBatches`, `inboundLastResort`, `acceptedBatchIDs` and `latestInboundGeneratedAt`. `ContactManager.dropInboundPrekeys(of:)` applies it to a contact's record and is called from:
 
-Open: whether to drop our own batches too, as `dropCardEraBatches` does. They hold Enclave keys only the old phone knows the public halves of.
+- `update(key:for:)`, when the incoming material differs from the contact's unexpired key (`keyRotated`). The same material, such as a reinstall (Bug 82), keeps the record as before.
+- `reset(identity:)`, unconditionally. The next exchange compares against the unexpired key, and a revoked contact has none, so `keyRotated` stays false there whatever the new phone's key is. `reset` therefore drops the state itself, and doesn't rely on the next exchange to see the change. (That blind spot has a second effect, on backup pieces: Bug 195, still open.)
 
-### Migration — open, needs a decision
+The next send then goes in long-term mode to the current key. The new phone opens it and issues a batch (`replenish`, `.longTerm`), and forward secrecy resumes. A save that dropped something flushes the write-ahead log, like the card paths do.
 
-The fix doesn't repair contacts already in this state. Two options:
+`acceptedBatchIDs` and `latestInboundGeneratedAt` go too, not only the keys. A date left from the old phone can be ahead of the new phone's clock, and `accept` refuses a batch older than it on a reopenable slot, which long-term mode is. The new phone's first batch would be dropped.
 
-- A launch pass that drops the inbound state where the contact's last two key records differ in material and `latestInboundGeneratedAt` is older than the current key's `acquiredAt`.
-- No migration, and tell users the existing escape: deleting the contact and exchanging again starts a fresh record.
+**Our own batches stay** (decided 2026-11-03). They don't cause this bug, and dropping them would make unreadable whatever the old phone sent before the change and we hadn't opened. Nothing leaks either way: a message from the old phone fails the signature check against the contact's current key. Clearing our own Enclave keys when a contact's key changes is hygiene, not a fix for this, and isn't done here.
 
-### Guard — tests to add
+### Migration — done
 
-- `.ambientTestKeyManager`, runs anywhere: for a contact with inbound batches and a last-resort key, `update(key:for:)` with new material empties the inbound side; with the same material it keeps it; `reset(identity:)` empties it.
-- The first send after a rotation is sealed in long-term mode, not to a stale prekey ID.
-- Two phones, Enclave-gated, in the style of `PrekeyConversationTests`: give one phone a new identity, exchange again and send. The new phone opens the message; a copy of the old phone's record does not.
+Decided 2026-11-03: a launch pass that keeps no state and runs at every launch and unlock (`ContactManager.sweepStaleInboundPrekeys()`, called from `sweepPrekeysIfUnlocked`), over every contact at every depth like `sweepCards`.
+
+Rule (`currentKeyAcquiredAt(of:)`, `PrekeyBookkeeper.inboundIsStale`): find when the contact's current key material first appeared, as the start of the run of identical material that ends their key list. A contact with no earlier different material is skipped without decrypting more. If what we hold from them has `latestInboundGeneratedAt` older than that moment, or none, it is dropped as above. This reaches contacts revoked and re-exchanged before the fix, and a contact exchanged twice with the new key, which "the last two records differ" would miss.
+
+It undoes its own trigger: a repaired contact has nothing inbound left, and once the new phone's batch is accepted its date is newer than its key. Nothing is recorded, so the pass leaves no trace of having run. A key whose date won't read leaves the record alone.
+
+**Open, needs a decision — a new phone whose clock is behind ours.** The batch date is the contact's clock; the key's date is ours. A new phone running behind by more than the time between the exchange and its first batch looks stale to the pass, so that contact goes back to long-term mode at every launch and unlock. Messages still open; forward secrecy for our sends to that contact is lost until the clock is fixed. Fixing it would need a record of when the batch was accepted, which the fixed-size record doesn't hold and which would be state the pass is meant not to keep.
+
+### Disclosure
+
+Releases from 2.0.0 (prekey continuity) up to this fix are affected: between a contact's key change and the first long-term send after it, what we sent could be opened on their old phone when their new key has no ML-KEM key. Recorded in `Docs/Audit/SECURITY_CHECKLIST.md` (post-sign-off, 2026-11-03).
+
+### Guard — tests
+
+- `StaleInboundPrekeysTests` (runs anywhere, `.ambientTestKeyManager`): new material empties the four fields and leaves our batches; the same material and a contact's first key keep the record; the first send after a change is `.longTerm`; a last-resort key alone is dropped; `reset(identity:)` empties them, and a revoke followed by a re-exchange finds nothing stale.
+- `StaleInboundPrekeysLaunchPassTests` (runs anywhere): a stale record is dropped and a fresh one kept; one key, the same material twice, an empty inbound side and an unreadable date are left alone; a repeated exchange with the new key and a revoke before the fix are repaired; a second run changes nothing.
+- `StaleInboundPrekeysConversationTests` (Enclave-gated, in the style of `PrekeyConversationTests`): after the change, what Alice sends opens on the new phone and not on the old one; the new phone answers with a batch and forward secrecy resumes; the same after a revoke and re-exchange; a contact stuck before the fix is repaired by the pass.
+- `CardMeetingSaveTests.secondMeetingKeepsRecord` made both meetings use the same key. It built fresh random material for each, so it had been changing the contact's key without meaning to.
 
 ### Related
 

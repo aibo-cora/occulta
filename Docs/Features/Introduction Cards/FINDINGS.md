@@ -636,4 +636,4 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
 
 | # | Summary | Status |
 |---|---|---|
-| [194](../Secure%20Mode/bugs.md) | After a contact's identity key changes, our sends go to their old phone's prekeys; a card conversation on a revoked contact is one way in | Open |
+| [194](../Secure%20Mode/bugs.md) | After a contact's identity key changes, our sends go to their old phone's prekeys; a card conversation on a revoked contact is one way in | Fixed 2026-11-03 (`release/v2.1.0`): a key change drops the contact's inbound prekeys, and a launch pass repairs contacts already stuck |
