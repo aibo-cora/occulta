@@ -602,7 +602,10 @@ extension ContactManager {
     ///   - key: Keying material.
     ///   - identifier: Identifier of the owner.
     ///   - method: Acquisition method. Nearby Interaction - secure, or something else.
-    func update(key: Contact.Draft.Key, for identifier: String) throws {
+    ///   - pairing: What the exchange handed over when both phones sent a prekey batch (`bugs.md` Bug 196): our first batch
+    ///     and the peer's, installed with the key in this save, and the peer recorded at the pairing-secret tier, which a
+    ///     phone that sent a batch is. `nil` for a peer that can't hold a pairing secret, and the record is left as it was.
+    func update(key: Contact.Draft.Key, for identifier: String, pairing: PairingOffer? = nil) throws {
         guard
             let contact = try self.fetchContact(by: identifier),
             let encryptedMaterial = try self.cryptoManager.encrypt(data: key.material),
@@ -631,6 +634,9 @@ extension ContactManager {
 
         // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
         let clearedCard = try self.clearCard(afterMeetingOf: contact)
+
+        // The first prekeys of this pairing, and the peer's tier, in the same save as the key (Bug 196).
+        if let pairing { try self.installPairingPrekeys(pairing, in: contact) }
 
         // The secret goes in as the row is inserted, not in a second save, which would mark the row updated in place.
         // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.

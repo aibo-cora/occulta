@@ -89,6 +89,8 @@ protocol KeyManagerProtocol {
     func createHybridFSSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
 
     func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
+    /// The per-pairing secret (`bugs.md` Bug 196). `quantumMaterial` is nil for a classical exchange.
+    func createPairingSecret(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data) -> Data?
     func generateExchangeNonce() -> Data?
 
     // MARK: - Identity challenge
@@ -1142,6 +1144,37 @@ extension TestKeyManager {
             info: info,
             outputByteCount: 32
         )
+    }
+
+    func createPairingSecret(
+        peerP256Material: Data,
+        quantumMaterial: QuantumKeyMaterial?,
+        ourNonce: Data,
+        peerNonce: Data
+    ) -> Data? {
+        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
+        guard ourNonce.count == 16, peerNonce.count == 16, ourNonce != peerNonce else { return nil }
+
+        var ikm = ecdh.rawECDH
+        if let quantumMaterial {
+            guard quantumMaterial.isValid else { return nil }
+            let sortedSecrets = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
+                .sorted { $0.lexicographicallyPrecedes($1) }
+            ikm.append(contentsOf: sortedSecrets[0])
+            ikm.append(contentsOf: sortedSecrets[1])
+        }
+
+        let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
+        var info = SaltInfo.kPairingSecretInfo
+        info.append(contentsOf: sortedNonces[0])
+        info.append(contentsOf: sortedNonces[1])
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: ecdh.salt,
+            info: info,
+            outputByteCount: 32
+        ).withUnsafeBytes { Data($0) }
     }
 
     func generateExchangeNonce() -> Data? {

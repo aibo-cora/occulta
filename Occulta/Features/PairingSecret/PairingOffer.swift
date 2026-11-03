@@ -40,6 +40,15 @@ struct PairingOffer: Equatable {
         }
     }
 
+    /// The secret this pairing holds, derived from the identity ECDH, both nonces and the ML-KEM secrets where the
+    /// exchange had them. Both phones get the same bytes. `nil` if the key manager couldn't derive it, in which case the
+    /// pairing is made as it was before this fix.
+    func secret(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
+        keyManager.createPairingSecret(
+            peerP256Material: peerIdentity, quantumMaterial: quantum, ourNonce: self.ourNonce, peerNonce: self.peerNonce
+        )
+    }
+
     /// Our pending batch in wire form: what the identity message carries.
     static func wireBatch(of record: PrekeyRecord) -> OccultaBundle.SealedPayload.PrekeySyncBatch? {
         PrekeyBookkeeper().pendingBatch(in: record, publicKeyOfBlob: Manager.PrekeySecretsManager.publicKey(ofBlob:)).map {
