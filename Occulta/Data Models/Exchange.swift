@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import OccultaFormats
 
 struct Exchange: Codable {
     let id: String
@@ -26,6 +27,10 @@ struct Exchange: Codable {
     /// filler, with an empty `token` and nothing else. An older build's decoder ignores the key and reads this as a
     /// discovery message, whose empty token fails to unarchive, so the message is dropped harmlessly.
     let cardProof: Data?
+    /// Our first prekeys, in the identity message: 15 one-time keys and a last-resort key (`bugs.md` Bug 196). Its
+    /// presence is the signal that this phone can hold a pairing secret, so a phone that sends none is treated as one
+    /// that can't. An older build's decoder ignores the key. `nil` in every other message.
+    let prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
 
     init(
         id: String,
@@ -35,7 +40,8 @@ struct Exchange: Codable {
         nonce: Data? = nil,
         encapsulationKey: Data? = nil,
         ciphertext: Data? = nil,
-        cardProof: Data? = nil
+        cardProof: Data? = nil,
+        prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
     ) {
         self.id = id
         self.token = token
@@ -45,6 +51,7 @@ struct Exchange: Codable {
         self.encapsulationKey = encapsulationKey
         self.ciphertext = ciphertext
         self.cardProof = cardProof
+        self.prekeyBatch = prekeyBatch
     }
 
     enum Version: Int8, Codable {
