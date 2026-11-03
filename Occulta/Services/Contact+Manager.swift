@@ -1272,7 +1272,9 @@ extension ContactManager {
                 contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                 pendingBatch:    outboundBatch,
                 prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                pairingSecret:   self.pairingSecretForSending(to: contact, tier: targetVersion)
+                pairingSecret:   self.pairingSecretForSending(to: contact, tier: targetVersion),
+                // Only a one-time key's slot may carry a half: a last-resort or long-term slot opens again.
+                pairingSwap:     try contactPrekey == nil ? nil : self.pairingSwapForSending(to: contact, tier: targetVersion)
             )]
             let sent: SentBundle
             if let streamedFiles {
@@ -1335,6 +1337,8 @@ private struct PendingGroupRecipient {
     let prefixesEphemeralSignature: Bool
     /// The pairing secret to seal this member's slot with, or nil (`bugs.md` Bug 196).
     let pairingSecret: Data?
+    /// The swap this member's one-time-prekey slot carries, if any (`PairingSecretState+Swap`).
+    let pairingSwap: PairingSecretSwap?
 }
 
 extension ContactManager {
@@ -1477,7 +1481,8 @@ extension ContactManager {
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
                 prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                pairingSecret:          self.pairingSecretForSending(to: contact, tier: memberVersion)
+                pairingSecret:          self.pairingSecretForSending(to: contact, tier: memberVersion),
+                pairingSwap:            try contactPrekey == nil ? nil : self.pairingSwapForSending(to: contact, tier: memberVersion)
             )
         }
 
@@ -1494,7 +1499,8 @@ extension ContactManager {
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
                 prefixesEphemeralSignature: p.prefixesEphemeralSignature,
-                pairingSecret:          p.pairingSecret
+                pairingSecret:          p.pairingSecret,
+                pairingSwap:            p.pairingSwap
             )
         }
 
@@ -2271,6 +2277,13 @@ extension ContactManager {
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
+        // The pairing secret's swap (Bug 196). A half is read only from a one-time-prekey slot of a forward-secret file whose
+        // sender is authenticated, by the slot's signature or its proof, and never in a card conversation.
+        try self.applyPairingSwap(
+            recipientPayload.pairingSwap, from: sender, taggedAndProven: slotRoutingTag != nil,
+            acceptsHalf: cardOpening == nil && isFSMode && used.consumable != nil
+                && (slotRoutingTag != nil || recipientPayload.senderEphemeralSignature != nil)
+        )
         try self.acceptInboundBatch(recipientPayload.prekeyBatch, openedWith: used, into: prekeys)
         // The card field's step, stored with the record below (SPEC §6.6 step 3).
         if let cardOpening { try self.applyCardOpening(cardOpening, to: sender) }

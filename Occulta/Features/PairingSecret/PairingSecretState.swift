@@ -23,8 +23,10 @@ struct PairingSecretState: Equatable {
         /// waiting for the peer's. A peer's half that arrives first goes straight to `held`: no peer half is stored.
         case swapping(ourHalf: Data)
         /// Both sides made the secret: derived at the pairing, or from two halves. `peerConfirmed` once the peer has
-        /// shown it holds it.
-        case held(secret: Data, peerConfirmed: Bool)
+        /// shown it holds it. `ourHalf` is kept after a swap until the peer's first file of the new form arrives, which
+        /// proves they hold the secret and have seen our confirmation, because our confirmation is made over it and goes
+        /// out in every one-time-prekey slot until then. `nil` for a derived secret and once the swap is settled.
+        case held(secret: Data, peerConfirmed: Bool, ourHalf: Data? = nil)
     }
 
     var phase: Phase
@@ -44,13 +46,13 @@ struct PairingSecretState: Equatable {
 
     /// The secret, once held. Routing tags are accepted from this point.
     var secret: Data? {
-        if case .held(let secret, _) = self.phase { return secret }
+        if case .held(let secret, _, _) = self.phase { return secret }
         return nil
     }
 
     /// Whether files to this peer go in the pairing-secret form: we hold the secret and know they do.
     var sendsNewForm: Bool {
-        if case .held(_, true) = self.phase { return true }
+        if case .held(_, true, _) = self.phase { return true }
         return false
     }
 }

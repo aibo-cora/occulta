@@ -96,7 +96,7 @@ struct PairingSecretCodecTests {
         var unknownPhase = good; unknownPhase[1] = 3
         #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(unknownPhase) }
 
-        var unknownFlag = good; unknownFlag[2] |= 0x04
+        var unknownFlag = good; unknownFlag[2] |= 0x08
         #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(unknownFlag) }
     }
 

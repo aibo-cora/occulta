@@ -81,6 +81,45 @@ extension ContactManager {
         !self.pairingSecretState(for: contact).refusesOldForm
     }
 
+    // MARK: - The swap, for pairings from before this fix (stage 6)
+
+    /// What a one-time-prekey slot to `contact` carries toward the pairing's secret, or `nil` for filler. May begin a swap:
+    /// the half is made and the state sealed on the key row here, and saved by the send's own save, which the one-time key
+    /// being taken already needs. Never called for a long-term or last-resort slot: such a slot opens again, so a half in it
+    /// could be read from a saved copy.
+    func pairingSwapForSending(to contact: Contact.Profile, tier: OccultaBundle.Version) throws -> PairingSecretSwap? {
+        guard let key = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }) else { return nil }
+        let (swap, next) = try self.pairingSecretState(of: key).outgoingSwap(
+            peerCanHold: tier.isAtLeast(.pairingSecretCapable)
+        ) { try PairingSecret.newHalf() }
+        if let next { try self.store(next, in: key) }
+        return swap
+    }
+
+    /// Applies what an opened file from `contact` says about the pairing's secret. Doesn't save; the open's own save does.
+    ///
+    /// - Parameters:
+    ///   - acceptsHalf: the half came in a one-time-prekey slot of a forward-secret file whose sender is authenticated, and
+    ///     not in a card conversation. Anything else is not read.
+    ///   - taggedAndProven: the file was found by the pairing's routing tag and its slot proof verified.
+    func applyPairingSwap(
+        _ swap: PairingSecretSwap?, from contact: Contact.Profile, taggedAndProven: Bool, acceptsHalf: Bool
+    ) throws {
+        guard let key = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }) else { return }
+        var state = self.pairingSecretState(of: key)
+        var changed = false
+
+        if acceptsHalf, let swap, let next = try state.receiving(swap, newHalf: { try PairingSecret.newHalf() }) {
+            state = next
+            changed = true
+        }
+        if taggedAndProven, let next = state.afterTaggedFile() {
+            state = next
+            changed = true
+        }
+        if changed { try self.store(state, in: key) }
+    }
+
     // MARK: - The first prekeys of a pairing
 
     /// Installs a pairing's first prekeys into `contact`'s record and records the peer at the pairing-secret tier.
