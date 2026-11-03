@@ -111,10 +111,13 @@ struct PairingSecretTests {
         #expect(try JSONDecoder().decode(PairingSecretSwap.self, from: Data(future.utf8)).kind == .unsupported)
     }
 
+    /// Foundation writes `/` in base64 as `\/`, so two random values differ in length by the slashes they happen to
+    /// hold. Real halves and filler are both random, so that spread is the same for both; with the escape off the
+    /// lengths are equal exactly.
     @Test("Filler and a real swap encode to the same length")
     func swapSizesMatch() throws {
-        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        let real = PairingSecretSwap(kind: .half, key: self.secret(3), confirmation: self.secret(4))
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let real = PairingSecretSwap(kind: .half, key: try PairingSecret.newHalf(), confirmation: try PairingSecret.newHalf())
         let filler = try PairingSecretSwap.filler()
         #expect(filler.kind == .none)
         #expect(try encoder.encode(real).count == encoder.encode(filler).count)
