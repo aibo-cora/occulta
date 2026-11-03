@@ -14824,11 +14824,11 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 
 ## Bug 196 — A file names its sender by identity key alone, so two pairings with one person can't be told apart
 
-**Status:** Open, being built on `v2.0.1/pairing-secret` (2026-11-03). Stage 1 built (the wire format: the
-`.pairingSecretCapable` tier, the slot `routingTag`, `RecipientPayload.pairingSwap` and `slotProof`, the `PairingSecret`
-functions); the rest waits on the decisions under "Open decisions". Design decided 2026-11-03 by the owner
-(`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, item 30; `Docs/General/decisions.md`, "A secret per pairing routes and binds
-every bundle"). Read from the code; nothing was run until the build below.
+**Status:** Fixed in the build on `v2.0.1/pairing-secret` (2026-11-04), not merged. Cards and the identity-key visibility
+below stay open, needs a decision. Design decided 2026-11-03 by the owner (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, item 30;
+`Docs/General/decisions.md`, "A secret per pairing routes and binds every bundle"), then settled with the owner in this
+build (see "Design as built"). Verified on the Simulator by the test suite, with two real phones' stores exchanging real
+bundles for the swap; **the Multipeer/NearbyInteraction exchange itself has not been run**: it needs two phones.
 
 **Number:** filed as Bug 194 on `v2.1.0/passphrase-independent-spaces`, whose docs still say 194 (rollout §8 item 30
 and its Related table, `decisions.md`, the `PASSPHRASE_*` docs). `release/v2.1.0` already holds a different Bug 194
@@ -15015,6 +15015,37 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
 5. **The version.** The tier is keyed to app version 2.0.1; `MARKETING_VERSION` is 2.0.0. The bump has to land
    before release or no phone is recorded at the tier.
 
+### Built (2026-11-04)
+
+1. **Wire:** `.pairingSecretCapable` (marker `0x0B`, app 2.0.1+, never the wire version); `Recipient.routingTag`;
+   `RecipientPayload.pairingSwap` and `slotProof`; `PairingSecret` (routing tag, slot proof, key binding, combine, confirmation,
+   derivation) in `OccultaFormats`. Old vectors are untouched; 14 new ones pin the rest.
+2. **At rest:** `PairingSecretState` and `PairingSecretCodec` (128 bytes, every state), the sealed `Key.pairingSecretEncrypted`
+   column, filled by `migratePairingSecretFields`, written with the key row, overwritten at deletion, carried by the reseal
+   (`KeyReseal+Inventory` and `+Run`, and the frozen-key fixture).
+3. **Exchange:** `Exchange.prekeyBatch` (15 one-time keys and a last-resort key), made in the Enclave when the peer connects
+   and held in memory, `PairingOffer`, installed with the key row in one save; the first message is forward-secret.
+4. **Pairing:** the secret derives at the exchange from the identity ECDH, the nonces and the ML-KEM secrets; a re-pair retires
+   the old phone's batches (`PrekeyBookkeeper.startPairing`) and drops its keys.
+5. **Send and receive:** per-slot routing tag, the secret mixed into the key, the proof in the slot; the header fingerprint
+   and shared proof are random when every recipient has a secret; `identifyOwner` matches tags first and refuses the identity
+   fingerprint for a pairing that began with a secret; `openSlot` opens only the tagged slot.
+6. **The swap** for a pairing from before the fix, in one-time-key slots only, with a half kept until the peer's first
+   new-form file arrives (`PairingSecretState+Swap`). Identity challenges need no change: they route by tag like any file.
+
+**Not built, open, needs a decision:**
+- **Cards.** Bootstrap slots keep the card-key fingerprint, and no secret is derived from `ss1` and `ss2` (step 6 of the Fix
+  above). A card conversation uses card keys, not the identity key, so the bug doesn't arise there; what it leaves is a
+  fingerprint a holder of the card file can compute. See the card SPEC §4.3.
+- **A mixed group.** One recipient without a secret keeps the real identity fingerprint and shared proof in the header for the
+  whole file, which any holder of the sender's public key can test.
+- **The inner challenge fingerprint** still binds to the identity key, as do the forward-secret slot signature, challenge
+  responses and backup-piece signatures: anyone holding `K` can verify them.
+- **The version.** The tier is keyed to 2.0.1; `MARKETING_VERSION` is still 2.0.0 and must be bumped before release.
+- **The "current key".** `contactPublicKeys?.last(where:)` is read as the current key throughout the app, and a SwiftData
+  to-many relationship has no order of its own. Two re-pair tests failed intermittently for it; the code is unchanged.
+- **Merging with `release/v2.1.0`:** its Bug 194 fix (PR #156) also resets a record on a key change; the two overlap.
+
 ### What the building session also changes
 
 - `OccultaTests/Interop/InteropVectors.json`: new vectors for the new version; the old ones stay, since old-form
@@ -15024,7 +15055,7 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
   `PASSPHRASE_LAYER_KEYS.md`'s "gap"; `OccultaCore/README.md` and `ReadmeExamplesTests` if `TransportKeyDerivation`'s
   API changes; this entry and rollout item 30 when it lands.
 
-### Tests (none yet)
+### Tests
 
 Added 2026-11-03: every state seals to one length; no `Key` row is nil after any creation path or the migration;
 deletion and soft-deletion overwrite the column; the vault backup payload doesn't hold the secret; labels aren't
@@ -15046,3 +15077,10 @@ computed for contacts hidden at the current depth; a new-form and an old-form sl
   sends them the old form until the swap completes, and loses no prekey state. Prekey round-trips need the
   `secureEnclaveAvailable()` gate (CLAUDE.md).
 
+Written 2026-11-04: `OccultaTests/PairingSecret/` — `PairingSecretTests` (wire functions and fields), `PairingSecretStateTests` (state,
+codec, column, migration, no data loss), `PairingOfferTests` and `PairingSaveTests` (the exchange's batch, the derivation, the
+save, a re-pair), `PairingRoutingTests` (two records with one identity key and different secrets, every file in
+`.longTermNoPQ`, old form refused and accepted, the proof, groups, an identity challenge), `PairingSwapTests` (the
+transitions: crossing, loss, forged confirmation) and `PairingSwapEndToEndTests` (two phones' real bundles, Enclave-gated, and the
+install from before the change). Not covered: a member forging another's slot beyond the key and tag checks above, cards, the
+Multipeer flow.

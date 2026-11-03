@@ -111,6 +111,16 @@ material is on file.
 3. Attach our pending batch, if any, with its ID (`pendingBatchForWire`). It rides every message until the contact
    uses a key from it.
 4. Store the record; the caller saves.
+5. **A pairing secret, where there is one (`bugs.md` Bug 196).** If the contact's `PairingSecretState` is held and
+   confirmed, and they are recorded at `.pairingSecretCapable` (2.0.1+), each slot is sealed in the pairing-secret
+   form: its wrapping key is `PairingSecret.bind(key, secret)`, it carries `routingTag` =
+   HMAC(secret, nonce), and its `RecipientPayload.slotProof` is keyed by the secret and covers the tag and our key.
+   When every recipient of the file is in this form the header's `senderFingerprint` and the sealed
+   `senderProof` are random bytes; one recipient without a secret keeps both as before. A slot with no secret
+   still carries a random tag, a filler swap and a random proof, so no field says which slots have one.
+6. **The swap, for a pairing from before the fix.** A one-time-key slot (never a last-resort or long-term one: those
+   open again) to a contact at the tier carries our half in `RecipientPayload.pairingSwap`, and the confirmation once
+   we hold both halves (`PairingSecretState+Swap`).
 
 Contacts on 1.9.0+ get the group bundle format with a one-entry recipient list; older ones get the single-recipient
 format. Shard content needs a one-time key: without one it is dropped and the message goes on the last-resort key or
@@ -124,18 +134,25 @@ slots too, whatever the sender did.
 
 `decryptSealed` (single-recipient) and `openGroup` (group), in this order:
 
-1. Identify the sender by fingerprint. `senderPrekeys(for:)` sweeps their record in memory, so nothing past its
+1. Identify the sender: by routing tag if some slot carries HMAC(secret, nonce) for a pairing secret we hold (checked for
+   every contact first), else by identity fingerprint, which a pairing that began with a secret refuses (`bugs.md`
+   Bug 196). `senderPrekeys(for:)` sweeps their record in memory, so nothing past its
    grace period opens the bundle, and returns a `SenderPrekeys` holding it. It writes nothing: the sweep is saved
    with the record once a slot has opened (step 3 for a one-time key, else step 7).
-2. Derive the key and open: `deriveInboundKey`, or `findAndOpenRecipientSlot` trying each slot. A `prekeyID` that
+2. Derive the key and open: `deriveInboundKey`, or `findAndOpenRecipientSlot` trying each slot. With a pairing secret
+   `openSlot` opens only the slot carrying our routing tag, with the secret mixed into its key, and tries no other;
+   without one it trial-decrypts as before. A `prekeyID` that
    names no one-time key is tried against each last-resort key still in the sender's record, by recomputing its
    derived ID (one HMAC each). Both report which key opened it (`InboundPrekeyUse`). A single-recipient bundle
    naming a last-resort key is rejected: only the group format's sender signature authenticates one.
 3. **Consume the prekey the moment it has opened something** (§2.2 of `SECURITY_CHECKLIST.md`):
    `SenderPrekeys.consume` deletes a legacy key from the keychain, applies the bookkeeping below, stores, saves and
    checkpoints the write-ahead log, all before any later check can reject the bundle.
-4. The remaining checks: shared ciphertext, sender proof, the sender-signature gates, payload decoding.
-5. Accept the batch the sender attached (`acceptInboundBatch`).
+4. The remaining checks: shared ciphertext, sender proof (in the slot, over its routing tag, for a file of the
+   pairing-secret form), the sender-signature gates, payload decoding.
+5. Apply the swap field (`applyPairingSwap`): a half is read only from a one-time-key slot of a forward-secret file
+   whose sender is authenticated; a verified file of the new form confirms the pairing and drops our half. Accept the
+   batch the sender attached (`acceptInboundBatch`).
 6. If the bundle was long-term and no batch of ours is pending, generate one (`installFreshBatch`).
 7. Store the record, save and flush (`ContactManager.save(_:for:)`). This writes the receipt sweep, and retries a
    save at step 3 that failed, throwing if it fails again.
@@ -303,6 +320,20 @@ OccultaBundle {
   group?                     — group format: blind and one recipient slot per member, each with its own secrecy context
 }
 
+Recipient {                  — group format, one per member
+  secrecyContext
+  wrappedPayload
+  routingTag?                — Bug 196, 2.0.1+: HMAC(pairing secret, "occulta-pairing-routing-tag-v1" || fingerprintNonce),
+                               or random bytes of the same size in a slot with no secret. nil from older builds
+}
+
+RecipientPayload {           — sealed in the slot
+  …
+  pairingSwap?               — PairingSecretSwap { kind: half | none, key: 32 bytes, confirmation: 32 bytes }: our
+                               half and its confirmation, or `none` and random bytes. Present in every slot of a 2.0.1+ send
+  slotProof?                 — HMAC(secret, "occulta-pairing-proof-v1" || routingTag || senderPublicKey), or random
+}
+
 PrekeySyncBatch {            — inside SealedPayload (single-recipient) or RecipientPayload (group)
   generatedAt                — Date, for the date rule
   id?                        — 16 random bytes on every batch a stage 1 build generates; omitted when nil, as
@@ -321,7 +352,8 @@ PrekeySyncBatch {            — inside SealedPayload (single-recipient) or Reci
 
 `WirePrekey` carries no `contactID`: our identifier for the contact must not travel, or it would leak the
 relationship graph. The receiver supplies its own. `OccultaTests/Interop/InteropVectors.json` pins these bytes,
-`prekeyBatchWithID` included.
+`prekeyBatchWithID` included, and the pairing-secret ones (`pairing.*`, `groupEnvelope.v4.routingTag`,
+`recipientPayload.pairingSecret`).
 
 ---
 
