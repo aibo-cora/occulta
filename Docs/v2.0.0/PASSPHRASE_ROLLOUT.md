@@ -79,6 +79,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   image, the file's key and the phrase;
 - 29, found while writing the migration tests (§3.3): whether copies of a contact that several depths show share
   one ID and its prekey state, and what happens to a contact record or a vault note too large for its row;
+- 30, one person paired in two spaces: both spaces match the sender, and a long-term message without ML-KEM
+  opens in both; the owner proposed an ID per pairing (2026-11-03);
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -357,7 +359,8 @@ Decision 1 is closed by it.
   open. No notice is shown, since a notice would name a contact the open space can't see. ~~Open, needs a
   decision (2026-10-31): a known person's file that won't open is the rejection oracle `b1f9045` removed (§8, 24).~~
   **Decided 2026-10-31:** the screen says "The contact who sent this message was deleted or cannot be found", the
-  same as for a deleted contact, so "I deleted them" covers it (§8, 24).
+  same as for a deleted contact, so "I deleted them" covers it (§8, 24). *2026-11-03:* this assumes one space
+  matches the sender. One person paired in two spaces matches both (§8, 30).
 
 ~~**Proposed in the brainstorm, not decided:** uniform records and noise rows (Bug 120).~~ **Decided 2026-10-29**
 (§5, Bug 120): one sealed record per contact in one table, a few fixed sizes with noise rows in the same sizes, no
@@ -1284,6 +1287,51 @@ there and aren't repeated here.
       raising the size.
       - A photo is re-encoded until it fits, by decision, so only a photo that still doesn't fit at the lowest
         quality is a case to cover.
+30. **One person paired in two spaces** (added 2026-11-03). Open, needs a decision.
+    - **How it happens.** Any user can pair the same person in two spaces. A coercer can force it: two travel
+      companions who hold each other behind a phrase are told to pair in the decoy.
+    - **What breaks.** There is one identity per install (15b), and `senderFingerprint` is
+      SHA-256(identity key ‖ nonce) (`Contact+Model+Profile.swift:18`). So both spaces match the sender, and §1.5's
+      rule for another space's bundle never fires. What happens next depends on the slot:
+      - **One-time prekey, last-resort prekey, `.longTermFallback`:** the file fails to open in the space whose
+        pairing didn't seal it. Prekeys are per pairing, and so are the ML-KEM secrets (`QuantumKeyMaterial`:
+        "Cannot be rederived"). The space shows an error for a contact it holds, not item 24's screen.
+      - **`.longTermNoPQ`** (either phone below iOS 26, or a pairing without ML-KEM): plain ECDH between the
+        identity keys, so the file opens in every space that holds the sender. The decoy shows the hidden pairing's
+        message. With no batch of its own pending, it also sends the sender a fresh batch (Receiving, step 6),
+        which mixes the two pairings' prekey state.
+    - **When the long-term slot is used.** Not when one-time keys run out: the last-resort key is never removed by
+      use, so senders stop there. It is used:
+      - for the first messages after pairing ("two fallback messages each way bootstrap a new pair");
+      - for every identity challenge (`IdentityChallenge+Manager.swift:504`), which a coercer holding either phone
+        can start;
+      - for a contact on a build older than last-resort keys.
+    - **Proposed by the owner (2026-11-03): an ID that tells which space's pairing sealed a bundle.**
+      - *Per pairing, not per space.* A space-wide ID sent to every contact would be the space identifier §1.6
+        says doesn't exist. Contacts could compare it. A coercer holding a peer's phone that has two pairings with
+        you would see two IDs, which proves two spaces.
+      - *What it would be.* A random 32-byte secret, exchanged at pairing, held only in the contact's sealed record
+        (no keychain item, nothing outside the space).
+    - **Two uses, either or both:**
+      - *Routing:* `senderFingerprint` = SHA-256(pairing secret ‖ nonce). The space whose pairing didn't seal the
+        bundle finds no match, and §1.5's rule applies as decided. It also means only the two parties can test a
+        captured file for its sender; today anyone holding the sender's public key can.
+      - *Key binding:* the secret mixed into every slot's derivation (`TransportKeyDerivation`). `.longTermNoPQ`
+        then fails outside its pairing's space even if routing were bypassed, and the NoPQ modes need the space's
+        phrase, which narrows the spec's "gap" (`PASSPHRASE_LAYER_KEYS.md`, ML-KEM modes).
+    - **What it costs, each open:**
+      - a wire-format change: the pairing exchange, the fingerprint and the derivation change, so a new bundle
+        version and new interop vectors;
+      - existing pairings have no secret. One could be sent inside a prekey-sealed message, with the identity
+        fingerprint kept until both sides hold it. Until then, and for peers on older builds, this item stays open
+        for that pairing;
+      - a group bundle carries one `senderFingerprint` for every member (`Crypto+Manager+GroupEncrypt.swift:281`),
+        and a per-pairing secret differs per member. The fingerprint would move into each member's slot, or
+        receivers would try each slot;
+      - a card's first message is fingerprinted by the card's key (`ContactManager+Cards.swift:722`), before any
+        pairing exists; the card would carry the secret;
+      - item 29: copies of a contact made by the migration would share one pairing and its secret, so this doesn't
+        separate them.
 
 ---
 
