@@ -400,8 +400,8 @@ public struct WireHandle {
     public static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
     public static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
 
-    // groupCapable/groupShardCapable/senderSignatureCapable/prefixedSenderSignatureCapable/bodyDigestCapable
-    // all encode to 0x04 on the wire (same binary layout as v4); 0x05–0x09 are only written
+    // groupCapable/groupShardCapable/senderSignatureCapable/prefixedSenderSignatureCapable/bodyDigestCapable/
+    // pairingSecretCapable all encode to 0x04 on the wire (same binary layout as v4); 0x05–0x09 and 0x0B are only written
     // into Contact.Profile.maxBundleVersion as capability markers. `streamedBodyCapable` is the
     // exception: 0x0A is a marker and also the wire version of the streamed layout. `parseHeader`
     // accepts exactly 0x04 and 0x0A, whatever these tables map.
@@ -421,6 +421,7 @@ public struct WireHandle {
         .senderSignatureCapable: 0x04,
         .prefixedSenderSignatureCapable: 0x04,
         .bodyDigestCapable:      0x04,
+        .pairingSecretCapable:   0x04,
         .streamedBodyCapable:    0x0A,
     ]
     private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [
@@ -431,6 +432,7 @@ public struct WireHandle {
         0x08: .prefixedSenderSignatureCapable,
         0x09: .bodyDigestCapable,
         0x0A: .streamedBodyCapable,
+        0x0B: .pairingSecretCapable,
     ]
 
     private static let _modeToByte: [OccultaBundle.Mode: UInt8] = [
