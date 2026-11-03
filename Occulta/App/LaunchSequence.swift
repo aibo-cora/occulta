@@ -268,6 +268,15 @@ enum LaunchSequence {
             #endif
         }
 
+        // The pairing secret (Bug 196): the field on every key row is never nil either.
+        do {
+            try DatabaseMigration.migratePairingSecretFields(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("pairing secret field migration error: \(error)")
+            #endif
+        }
+
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
         do {

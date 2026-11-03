@@ -380,11 +380,24 @@ extension Contact.Profile {
         /// Encrypted with the local DB key before storage — same as all other sensitive fields.
         var quantumKeyMaterialEncrypted: Data?
 
-        init(material: Data? = nil, owner: Data, date: Data, quantumKeyMaterialEncrypted: Data? = nil) {
+        /// The sealed `PairingSecretState` for this peer key (`PairingSecretCodec`): always
+        /// `PairingSecretCodec.capacity` bytes of plaintext, so its length says nothing about whether the pairing has a
+        /// secret or how far it is (`bugs.md` Bug 196). On the key, not the contact: the secret belongs to the key it
+        /// was made with, so a key change leaves it behind with the retired row. Written as the row is inserted and by
+        /// `DatabaseMigration.migratePairingSecretFields`, so it is never nil in steady state; overwritten with the
+        /// sealed empty state at deletion. Read and written by `ContactManager+PairingSecret`, nowhere else.
+        /// SwiftData lightweight migration: new optional column, no plan required.
+        var pairingSecretEncrypted: Data?
+
+        init(
+            material: Data? = nil, owner: Data, date: Data, quantumKeyMaterialEncrypted: Data? = nil,
+            pairingSecretEncrypted: Data? = nil
+        ) {
             self.material = material
             self.owner = owner
             self.acquiredAt = date
             self.quantumKeyMaterialEncrypted = quantumKeyMaterialEncrypted
+            self.pairingSecretEncrypted = pairingSecretEncrypted
         }
         
         init(material: Data? = nil, owner: Data, date: Data) {

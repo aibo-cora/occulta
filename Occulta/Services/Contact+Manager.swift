@@ -535,6 +535,8 @@ class ContactManager {
         try self.store(CardState.empty, for: contact)
         // And the challenge state, every depth's slot: a pending challenge to a deleted contact goes with them.
         try self.store(ChallengeState.empty, for: contact)
+        // The pairing secret of every key the contact held: the sealed empty state, the same size (Bug 196).
+        for key in contact.contactPublicKeys ?? [] { try self.store(PairingSecretState.empty, in: key) }
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
@@ -630,7 +632,15 @@ extension ContactManager {
         // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
         let clearedCard = try self.clearCard(afterMeetingOf: contact)
 
-        contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
+        // The secret goes in as the row is inserted, not in a second save, which would mark the row updated in place.
+        // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.
+        let pairingState = key.pairingSecret.map(PairingSecretState.derived(secret:)) ?? PairingSecretState.empty
+        let sealedPairingSecret = try self.sealedPairingSecret(pairingState)
+
+        contact.contactPublicKeys?.append(Contact.Profile.Key(
+            material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,
+            quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial, pairingSecretEncrypted: sealedPairingSecret
+        ))
         
         #if DEBUG
         debugPrint("Updated key, owner hash = \(key.owner)")
