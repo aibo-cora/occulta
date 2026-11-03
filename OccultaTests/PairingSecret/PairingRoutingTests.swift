@@ -299,6 +299,42 @@ struct PairingRoutingTests {
         #expect(recipients[1].routingTag != PairingSecret.routingTag(secret: secret(1), nonce: bundle.fingerprintNonce))
     }
 
+    // MARK: Identity challenges
+
+    /// A challenge from `sender`, as `Manager.createChallenge` builds one, now.
+    private func challenge(from sender: TestKeyManager) throws -> IdentityChallengeEnvelope {
+        let nonce = Data((0..<IdentityChallenge.nonceLength).map { _ in UInt8.random(in: .min ... .max) })
+        let payload = IdentityChallenge.ChallengePayload(
+            nonce: nonce, timestamp: IdentityChallenge.encodeTimestamp(UInt64(Date().timeIntervalSince1970)),
+            challengerFingerprint: OccultaBundle.SecrecyContext.fingerprint(for: try sender.retrieveIdentity(), nonce: nonce)
+        )
+        return .challenge(payload: payload.encoded(), contextNote: "Was this you?")
+    }
+
+    @Test("A challenge on a pairing with a secret is routed by tag, on the long-term slot, and reaches the coordinator authenticated",
+          .ambientTestKeyManager)
+    func challengeIsRoutedByTag() throws {
+        let cm = try makeContactManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        let senderKey = try self.sender.retrieveIdentity()
+        let hidden = try insertSender(publicKey: senderKey, state: .derived(secret: secret(1)), in: cm)
+        let decoy  = try insertSender(publicKey: senderKey, state: .derived(secret: secret(2)), in: cm)
+
+        let bundle = try Manager.Crypto(keyManager: self.sender).seal(
+            sealedPayload: OccultaBundle.SealedPayload(
+                message: Data("challenge".utf8), identityChallenge: try self.challenge(from: self.sender), appVersion: "2.0.1"
+            ),
+            groupID: UUID(),
+            recipients: [GroupRecipient(publicKey: me, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil, pairingSecret: secret(1))]
+        )
+
+        #expect(bundle.group?.recipients.first?.secrecyContext.mode == .longTermNoPQ, "the slot a coercer can make us use")
+        #expect(bundle.senderFingerprint != OccultaBundle.SecrecyContext.fingerprint(for: senderKey, nonce: bundle.fingerprintNonce))
+        #expect(try cm.identifyOwner(of: bundle) == hidden.identifier)
+        #expect(try cm.openGroup(bundle: bundle).challenge != nil)
+        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: bundle, ownerID: decoy.identifier) }
+    }
+
     // MARK: Gating
 
     @Test("Only a held, confirmed secret at the tier is sent with", .ambientTestKeyManager)
