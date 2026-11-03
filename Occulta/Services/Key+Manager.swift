@@ -9,6 +9,7 @@ import Foundation
 import CryptoKit
 import LocalAuthentication
 import OccultaCore
+import OccultaFormats
 
 // MARK: - HKDF info strings
 
@@ -30,9 +31,6 @@ struct SaltInfo {
     /// appended to the info field for per-session uniqueness.
     /// The nonces are appended at call time — this is the static prefix only.
     static let kDicewareKeyInfo = "Occulta-v2-diceware-2026".data(using: .utf8)!
-    /// The per-pairing secret (`bugs.md` Bug 196): the same IKM as the diceware key and the same nonces, under a label of
-    /// its own, so the words a screen shows never let anyone compute it. The nonces are appended at call time.
-    static let kPairingSecretInfo = "Occulta-v1-pairing-secret-2026".data(using: .utf8)!
     /// Vault key, **legacy form**: ECDH(vault_SE_priv, G) → HKDF. A function of the vault Enclave key's public point
     /// (`bugs.md` Bug 171), so nothing in it needs the biometric gate. Kept to open what the vault rewrap has not moved
     /// yet and what a downgraded build writes; the current form is `kVaultEnclaveBoundKeyInfo`, below. The vault SE key is
@@ -1826,10 +1824,8 @@ extension Manager.Key {
         )
     }
  
-    /// The 32-byte secret one pairing holds (`bugs.md` Bug 196): HKDF over the identity ECDH and, where the exchange had
-    /// them, both ML-KEM secrets sorted, salted as the other transport keys are, with both exchange nonces sorted in
-    /// the info. Both phones compute the same bytes. Under `kPairingSecretInfo`, not the diceware label, so the
-    /// verification words reveal nothing of it.
+    /// The 32-byte secret one pairing holds (`bugs.md` Bug 196): `PairingSecret.derive` over the identity ECDH and, where the
+    /// exchange had them, both ML-KEM secrets and both nonces. Both phones compute the same bytes.
     ///
     /// SE operations: one ECDH via SE identity key.
     func createPairingSecret(
@@ -1839,28 +1835,13 @@ extension Manager.Key {
         peerNonce: Data
     ) -> Data? {
         guard let ecdhAndSalt = self.ecdhWithSalt(peerP256Material: peerP256Material) else { return nil }
-        guard ourNonce.count == 16, peerNonce.count == 16, ourNonce != peerNonce else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
 
-        var ikm = ecdhAndSalt.rawECDH
-        if let quantumMaterial {
-            guard quantumMaterial.isValid else { return nil }
-            let sortedSecrets = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
-                .sorted { $0.lexicographicallyPrecedes($1) }
-            ikm.append(contentsOf: sortedSecrets[0])
-            ikm.append(contentsOf: sortedSecrets[1])
-        }
-
-        let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
-        var info = SaltInfo.kPairingSecretInfo
-        info.append(contentsOf: sortedNonces[0])
-        info.append(contentsOf: sortedNonces[1])
-
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm),
-            salt: ecdhAndSalt.salt,
-            info: info,
-            outputByteCount: 32
-        ).withUnsafeBytes { Data($0) }
+        return PairingSecret.derive(
+            rawECDH: ecdhAndSalt.rawECDH, salt: ecdhAndSalt.salt,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce
+        )
     }
  
     // MARK: - 16-byte exchange nonce

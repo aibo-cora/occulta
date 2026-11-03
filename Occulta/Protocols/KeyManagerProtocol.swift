@@ -8,6 +8,7 @@ import Foundation
 import CryptoKit
 import LocalAuthentication
 import OccultaCore
+import OccultaFormats
 
 // MARK: - Bug 171 key forms
 
@@ -1153,28 +1154,13 @@ extension TestKeyManager {
         peerNonce: Data
     ) -> Data? {
         guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
-        guard ourNonce.count == 16, peerNonce.count == 16, ourNonce != peerNonce else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
 
-        var ikm = ecdh.rawECDH
-        if let quantumMaterial {
-            guard quantumMaterial.isValid else { return nil }
-            let sortedSecrets = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
-                .sorted { $0.lexicographicallyPrecedes($1) }
-            ikm.append(contentsOf: sortedSecrets[0])
-            ikm.append(contentsOf: sortedSecrets[1])
-        }
-
-        let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
-        var info = SaltInfo.kPairingSecretInfo
-        info.append(contentsOf: sortedNonces[0])
-        info.append(contentsOf: sortedNonces[1])
-
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm),
-            salt: ecdh.salt,
-            info: info,
-            outputByteCount: 32
-        ).withUnsafeBytes { Data($0) }
+        return PairingSecret.derive(
+            rawECDH: ecdh.rawECDH, salt: ecdh.salt,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce
+        )
     }
 
     func generateExchangeNonce() -> Data? {
