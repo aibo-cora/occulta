@@ -10,9 +10,10 @@ Code references are against `3319fd7`. Line numbers drift, so re-check them befo
 
 **A. Close the device-seizure hole**
 1. Make a diceware phrase an input to every depth's key, including the vault's
-2. Use the Secure Enclave for every guess, not once
-3. Make every row open under every depth's key, with filler where the row doesn't belong
-4. Update every depth's slot on every write (not achievable as written; open, 2026-10-15)
+2. ~~Use the Secure Enclave for every guess, not once~~ (dropped 2026-10-29)
+3. ~~Make every row open under every depth's key, with filler where the row doesn't belong~~ (superseded
+   2026-10-29: independent spaces)
+4. Update every depth's slot on every write (not achievable; recorded 2026-10-29 as a stated limit, Bug 120)
 5. Bind the small sealed fields to their row and field
 
 **B. Protect messages the adversary already holds**
@@ -69,6 +70,9 @@ Entry never goes through the ordinary keyboard (§4).
 
 ### 2. The Secure Enclave inside every guess
 
+**Dropped 2026-10-29 by the owner (D2 of Bug 171).** The per-guess requirement is out, and the `ECDH(d, P)`
+device-binding term stays. Strength rests on 7 words through PBKDF2. The text below is the record.
+
 **Why.** If the Enclave's contribution is a fixed value (`ECDH(SE_priv, G)`), one call during extraction
 captures it, and guessing moves off the phone to GPU or ASIC farms. Feeding the stretched phrase into
 the Enclave operation means each guess costs one Enclave call on that specific phone. At 7 words this
@@ -77,7 +81,7 @@ Enclave exploit, which at this level has to be assumed.
 
 **Ships with 1, not after it.** Adding it later changes the key, which forces a second full reseal.
 
-**Found 2026-10-21 (`bugs.md` Bug 171), and what the fix changes. Recommended; open, needs a decision (D2, not decided).**
+**Found 2026-10-21 (`bugs.md` Bug 171), and what the fix changes. Recommended; decided 2026-10-29 (D2, above).**
 The construction this step names does not meet it: `ECDH(SE_priv, s·G)` equals `ECDH(s, Q)`, which an attacker computes in
 software, so the Enclave takes no part in a guess. The fix that landed in 2.0.0 gives the keys that exist today an Enclave term
 that is real (`ECDH(SE_priv, P)`, P a point nobody knows the discrete log of) plus a Keychain secret per access tier and, on
@@ -90,6 +94,10 @@ as written with that note beside them.
 **Tracked:** spec §1, requirement of 2026-09-29; Bug 171.
 
 ### 3. Every row opens under every depth's key
+
+**Superseded 2026-10-29 by the owner: independent spaces** (`PASSPHRASE_ROLLOUT.md` §1.5). A space is a key plus
+whatever rows decrypt under it. There is no canary, chain, shared key or origin list, and no row has to open under
+every key. The proposal of 2026-10-15 below is the record.
 
 **Why.** If a depth-2 row is sealed only under depth 2's key, a surrendered duress key gets an
 authentication failure when it reaches that row. The failure is proof that something is hidden, and it
@@ -121,6 +129,11 @@ real depth's rows change daily and the duress depths' rows almost never change, 
 points at the real one. Each write must reseal every depth's slot with fresh nonces.
 `backup-export-meta.dat` (`ExportMetaSlotCodec`) already works this way, and custody shards reseal the
 survivors on deletion since Bug 130. Everything else per-depth touches only its own depth's bytes.
+
+**Recorded 2026-10-29 as a stated limit (Bug 120).** A duress space protects against one image, not a series.
+In one image and with no phrase the design fixes per-type row counts, row sizes and space tags, and writes every
+change as "append a new row, shred the old". Rows a surrendered space can't open changing between images are not
+fixed, and noise rows don't close it. Still open in the register.
 
 **Not achievable as written, 2026-10-15** (spec §2, "Finding, 2026-10-15"). Open, needs a decision.
 - **Without a phrase,** per-depth keys alone hide which depth a changed row belongs to. The comparison
@@ -453,9 +466,19 @@ The phrase setup screen is the natural place to show this once. Its wording depe
 The guidance must also say that the transport keeps its own records. An ongoing exchange of `.occ` files
 with a hidden contact is visible in Messages history and its backups, whatever the app does (step 17).
 
-It must also say that a duress depth doesn't survive comparison across repeated images (step 4, open). An
-adversary who imaged the phone earlier and later gets a duress phrase can tell that another depth exists and
-is in use.
+It must also say that a duress depth doesn't survive comparison across repeated images (step 4, a stated
+limit since 2026-10-29). An adversary who imaged the phone earlier and later gets a duress phrase can tell that
+another depth exists and is in use.
+
+Under independent spaces (2026-10-29) it must also say:
+- A forgotten phrase loses that space's data for good. There is no probation week and no way back once migration
+  has finished.
+- A mistyped phrase opens an empty space, and what is written there is reachable only by typing the same typo.
+- Turning the lock off opens the app with no phrase for anyone who unlocks the phone, and the user's other spaces
+  can't be opened until it is turned on again.
+- Erase All Data erases only the space it is run in. There is no in-app full wipe; that is the iPhone's own
+  reset.
+- A decoy goes stale unless it is used, and its contents are only as convincing as its use.
 
 ---
 
