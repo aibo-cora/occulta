@@ -15137,3 +15137,110 @@ a coercer could read changes. This is a public API break, taken while no host ap
 `ecdhOutput` of 0, 16, 31, 33 and 64 bytes throws `invalidECDHOutputLength` in the classical and the hybrid form; with every
 input wrong, the own-key error comes first, and each later check is reached only once the earlier ones pass.
 `ReadmeExamplesTests` mirrors the README's now-throwing example. The interop vectors are unchanged.
+
+---
+
+## Bug 194 — After a contact's identity key changes, our messages to them are sealed to their old phone's prekeys: the new phone can't open them, and without ML-KEM the old phone can
+
+**Status:** **Fixed 2026-11-03** on branch `claude/bug-194-stale-inbound-prekeys-ee7f61` ([aibo-cora/occulta#156](https://github.com/aibo-cora/occulta/pull/156), to `release/v2.1.0`). Filed 2026-11-03 from audit lead 13 (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md` §13), confirmed by a code trace at `cea3927b` (`release/v2.1.0`), then reproduced by `StaleInboundPrekeysConversationTests` on a real Enclave: with the fix removed, the new phone throws `recipientSlotNotFound` on every message sent after the key change. The trace widens the lead in two ways: it needs no introduction card and no revoke, only a contact whose identity key changes; and it finds a confidentiality case the lead ruled out.
+
+**Target:** `release/v2.1.0` only, decided 2026-11-03. No 2.0.x backport: a 2.0.x user who needs the exposure closed sooner can delete the contact and exchange again, which starts a fresh record.
+
+### Severity: High
+
+- **Availability, certain on a hardware cycle.** It hits every contact whose identity key changes, which Bug 82's table lists: a new iPhone, a restore to new hardware, Erase All Data, Erase All Content and Settings. From the re-exchange on, our messages don't open on their new phone. If their old phone ran 2.0.0 or later, it never recovers on its own.
+- **Confidentiality, when the contact's new key has no ML-KEM key** (their new phone is below iOS 26). The slots open on the *old* phone instead. In the case revoke exists for — a lost, stolen or seized phone — whoever holds that phone and can unlock Occulta on it reads what we send after the re-exchange. That is the coercer the app is built against.
+
+### What happens
+
+1. Our record for the contact (`prekeyRecordEncrypted`) holds their inbound one-time keys, at most `maxInboundBatches` (2) × `maxInboundKeysPerBatch` (15), and their last-resort key. The private halves live in the old phone's Enclave.
+2. Their identity key changes and we exchange again. `update(key:for:)` (`Contact+Manager.swift:605`) appends the new key. It computes `keyRotated`, but that only feeds `contactKeyRotated`, whose one listener reconciles backup pieces (`OccultaApp.swift:365`). `clearCard(afterMeetingOf:)` drops the record only when a card existed, and says so: "an ordinary re-exchange keeps its prekeys" (`ContactManager+Cards.swift:226-236`). The in-person exchange carries no prekeys, and the record isn't bound to any identity key. `reset(identity:)` (`Contact+Manager.swift:650`) only writes `expiredOn`.
+3. Our next send takes the oldest inbound key (`PrekeyBookkeeper.takeInboundPrekey`, `PrekeyBookkeeper.swift:65`, called from `Contact+Manager.swift:1190` and, for cards, `ContactManager+Cards.swift:461`). Once those run out, a group-format send uses `inboundLastResort` (`lastResortPrekey`, `PrekeyBookkeeper.swift:76`), which is never consumed.
+4. The new phone holds none of those keys. `privateKey(forPrekeyID:)` and `lastResortKey(forPrekeyID:)` return nil (`Contact+Manager+Prekeys.swift:234-249`), every slot is skipped, and `findAndOpenRecipientSlot` throws `recipientSlotNotFound` (`Crypto+Manager+GroupDecrypt.swift:201`).
+5. **Nothing replaces the old keys.** Only `accept` changes `inboundLastResort` (`PrekeyBookkeeper.swift:121-155`), and it needs a batch from the new phone. The new phone issues us a batch only in `replenish` (`Contact+Manager+Prekeys.swift:141`), after one of our bundles opens on it, and none does. Its own messages to us go in long-term fallback mode with no batch attached, since it has none pending for us. So once the stale one-time keys are used up, every send goes to the old last-resort key, indefinitely. An old phone from before 2.0.0 sent no last-resort key (prekey continuity, `faf44714` and earlier). There, sends fall back to the long-term key once the stale keys are gone, the new phone opens that and replenishes, and the conversation recovers after at most 30 lost messages.
+6. **Which phone can open them.** `deriveOutboundKey` (`Crypto+Manager+KeyDerivation.swift:25-55`) wraps with ECDH(ephemeral, prekey), plus ML-KEM to the `quantumMaterial` of the contact's *current* key (`resolveKeyMaterial`, `Contact+Manager.swift:1595`). In hybrid mode the old phone lacks the new key's ML-KEM private key, so it can't open the slot either. In `.forwardSecretNoPQ` the receiving side ignores quantum material (`Crypto+Manager+KeyDerivation.swift:122`). The wrapping key is then the old prekey alone, our signature checks against our own unchanged key, and the old phone's Occulta opens the message as it would any other.
+
+The lead's statement that the old phone "can open the classical outer layer, but not the ML-KEM-protected inner payload" holds only for hybrid mode. The card path the lead describes is one instance: `createCard` doesn't touch the record, and `importCard` only replaces our pending batches (`ContactManager+Cards.swift:310-313`).
+
+### Who sees what
+
+- **We** see nothing wrong: every send succeeds.
+- **The contact's new phone** shows an error for each of our files.
+- **Their old phone**, in `.forwardSecretNoPQ`, opens them.
+
+### Fix — decided and done
+
+Decided 2026-11-03: **inbound side only.** `PrekeyBookkeeper.dropInbound(from:)` clears `inboundBatches`, `inboundLastResort`, `acceptedBatchIDs` and `latestInboundGeneratedAt`. `ContactManager.dropInboundPrekeys(of:)` applies it to a contact's record and is called from:
+
+- `update(key:for:)`, when the incoming material differs from the contact's unexpired key (`keyRotated`). The same material, such as a reinstall (Bug 82), keeps the record as before.
+- `reset(identity:)`, unconditionally. The next exchange compares against the unexpired key, and a revoked contact has none, so `keyRotated` stays false there whatever the new phone's key is. `reset` therefore drops the state itself, and doesn't rely on the next exchange to see the change. (That blind spot has a second effect, on backup pieces: Bug 195, still open.)
+
+The next send then goes in long-term mode to the current key. The new phone opens it and issues a batch (`replenish`, `.longTerm`), and forward secrecy resumes. A save that dropped something flushes the write-ahead log, like the card paths do.
+
+`acceptedBatchIDs` and `latestInboundGeneratedAt` go too, not only the keys. A date left from the old phone can be ahead of the new phone's clock, and `accept` refuses a batch older than it on a reopenable slot, which long-term mode is. The new phone's first batch would be dropped.
+
+**Our own batches stay** (decided 2026-11-03). They don't cause this bug, and dropping them would make unreadable whatever the old phone sent before the change and we hadn't opened. Nothing leaks either way: a message from the old phone fails the signature check against the contact's current key. Clearing our own Enclave keys when a contact's key changes is hygiene, not a fix for this, and isn't done here.
+
+### Migration — done
+
+Decided 2026-11-03: a launch pass that keeps no state and runs at every launch and unlock (`ContactManager.sweepStaleInboundPrekeys()`, called from `sweepPrekeysIfUnlocked`), over every contact at every depth like `sweepCards`.
+
+Rule (`currentKeyAcquiredAt(of:)`, `PrekeyBookkeeper.inboundIsStale`): find when the contact's current key material first appeared, as the start of the run of identical material that ends their key list. A contact with no earlier different material is skipped without decrypting more. If what we hold from them has `latestInboundGeneratedAt` older than that moment, or none, it is dropped as above. This reaches contacts revoked and re-exchanged before the fix, and a contact exchanged twice with the new key, which "the last two records differ" would miss.
+
+It undoes its own trigger: a repaired contact has nothing inbound left, and once the new phone's batch is accepted its date is newer than its key. Nothing is recorded, so the pass leaves no trace of having run. A key whose date won't read leaves the record alone.
+
+**Open, needs a decision — a new phone whose clock is behind ours.** The batch date is the contact's clock; the key's date is ours. A new phone running behind by more than the time between the exchange and its first batch looks stale to the pass, so that contact goes back to long-term mode at every launch and unlock. Messages still open; forward secrecy for our sends to that contact is lost until the clock is fixed. Fixing it would need a record of when the batch was accepted, which the fixed-size record doesn't hold and which would be state the pass is meant not to keep.
+
+### Disclosure
+
+Releases from 2.0.0 (prekey continuity) up to this fix are affected: between a contact's key change and the first long-term send after it, what we sent could be opened on their old phone when their new key has no ML-KEM key. Recorded in `Docs/Audit/SECURITY_CHECKLIST.md` (post-sign-off, 2026-11-03).
+
+### Guard — tests
+
+- `StaleInboundPrekeysTests` (runs anywhere, `.ambientTestKeyManager`): new material empties the four fields and leaves our batches; the same material and a contact's first key keep the record; the first send after a change is `.longTerm`; a last-resort key alone is dropped; `reset(identity:)` empties them, and a revoke followed by a re-exchange finds nothing stale.
+- `StaleInboundPrekeysLaunchPassTests` (runs anywhere): a stale record is dropped and a fresh one kept; one key, the same material twice, an empty inbound side and an unreadable date are left alone; a repeated exchange with the new key and a revoke before the fix are repaired; a second run changes nothing.
+- `StaleInboundPrekeysConversationTests` (Enclave-gated, in the style of `PrekeyConversationTests`): after the change, what Alice sends opens on the new phone and not on the old one; the new phone answers with a batch and forward secrecy resumes; the same after a revoke and re-exchange; a contact stuck before the fix is repaired by the pass.
+- `CardMeetingSaveTests.secondMeetingKeepsRecord` made both meetings use the same key. It built fresh random material for each, so it had been changing the contact's key without meaning to.
+
+### Related
+
+- Bug 82 is the same event in the receiving direction; D-19 is its authenticity side.
+- `Docs/Features/Multi-Device Contacts/FINDINGS.md:37` already notes that "the old slot's prekey pool becomes orphaned" on re-pairing, as "the same shape of problem single-device key rotation already has". This is that problem, filed.
+- The Trust Check top-level flow design sends users here from its lost-phone and new-phone remedies.
+- Bug 195: the same `keyRotated` blind spot after `reset(identity:)`, seen from the backup-piece side. One comparison against the contact's most recent key record serves both.
+
+---
+
+## Bug 195 — After a revoke (`reset(identity:)`), a re-exchange with a changed key never fires `contactKeyRotated`, so the backup-piece re-send for that trustee is skipped
+
+**Status:** **Open.** Filed 2026-11-03 while triaging Bug 194. Read from the code only: not reproduced by a test, and the fallback described under "What isn't traced" is not followed to its end. Fix not decided; it shares a code path with Bug 194's, so it is proposed alongside.
+
+**Target:** Not set — open, needs a decision.
+
+### Severity: Medium
+
+Pending a trace. A trustee who lost a phone, was revoked and then re-exchanged keys holds backup-key pieces sealed to a key they no longer have. The re-send that repairs that is keyed off an event that doesn't fire on this path.
+
+### What happens
+
+1. `reset(identity:)` (`Contact+Manager.swift:650`) writes `expiredOn` on the contact's last key and nothing else. No unexpired key is left.
+2. The re-exchange calls `update(key:for:)` (`Contact+Manager.swift:605`). It computes `keyRotated` by comparing the new material with `contactPublicKeys?.last(where: { $0.expiredOn == nil })` (`Contact+Manager.swift:627`). That is nil after step 1, so the `if let` chain fails and `keyRotated` stays `false`, whatever the new material is.
+3. `contactKeyRotated` isn't sent (`Contact+Manager.swift:645`). Its one listener, `OccultaApp.swift:365`, calls `reconcileBackupPieces(keyChangedFor:)`, and `ShardCustodyManager.reconcileBackupPieces` (`ShardCustody+Manager.swift:533`) uses `keyChangedFor` to find the pieces this depth must re-send to the trustee's new key (Bug 141).
+4. Same hole for a re-exchange after revoke with the *same* material: harmless there, since nothing changed. The defect is only that the comparison is made against "the unexpired key" rather than "the contact's most recent key".
+
+### What isn't traced
+
+The comment at `OccultaApp.swift:361-364` says other depths, and Bob's side, notice at their own unlock or from the trustee's next manifest. The unlock-time `reconcileBackupPieces()` runs with no `keyChangedFor`. Whether that path alone re-sends this depth's pieces to the new key, and how long it takes, wasn't followed. That decides whether this is a delay or a permanent gap, and so the severity.
+
+### Fix — proposed, open, needs a decision
+
+Compare the incoming material with the contact's most recent key record, expired or not, so `keyRotated` is true after a revoke when the material differs. Bug 194's fix needs the same comparison for the same reason; one change serves both.
+
+### Guard — tests to add
+
+- `.ambientTestKeyManager`: for a contact whose last key was expired by `reset(identity:)`, `update(key:for:)` with different material sends `contactKeyRotated`; with the same material it doesn't.
+
+### Related
+
+- Bug 194: same blind spot, on the prekey record. `reset` must drop that state itself, because the next exchange can't be relied on to see a rotation.
+- Bug 141: the re-send this event triggers.
