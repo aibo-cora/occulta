@@ -1618,6 +1618,21 @@ the share staging key.
 
 **Consequences:** it is the app's first CommonCrypto import, so `CLAUDE.md`'s "CryptoKit and Security.framework" line changes when it lands.
 
+## A secret per pairing routes and binds every bundle
+
+**Status:** Decided 2026-11-03 by the owner. Not built. Closes the design of `PASSPHRASE_ROLLOUT.md` §8, item 30; its remainder is open, needs a decision.
+
+**Context:** There is one identity per install (15b), and `senderFingerprint` is SHA-256(identity key ‖ nonce). One person paired in two spaces, which a coercer can force, matches in both. A prekey or ML-KEM file then fails in the other space with an error for a contact it holds, and a `.longTermNoPQ` file opens there and makes it send the sender a batch.
+
+**Decision:** Each pairing exchanges a random 32-byte secret, held only in the contact's sealed record. `senderFingerprint` becomes SHA-256(pairing secret ‖ nonce); the secret is mixed into every slot's derivation (`TransportKeyDerivation`); and `senderProof` covers it as well as the sender's public key.
+
+**Why:**
+- Routing makes two pairings work: only the space whose pairing sealed a file matches it, and the other shows item 24's screen. Only the two parties can test a captured file for its sender; today anyone with the sender's public key can.
+- Key binding means a NoPQ file needs the space's phrase, not just the identity key and the passcode. With ML-KEM it adds nothing; the gain lasts while phones below iOS 26 remain.
+- Per pairing, not per space: a space-wide ID sent to every contact could be compared, and a peer's phone with two pairings would prove two spaces.
+
+**Consequences:** a new bundle version and new interop vectors. Open, needs a decision: how existing pairings get a secret, the fingerprint's place in a group bundle (one today for every member), how a card carries the secret, and the stage it ships in. Neither use helps against someone with the space's phrase, or with item 29's migrated copies.
+
 ---
 
 ## OccultaCore: AGPL-3.0, primitives only, two modules

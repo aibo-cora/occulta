@@ -66,6 +66,9 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   through CommonCrypto, not Argon2id, tuned to about 1 s on an iPhone 11; the rest were superseded or decided
   above (decided 2026-11-02);
 - the data slices ship together, in one reseal (§7.1);
+- 30, one person paired in two spaces: a random 32-byte secret per pairing, exchanged at pairing and held only
+  in the contact's sealed record; `senderFingerprint` is computed from it, it is mixed into every slot's key
+  derivation, and `senderProof` covers it (decided 2026-11-03, not built);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
 
@@ -79,8 +82,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   image, the file's key and the phrase;
 - 29, found while writing the migration tests (§3.3): whether copies of a contact that several depths show share
   one ID and its prekey state, and what happens to a contact record or a vault note too large for its row;
-- 30, one person paired in two spaces: both spaces match the sender, and a long-term message without ML-KEM
-  opens in both; the owner proposed an ID per pairing (2026-11-03);
+- 30's remainder: how existing pairings get a pairing secret, the fingerprint's place in a group bundle, how a
+  card carries the secret, and the stage it ships in;
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -360,7 +363,8 @@ Decision 1 is closed by it.
   decision (2026-10-31): a known person's file that won't open is the rejection oracle `b1f9045` removed (§8, 24).~~
   **Decided 2026-10-31:** the screen says "The contact who sent this message was deleted or cannot be found", the
   same as for a deleted contact, so "I deleted them" covers it (§8, 24). *2026-11-03:* this assumes one space
-  matches the sender. One person paired in two spaces matches both (§8, 30).
+  matches the sender. One person paired in two spaces matches both, so the fingerprint is computed from a secret
+  per pairing (decided 2026-11-03; §8, 30).
 
 ~~**Proposed in the brainstorm, not decided:** uniform records and noise rows (Bug 120).~~ **Decided 2026-10-29**
 (§5, Bug 120): one sealed record per contact in one table, a few fixed sizes with noise rows in the same sizes, no
@@ -1287,7 +1291,10 @@ there and aren't repeated here.
       raising the size.
       - A photo is re-encoded until it fits, by decision, so only a photo that still doesn't fit at the lowest
         quality is a case to cover.
-30. **One person paired in two spaces** (added 2026-11-03). Open, needs a decision.
+30. **One person paired in two spaces** (added 2026-11-03). ~~Open, needs a decision.~~ **Decided 2026-11-03 by
+    the owner: a random secret per pairing, used for both routing and key binding, with `senderProof` covering it**
+    (`decisions.md`, 2026-11-03). Not built. Still open, needs a decision: how existing pairings get a secret,
+    where the fingerprint goes in a group bundle, how a card carries the secret, and which stage it ships in.
     - **How it happens.** Any user can pair the same person in two spaces. A coercer can force it: two travel
       companions who hold each other behind a phrase are told to pair in the decoy.
     - **What breaks.** There is one identity per install (15b), and `senderFingerprint` is
@@ -1347,7 +1354,7 @@ there and aren't repeated here.
         item 29's copies.
       - *Cost:* the secret, the pairing-exchange change and the version bump are paid once for both. Key binding
         then adds one input to the derivation. Routing is the larger part, through the group change above.
-      - *Recommended, not decided:* both. `senderProof` (`Contact+Manager.swift`, step 5.5), which today
+      - ~~*Recommended, not decided:*~~ *Decided 2026-11-03:* both. `senderProof` (`Contact+Manager.swift`, step 5.5), which today
         authenticates the sender's public key, would also cover the pairing secret, so the routing field is checked
         no less strictly than today.
 
