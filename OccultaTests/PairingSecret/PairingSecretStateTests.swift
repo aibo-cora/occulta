@@ -310,3 +310,50 @@ struct PairingSecretMigrationTests {
         #expect(key.quantumKeyMaterialEncrypted == quantum)
     }
 }
+
+// MARK: - No data loss
+
+@MainActor
+@Suite("Bug 196 — the migration for an install from before the change", .serialized)
+struct PairingMigrationNoDataLossTests {
+
+    @Test("It leaves every other field of a pre-change contact byte-identical, and the contact's old-form files still open",
+          .ambientTestKeyManager)
+    func nothingElseChanges() throws {
+        let (cm, _) = try makeContactManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        let sender = TestKeyManager()
+        let profile = Contact.Profile(
+            identifier: UUID().uuidString, givenName: "", familyName: "", middleName: "", nickname: "",
+            organizationName: "", departmentName: "", jobTitle: ""
+        )
+        profile.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        profile.contactPublicKeys = [Contact.Profile.Key(
+            material: try Manager.Crypto().encrypt(data: try sender.retrieveIdentity()), owner: Data(), date: Data()
+        )]
+        var record = PrekeyRecord.empty
+        record.ownBatches = [PrekeyRecord.OwnBatch(
+            id: Data(repeating: 7, count: 16), createdAt: Date(), retiredAt: nil, isPending: true,
+            keys: [PrekeyRecord.OwnKey(id: Data(repeating: 9, count: 16), blob: nil, publicKey: Data(repeating: 4, count: 65))]
+        )]
+        profile.prekeyRecordEncrypted = try PrekeyRecordCodec().encode(record).encrypt()
+        profile.maxBundleVersion = try Manager.Crypto().encrypt(data: Data([0x09]))
+        try cm.insertProfile(profile)
+
+        let (prekeys, tier, scheme) = (profile.prekeyRecordEncrypted, profile.maxBundleVersion, profile.encryptionScheme)
+
+        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+
+        #expect(profile.prekeyRecordEncrypted == prekeys)
+        #expect(profile.maxBundleVersion == tier)
+        #expect(profile.encryptionScheme == scheme)
+        #expect(cm.pairingSecretState(for: profile) == .empty)
+
+        // An old-form file from them still opens: nothing about the pairing changed.
+        let bundle = try Manager.Crypto(keyManager: sender).seal(
+            sealedPayload: OccultaBundle.SealedPayload(message: Data("hello".utf8), appVersion: "1.11.1"), groupID: UUID(),
+            recipients: [GroupRecipient(publicKey: me, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)]
+        )
+        #expect(try cm.openGroup(bundle: bundle).ownerID == profile.identifier)
+    }
+}

@@ -41,7 +41,9 @@ private final class Phone {
     }
 
     /// The other phone as a contact recorded at the pairing-secret tier, with no secret yet: a pairing from before this fix.
-    func add(_ other: Phone) throws {
+    /// - Parameter pairingFieldFilled: false leaves the key row as an install from before this fix holds it, with nothing
+    ///   in the pairing-secret column, for the launch migration to fill.
+    func add(_ other: Phone, pairingFieldFilled: Bool = true) throws {
         try self.run {
             let profile = Contact.Profile(
                 identifier: self.contactID, givenName: "", familyName: "", middleName: "",
@@ -51,7 +53,7 @@ private final class Phone {
                 material: try Manager.Crypto().encrypt(data: try other.keyManager.retrieveIdentity()),
                 owner: Data(), date: Data(), quantumKeyMaterialEncrypted: nil
             )
-            try self.contactManager.store(.empty, in: key)
+            if pairingFieldFilled { try self.contactManager.store(.empty, in: key) }
             profile.contactPublicKeys = [key]
             let tier = try #require(OccultaBundle.Version.pairingSecretCapable.wireByte)
             profile.maxBundleVersion = try Manager.Crypto().encrypt(data: Data([tier]))
@@ -161,6 +163,42 @@ struct PairingSwapEndToEndTests {
         for _ in 0..<3 {
             try bob.receive(try alice.send())
             try alice.receive(try bob.send())
+        }
+        let a = try alice.state, b = try bob.state
+        #expect(a.secret != nil && a.secret == b.secret)
+        #expect(a.sendsNewForm && b.sendsNewForm)
+    }
+
+    // MARK: Migration: an install from before the change
+
+    @Test("An install from before the change loses nothing: the migration fills the column, old-form files go out and open until the swap settles",
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func migrationLosesNothing() throws {
+        let alice = try Phone(contactID: "bob"), bob = try Phone(contactID: "alice")
+        try alice.add(bob, pairingFieldFilled: false)
+        try bob.add(alice, pairingFieldFilled: false)
+
+        // Before the launch migration the column is nil; code reads that as no secret, and the pairing works.
+        try bob.receive(try alice.send())
+        try alice.receive(try bob.send())
+
+        let before = try alice.run { try alice.contact.prekeyRecordEncrypted }
+        for phone in [alice, bob] {
+            try phone.run { try DatabaseMigration.migratePairingSecretFields(modelContext: phone.contactManager.modelContext) }
+        }
+        #expect(try alice.run { try alice.contact.prekeyRecordEncrypted } == before, "the migration leaves the prekey record byte-identical")
+        #expect(try alice.state == .empty && (try bob.state) == .empty)
+
+        // The first message after it is still the old form: the identity fingerprint, until the swap completes.
+        let encoded = try alice.send()
+        let bundle = try OccultaBundle.decoded(from: encoded)
+        #expect(bundle.senderFingerprint == OccultaBundle.SecrecyContext.fingerprint(
+            for: try alice.keyManager.retrieveIdentity(), nonce: bundle.fingerprintNonce))
+        try bob.receive(encoded)
+
+        for _ in 0..<4 {
+            try alice.receive(try bob.send())
+            try bob.receive(try alice.send())
         }
         let a = try alice.state, b = try bob.state
         #expect(a.secret != nil && a.secret == b.secret)
