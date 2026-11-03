@@ -15192,3 +15192,40 @@ The fix doesn't repair contacts already in this state. Two options:
 - Bug 82 is the same event in the receiving direction; D-19 is its authenticity side.
 - `Docs/Features/Multi-Device Contacts/FINDINGS.md:37` already notes that "the old slot's prekey pool becomes orphaned" on re-pairing, as "the same shape of problem single-device key rotation already has". This is that problem, filed.
 - The Trust Check top-level flow design sends users here from its lost-phone and new-phone remedies.
+- Bug 195: the same `keyRotated` blind spot after `reset(identity:)`, seen from the backup-piece side. One comparison against the contact's most recent key record serves both.
+
+---
+
+## Bug 195 — After a revoke (`reset(identity:)`), a re-exchange with a changed key never fires `contactKeyRotated`, so the backup-piece re-send for that trustee is skipped
+
+**Status:** **Open.** Filed 2026-11-03 while triaging Bug 194. Read from the code only: not reproduced by a test, and the fallback described under "What isn't traced" is not followed to its end. Fix not decided; it shares a code path with Bug 194's, so it is proposed alongside.
+
+**Target:** Not set — open, needs a decision.
+
+### Severity: Medium
+
+Pending a trace. A trustee who lost a phone, was revoked and then re-exchanged keys holds backup-key pieces sealed to a key they no longer have. The re-send that repairs that is keyed off an event that doesn't fire on this path.
+
+### What happens
+
+1. `reset(identity:)` (`Contact+Manager.swift:650`) writes `expiredOn` on the contact's last key and nothing else. No unexpired key is left.
+2. The re-exchange calls `update(key:for:)` (`Contact+Manager.swift:605`). It computes `keyRotated` by comparing the new material with `contactPublicKeys?.last(where: { $0.expiredOn == nil })` (`Contact+Manager.swift:627`). That is nil after step 1, so the `if let` chain fails and `keyRotated` stays `false`, whatever the new material is.
+3. `contactKeyRotated` isn't sent (`Contact+Manager.swift:645`). Its one listener, `OccultaApp.swift:365`, calls `reconcileBackupPieces(keyChangedFor:)`, and `ShardCustodyManager.reconcileBackupPieces` (`ShardCustody+Manager.swift:533`) uses `keyChangedFor` to find the pieces this depth must re-send to the trustee's new key (Bug 141).
+4. Same hole for a re-exchange after revoke with the *same* material: harmless there, since nothing changed. The defect is only that the comparison is made against "the unexpired key" rather than "the contact's most recent key".
+
+### What isn't traced
+
+The comment at `OccultaApp.swift:361-364` says other depths, and Bob's side, notice at their own unlock or from the trustee's next manifest. The unlock-time `reconcileBackupPieces()` runs with no `keyChangedFor`. Whether that path alone re-sends this depth's pieces to the new key, and how long it takes, wasn't followed. That decides whether this is a delay or a permanent gap, and so the severity.
+
+### Fix — proposed, open, needs a decision
+
+Compare the incoming material with the contact's most recent key record, expired or not, so `keyRotated` is true after a revoke when the material differs. Bug 194's fix needs the same comparison for the same reason; one change serves both.
+
+### Guard — tests to add
+
+- `.ambientTestKeyManager`: for a contact whose last key was expired by `reset(identity:)`, `update(key:for:)` with different material sends `contactKeyRotated`; with the same material it doesn't.
+
+### Related
+
+- Bug 194: same blind spot, on the prekey record. `reset` must drop that state itself, because the next exchange can't be relied on to see a rotation.
+- Bug 141: the re-send this event triggers.
