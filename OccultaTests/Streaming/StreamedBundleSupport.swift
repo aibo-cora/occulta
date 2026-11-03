@@ -101,7 +101,7 @@ func writeStreamedBundle(
             recipients: try recipients.map {
                 try crypto.wrapRecipient(
                     $0, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: digest,
-                    labelNonce: outerNonce, senderPublicKey: senderPublicKey
+                    tagNonce: outerNonce, senderPublicKey: senderPublicKey
                 )
             }
         )

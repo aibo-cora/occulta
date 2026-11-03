@@ -2,8 +2,8 @@
 //  PairingRoutingTests.swift
 //  OccultaTests
 //
-//  Bug 196, stage 5: a file of the pairing-secret form from seal to open. Its slot is found by label and opens only with
-//  the secret mixed into its key; its sender proof is in the slot and covers the label; two records that share one
+//  Bug 196, stage 5: a file of the pairing-secret form from seal to open. Its slot is found by routing tag and opens only with
+//  the secret mixed into its key; its sender proof is in the slot and covers the routing tag; two records that share one
 //  identity key and hold different secrets each see only their own pairing's files; an old-form file is refused by a
 //  pairing that began with a secret and accepted by one that didn't.
 //
@@ -117,13 +117,13 @@ struct PairingRoutingTests {
         #expect(bundle.senderFingerprint == OccultaBundle.SecrecyContext.fingerprint(for: senderKey, nonce: bundle.fingerprintNonce))
     }
 
-    @Test("The slot's label is the HMAC of the file's nonce under the secret", .ambientTestKeyManager)
-    func labelIsTheHMAC() throws {
+    @Test("The slot's routing tag is the HMAC of the file's nonce under the secret", .ambientTestKeyManager)
+    func tagIsTheHMAC() throws {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let bundle = try seal(from: self.sender, to: [(me, secret(1))])
-        let label = try #require(bundle.group?.recipients.first?.label)
+        let tag = try #require(bundle.group?.recipients.first?.routingTag)
 
-        #expect(label == PairingSecret.label(secret: secret(1), nonce: bundle.fingerprintNonce))
+        #expect(tag == PairingSecret.routingTag(secret: secret(1), nonce: bundle.fingerprintNonce))
     }
 
     // MARK: Two pairings, one identity key
@@ -207,7 +207,7 @@ struct PairingRoutingTests {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let senderKey = try self.sender.retrieveIdentity()
         let bundle = try seal(from: self.sender, to: [(me, secret(1))])
-        let label = try #require(bundle.group?.recipients.first?.label)
+        let tag = try #require(bundle.group?.recipients.first?.routingTag)
 
         // Open the slot the way the receiver would, to read its proof.
         let cm = try makeContactManager()
@@ -216,22 +216,22 @@ struct PairingRoutingTests {
         #expect(opened.sealed.senderProof?.count == 32)
         #expect(opened.sealed.senderProof != Data(HMAC<SHA256>.authenticationCode(for: senderKey, using: SymmetricKey(data: Data(count: 32)))))
         #expect(PairingSecret.isValidSlotProof(
-            PairingSecret.slotProof(secret: secret(1), label: label, senderPublicKey: senderKey),
-            secret: secret(1), label: label, senderPublicKey: senderKey
+            PairingSecret.slotProof(secret: secret(1), routingTag: tag, senderPublicKey: senderKey),
+            secret: secret(1), routingTag: tag, senderPublicKey: senderKey
         ))
     }
 
-    @Test("A slot whose proof covers another label is refused", .ambientTestKeyManager)
-    func proofOverAnotherLabelFails() throws {
+    @Test("A slot whose proof covers another routing tag is refused", .ambientTestKeyManager)
+    func proofOverAnotherTagFails() throws {
         let cm = try makeContactManager()
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let senderKey = try self.sender.retrieveIdentity()
         try insertSender(publicKey: senderKey, state: .derived(secret: secret(1)), in: cm)
 
-        // A file whose slot carries a proof made over some other label.
+        // A file whose slot carries a proof made over some other routing tag.
         let bundle = try sealWithProof(
             from: self.sender, to: me, secret: secret(1),
-            proof: PairingSecret.slotProof(secret: secret(1), label: Data(repeating: 0xEE, count: 32), senderPublicKey: senderKey)
+            proof: PairingSecret.slotProof(secret: secret(1), routingTag: Data(repeating: 0xEE, count: 32), senderPublicKey: senderKey)
         )
 
         #expect(throws: GroupDecryptError.senderProofMismatch) { try cm.openGroup(bundle: bundle) }
@@ -250,18 +250,18 @@ struct PairingRoutingTests {
 
     // MARK: Groups
 
-    @Test("A group file gives each member a label only their own secret computes", .ambientTestKeyManager)
-    func groupLabelsAreSeparate() throws {
+    @Test("A group file gives each member a routing tag only their own secret computes", .ambientTestKeyManager)
+    func groupTagsAreSeparate() throws {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let other = try TestKeyManager().retrieveIdentity()
         let bundle = try seal(from: self.sender, to: [(me, secret(1)), (other, secret(2))])
-        let labels = try #require(bundle.group?.recipients.map(\.label))
+        let tags = try #require(bundle.group?.recipients.map(\.routingTag))
 
-        #expect(labels[0] == PairingSecret.label(secret: secret(1), nonce: bundle.fingerprintNonce))
-        #expect(labels[1] == PairingSecret.label(secret: secret(2), nonce: bundle.fingerprintNonce))
-        #expect(labels[0] != labels[1])
-        // A member holding the other secret computes the other label, never ours.
-        #expect(PairingSecret.label(secret: secret(2), nonce: bundle.fingerprintNonce) != labels[0])
+        #expect(tags[0] == PairingSecret.routingTag(secret: secret(1), nonce: bundle.fingerprintNonce))
+        #expect(tags[1] == PairingSecret.routingTag(secret: secret(2), nonce: bundle.fingerprintNonce))
+        #expect(tags[0] != tags[1])
+        // A member holding the other secret computes the other routing tag, never ours.
+        #expect(PairingSecret.routingTag(secret: secret(2), nonce: bundle.fingerprintNonce) != tags[0])
     }
 
     @Test("A group member opens their own slot and not another's", .ambientTestKeyManager)
@@ -287,16 +287,16 @@ struct PairingRoutingTests {
         #expect(bundle.senderFingerprint == OccultaBundle.SecrecyContext.fingerprint(for: senderKey, nonce: bundle.fingerprintNonce))
     }
 
-    @Test("Every slot carries a label, a swap field and a slot proof, whether or not it has a secret", .ambientTestKeyManager)
+    @Test("Every slot carries a routing tag, a swap field and a slot proof, whether or not it has a secret", .ambientTestKeyManager)
     func slotsAreUniform() throws {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let other = try TestKeyManager().retrieveIdentity()
         let bundle = try seal(from: self.sender, to: [(me, secret(1)), (other, nil)])
         let recipients = try #require(bundle.group?.recipients)
 
-        #expect(recipients.allSatisfy { $0.label?.count == 32 })
-        // A filler label belongs to no secret.
-        #expect(recipients[1].label != PairingSecret.label(secret: secret(1), nonce: bundle.fingerprintNonce))
+        #expect(recipients.allSatisfy { $0.routingTag?.count == 32 })
+        // A filler routing tag belongs to no secret.
+        #expect(recipients[1].routingTag != PairingSecret.routingTag(secret: secret(1), nonce: bundle.fingerprintNonce))
     }
 
     // MARK: Gating
@@ -337,7 +337,7 @@ private func sealWithProof(
     aad.append(blind)
     let sealedBody = try WireHandle.encode(payload: OccultaBundle.SealedPayload(
         // No `appVersion`: a body claiming 2.0.0 or later without a digest is refused for that before the proof is read.
-        message: Data("hello".utf8), appVersion: nil, senderProof: try PairingSecret.fillerLabel(), groupID: groupID
+        message: Data("hello".utf8), appVersion: nil, senderProof: try PairingSecret.fillerTag(), groupID: groupID
     ))
 
     let (derived, context) = try Manager.Crypto(keyManager: sender).deriveOutboundKey(
@@ -353,11 +353,11 @@ private func sealWithProof(
     return OccultaBundle(
         version: .v4, secrecy: outerSecrecy,
         ciphertext: try #require(try AES.GCM.seal(sealedBody, using: contentKey, authenticating: aad).combined),
-        fingerprintNonce: outerNonce, senderFingerprint: try PairingSecret.fillerLabel(),
+        fingerprintNonce: outerNonce, senderFingerprint: try PairingSecret.fillerTag(),
         group: OccultaBundle.GroupEnvelope(blind: blind, blindNonce: blindNonce, recipients: [OccultaBundle.Recipient(
             secrecyContext: context,
             wrappedPayload: try #require(try AES.GCM.seal(slot, using: wrappingKey, authenticating: blind).combined),
-            label: PairingSecret.label(secret: secret, nonce: outerNonce)
+            routingTag: PairingSecret.routingTag(secret: secret, nonce: outerNonce)
         )])
     )
 }

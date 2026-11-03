@@ -1754,11 +1754,11 @@ extension ContactManager {
  
         let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 
-        // A pairing's label names its contact outright (Bug 196): a file of the new form is not matched by identity, and an
-        // old-form file is not matched to a pairing that began with a secret. Labels are checked for every contact first,
-        // so a twin that holds the same identity key can't take a file whose label belongs to another.
-        if let labelled = contacts.first(where: { self.bundleCarriesLabel(of: $0, in: bundle) }) {
-            return labelled
+        // A pairing's routing tag names its contact outright (Bug 196): a file of the new form is not matched by identity, and an
+        // old-form file is not matched to a pairing that began with a secret. Routing tags are checked for every contact first,
+        // so a twin that holds the same identity key can't take a file whose routing tag belongs to another.
+        if let tagged = contacts.first(where: { self.bundleCarriesRoutingTag(of: $0, in: bundle) }) {
+            return tagged
         }
 
         for contact in contacts {
@@ -2126,10 +2126,10 @@ extension ContactManager {
         let recipientMode: OccultaBundle.Mode
         let slotEphemeralKey: Data
         var cardOpening: CardSlotOpening?
-        /// The label that routed us to the slot, for a file of the pairing-secret form (Bug 196).
-        var slotLabel: Data?
+        /// The routing tag that routed us to the slot, for a file of the pairing-secret form (Bug 196).
+        var slotRoutingTag: Data?
 
-        // ── 3. Find our slot (by the pairing label, or trial decryption) and open it ─────
+        // ── 3. Find our slot (by the pairing routing tag, or trial decryption) and open it ─────
         if let cardContext {
             senderPublicKey = cardContext.peerAgreementKey
             let opening = try cryptoOps.openCardSlot(
@@ -2153,7 +2153,7 @@ extension ContactManager {
                 pairing: self.pairingSlotContext(for: sender)
             )
             (recipientPayload, used, recipientMode, slotEphemeralKey) = (opened.payload, opened.used, opened.mode, opened.ephemeralPublicKey)
-            slotLabel = opened.matchedLabel
+            slotRoutingTag = opened.matchedRoutingTag
         }
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
@@ -2249,11 +2249,11 @@ extension ContactManager {
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
-        if let slotLabel, let secret = self.pairingSecretState(for: sender).secret {
-            // The pairing-secret form: the proof is in the slot, keyed by the secret, and covers the slot's label.
+        if let slotRoutingTag, let secret = self.pairingSecretState(for: sender).secret {
+            // The pairing-secret form: the proof is in the slot, keyed by the secret, and covers the slot's routing tag.
             // `SealedPayload.senderProof` is random filler here and is not read.
             guard let slotProof = recipientPayload.slotProof,
-                  PairingSecret.isValidSlotProof(slotProof, secret: secret, label: slotLabel, senderPublicKey: senderPublicKey)
+                  PairingSecret.isValidSlotProof(slotProof, secret: secret, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
             else { throw GroupDecryptError.senderProofMismatch }
         } else {
             guard let proof = decoded.senderProof,

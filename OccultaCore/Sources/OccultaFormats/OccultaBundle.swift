@@ -159,7 +159,7 @@ public struct OccultaBundle: Codable {
         /// without the receive path and the send path, TestFlight included. Such a build would be recorded at
         /// this tier and sent bundles it can't open (`ROLLOUT_PLAN.md`, release mechanics).
         case streamedBodyCapable
-        /// Capability watermark: contact's build gives each pairing a secret (`bugs.md` Bug 196): a routing `label` in
+        /// Capability watermark: contact's build gives each pairing a secret (`bugs.md` Bug 196): a routing tag in
         /// every slot, the secret mixed into each slot's key, the sender proof in the slot, and the swap that gives an
         /// existing pairing its secret (`RecipientPayload.pairingSwap`). Never written to the wire `version` field;
         /// stored only in `Contact.Profile.maxBundleVersion` as byte 0x0B.
@@ -232,7 +232,7 @@ public struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
-            .pairingSecretCapable, // 2.0.1+ — a secret per pairing: slot labels, key binding, in-slot sender proof
+            .pairingSecretCapable, // 2.0.1+ — a secret per pairing: slot routing tags, key binding, in-slot sender proof
             .streamedBodyCapable, // 2.0.0+ — the body of a group bundle is a chunk stream (wire version 0x0A)
             .bodyDigestCapable, // 2.0.0+  — every group slot carries the body's digest
             .prefixedSenderSignatureCapable, // 1.10.2+ — domain-separated ephemeral signature
@@ -648,25 +648,25 @@ public struct OccultaBundle: Codable {
         /// The receiver finds their slot by trial-decryption — no cleartext
         /// identity hint is included, so an observer cannot confirm membership.
         public let wrappedPayload: Data
-        /// `PairingSecret.label(secret:nonce:)` for the pairing this slot is sealed to, readable before decryption:
-        /// the receiver matches it against one label per contact, in place of the sender's fingerprint and of
+        /// `PairingSecret.routingTag(secret:nonce:)` for the pairing this slot is sealed to, readable before decryption:
+        /// the receiver matches it against one routing tag per contact, in place of the sender's fingerprint and of
         /// trial decryption (`bugs.md` Bug 196). A random filler of the same size in a slot that has no pairing
-        /// secret to label, so the field's presence says nothing. `nil` from builds before the pairing-secret tier.
-        public let label: Data?
+        /// secret to tag, so the field's presence says nothing. `nil` from builds before the pairing-secret tier.
+        public let routingTag: Data?
 
-        public init(secrecyContext: SecrecyContext, wrappedPayload: Data, label: Data? = nil) {
+        public init(secrecyContext: SecrecyContext, wrappedPayload: Data, routingTag: Data? = nil) {
             self.secrecyContext = secrecyContext
             self.wrappedPayload = wrappedPayload
-            self.label          = label
+            self.routingTag     = routingTag
         }
 
-        enum CodingKeys: String, CodingKey { case secrecyContext, wrappedPayload, label }
+        enum CodingKeys: String, CodingKey { case secrecyContext, wrappedPayload, routingTag }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.secrecyContext = try c.decode(SecrecyContext.self, forKey: .secrecyContext)
             self.wrappedPayload = try c.decode(Data.self, forKey: .wrappedPayload)
-            self.label          = try c.decodeIfPresent(Data.self, forKey: .label)
+            self.routingTag     = try c.decodeIfPresent(Data.self, forKey: .routingTag)
         }
     }
 
@@ -753,8 +753,8 @@ public struct OccultaBundle: Codable {
         /// to a recipient at `.pairingSecretCapable`, so slot sizes match. `nil` from builds before that tier.
         public let pairingSwap: PairingSecretSwap?
 
-        /// `PairingSecret.slotProof(secret:label:senderPublicKey:)`: the sender proof for this slot, covering the
-        /// slot's `label`. Random filler of the same size when the slot has no pairing secret. `nil` from builds
+        /// `PairingSecret.slotProof(secret:routingTag:senderPublicKey:)`: the sender proof for this slot, covering the
+        /// slot's `routingTag`. Random filler of the same size when the slot has no pairing secret. `nil` from builds
         /// before `.pairingSecretCapable`; `SealedPayload.senderProof` is the proof for those.
         public let slotProof: Data?
 

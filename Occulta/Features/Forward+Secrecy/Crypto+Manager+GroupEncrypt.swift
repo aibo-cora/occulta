@@ -54,7 +54,7 @@ struct GroupRecipient {
     let card: CardSlot?
 
     /// The pairing secret to seal this slot with (`bugs.md` Bug 196): non-nil only when we hold it, the recipient is known
-    /// to hold it too, and they are at the pairing-secret tier. The slot then carries its routing label, the secret is
+    /// to hold it too, and they are at the pairing-secret tier. The slot then carries its routing routing tag, the secret is
     /// mixed into its key, and its sender proof is keyed by it. Resolved by the caller, like every other field here.
     let pairingSecret: Data?
 
@@ -261,7 +261,7 @@ extension Manager.Crypto {
         // any recipient could make for another sender (Bug 196). One recipient on the old form needs both as before.
         let allOnSecret = recipients.allSatisfy { $0.pairingSecret != nil }
         let senderProof = allOnSecret
-            ? try PairingSecret.fillerLabel()
+            ? try PairingSecret.fillerTag()
             : Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
 
         // Per-bundle group blind: HMAC(key: groupID.rawBytes, msg: blindNonce).
@@ -294,7 +294,7 @@ extension Manager.Crypto {
             sessionKey: sessionKey, senderPublicKey: senderPub, blindNonce: blindNonce, blind: blind,
             payload: authenticatedPayload, outerSecrecy: outerSecrecy, outerNonce: outerNonce,
             senderFingerprint: allOnSecret
-                ? try PairingSecret.fillerLabel()
+                ? try PairingSecret.fillerTag()
                 : OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
         )
     }
@@ -306,7 +306,7 @@ extension Manager.Crypto {
         let entries = try recipients.map { r in
             try self.wrapRecipient(
                 r, sessionKeyData: sessionKeyData, blind: context.blind, bodyDigest: bodyDigest,
-                labelNonce: context.outerNonce, senderPublicKey: context.senderPublicKey
+                tagNonce: context.outerNonce, senderPublicKey: context.senderPublicKey
             )
         }
         return OccultaBundle.GroupEnvelope(blind: context.blind, blindNonce: context.blindNonce, recipients: entries)
@@ -317,7 +317,7 @@ extension Manager.Crypto {
         sessionKeyData: Data,
         blind: Data,
         bodyDigest: Data,
-        labelNonce: Data,
+        tagNonce: Data,
         senderPublicKey: Data
     ) throws -> OccultaBundle.Recipient {
         guard r.publicKey.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
@@ -333,20 +333,20 @@ extension Manager.Crypto {
         )
 
         // The pairing secret, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
-        // pairing that sealed it; its label routes it; its proof, keyed by the secret, covers the label and our key.
+        // pairing that sealed it; its routing tag routes it; its proof, keyed by the secret, covers the routing tag and our key.
         // A slot with none carries random bytes of the same sizes, so the fields' presence says nothing, in a group
         // that mixes both.
         let wrappingKey: SymmetricKey
-        let label: Data
+        let routingTag: Data
         let slotProof: Data
         if let secret = r.pairingSecret {
             wrappingKey = PairingSecret.bind(derivedKey, secret: secret)
-            label = PairingSecret.label(secret: secret, nonce: labelNonce)
-            slotProof = PairingSecret.slotProof(secret: secret, label: label, senderPublicKey: senderPublicKey)
+            routingTag = PairingSecret.routingTag(secret: secret, nonce: tagNonce)
+            slotProof = PairingSecret.slotProof(secret: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)
         } else {
             wrappingKey = derivedKey
-            label = try PairingSecret.fillerLabel()
-            slotProof = try PairingSecret.fillerLabel()
+            routingTag = try PairingSecret.fillerTag()
+            slotProof = try PairingSecret.fillerTag()
         }
 
         // FS mode's session key is ECDH(senderEphemeral, recipientPrekey) — it never
@@ -398,7 +398,7 @@ extension Manager.Crypto {
             encodedPayload, using: wrappingKey, nonce: AES.GCM.Nonce(), authenticating: blind
         ).combined else { throw EncryptionError.sealFailed }
 
-        return OccultaBundle.Recipient(secrecyContext: secrecyContext, wrappedPayload: wrappedPayload, label: label)
+        return OccultaBundle.Recipient(secrecyContext: secrecyContext, wrappedPayload: wrappedPayload, routingTag: routingTag)
     }
 
     /// Domain-separation prefix for `senderEphemeralSignature`.

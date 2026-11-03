@@ -42,7 +42,7 @@ struct PairingSecretState: Equatable {
         PairingSecretState(phase: .held(secret: secret, peerConfirmed: true), refusesOldForm: true)
     }
 
-    /// The secret, once held. Labels are accepted from this point.
+    /// The secret, once held. Routing tags are accepted from this point.
     var secret: Data? {
         if case .held(let secret, _) = self.phase { return secret }
         return nil

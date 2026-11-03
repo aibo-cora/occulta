@@ -139,7 +139,7 @@ extension Manager.Crypto {
     struct PairingSlotContext {
         /// The sender's pairing secret, held in our record for them.
         let secret: Data
-        /// Whether a slot with no label of this pairing may still be tried as an old-form slot. False for a pairing that
+        /// Whether a slot with no routing tag of this pairing may still be tried as an old-form slot. False for a pairing that
         /// began with a secret: an old-form file there is another pairing's.
         let acceptsOldForm: Bool
     }
@@ -150,16 +150,16 @@ extension Manager.Crypto {
         let used: InboundPrekeyUse
         let mode: OccultaBundle.Mode
         let ephemeralPublicKey: Data
-        /// The label that routed us to the slot, when it was found by the pairing secret and not by trial. The sender
+        /// The routing tag that routed us to the slot, when it was found by the pairing secret and not by trial. The sender
         /// proof inside the slot is checked against it.
-        let matchedLabel: Data?
+        let matchedRoutingTag: Data?
     }
 
     /// `openRecipientSlot` with the sender's pairing secret, if the record holds one.
     ///
-    /// With a secret, our slot is the one whose label is `PairingSecret.label(secret, bundle.fingerprintNonce)`: one
+    /// With a secret, our slot is the one whose routing tag is `PairingSecret.routingTag(secret, bundle.fingerprintNonce)`: one
     /// comparison per slot in place of a trial decryption, and no other slot is opened, so a group member's slot is
-    /// never tried with our key. Its key has the secret mixed in. No slot with that label means the file isn't of this
+    /// never tried with our key. Its key has the secret mixed in. No slot with that routing tag means the file isn't of this
     /// pairing's new form: it is tried as an old-form slot only if `acceptsOldForm`, else it is not ours.
     func openSlot(
         in bundle: OccultaBundle,
@@ -196,12 +196,12 @@ extension Manager.Crypto {
         }
 
         // The slot this pairing's secret names, if any (Bug 196).
-        let expectedLabel = pairing.map { PairingSecret.label(secret: $0.secret, nonce: bundle.fingerprintNonce) }
-        let labelled = expectedLabel.map { label in recipients.contains { $0.label == label } } ?? false
-        if let pairing, !labelled, !pairing.acceptsOldForm { throw GroupDecryptError.recipientSlotNotFound }
+        let expectedRoutingTag = pairing.map { PairingSecret.routingTag(secret: $0.secret, nonce: bundle.fingerprintNonce) }
+        let tagged = expectedRoutingTag.map { tag in recipients.contains { $0.routingTag == tag } } ?? false
+        if let pairing, !tagged, !pairing.acceptsOldForm { throw GroupDecryptError.recipientSlotNotFound }
 
         for entry in recipients {
-            if labelled, entry.label != expectedLabel { continue }
+            if tagged, entry.routingTag != expectedRoutingTag { continue }
 
             guard let (derivedKey, used) = try? self.deriveInboundKey(
                 secrecy: entry.secrecyContext,
@@ -210,7 +210,7 @@ extension Manager.Crypto {
                 quantumMaterial: quantumMaterial,
                 prekeys: prekeys
             ) else { continue }
-            let wrappingKey = labelled ? pairing.map { PairingSecret.bind(derivedKey, secret: $0.secret) } ?? derivedKey : derivedKey
+            let wrappingKey = tagged ? pairing.map { PairingSecret.bind(derivedKey, secret: $0.secret) } ?? derivedKey : derivedKey
             
             guard let box   = try? AES.GCM.SealedBox(combined: entry.wrappedPayload),
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),
@@ -249,7 +249,7 @@ extension Manager.Crypto {
             }
             return OpenedSlot(
                 payload: payload, used: used, mode: entry.secrecyContext.mode,
-                ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey, matchedLabel: labelled ? expectedLabel : nil
+                ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey, matchedRoutingTag: tagged ? expectedRoutingTag : nil
             )
         }
         throw GroupDecryptError.recipientSlotNotFound

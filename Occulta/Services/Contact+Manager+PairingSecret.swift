@@ -65,14 +65,14 @@ extension ContactManager {
         return state.secret.map { Manager.Crypto.PairingSlotContext(secret: $0, acceptsOldForm: !state.refusesOldForm) }
     }
 
-    /// Whether `bundle` names `contact` as its sender by a pairing label: some slot carries
-    /// `PairingSecret.label(secret, bundle.fingerprintNonce)` for the secret `contact` holds.
-    func bundleCarriesLabel(of contact: Contact.Profile, in bundle: OccultaBundle) -> Bool {
+    /// Whether `bundle` names `contact` as its sender by a pairing routing tag: some slot carries
+    /// `PairingSecret.routingTag(secret, bundle.fingerprintNonce)` for the secret `contact` holds.
+    func bundleCarriesRoutingTag(of contact: Contact.Profile, in bundle: OccultaBundle) -> Bool {
         guard let secret = self.pairingSecretState(for: contact).secret, let recipients = bundle.group?.recipients else {
             return false
         }
-        let label = PairingSecret.label(secret: secret, nonce: bundle.fingerprintNonce)
-        return recipients.contains { $0.label == label }
+        let tag = PairingSecret.routingTag(secret: secret, nonce: bundle.fingerprintNonce)
+        return recipients.contains { $0.routingTag == tag }
     }
 
     /// Whether an old-form file (the sender named by identity fingerprint) may be attributed to `contact`. Not once the

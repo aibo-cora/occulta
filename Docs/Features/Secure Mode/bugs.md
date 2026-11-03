@@ -14825,7 +14825,7 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 ## Bug 196 — A file names its sender by identity key alone, so two pairings with one person can't be told apart
 
 **Status:** Open, being built on `v2.0.1/pairing-secret` (2026-11-03). Stage 1 built (the wire format: the
-`.pairingSecretCapable` tier, the slot `label`, `RecipientPayload.pairingSwap` and `slotProof`, the `PairingSecret`
+`.pairingSecretCapable` tier, the slot `routingTag`, `RecipientPayload.pairingSwap` and `slotProof`, the `PairingSecret`
 functions); the rest waits on the decisions under "Open decisions". Design decided 2026-11-03 by the owner
 (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, item 30; `Docs/General/decisions.md`, "A secret per pairing routes and binds
 every bundle"). Read from the code; nothing was run until the build below.
@@ -14891,6 +14891,10 @@ keychain item, nothing outside the record).
    pairing until the confirmation.
 
 ### Design as built (2026-11-03; the full design, chosen over a new-pairings-only variant)
+
+**Naming (2026-11-03, the owner):** the entry and the decision call the per-slot HMAC a "routing label"; in code and on the wire
+it is `routingTag` (`Recipient.routingTag`, `PairingSecret.routingTag(secret:nonce:)`), because "label" already names vault entry
+labels, signed-attribute labels and the reseal inventory's. Read "label" below as the routing tag.
 
 Shipped in 2.0.1, which has no spaces: the cross-space case is tested with two contact records that share one identity
 key and hold different secrets. What 2.0.1 itself gives is sender testing closed for pairings with a secret, `.longTermNoPQ`

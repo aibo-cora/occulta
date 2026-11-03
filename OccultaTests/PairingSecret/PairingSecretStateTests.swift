@@ -118,7 +118,7 @@ struct PairingSecretCodecTests {
         #expect(state.refusesOldForm)
     }
 
-    @Test("Only a held and confirmed secret sends the new form; a held one already routes labels")
+    @Test("Only a held and confirmed secret sends the new form; a held one already routes routing tags")
     func rules() {
         #expect(!PairingSecretState.empty.sendsNewForm)
         #expect(PairingSecretState.empty.secret == nil)
