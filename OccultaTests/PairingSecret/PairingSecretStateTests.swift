@@ -291,10 +291,12 @@ struct PairingSecretMigrationTests {
         let row = insert(keys: 2, in: cm.modelContext)
 
         try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
-        let first = try #require(row.contactPublicKeys).map(\.pairingSecretEncrypted)
+        // As sets: a to-many relationship has no order of its own, and the order isn't what this test is about.
+        let first = Set(try #require(row.contactPublicKeys).compactMap(\.pairingSecretEncrypted))
         try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
 
-        #expect(try #require(row.contactPublicKeys).map(\.pairingSecretEncrypted) == first)
+        #expect(first.count == 2)
+        #expect(Set(try #require(row.contactPublicKeys).compactMap(\.pairingSecretEncrypted)) == first)
     }
 
     @Test("It touches no other field of the key", .ambientTestKeyManager)
