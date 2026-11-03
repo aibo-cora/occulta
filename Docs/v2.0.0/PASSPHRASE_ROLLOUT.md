@@ -411,6 +411,19 @@ keys.
 **What that means for the call sites.** Most field-level calls on contacts become one blob decode. The 175
 sites are the scope to sweep, together with requirement 5's "not swept yet" list.
 
+**Depth filtering is a second sweep, outside the 175.** Which contacts a depth sees is decided by reading the
+depth stamps requirement 1 drops, through an absolute depth number:
+- `Contact.Profile.isVisible(atDepth:)` and its `usingKey:` variant, `VaultEntry.isVisible(atDepth:whenUnclassified:)`,
+  and `ContactListFilter.visibleContacts`, `isEmptyList` and `groupsWithMembers`. As of `1482a64d`, 24 call sites in
+  16 files: every contact list, picker and search, card import, the prekey and classification managers, and
+  Secure Mode itself. The list screens are the Bug 25 / Bug 28 failure if one is missed.
+- `Group.members(atDepth:)`, 18 call sites, which requirement 5 replaces with one group row per depth.
+
+Under the new storage a depth sees what decrypts under its own key, and the shared-key contacts the origin lists
+don't hide from it (spec §2, 2026-10-15). Every one of these callers
+moves to that, and none may fall back to listing every row. New pickers, such as the top-level Trust Check's, go
+through `ContactListFilter` so they move with it.
+
 **`Contact.Profile.identifier` is a reference, not only a field** (`bugs.md` Bug 171, "What stays open" item 4;
 `decisions.md`, 2026-10-21). Its base64 ciphertext is stored as a value in `Group` member slots,
 `Draft.encryptedRecipientID`, the custody and shard payloads and the legacy keychain prekey tags
