@@ -14824,7 +14824,9 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 
 ## Bug 196 — A file names its sender by identity key alone, so two pairings with one person can't be told apart
 
-**Status:** Open, being built on `v2.0.1/pairing-secret` (2026-11-03). Design decided 2026-11-03 by the owner
+**Status:** Open, being built on `v2.0.1/pairing-secret` (2026-11-03). Stage 1 built (the wire format: the
+`.pairingSecretCapable` tier, the slot `label`, `RecipientPayload.pairingSwap` and `slotProof`, the `PairingSecret`
+functions); the rest waits on the decisions under "Open decisions". Design decided 2026-11-03 by the owner
 (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, item 30; `Docs/General/decisions.md`, "A secret per pairing routes and binds
 every bundle"). Read from the code; nothing was run until the build below.
 
@@ -14953,11 +14955,44 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
   So the secret never leaves the sealed record, and a test pins that the vault backup payload doesn't hold it. A new
   peer key (identity rotation, Bugs 82 and 94) is a new pairing: the secret sits on the peer's `Key` row, so a
   retired key leaves its secret behind with it. No path resets a pairing's secret on the arrival of an old-form file:
-  a replayed or forged old-form file would then downgrade it. **Open, needs a decision:** whether a fresh
-  authenticated half from a peer we hold a confirmed secret with restarts the swap, which would cover a peer who
-  reinstalls and pairs again under the same identity. Not checked: whether the SwiftData store is excluded from
-  iCloud or iTunes backups; the sealed fields wouldn't open on another phone either way. When Device Migration is
-  built, its design needs a line here: the secret is fresh per new pairing and never copied (rollout item 29).
+  a replayed or forged old-form file would then downgrade it. **Decided 2026-11-03: no restart rule.** A fresh
+  authenticated half from a peer we already hold a confirmed secret with does not restart the swap; a peer who loses
+  their record gets a new Enclave identity and re-pairs, which derives a new secret. The SwiftData store is excluded
+  from iCloud and iTunes backups (Bug 70, `BackupExclusionTests`), and its sealed fields wouldn't open on another
+  phone either way. When Device Migration is built, its design needs a line here: the secret is fresh per new
+  pairing and never copied (rollout item 29).
+
+### Open decisions (2026-11-03)
+
+1. **How a new pairing learns the peer can use the secret.** Step 1 says nothing new is sent in the exchange; that
+   does not hold. A classical exchange's `Payload` carries no nonces (`hybridResult` is nil; the nonces live in
+   `ExchangeManager`), which is plumbing. The real gap: a 2.0.0 phone also sends a nonce, so a secret derived at
+   pairing doesn't prove the peer holds it, and refusing the old form on such a contact would cut it off. Options:
+   (a) one optional field on `Exchange`, which the Multipeer session (`.required` encryption) shows only to the peer
+   and old builds ignore: the new form from the first message, often the `.longTermNoPQ` bootstrap this bug is about;
+   (b) nothing in the exchange: both sides hold the secret unconfirmed, and each side's first message goes in the old
+   form with the identity fingerprint, carrying a confirmation. Recommended: (a). Needs a decision.
+2. **Pairwise keys instead of, or beside, the secret.** A key per pairing (an Enclave blob in the sealed `Key` row, so
+   no keychain item) would give the long-term path a hardware-bound key and make signatures mean something only to
+   the pair. It reopens rollout decision 15b, needs a rollover for existing pairings that looks like a key change
+   (`contactKeyRotated`, Bugs 82, 94, 195), loses the "same phone re-paired" continuity check, and touches every use
+   of the identity key. Group files would still need a label per slot. If the identity key is kept and exchanged
+   beside it, the cross-contact linkage in the audit below stays. Not for 2.0.1; for the owner. Needs a decision.
+3. **Where the identity key is visible (audit of 2026-11-03, one source reader, nothing run, commit `33a90a7f`).**
+   `K` is the identity public key, `H` its SHA-256. Open, needs a decision, and unchanged by this fix:
+   - the pairing exchange sends `K` to every contact, so `K` is a stable pseudonym that two seized phones can match;
+   - Settings shows `H` in full on every layer, the pairing confirmation shows 8 bytes of it, and a contact's detail
+     shows the hash of their key;
+   - `Key.owner` stores `H` (sealed) in every contact's key row.
+   Closed by this fix: the cleartext header fingerprint SHA-256(`K` ‖ nonce) and the challenge routing fingerprint.
+   Not closed by it: signatures checkable with `K` (the forward-secret slot signature, challenge responses, backup
+   pieces sent to trustees).
+4. **Routing and depth.** `fetchAllContacts()` is not filtered by depth: `identifyOwner` matches every non-deleted
+   contact, and the visibility gate runs later, in `buildOwnedBasket`. The label match inherits that. Before building
+   it: read what happens between the match and the gate, and make sure no slot is opened and no prekey consumed for a
+   contact hidden at the current depth.
+5. **The version.** The tier is keyed to app version 2.0.1; `MARKETING_VERSION` is 2.0.0. The bump has to land
+   before release or no phone is recorded at the tier.
 
 ### What the building session also changes
 
