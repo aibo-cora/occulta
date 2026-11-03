@@ -15137,3 +15137,58 @@ a coercer could read changes. This is a public API break, taken while no host ap
 `ecdhOutput` of 0, 16, 31, 33 and 64 bytes throws `invalidECDHOutputLength` in the classical and the hybrid form; with every
 input wrong, the own-key error comes first, and each later check is reached only once the earlier ones pass.
 `ReadmeExamplesTests` mirrors the README's now-throwing example. The interop vectors are unchanged.
+
+---
+
+## Bug 194 — After a contact's identity key changes, our messages to them are sealed to their old phone's prekeys: the new phone can't open them, and without ML-KEM the old phone can
+
+**Status:** **Open.** Filed 2026-11-03 from audit lead 13 (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md` §13), confirmed by a code trace at `cea3927b` (`release/v2.1.0`). Not yet reproduced by a test or on a device. The trace widens the lead in two ways: it needs no introduction card and no revoke, only a contact whose identity key changes; and it finds a confidentiality case the lead ruled out.
+
+**Target:** Not set — open, needs a decision.
+
+### Severity: High
+
+- **Availability, certain on a hardware cycle.** It hits every contact whose identity key changes, which Bug 82's table lists: a new iPhone, a restore to new hardware, Erase All Data, Erase All Content and Settings. From the re-exchange on, our messages don't open on their new phone. If their old phone ran 2.0.0 or later, it never recovers on its own.
+- **Confidentiality, when the contact's new key has no ML-KEM key** (their new phone is below iOS 26). The slots open on the *old* phone instead. In the case revoke exists for — a lost, stolen or seized phone — whoever holds that phone and can unlock Occulta on it reads what we send after the re-exchange. That is the coercer the app is built against.
+
+### What happens
+
+1. Our record for the contact (`prekeyRecordEncrypted`) holds their inbound one-time keys, at most `maxInboundBatches` (2) × `maxInboundKeysPerBatch` (15), and their last-resort key. The private halves live in the old phone's Enclave.
+2. Their identity key changes and we exchange again. `update(key:for:)` (`Contact+Manager.swift:605`) appends the new key. It computes `keyRotated`, but that only feeds `contactKeyRotated`, whose one listener reconciles backup pieces (`OccultaApp.swift:365`). `clearCard(afterMeetingOf:)` drops the record only when a card existed, and says so: "an ordinary re-exchange keeps its prekeys" (`ContactManager+Cards.swift:226-236`). The in-person exchange carries no prekeys, and the record isn't bound to any identity key. `reset(identity:)` (`Contact+Manager.swift:650`) only writes `expiredOn`.
+3. Our next send takes the oldest inbound key (`PrekeyBookkeeper.takeInboundPrekey`, `PrekeyBookkeeper.swift:65`, called from `Contact+Manager.swift:1190` and, for cards, `ContactManager+Cards.swift:461`). Once those run out, a group-format send uses `inboundLastResort` (`lastResortPrekey`, `PrekeyBookkeeper.swift:76`), which is never consumed.
+4. The new phone holds none of those keys. `privateKey(forPrekeyID:)` and `lastResortKey(forPrekeyID:)` return nil (`Contact+Manager+Prekeys.swift:234-249`), every slot is skipped, and `findAndOpenRecipientSlot` throws `recipientSlotNotFound` (`Crypto+Manager+GroupDecrypt.swift:201`).
+5. **Nothing replaces the old keys.** Only `accept` changes `inboundLastResort` (`PrekeyBookkeeper.swift:121-155`), and it needs a batch from the new phone. The new phone issues us a batch only in `replenish` (`Contact+Manager+Prekeys.swift:141`), after one of our bundles opens on it, and none does. Its own messages to us go in long-term fallback mode with no batch attached, since it has none pending for us. So once the stale one-time keys are used up, every send goes to the old last-resort key, indefinitely. An old phone from before 2.0.0 sent no last-resort key (prekey continuity, `faf44714` and earlier). There, sends fall back to the long-term key once the stale keys are gone, the new phone opens that and replenishes, and the conversation recovers after at most 30 lost messages.
+6. **Which phone can open them.** `deriveOutboundKey` (`Crypto+Manager+KeyDerivation.swift:25-55`) wraps with ECDH(ephemeral, prekey), plus ML-KEM to the `quantumMaterial` of the contact's *current* key (`resolveKeyMaterial`, `Contact+Manager.swift:1595`). In hybrid mode the old phone lacks the new key's ML-KEM private key, so it can't open the slot either. In `.forwardSecretNoPQ` the receiving side ignores quantum material (`Crypto+Manager+KeyDerivation.swift:122`). The wrapping key is then the old prekey alone, our signature checks against our own unchanged key, and the old phone's Occulta opens the message as it would any other.
+
+The lead's statement that the old phone "can open the classical outer layer, but not the ML-KEM-protected inner payload" holds only for hybrid mode. The card path the lead describes is one instance: `createCard` doesn't touch the record, and `importCard` only replaces our pending batches (`ContactManager+Cards.swift:310-313`).
+
+### Who sees what
+
+- **We** see nothing wrong: every send succeeds.
+- **The contact's new phone** shows an error for each of our files.
+- **Their old phone**, in `.forwardSecretNoPQ`, opens them.
+
+### Fix — proposed, open, needs a decision
+
+When the contact's key material changes in `update(key:for:)` (`keyRotated`), and in `reset(identity:)`, drop the inbound side of their record: `inboundBatches`, `inboundLastResort`, `acceptedBatchIDs`, `latestInboundGeneratedAt`. The next send then goes in long-term mode to the new key. The new phone opens it and issues a batch (`replenish`, `.longTerm`), and forward secrecy resumes. A re-exchange with unchanged material, such as a reinstall (Bug 82), keeps the record as today.
+
+Open: whether to drop our own batches too, as `dropCardEraBatches` does. They hold Enclave keys only the old phone knows the public halves of.
+
+### Migration — open, needs a decision
+
+The fix doesn't repair contacts already in this state. Two options:
+
+- A launch pass that drops the inbound state where the contact's last two key records differ in material and `latestInboundGeneratedAt` is older than the current key's `acquiredAt`.
+- No migration, and tell users the existing escape: deleting the contact and exchanging again starts a fresh record.
+
+### Guard — tests to add
+
+- `.ambientTestKeyManager`, runs anywhere: for a contact with inbound batches and a last-resort key, `update(key:for:)` with new material empties the inbound side; with the same material it keeps it; `reset(identity:)` empties it.
+- The first send after a rotation is sealed in long-term mode, not to a stale prekey ID.
+- Two phones, Enclave-gated, in the style of `PrekeyConversationTests`: give one phone a new identity, exchange again and send. The new phone opens the message; a copy of the old phone's record does not.
+
+### Related
+
+- Bug 82 is the same event in the receiving direction; D-19 is its authenticity side.
+- `Docs/Features/Multi-Device Contacts/FINDINGS.md:37` already notes that "the old slot's prekey pool becomes orphaned" on re-pairing, as "the same shape of problem single-device key rotation already has". This is that problem, filed.
+- The Trust Check top-level flow design sends users here from its lost-phone and new-phone remedies.
