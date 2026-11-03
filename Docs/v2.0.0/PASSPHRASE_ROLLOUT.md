@@ -1332,6 +1332,24 @@ there and aren't repeated here.
         pairing exists; the card would carry the secret;
       - item 29: copies of a contact made by the migration would share one pairing and its secret, so this doesn't
         separate them.
+    - **What each use gains** (2026-11-03):
+      - *Routing* is needed for two pairings to work at all: only the space whose pairing sealed a file matches it,
+        and the other shows item 24's screen. It also takes sender testing away from third parties: today anyone with
+        the sender's public key can test a captured file, which includes every contact of theirs and a coercer holding
+        any of those phones.
+      - *Key binding* closes a measurable gap for the NoPQ modes only. Today a `.longTermNoPQ` file needs the
+        identity key, in the keychain behind the passcode, and the sender's public key, so it opens outside the app
+        with no phrase. So does a `.forwardSecretNoPQ` file whose prekey is still unused. With the secret in the
+        derivation, both also need the contact's sealed record, so the phrase. With ML-KEM it adds nothing: those
+        modes already need the ML-KEM secrets in the sealed record. The gain lasts while phones below iOS 26 and
+        pairings without ML-KEM remain, a real share at a deployment target of 18.6.
+      - *Neither* helps against someone with the space's phrase, who gets the record and the secret with it, or with
+        item 29's copies.
+      - *Cost:* the secret, the pairing-exchange change and the version bump are paid once for both. Key binding
+        then adds one input to the derivation. Routing is the larger part, through the group change above.
+      - *Recommended, not decided:* both. `senderProof` (`Contact+Manager.swift`, step 5.5), which today
+        authenticates the sender's public key, would also cover the pairing secret, so the routing field is checked
+        no less strictly than today.
 
 ---
 
