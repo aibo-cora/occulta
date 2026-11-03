@@ -66,9 +66,11 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   through CommonCrypto, not Argon2id, tuned to about 1 s on an iPhone 11; the rest were superseded or decided
   above (decided 2026-11-02);
 - the data slices ship together, in one reseal (§7.1);
-- 30, one person paired in two spaces: a random 32-byte secret per pairing, exchanged at pairing and held only
-  in the contact's sealed record; `senderFingerprint` is computed from it, it is mixed into every slot's key
-  derivation, and `senderProof` covers it (decided 2026-11-03, not built);
+- 30, one person paired in two spaces: a 32-byte secret per pairing, held only in the contact's sealed record,
+  mixed into every slot's key derivation; derived at pairing for new pairings, swapped in a `RecipientPayload`
+  field with a confirmation for existing ones, from the card's ML-KEM material for cards; each slot carries
+  HMAC(secret, nonce) as its routing label in place of the outer `senderFingerprint`, and the sender proof covers
+  it; shipped in a release before 2.1.0 (decided 2026-11-03, not built);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
 
@@ -82,8 +84,6 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   image, the file's key and the phrase;
 - 29, found while writing the migration tests (§3.3): whether copies of a contact that several depths show share
   one ID and its prekey state, and what happens to a contact record or a vault note too large for its row;
-- 30's remainder: how existing pairings get a pairing secret, the fingerprint's place in a group bundle, how a
-  card carries the secret, and the stage it ships in;
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -940,6 +940,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
+| P | Pairing secret, in a release before 2.1.0 | §8, 30: the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material; a routing label in each slot; key binding; a new bundle version and interop vectors | Not estimated |
 | 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
@@ -1293,8 +1294,9 @@ there and aren't repeated here.
         quality is a case to cover.
 30. **One person paired in two spaces** (added 2026-11-03). ~~Open, needs a decision.~~ **Decided 2026-11-03 by
     the owner: a random secret per pairing, used for both routing and key binding, with `senderProof` covering it**
-    (`decisions.md`, 2026-11-03). Not built. Still open, needs a decision: how existing pairings get a secret,
-    where the fingerprint goes in a group bundle, how a card carries the secret, and which stage it ships in.
+    (`decisions.md`, 2026-11-03). Not built. ~~Still open, needs a decision: how existing pairings get a secret,
+    where the fingerprint goes in a group bundle, how a card carries the secret, and which stage it ships in.~~
+    **The remainder, decided 2026-11-03 by the owner,** is at the end of this item.
     - **How it happens.** Any user can pair the same person in two spaces. A coercer can force it: two travel
       companions who hold each other behind a phrase are told to pair in the decoy.
     - **What breaks.** There is one identity per install (15b), and `senderFingerprint` is
@@ -1317,8 +1319,8 @@ there and aren't repeated here.
       - *Per pairing, not per space.* A space-wide ID sent to every contact would be the space identifier §1.6
         says doesn't exist. Contacts could compare it. A coercer holding a peer's phone that has two pairings with
         you would see two IDs, which proves two spaces.
-      - *What it would be.* A random 32-byte secret, exchanged at pairing, held only in the contact's sealed record
-        (no keychain item, nothing outside the space).
+      - *What it would be.* A ~~random~~ 32-byte secret, ~~exchanged~~ *derived (2026-11-03, below)* at pairing,
+        held only in the contact's sealed record (no keychain item, nothing outside the space).
     - **Two uses, either or both:**
       - *Routing:* `senderFingerprint` = SHA-256(pairing secret ‖ nonce). The space whose pairing didn't seal the
         bundle finds no match, and §1.5's rule applies as decided. It also means only the two parties can test a
@@ -1326,7 +1328,7 @@ there and aren't repeated here.
       - *Key binding:* the secret mixed into every slot's derivation (`TransportKeyDerivation`). `.longTermNoPQ`
         then fails outside its pairing's space even if routing were bypassed, and the NoPQ modes need the space's
         phrase, which narrows the spec's "gap" (`PASSPHRASE_LAYER_KEYS.md`, ML-KEM modes).
-    - **What it costs, each open:**
+    - **What it costs** ~~**, each open**~~ *(each decided 2026-11-03, below)***:**
       - a wire-format change: the pairing exchange, the fingerprint and the derivation change, so a new bundle
         version and new interop vectors;
       - existing pairings have no secret. One could be sent inside a prekey-sealed message, with the identity
@@ -1357,6 +1359,33 @@ there and aren't repeated here.
       - ~~*Recommended, not decided:*~~ *Decided 2026-11-03:* both. `senderProof` (`Contact+Manager.swift`, step 5.5), which today
         authenticates the sender's public key, would also cover the pairing secret, so the routing field is checked
         no less strictly than today.
+    - **The remainder, decided 2026-11-03 by the owner** (`decisions.md`, 2026-11-03). Not built.
+      - *New pairings derive the secret at pairing,* from what the exchange already shares: the identity ECDH, both
+        pairing nonces and the ML-KEM secrets where present, under a label of its own. It is the same input the
+        verification words come from, so the words authenticate it, and it covers the first message after pairing,
+        when the travel-companion case strikes. This replaces "a random secret, exchanged at pairing": a field sent
+        over Multipeer isn't covered by the words, and it would need a new exchange message.
+      - *Existing pairings swap it in bundles.* A new optional field in `RecipientPayload`, next to `prekeyBatch`,
+        carries a key, its type and a confirmation. Each side sends a random half and the secret is made from both,
+        so two phones sending at once can't conflict. The confirmation tells each side the other holds both halves.
+        Until it arrives, the identity fingerprint stays accepted for that pairing; after it, it is refused, as the
+        body-digest guard refuses a downgrade. For a classical pairing a half goes only in a one-time-prekey slot, so
+        a captured long-term file can't give it away. Not in `SealedPayload` and not as a signed attribute: the
+        sealed payload is shared by every member of a group file, so a half there reaches them all.
+      - *Each slot carries its routing label,* HMAC(pairing secret, the file's nonce), readable before decryption.
+        The outer `senderFingerprint` goes, and so does trial decryption: the receiver computes one HMAC per contact
+        in the open space and matches the labels. Every file is affected, since a one-to-one file is a group of one
+        (`Contact+Manager.swift:1269`). A member holds only their own pairing's secret, so the other slots' labels
+        look random to them. The sender proof moves into each slot's `RecipientPayload` and covers its label.
+      - *A card needs nothing new.* Its bootstrap slots are labelled HMAC(card agreement key, nonce): a card key is
+        new for every card, and only a holder of the card file can compute it, as with today's card fingerprint.
+        Once both sides hold `ss1` and `ss2`, the secret is derived from them as at a pairing, and the labels
+        switch with the confirmation above. Key binding adds nothing during the bootstrap, since cards need iOS 26.
+      - *It ships in a release before 2.1.0,* as a stage of its own (§7.2, stage P). A pairing switches only once
+        both phones run the new build, so shipped with spaces it would protect no pairing on the day they appear.
+        It doesn't depend on the passphrase, and it keeps two large changes in separate releases (2026-10-19).
+      - *What stays open:* a pairing with a contact still on an older build keeps the identity fingerprint, and this
+        item stays open for it until they upgrade; item 29's copies share one pairing.
 
 ---
 

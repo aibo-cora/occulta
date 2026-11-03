@@ -1631,7 +1631,16 @@ the share staging key.
 - Key binding means a NoPQ file needs the space's phrase, not just the identity key and the passcode. With ML-KEM it adds nothing; the gain lasts while phones below iOS 26 remain.
 - Per pairing, not per space: a space-wide ID sent to every contact could be compared, and a peer's phone with two pairings would prove two spaces.
 
-**Consequences:** a new bundle version and new interop vectors. Open, needs a decision: how existing pairings get a secret, the fingerprint's place in a group bundle (one today for every member), how a card carries the secret, and the stage it ships in. Neither use helps against someone with the space's phrase, or with item 29's migrated copies.
+**Consequences:** a new bundle version and new interop vectors. ~~Open, needs a decision: how existing pairings get a secret, the fingerprint's place in a group bundle (one today for every member), how a card carries the secret, and the stage it ships in.~~ Decided 2026-11-03 (below). Neither use helps against someone with the space's phrase, or with item 29's migrated copies.
+
+**The remainder, decided 2026-11-03 by the owner:**
+- *New pairings derive the secret at pairing* from the identity ECDH, both pairing nonces and the ML-KEM secrets where present: the input the verification words come from, so the words authenticate it, and it covers the first message. This replaces "a random secret exchanged at pairing", which the words wouldn't cover.
+- *Existing pairings swap it in bundles:* a new optional `RecipientPayload` field carrying a key, its type and a confirmation. Each side sends a random half; the secret is made from both. The identity fingerprint stays accepted for the pairing until the confirmation arrives, and is refused after. A classical pairing's half goes only in a one-time-prekey slot. Not in `SealedPayload` or a signed attribute, since a group file's sealed payload reaches every member.
+- *Each slot carries its routing label,* HMAC(pairing secret, nonce), in place of the outer `senderFingerprint` and trial decryption; the sender proof moves into each slot and covers it. Every file is affected, since a one-to-one file is a group of one.
+- *Cards need nothing new:* bootstrap slots are labelled with HMAC(card agreement key, nonce), which only a holder of the card file can compute, as today; the secret is derived from `ss1` and `ss2` once both are held.
+- *It ships in a release before 2.1.0,* as its own stage, so pairings hold secrets before spaces exist.
+
+**Still open:** a pairing with a contact on an older build keeps the identity fingerprint until they upgrade.
 
 ---
 
