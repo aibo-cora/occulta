@@ -394,7 +394,8 @@ section hides.
     the contact (`quantumKeyMaterialEncrypted`). Once the record is sealed under layer keys, a depth that
     can't see the contact can't open these messages. **These modes need no change.**
   - `.forwardSecretNoPQ` and `.longTermNoPQ` need only the prekey or the identity key, both usable with
-    the passcode. **These are the gap.**
+    the passcode. **These are the gap.** *2026-11-03:* a secret per pairing, mixed into every slot's key, narrows
+    it: these modes then also need the contact's sealed record (`bugs.md` Bug 194; rollout §8, item 30).
 
 *Why prekeys stay in the Enclave.* Moving them into the contact's record would hide them behind the
 phrase but break forward secrecy. Consider an image taken before a prekey is used, with the phrase obtained

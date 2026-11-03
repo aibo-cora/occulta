@@ -70,7 +70,7 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   mixed into every slot's key derivation; derived at pairing for new pairings, swapped in a `RecipientPayload`
   field with a confirmation for existing ones, from the card's ML-KEM material for cards; each slot carries
   HMAC(secret, nonce) as its routing label in place of the outer `senderFingerprint`, and the sender proof covers
-  it; shipped in a release before 2.1.0 (decided 2026-11-03, not built);
+  it; shipped in a release before 2.1.0 (decided 2026-11-03, not built; Bug 194);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
 
@@ -940,7 +940,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| P | Pairing secret, in a release before 2.1.0 | §8, 30: the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material; a routing label in each slot; key binding; a new bundle version and interop vectors | Not estimated |
+| P | Pairing secret, in a release before 2.1.0 | `bugs.md` Bug 194; §8, 30: the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material; a routing label in each slot; key binding; a new bundle version and interop vectors | Not estimated |
 | 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
@@ -1359,7 +1359,8 @@ there and aren't repeated here.
       - ~~*Recommended, not decided:*~~ *Decided 2026-11-03:* both. `senderProof` (`Contact+Manager.swift`, step 5.5), which today
         authenticates the sender's public key, would also cover the pairing secret, so the routing field is checked
         no less strictly than today.
-    - **The remainder, decided 2026-11-03 by the owner** (`decisions.md`, 2026-11-03). Not built.
+    - **The remainder, decided 2026-11-03 by the owner** (`decisions.md`, 2026-11-03). Not built; the work is
+      tracked as `bugs.md` Bug 194, with the files to change, the tests and what is still open.
       - *New pairings derive the secret at pairing,* from what the exchange already shares: the identity ECDH, both
         pairing nonces and the ML-KEM secrets where present, under a label of its own. It is the same input the
         verification words come from, so the words authenticate it, and it covers the first message after pairing,
@@ -1396,6 +1397,7 @@ depends on or changes.
 
 | Item | Summary | Status | Here |
 |---|---|---|---|
+| Bug 194 | A file names its sender by identity key alone, so two pairings with one person can't be told apart | Open; design decided 2026-11-03, not built | §8, 30; stage P, in a release before 2.1.0 |
 | Bug 37 | Re-enable PIN fails silently at a lowered gate with an unknown PIN | Closed (fixed) | §1.3: the fix has no phrase equivalent yet |
 | Bug 62 | `pinCollision` PIN oracle | Open | Gone with the old store once the reseal is verified (§3.2) |
 | Bug 92 | Exported backup opens with the backup key alone; opt-in export passphrase unbuilt | Open, re-scoped 2026-09-24 | §6: shares the keyboard |

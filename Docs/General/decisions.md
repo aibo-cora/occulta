@@ -1640,7 +1640,7 @@ the share staging key.
 - *Cards need nothing new:* bootstrap slots are labelled with HMAC(card agreement key, nonce), which only a holder of the card file can compute, as today; the secret is derived from `ss1` and `ss2` once both are held.
 - *It ships in a release before 2.1.0,* as its own stage, so pairings hold secrets before spaces exist.
 
-**Still open:** a pairing with a contact on an older build keeps the identity fingerprint until they upgrade.
+**Still open:** a pairing with a contact on an older build keeps the identity fingerprint until they upgrade. The build, its tests and two smaller open points are tracked as `Docs/Features/Secure Mode/bugs.md` Bug 194.
 
 ---
 
