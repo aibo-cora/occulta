@@ -675,9 +675,14 @@ extension ContactManager {
         var newRow: Contact.Profile.Key?
 
         var clearedCard = false
+        var droppedInbound = false
         do {
             // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
             clearedCard = try self.clearCard(afterMeetingOf: contact)
+
+            // Their old phone's prekeys are of no use to the new one (Bug 194). Same material keeps them: a reinstall. Before the
+            // pairing's own batches go in, which are the new phone's.
+            droppedInbound = try keyRotated ? self.dropInboundPrekeys(of: contact) : false
 
             // The first prekeys of this pairing, and the peer's tier, in the same save as the key (Bug 196).
             if let pairing { try self.installPairingPrekeys(pairing, in: contact) }
@@ -737,13 +742,16 @@ extension ContactManager {
             self.modelContext.rollback()
             throw error
         }
-        if clearedCard { self.security.checkpointStore() }
+        if clearedCard || droppedInbound { self.security.checkpointStore() }
 
         self.contactKeyUpdated.send(identifier)
         if keyRotated { self.contactKeyRotated.send(identifier) }
     }
     
     /// Remove all keys of a contact.
+    ///
+    /// Their prekeys go with them (Bug 194). The next exchange compares the new key with the unexpired one, and a
+    /// revoked contact has none, so it can't be relied on to see the change.
     /// - Parameter identifier: Contact's ID.
     func reset(identity identifier: String) throws {
         guard
@@ -751,15 +759,17 @@ extension ContactManager {
         else {
             throw ContactManager.Errors.contactNotFound
         }
-        
+
         let expiration = String(Date.now.timeIntervalSince1970).data(using: .utf8)
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
-        
+        let droppedInbound = try self.dropInboundPrekeys(of: contact)
+
         // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
         // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
         contact.currentKey?.expiredOn = encrypted
         
         try self.modelContext.save()
+        if droppedInbound { self.security.checkpointStore() }
     }
     
     /// Encrypt data for a contact using their public key, which is encrypted.
