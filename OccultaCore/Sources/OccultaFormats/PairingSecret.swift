@@ -44,6 +44,14 @@ public enum PairingSecret {
         Self.mac(secret, domain: Self.proofDomain, label + senderPublicKey)
     }
 
+    /// Whether `proof` is the slot proof for this secret, label and sender key. Constant time.
+    public static func isValidSlotProof(_ proof: Data, secret: Data, label: Data, senderPublicKey: Data) -> Bool {
+        HMAC<SHA256>.isValidAuthenticationCode(
+            proof, authenticating: Self.domainInput(Self.proofDomain, label + senderPublicKey),
+            using: SymmetricKey(data: secret)
+        )
+    }
+
     // MARK: - Key binding
 
     /// `key` with the secret mixed in: HKDF-SHA256(ikm: key, salt: secret, info: "occulta-pairing-bind-v1").

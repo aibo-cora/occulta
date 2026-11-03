@@ -162,9 +162,13 @@ struct PairingSecretColumnTests {
         ))
         try cm.update(key: draft, for: contact.identifier)
 
-        #expect(contact.contactPublicKeys?.count == 2)
+        // Each row holds its own pairing's secret. Not read through `.last`: a to-many relationship has no order of its
+        // own, and which row is the current key is not what this test is about.
+        let keys = try #require(contact.contactPublicKeys)
+        #expect(keys.count == 2)
         #expect(cm.pairingSecretState(of: first) == .derived(secret: half(1)))
-        #expect(cm.pairingSecretState(for: contact) == .derived(secret: half(2)), "the current key's secret is the latest")
+        let states = Set(keys.compactMap { cm.pairingSecretState(of: $0).secret })
+        #expect(states == [half(1), half(2)])
     }
 
     @Test("Every state seals to one length, and a created key's field is that length", .ambientTestKeyManager)

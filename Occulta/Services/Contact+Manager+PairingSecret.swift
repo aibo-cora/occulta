@@ -48,6 +48,39 @@ extension ContactManager {
         return self.pairingSecretState(of: key)
     }
 
+    // MARK: - Sending and receiving (stage 5)
+
+    /// The secret to seal a file to `contact` with, or nil: the pairing holds one, the peer is known to hold it too, and
+    /// the peer is at the pairing-secret tier. Anything less sends as before.
+    func pairingSecretForSending(to contact: Contact.Profile, tier: OccultaBundle.Version) -> Data? {
+        guard tier.isAtLeast(.pairingSecretCapable) else { return nil }
+        let state = self.pairingSecretState(for: contact)
+        return state.sendsNewForm ? state.secret : nil
+    }
+
+    /// What a pairing contributes to opening a file from `contact`: its secret, once held, and whether an old-form file
+    /// may still be tried against it. nil when there is no secret to route by.
+    func pairingSlotContext(for contact: Contact.Profile) -> Manager.Crypto.PairingSlotContext? {
+        let state = self.pairingSecretState(for: contact)
+        return state.secret.map { Manager.Crypto.PairingSlotContext(secret: $0, acceptsOldForm: !state.refusesOldForm) }
+    }
+
+    /// Whether `bundle` names `contact` as its sender by a pairing label: some slot carries
+    /// `PairingSecret.label(secret, bundle.fingerprintNonce)` for the secret `contact` holds.
+    func bundleCarriesLabel(of contact: Contact.Profile, in bundle: OccultaBundle) -> Bool {
+        guard let secret = self.pairingSecretState(for: contact).secret, let recipients = bundle.group?.recipients else {
+            return false
+        }
+        let label = PairingSecret.label(secret: secret, nonce: bundle.fingerprintNonce)
+        return recipients.contains { $0.label == label }
+    }
+
+    /// Whether an old-form file (the sender named by identity fingerprint) may be attributed to `contact`. Not once the
+    /// pairing began with a secret: such a file is another pairing's (Bug 196).
+    func acceptsOldForm(from contact: Contact.Profile) -> Bool {
+        !self.pairingSecretState(for: contact).refusesOldForm
+    }
+
     // MARK: - The first prekeys of a pairing
 
     /// Installs a pairing's first prekeys into `contact`'s record and records the peer at the pairing-secret tier.

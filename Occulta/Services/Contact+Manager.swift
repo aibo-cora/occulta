@@ -1271,7 +1271,8 @@ extension ContactManager {
                 contactPrekey:   contactPrekey ?? lastResortPrekey,
                 contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                 pendingBatch:    outboundBatch,
-                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
+                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable),
+                pairingSecret:   self.pairingSecretForSending(to: contact, tier: targetVersion)
             )]
             let sent: SentBundle
             if let streamedFiles {
@@ -1332,6 +1333,8 @@ private struct PendingGroupRecipient {
     /// Whether this member's build verifies the domain-separated ephemeral signature.
     /// Resolved per member, since a group's members can be on different builds.
     let prefixesEphemeralSignature: Bool
+    /// The pairing secret to seal this member's slot with, or nil (`bugs.md` Bug 196).
+    let pairingSecret: Data?
 }
 
 extension ContactManager {
@@ -1473,7 +1476,8 @@ extension ContactManager {
                 contactPrekeyIsLastResort: lastResortPrekey != nil,
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
-                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
+                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable),
+                pairingSecret:          self.pairingSecretForSending(to: contact, tier: memberVersion)
             )
         }
 
@@ -1489,7 +1493,8 @@ extension ContactManager {
                 contactPrekeyIsLastResort: p.contactPrekeyIsLastResort,
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
-                prefixesEphemeralSignature: p.prefixesEphemeralSignature
+                prefixesEphemeralSignature: p.prefixesEphemeralSignature,
+                pairingSecret:          p.pairingSecret
             )
         }
 
@@ -1749,8 +1754,16 @@ extension ContactManager {
  
         let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 
+        // A pairing's label names its contact outright (Bug 196): a file of the new form is not matched by identity, and an
+        // old-form file is not matched to a pairing that began with a secret. Labels are checked for every contact first,
+        // so a twin that holds the same identity key can't take a file whose label belongs to another.
+        if let labelled = contacts.first(where: { self.bundleCarriesLabel(of: $0, in: bundle) }) {
+            return labelled
+        }
+
         for contact in contacts {
             if
+                self.acceptsOldForm(from: contact),
                 let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
                 let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material),
                 contact.isLikelySender(of: bundle, contactPublicKey: pubKey)
@@ -2113,8 +2126,10 @@ extension ContactManager {
         let recipientMode: OccultaBundle.Mode
         let slotEphemeralKey: Data
         var cardOpening: CardSlotOpening?
+        /// The label that routed us to the slot, for a file of the pairing-secret form (Bug 196).
+        var slotLabel: Data?
 
-        // ── 3. Trial-decrypt: find our slot and open it ─────────────────
+        // ── 3. Find our slot (by the pairing label, or trial decryption) and open it ─────
         if let cardContext {
             senderPublicKey = cardContext.peerAgreementKey
             let opening = try cryptoOps.openCardSlot(
@@ -2127,15 +2142,18 @@ extension ContactManager {
         } else {
             senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
             let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
-            (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
+            let opened = try cryptoOps.openSlot(
                 in: bundle,
                 blind: envelope.blind,
                 senderContactID: sender.identifier,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
                 prekeys: prekeys,
-                body: body
+                body: body,
+                pairing: self.pairingSlotContext(for: sender)
             )
+            (recipientPayload, used, recipientMode, slotEphemeralKey) = (opened.payload, opened.used, opened.mode, opened.ephemeralPublicKey)
+            slotLabel = opened.matchedLabel
         }
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
@@ -2231,9 +2249,17 @@ extension ContactManager {
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
-        guard let proof = decoded.senderProof,
-              HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
-            throw GroupDecryptError.senderProofMismatch
+        if let slotLabel, let secret = self.pairingSecretState(for: sender).secret {
+            // The pairing-secret form: the proof is in the slot, keyed by the secret, and covers the slot's label.
+            // `SealedPayload.senderProof` is random filler here and is not read.
+            guard let slotProof = recipientPayload.slotProof,
+                  PairingSecret.isValidSlotProof(slotProof, secret: secret, label: slotLabel, senderPublicKey: senderPublicKey)
+            else { throw GroupDecryptError.senderProofMismatch }
+        } else {
+            guard let proof = decoded.senderProof,
+                  HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
+                throw GroupDecryptError.senderProofMismatch
+            }
         }
 
         // ── 6. Post-processing ────────────────────────────────────────────

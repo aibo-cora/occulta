@@ -99,7 +99,10 @@ func writeStreamedBundle(
         group: OccultaBundle.GroupEnvelope(
             blind: blind, blindNonce: blindNonce,
             recipients: try recipients.map {
-                try crypto.wrapRecipient($0, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: digest)
+                try crypto.wrapRecipient(
+                    $0, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: digest,
+                    labelNonce: outerNonce, senderPublicKey: senderPublicKey
+                )
             }
         )
     )
