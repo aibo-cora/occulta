@@ -574,6 +574,8 @@ there and aren't repeated here.
    depth 0.
 6. **A test phone with no real data.** Which one? As of 2026-10-19 none is cleared: the iPhone 11 still holds real
    data. Stage 0's timing and every stage from 3 on wait for one.
+   *2026-11-02: a measuring app for stage 0's device timings is built, `Tools/OccultaMeasure/` (its own bundle ID, no
+   Occulta code, no stored keys). It runs on the Simulator; a device run is manual and per phone (its README).*
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ **Decided:** refused while duress depths exist.
