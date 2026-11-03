@@ -632,6 +632,9 @@ extension ContactManager {
         // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
         let clearedCard = try self.clearCard(afterMeetingOf: contact)
 
+        // Their old phone's prekeys are of no use to the new one (Bug 194). Same material keeps them: a reinstall.
+        let droppedInbound = try keyRotated ? self.dropInboundPrekeys(of: contact) : false
+
         contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
         
         #if DEBUG
@@ -639,13 +642,16 @@ extension ContactManager {
         #endif
 
         try self.modelContext.save()
-        if clearedCard { self.security.checkpointStore() }
+        if clearedCard || droppedInbound { self.security.checkpointStore() }
 
         self.contactKeyUpdated.send(identifier)
         if keyRotated { self.contactKeyRotated.send(identifier) }
     }
     
     /// Remove all keys of a contact.
+    ///
+    /// Their prekeys go with them (Bug 194). The next exchange compares the new key with the unexpired one, and a
+    /// revoked contact has none, so it can't be relied on to see the change.
     /// - Parameter identifier: Contact's ID.
     func reset(identity identifier: String) throws {
         guard
@@ -653,13 +659,15 @@ extension ContactManager {
         else {
             throw ContactManager.Errors.contactNotFound
         }
-        
+
         let expiration = String(Date.now.timeIntervalSince1970).data(using: .utf8)
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
-        
+
+        let droppedInbound = try self.dropInboundPrekeys(of: contact)
         contact.contactPublicKeys?.last?.expiredOn = encrypted
-        
+
         try self.modelContext.save()
+        if droppedInbound { self.security.checkpointStore() }
     }
     
     /// Encrypt data for a contact using their public key, which is encrypted.

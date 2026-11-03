@@ -976,6 +976,8 @@ struct RootView: View {
         try? DatabaseMigration.migrateCardFields(modelContext: self.contactManager.modelContext)
         try? DatabaseMigration.migrateChallengeFields(modelContext: self.contactManager.modelContext)
         try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
+        // Bug 194: contacts whose key changed before the fix, every contact at every depth.
+        try? self.contactManager.sweepStaleInboundPrekeys()
         // Introduction cards (SPEC §6.4): every contact at every depth, unlike the prekey sweep above.
         try? self.contactManager.sweepCards()
     }
