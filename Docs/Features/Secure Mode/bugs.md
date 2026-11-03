@@ -14972,6 +14972,16 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
    and old builds ignore: the new form from the first message, often the `.longTermNoPQ` bootstrap this bug is about;
    (b) nothing in the exchange: both sides hold the secret unconfirmed, and each side's first message goes in the old
    form with the identity fingerprint, carrying a confirmation. Recommended: (a). Needs a decision.
+   Narrowed 2026-11-03 to an optional `pairingNonce` on `Exchange` (a fresh 16 bytes that feeds the secret; its presence
+   on both sides is the capability signal, so no flag and no `appVersion`), and the confirmation kept only for the
+   swap of existing pairings. Residual: a relay that passes the exchange faithfully can strip the field, which leaves
+   both phones on today's form, or one phone refusing the old form the other still sends. **Pinned, not decided:** a
+   last-resort key exchanged at pairing, as an introduction card's key is (the bootstrap slot is an ephemeral ECDH to
+   the card key, routed by SHA-256(card key ‖ nonce)), so the first messages are forward-secret and use no
+   long-term key. Today nothing generates prekeys at a first message; they come back with the reply to a fallback
+   message (FORWARD_SECRECY_GUIDE). It would also make a secret delivered only in a bundle workable, since the half
+   could ride the first forward-secret message. It adds key generation, storage and a use of the last-resort path at
+   pairing: a stage of its own, which also shrinks reason 4 above without the secret.
 2. **Pairwise keys instead of, or beside, the secret.** A key per pairing (an Enclave blob in the sealed `Key` row, so
    no keychain item) would give the long-term path a hardware-bound key and make signatures mean something only to
    the pair. It reopens rollout decision 15b, needs a rollover for existing pairings that looks like a key change
