@@ -77,6 +77,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - the unlock cost, to be measured on a device, by the measuring app of decision 6 (PR #155; not run on a device);
 - 26's remainder: stale copies of the main store file's pages in APFS free blocks and flash, readable with a raw
   image, the file's key and the phrase;
+- 29, found while writing the migration tests (§3.3): whether copies of a contact that several depths show share
+  one ID and its prekey state, and what happens to a contact record or a vault note too large for its row;
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -103,7 +105,7 @@ waiting for this work, and a downgrade must lose nothing, through a new store fi
 
 **What is new here.**
 - Phrase entry and learning (§2).
-- Each starting state's migration (§3).
+- Each starting state's migration (§3), and the tests that prove it loses nothing (§3.3).
 - Rule 4's way back (§1.2).
 - The coercion gate under phrases (§1.3).
 - Installs with no lock (§1.4).
@@ -627,6 +629,94 @@ with no "Later" (`decisions.md`, 2026-10-19).
   at a bad moment.
 - A decoy is no different (8a).
 
+### 3.3 Migration tests
+
+**Added 2026-11-03 at the owner's request.** These tests prove that moving from today's encryption to phrase-derived
+space keys loses nothing, with the lock on and with it off, on mock data. They are register C3's "data survives"
+test (TEST-2) for this migration. No slice counts as done until its part passes (§6).
+
+**The mock data: today's store, sealed the way today's app seals it.** Build on Bug 171's frozen fixture
+(`LegacyStore` in `OccultaTests/SecureMode/KeyResealFixtures.swift`). It already seals a value for every encrypted
+field under fixed `TestKeyManager` keys, in both key forms (`KeyForm`: below iOS 26 and iOS 26+), with byte values
+checked against recorded ones. It needs the following added:
+- **Several depths, with data at each.** That means contacts in every visibility class:
+  - visible everywhere;
+  - visible through depth N;
+  - hidden at every duress depth;
+  - created under coercion at depth N (`originDepth`);
+  - soft-deleted.
+- **Vault entries** at each depth, plus one that is unclassified.
+- **Groups** whose members span those classes, **drafts** addressed to them, **backup keys**, **custody shards**,
+  **restore records** and the **queue records** listed in §8, 21.
+- **Every field filled.** Each contact also has a prekey record, and one has a photo.
+- **Edge cases:**
+  - empty strings;
+  - a contact record larger than its 8 KB row;
+  - a vault note longer than about 3.5 KB;
+  - a photo larger than 24 KB.
+
+  What the migration does with the three that don't fit is open, needs a decision (§8, 29).
+- **What each depth shows, spelled out in the fixture as literal lists.** A fixture guard checks that today's code
+  (`Contact.Profile.isVisible(atDepth:)`, `VaultEntry.isVisible(atDepth:whenUnclassified:)` and the group and
+  backup-key filters) agrees with those lists. A later change to today's filters then can't quietly move what the
+  tests expect.
+
+**What every test checks.**
+1. **Each space shows exactly what its depth showed.** After migration, opening each space with its phrase shows
+   the same records as the literal list for that depth, with the same plaintext, compared field by field. Nothing
+   may be missing and nothing extra may appear.
+   - Photos are compared by what the re-encoding promises (§1.5): the photo decodes, is about 360 px, carries no
+     metadata, and belongs to the same contact. The original isn't kept, by decision.
+2. **References resolve within the space.** Every group member, draft recipient, custody and shard payload and
+   `TrusteeTag` in a space names a contact in that same space: the one it named before, now by its random ID (§8,
+   20). No reference holds the old identifier's ciphertext, and no reference holds an address-book ID.
+3. **Prekeys survive.** A message sealed to a contact's prekey before the migration opens after it, in the space
+   that holds the contact (ROLLOUT_PLAN, "Prekeys survive the retagging").
+4. **Nothing opens anywhere else.** No record opens under another space's key, and a fresh phrase opens nothing.
+   Noise rows open under no key. Each record is bound to its row (§1.6). The new store's row count equals the
+   records of every space plus a noise count inside the decided range.
+5. **The old store isn't touched until every layer has been migrated and verified.** Before that, it is
+   byte-for-byte what was seeded and still opens with the old PINs. Afterwards the store and the keys §3.2 lists are
+   gone (Bug 138).
+6. **Reads fail loudly.** A seeded value that won't open under today's key stops the migration with an error
+   (register C1). Nothing is written or deleted, and the user's data is left as it was.
+
+**One test per starting state (§3.1).** Each one runs in both key forms.
+
+| Starting state | What the test does | What must hold, beyond checks 1–6 |
+|---|---|---|
+| No lock (PIN never set) | Migrates silently under the empty phrase | Depth 0's view is in the space of the empty phrase; no prompt |
+| PIN only | Sets up one phrase | Depth 0's view is in the phrase's space |
+| Secure Mode with K duress layers, for K = 1 and K = 3 | Sets up K+1 phrases in one sitting from the real depth (Rule 2) | Each depth's view is in its own space |
+| Unlocked at duress depth N (8a) | Sets up at N, then later finishes from the real depth, typing N's phrase again | After the first step, only N's view is in the new store, and the old store is intact and opens with every PIN. After the second, every depth's view is in its space and the old store is gone |
+| Lock off at duress depth N (8b) | Migrates N silently under the device-only key; later the real user turns the lock on and finishes setup | Same as 8a: the old store waits for the other layers |
+| Depths a coercer created (`coercerBaseDepth > 0`) | Sets up as in the K-layer case | The coercer's depths and the contacts born in them are in no space, and their rows are shredded. Everything else checks 1–6 as usual. This is the one deliberate removal, by decision 7d |
+
+**The lock turned on and off after migration.** On every starting state, after migration:
+- the lock is turned off (7a);
+- it is turned on again, which reseals the space under a new phrase (7c);
+- on an install that had no lock, it is turned on for the first time (§1.4).
+
+After each step, the space shows exactly what it showed before the step, and the old phrase opens nothing.
+
+**Interruptions and repeats.** These carry Bug 171's crash-safety tests over:
+- Interrupted at each write point: nothing becomes unreadable, the next launch finishes, and a third run changes
+  nothing.
+- A new record is opened and compared before anything old is deleted. A faulty sealer leaves the old store whole.
+- At scale (2,000 contacts across three depths, as in `KeyResealScaleTests`), time and memory are attached.
+
+**Where they run.**
+- They run on the Simulator, under `.ambientFrozenTestKeyManager`, with the KDF's cost injected (§6) and the
+  store in a directory of the test's own (Bug 192).
+- Variants that need a real Enclave are gated with `.enabled(if: secureEnclaveAvailable())`.
+- They never run on a phone that holds real data. The device run waits for the spare phone (§8, 6) and belongs to
+  stage 7.
+
+**When they land.**
+- Stage 0 builds the mock data, the literal lists and the fixture guards, which pass against today's code.
+- The checks are switched on as their slices land: the vault at stage 3; contacts, photos and groups at stage 4;
+  the remaining records at stage 5; every starting state and the lock toggles at stage 6.
+
 ---
 
 ## 4. From the local DB key to depth keys
@@ -794,7 +884,8 @@ more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ agains
   - 25 test files (about 8,800 lines) use `Manager.Security` or `PINManager`.
   - `TestKeyManager` needs a depth-key path.
   - The KDF's cost must be injectable, or each derivation costs ~1 s in the suite.
-  - The "data survives" reseal test (register C3, TEST-2) is required before any slice counts as done.
+  - The "data survives" reseal test (register C3, TEST-2) is required before any slice counts as done. §3.3 is its
+    plan: mock data under today's encryption, one test per starting state, and the lock turned off and on.
 - **Devices.** The Simulator can't unlock the vault. Timing (§7, stage 0) and every stage from 3 on need a
   physical phone that holds no real data.
 - **Docs to update once decided:**
@@ -842,7 +933,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3); PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
+| 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; each record bound to its row (step 5, §1.6) | 2–3 |
@@ -1180,6 +1271,19 @@ there and aren't repeated here.
     the store can bring back a deleted contact's record, or a contact's earlier keys, with no phrase. Closing it
     needs something per space that changes with every write, which §1.5's "no per-space record" rules out. Open,
     needs a decision.
+29. **What the migration does with data that doesn't map one to one** (added 2026-11-03 while writing §3.3's
+    tests; not decided). §3.3's expectations need both answers.
+    - **A contact today's code shows at several depths.** Most contacts are visible everywhere (`visibleThroughDepth`
+      holds `Int.max`), so under 8a each space that can see one receives its own copy. Open, needs a decision:
+      - whether the copies share one random ID (§8, 20) or get one each;
+      - what happens to the prekey state, now copied into every space. A prekey consumed in one space is still
+        listed in the others, while its private key, held once in the Enclave (`PrekeySecretsManager`), is gone.
+    - **Records that don't fit their row.** The decided sizes are 8 KB for a small record, about 3.5 KB of text for
+      a vault note and 24 KB for a photo (§1.5, §8, 21). Today's store has no such limits. Open, needs a decision
+      for a contact record or a note that is too large: failing the migration loudly, splitting the record, or
+      raising the size.
+      - A photo is re-encoded until it fits, by decision, so only a photo that still doesn't fit at the lowest
+        quality is a case to cover.
 
 ---
 
@@ -1207,5 +1311,5 @@ depends on or changes.
 | Bug 190 | SwiftData's persistent history logs every write with a time; `Z_OPT` marks rows updated in place | Filed 2026-10-31. For the new store, decided 2026-11-01: plain SQLite, so none of it applies there. For the SwiftData store that remains, and for today's app, open, needs a decision | §8, 23 |
 | Register C1 | Decryption failure not representable | Open, P1 | Stage 0 |
 | Register C2 | Local DB key re-derived per operation; no cache | Open, P1. One Enclave ECDH measured at about 4.6 ms on an iPhone 15 Pro (2026-11-01); the cache's rules decided 2026-11-01 | Stage 0; §8, 27 |
-| Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't | Stage 0 |
+| Register C3 | No key-manager seam; no "data survives" reseal test | Open, P1, as recorded. The seam now exists (`Manager.Ambient`, `TestKeyManager`); the test doesn't. Its plan for this migration is §3.3 (2026-11-03) | Stage 0, then stages 3–6 |
 | Register §G | No `VersionedSchema` | Open | Stage 0 |
