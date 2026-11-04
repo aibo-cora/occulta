@@ -90,15 +90,11 @@ extension PairingSecretState {
 
     /// The state after a file of the new form from the peer opened and its slot proof verified. That proves they hold the
     /// secret, and that they have seen our confirmation, since they send the new form only once they hold ours: our half
-    /// has done its work, and the peer has switched, so from here an old-form file naming them by identity is one sent
-    /// before the switch and arriving late, or another pairing's, and the record refuses it like one that began with a
-    /// secret (decided 2026-11-04). `nil` when nothing changes.
+    /// has done its work. `nil` when nothing changes.
     func afterTaggedFile() -> PairingSecretState? {
-        guard case .held(let secret, let confirmed, let half) = self.phase else { return nil }
-        guard !confirmed || half != nil || !self.refusesOldForm else { return nil }
+        guard case .held(let secret, let confirmed, let half) = self.phase, !confirmed || half != nil else { return nil }
         var next = self
         next.phase = .held(secret: secret, peerConfirmed: true, ourHalf: nil)
-        next.refusesOldForm = true
         return next
     }
 

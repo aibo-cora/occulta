@@ -14912,7 +14912,7 @@ bound to the pairing, and the capability on phones before 2.1.0.
   into `Contact.Profile.Key.pairingSecretEncrypted`. On the `Key` row because a secret belongs to a peer key: a key
   change leaves the old secret on the retired row. Added to `KeyReseal+Inventory.swift`.
 - *Rules read off the state:* send the new form only when `held` and `peerConfirmed` and the tier allows; accept a label
-  when `held`; accept the old form unless `refusesOldForm`, which a swapped pairing gets from the peer's first new-form file. A peer's half that arrives first goes straight to `held`
+  when `held`; accept the old form unless `refusesOldForm`. A peer's half that arrives first goes straight to `held`
   (no peer half is ever stored). `ourHalf` is saved before its first send, so a crash retries the same half.
 
 **Nothing may tell old form from new, on the wire or at rest.**
@@ -14955,14 +14955,15 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
 
 - **Refusing the old form: a split rule.** A record made by a new pairing refuses an old-form file from the start,
   since otherwise an old-form file from the person's other pairing matches it, which is this bug. A record that
-  swapped keeps accepting old-form files while the swap settles: files travel offline and arrive late, and a file the
-  contact sent before the confirmation but opened after it would otherwise be lost. **Decided 2026-11-04: it refuses
-  from the peer's first new-form file on.** That file (found by tag, slot proof verified) shows the peer has the
-  secret and has switched, so an old-form file naming them by identity afterwards is one sent before the switch and
-  arriving later than a newer one, or another pairing's. `afterTaggedFile` sets `refusesOldForm`, sealed with the rest
-  of the state and never cleared. The cost is accepted: a message sent before the peer switched that is delivered
-  after their first new-form file is refused, and its sender is not told. Pinned by
-  `refusalBeginsWithThePeersFirstNewFormFile` and `swappedPairingRefusesOldFormAfterTheFirstTaggedFile`.
+  swapped keeps accepting old-form files after the confirmation: files travel offline and arrive late, and a file the
+  contact sent before the confirmation but opened after it would otherwise be lost. **Decided 2026-11-04 (the
+  owner): it keeps accepting.** What that leaves is an old-form file for a swapped record from any sender who holds the
+  identity key; it matches by identity as today, so two swapped records for one person stay as ambiguous as before the
+  fix, and the population shrinks as old pairings are re-made. Refusing from the peer's first new-form file on was
+  built and reverted the same day: it dropped messages that prekey continuity promises to open, and three of its tests
+  failed (`PrekeyConversationTests`: out of order within windows of 4, a message on a retired last-resort key within
+  its 30 days, a long-term reply redelivered after its batch ID aged out). A limit of 30 days after that file would
+  have passed them, at the price of a stored date and a clock dependence; not chosen.
 
 - **Restore and device migration: no path carries a contact record (found 2026-11-03, building this).** The entry
   listed backup restore and Device Migration as paths that must carry the secret or fall back to the swap. Read from

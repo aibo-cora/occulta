@@ -189,7 +189,7 @@ struct PairingRoutingTests {
         #expect(try cm.openGroup(bundle: oldForm).ownerID == contact.identifier)
     }
 
-    @Test("A swapped pairing accepts old form until the peer's first new-form file arrives (the split rule)", .ambientTestKeyManager)
+    @Test("A swapped pairing keeps accepting old form while it holds the secret (the split rule)", .ambientTestKeyManager)
     func swappedPairingAcceptsOldForm() throws {
         let cm = try makeContactManager()
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
@@ -198,23 +198,6 @@ struct PairingRoutingTests {
 
         #expect(try cm.openGroup(bundle: try seal(from: self.sender, to: [(me, nil)])).ownerID == contact.identifier)
         #expect(try cm.openGroup(bundle: try seal(from: self.sender, to: [(me, secret(3))])).ownerID == contact.identifier)
-    }
-
-    @Test("A swapped pairing refuses old form from the peer's first new-form file on", .ambientTestKeyManager)
-    func swappedPairingRefusesOldFormAfterTheFirstTaggedFile() throws {
-        let cm = try makeContactManager()
-        let me = try Manager.Ambient.keyManager.retrieveIdentity()
-        let swapped = PairingSecretState(phase: .held(secret: secret(3), peerConfirmed: true), refusesOldForm: false)
-        let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: swapped, in: cm)
-        let oldForm = try seal(from: self.sender, to: [(me, nil)])
-
-        #expect(try cm.identifyOwner(of: oldForm) == contact.identifier)
-
-        let newForm = try seal(from: self.sender, to: [(me, secret(3))])
-        #expect(try cm.openGroup(bundle: newForm).ownerID == contact.identifier)   // opening it applies the swap's effects
-
-        #expect(throws: ContactManager.Errors.self) { try cm.identifyOwner(of: oldForm) }
-        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: oldForm, ownerID: contact.identifier) }
     }
 
     // MARK: Depth

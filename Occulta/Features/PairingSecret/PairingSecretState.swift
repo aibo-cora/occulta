@@ -31,11 +31,10 @@ struct PairingSecretState: Equatable {
 
     var phase: Phase
 
-    /// Set for a pairing that began with a secret, and for a swapped one once the peer's first new-form file has
-    /// arrived; never cleared. A record that has it refuses an old-form file (the sender named by identity
-    /// fingerprint), because otherwise an old-form file from the person's other pairing matches it, which is the bug.
-    /// A swapped record without it keeps accepting old form until then, so a file sent before the swap finished is
-    /// not lost when it arrives before the peer has switched.
+    /// Set for a pairing that began with a secret, and never cleared. A record that has it refuses an old-form file
+    /// (the sender named by identity fingerprint), because otherwise an old-form file from the person's other
+    /// pairing matches it, which is the bug. A record without it keeps accepting old form, so a file sent before
+    /// the swap finished is not lost when it arrives after.
     var refusesOldForm: Bool
 
     static let empty = PairingSecretState(phase: .none, refusesOldForm: false)

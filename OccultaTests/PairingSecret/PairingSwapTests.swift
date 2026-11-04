@@ -169,22 +169,6 @@ struct PairingSwapTransitionTests {
         #expect(derived.afterTaggedFile() == nil)
     }
 
-    @Test("A swapped pairing accepts old form until the peer's first new-form file arrives, then refuses it, for good")
-    func refusalBeginsWithThePeersFirstNewFormFile() throws {
-        var p = Pairing()
-        try p.aSends(); try p.bSends(); try p.aSends()
-        #expect(p.a.sendsNewForm && p.b.sendsNewForm)
-        #expect(!p.a.refusesOldForm && !p.b.refusesOldForm, "nothing of the new form has arrived yet: a late old-form file is not lost")
-
-        p.bSendsNewForm()                       // B's first new-form file reaches A
-        #expect(p.a.refusesOldForm && !p.b.refusesOldForm)
-        p.aSendsNewForm()
-        #expect(p.a.refusesOldForm && p.b.refusesOldForm)
-
-        // Nothing changes again, and the flag is not cleared by anything the swap does.
-        #expect(p.a.afterTaggedFile() == nil && p.b.afterTaggedFile() == nil)
-    }
-
     @Test("The swap changes nothing about whether old form is refused")
     func refusalIsSticky() throws {
         var p = Pairing()
