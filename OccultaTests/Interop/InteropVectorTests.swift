@@ -196,8 +196,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let challengeState: String?
     let challengeSlot: ChallengeSlotInput?
 
-    // pairingRoutingTag, pairingSlotProof, pairingBind, pairingCombine, pairingConfirmation, pairingDerive,
-    // pairingField, recipientPayload
+    // pairingRoutingTag, pairingSlotProof, pairingBind, pairingDerive, pairingField, recipientPayload,
+    // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript
     let pairing: PairingInput?
 
     /// A secret per pairing (`bugs.md` Bug 196). Every field is hex; each kind reads its own subset.
@@ -214,6 +214,19 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let mlkemSecret2: String?
         let ourNonce: String?
         let peerNonce: String?
+        // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript (stage 2)
+        let pairwiseECDH: String?
+        let identityECDH: String?
+        let identitySalt: String?
+        let ourAgreementKey: String?
+        let peerAgreementKey: String?
+        let transcript: String?
+        let blockOneAgreement: String?
+        let blockOneSigning: String?
+        let blockOneMLDSA: String?
+        let blockTwoAgreement: String?
+        let blockTwoSigning: String?
+        let blockTwoMLDSA: String?
         // recipientPayload
         let slotProof: String?
     }
@@ -554,6 +567,56 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             let input = try #require(self.pairing)
             return RoutingKey.bind(SymmetricKey(data: try Self.bytes(input.key)), secret: try Self.bytes(input.secret))
                 .withUnsafeBytes { Data($0) }
+
+        case "pairingTranscript":
+            let input = try #require(self.pairing)
+            let one = try #require(RoutingKey.PairBlock(
+                agreementKey: try Self.bytes(input.blockOneAgreement), signingKey: try Self.bytes(input.blockOneSigning),
+                mldsaKey: try input.blockOneMLDSA.map(Self.bytes)))
+            let two = try #require(RoutingKey.PairBlock(
+                agreementKey: try Self.bytes(input.blockTwoAgreement), signingKey: try Self.bytes(input.blockTwoSigning),
+                mldsaKey: try input.blockTwoMLDSA.map(Self.bytes)))
+            let transcript = RoutingKey.transcript(one, two)
+            #expect(transcript == RoutingKey.transcript(two, one), "\(self.name): the two orders disagree")
+            return transcript
+
+        case "routingKeyDerive":
+            // Both phones derive it, each with itself as "our": the agreement keys, nonces and ML-KEM secrets, swapped, must agree.
+            let input = try #require(self.pairing)
+            let ours = try Self.bytes(input.ourAgreementKey), theirs = try Self.bytes(input.peerAgreementKey)
+            let nonceOne = try Self.bytes(input.ourNonce), nonceTwo = try Self.bytes(input.peerNonce)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            let derived = try #require(RoutingKey.derive(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                ourAgreementKey: ours, peerAgreementKey: theirs, mlkemSecrets: secrets,
+                ourNonce: nonceOne, peerNonce: nonceTwo, transcript: try Self.bytes(input.transcript)))
+            let otherSide = RoutingKey.derive(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                ourAgreementKey: theirs, peerAgreementKey: ours, mlkemSecrets: secrets.map { ($0.1, $0.0) },
+                ourNonce: nonceTwo, peerNonce: nonceOne, transcript: try Self.bytes(input.transcript))
+            #expect(derived == otherSide, "\(self.name): the two sides disagree")
+            return derived
+
+        case "pairingWordsKey":
+            let input = try #require(self.pairing)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            return try #require(RoutingKey.wordsKey(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                identitySalt: try Self.bytes(input.identitySalt), mlkemSecrets: secrets,
+                ourNonce: try Self.bytes(input.ourNonce), peerNonce: try Self.bytes(input.peerNonce),
+                transcript: try Self.bytes(input.transcript)))
+
+        case "pairwiseLongTermKey":
+            let input = try #require(self.pairing)
+            let ours = try Self.bytes(input.ourAgreementKey), theirs = try Self.bytes(input.peerAgreementKey)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            let key = try #require(RoutingKey.longTermKey(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), ourAgreementKey: ours, peerAgreementKey: theirs, mlkemSecrets: secrets))
+            let otherSide = RoutingKey.longTermKey(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), ourAgreementKey: theirs, peerAgreementKey: ours,
+                mlkemSecrets: secrets.map { ($0.1, $0.0) })
+            #expect(key.withUnsafeBytes { Data($0) } == otherSide?.withUnsafeBytes { Data($0) }, "\(self.name): the two sides disagree")
+            return key.withUnsafeBytes { Data($0) }
 
         case "pairingDerive":
             // Both phones derive it, each with itself as "our": the nonces and the ML-KEM secrets, swapped, must agree.

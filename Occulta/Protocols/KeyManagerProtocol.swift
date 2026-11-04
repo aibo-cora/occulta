@@ -92,6 +92,17 @@ protocol KeyManagerProtocol {
     func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
     /// The per-routing key (`bugs.md` Bug 196). `quantumMaterial` is nil for a classical exchange.
     func createRoutingKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data) -> Data?
+    /// The routing key of a pair-key pairing (`bugs.md` Bug 196, stage 2): `RoutingKey.derive` over the pair-key ECDH
+    /// the caller made and the identity ECDH made here, so no raw identity ECDH output leaves the key manager.
+    func createRoutingKey(
+        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data, transcript: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    ) -> Data?
+    /// The key the verification words come from for an exchange that made pair keys: `RoutingKey.wordsKey`.
+    func createPairwiseDicewareKey(
+        peerP256Material: Data, pairwiseECDH: Data, transcript: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    ) -> SymmetricKey?
     func generateExchangeNonce() -> Data?
 
     // MARK: - Identity challenge
@@ -1161,6 +1172,35 @@ extension TestKeyManager {
             mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
             ourNonce: ourNonce, peerNonce: peerNonce
         )
+    }
+
+    func createRoutingKey(
+        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data, transcript: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    ) -> Data? {
+        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        return RoutingKey.derive(
+            pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, ourAgreementKey: ourAgreementKey,
+            peerAgreementKey: peerAgreementKey,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
+        )
+    }
+
+    func createPairwiseDicewareKey(
+        peerP256Material: Data, pairwiseECDH: Data, transcript: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    ) -> SymmetricKey? {
+        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        return RoutingKey.wordsKey(
+            pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, identitySalt: ecdh.salt,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
+        ).map { SymmetricKey(data: $0) }
     }
 
     func generateExchangeNonce() -> Data? {

@@ -65,6 +65,25 @@ nonisolated final class SoftwareCardKeys: CardKeyProviding, @unchecked Sendable 
     func signingPublicKey(blob: Data) throws -> Data {
         try P256.Signing.PrivateKey(rawRepresentation: blob).publicKey.x963Representation
     }
+
+    /// Software ML-DSA-87: the blob is the key's seed. `mldsaAvailable` false makes the key throw, as a phone below iOS 26 does.
+    var mldsaAvailable = true
+
+    func makeMLDSAKey() throws -> (publicKey: Data, blob: Data) {
+        guard self.mldsaAvailable, #available(iOS 26, *) else { throw Failure.injected }
+        let key = try MLDSA87.PrivateKey()
+        return (key.publicKey.rawRepresentation, key.seedRepresentation)
+    }
+
+    func mldsaSign(_ payload: Data, blob: Data) throws -> Data {
+        guard #available(iOS 26, *) else { throw Failure.injected }
+        return try MLDSA87.PrivateKey(seedRepresentation: blob, publicKey: nil).signature(for: payload)
+    }
+
+    func mldsaPublicKey(blob: Data) throws -> Data {
+        guard #available(iOS 26, *) else { throw Failure.injected }
+        return try MLDSA87.PrivateKey(seedRepresentation: blob, publicKey: nil).publicKey.rawRepresentation
+    }
 }
 
 // MARK: - Helpers
