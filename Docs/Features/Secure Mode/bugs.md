@@ -15010,12 +15010,20 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
    leaves both phones on today's form, or one phone refusing the old form the other still sends. Unverified:
    `encryptBundle` choosing a freshly accepted batch's key for a new record in every mode, hybrid included; a test
    settles it.
-2. **Pairwise keys instead of, or beside, the secret.** A key per pairing (an Enclave blob in the sealed `Key` row, so
-   no keychain item) would give the long-term path a hardware-bound key and make signatures mean something only to
-   the pair. It reopens rollout decision 15b, needs a rollover for existing pairings that looks like a key change
-   (`contactKeyRotated`, Bugs 82, 94, 195), loses the "same phone re-paired" continuity check, and touches every use
-   of the identity key. Group files would still need a label per slot. If the identity key is kept and exchanged
-   beside it, the cross-contact linkage in the audit below stays. Not for 2.0.1; for the owner. Needs a decision.
+2. **A key per pairing, beside the secret or instead of the identity key.** What is built is a shared symmetric secret per
+   pairing, not a key pair. A key per pairing (an Enclave blob in the sealed `Key` row, so no keychain item) would sign
+   and agree keys in place of `K`. It reopens rollout decision 15b, needs a rollover for existing pairings that looks
+   like a key change (`contactKeyRotated`, Bugs 82, 94, 195), and touches every use of the identity key. Group files
+   would still need a tag per slot. The secret can be derived from a pairwise ECDH instead (a new derivation domain, so
+   old and new pairings don't collide); the tags, the key binding, the slot proof, the swap and the state codec stay.
+   **Recorded 2026-11-04 (the owner): a candidate for the 2.1.0 design, only together with a decision on retiring `K`.**
+   With `K` kept and exchanged beside it, what the key adds over the secret is small: a hardware-bound long-term key
+   (the secret, read with the local DB key, lets files be recognised, not opened or forged, and that reader already has
+   the contacts and messages); signatures that verify only for the pair (they sit in sealed payloads, so only the
+   recipient sees them, and a trustee could show a shard attribute to a third party); and the inner challenge
+   fingerprint no longer binding to `K`. It does not remove the `K` pseudonym, the displayed hashes or the contact
+   books' copies of `K`, and it leaves depth behaviour as the secret has it. The gain is large only if `K` is retired,
+   which also ends the pseudonym and costs the "same phone re-paired" continuity check. Not for 2.0.1.
 3. **Where the identity key is visible (audit of 2026-11-03, one source reader, nothing run, commit `33a90a7f`).**
    `K` is the identity public key, `H` its SHA-256. Open, needs a decision, and unchanged by this fix:
    - the pairing exchange sends `K` to every contact, so `K` is a stable pseudonym. Matching two phones' copies needs
