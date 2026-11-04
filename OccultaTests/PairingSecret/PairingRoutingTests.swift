@@ -189,17 +189,6 @@ struct PairingRoutingTests {
         #expect(try cm.openGroup(bundle: oldForm).ownerID == contact.identifier)
     }
 
-    @Test("A swapped pairing keeps accepting old form while it holds the secret (the split rule)", .ambientTestKeyManager)
-    func swappedPairingAcceptsOldForm() throws {
-        let cm = try makeContactManager()
-        let me = try Manager.Ambient.keyManager.retrieveIdentity()
-        let swapped = PairingSecretState(phase: .held(secret: secret(3), peerConfirmed: true), refusesOldForm: false)
-        let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: swapped, in: cm)
-
-        #expect(try cm.openGroup(bundle: try seal(from: self.sender, to: [(me, nil)])).ownerID == contact.identifier)
-        #expect(try cm.openGroup(bundle: try seal(from: self.sender, to: [(me, secret(3))])).ownerID == contact.identifier)
-    }
-
     // MARK: Depth
 
     @Test("A contact hidden at the current depth routes and opens exactly as a visible one does (no depth oracle)", .ambientTestKeyManager)
@@ -315,7 +304,7 @@ struct PairingRoutingTests {
         #expect(bundle.senderFingerprint == OccultaBundle.SecrecyContext.fingerprint(for: senderKey, nonce: bundle.fingerprintNonce))
     }
 
-    @Test("Every slot carries a routing tag, a swap field and a slot proof, whether or not it has a secret", .ambientTestKeyManager)
+    @Test("Every slot carries a routing tag and a slot proof, whether or not it has a secret", .ambientTestKeyManager)
     func slotsAreUniform() throws {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let other = try TestKeyManager().retrieveIdentity()
@@ -365,19 +354,15 @@ struct PairingRoutingTests {
 
     // MARK: Gating
 
-    @Test("Only a held, confirmed secret at the tier is sent with", .ambientTestKeyManager)
+    @Test("Only a held secret at the tier is sent with", .ambientTestKeyManager)
     func sendingGate() throws {
         let cm = try makeContactManager()
         let key = try TestKeyManager().retrieveIdentity()
-        let confirmed = try insertSender(publicKey: key, state: .derived(secret: secret(1)), in: cm)
-        let unconfirmed = try insertSender(
-            publicKey: key, state: PairingSecretState(phase: .held(secret: secret(2), peerConfirmed: false), refusesOldForm: false), in: cm
-        )
+        let held = try insertSender(publicKey: key, state: .derived(secret: secret(1)), in: cm)
         let none = try insertSender(publicKey: key, state: .empty, in: cm)
 
-        #expect(cm.pairingSecretForSending(to: confirmed, tier: .pairingSecretCapable) == secret(1))
-        #expect(cm.pairingSecretForSending(to: confirmed, tier: .streamedBodyCapable) == nil, "a peer below the tier gets the old form")
-        #expect(cm.pairingSecretForSending(to: unconfirmed, tier: .pairingSecretCapable) == nil)
+        #expect(cm.pairingSecretForSending(to: held, tier: .pairingSecretCapable) == secret(1))
+        #expect(cm.pairingSecretForSending(to: held, tier: .streamedBodyCapable) == nil, "a peer below the tier gets the old form")
         #expect(cm.pairingSecretForSending(to: none, tier: .pairingSecretCapable) == nil)
     }
 }
@@ -412,7 +397,7 @@ private func sealWithProof(
     encoder.outputFormatting = .sortedKeys
     let slot = try encoder.encode(OccultaBundle.RecipientPayload(
         sessionKey: contentKey.withUnsafeBytes { Data($0) }, senderEphemeralSignature: Data(count: 72),
-        pairingSwap: try PairingSecretSwap.filler(), slotProof: proof
+        slotProof: proof
     ))
     return OccultaBundle(
         version: .v4, secrecy: outerSecrecy,

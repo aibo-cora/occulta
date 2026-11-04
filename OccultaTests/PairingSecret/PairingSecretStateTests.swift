@@ -52,10 +52,6 @@ private func half(_ byte: UInt8) -> Data { Data(repeating: byte, count: 32) }
 
 private let everyState: [(name: String, state: PairingSecretState)] = [
     ("none", .empty),
-    ("none, refuses old form", PairingSecretState(phase: .none, refusesOldForm: true)),
-    ("swapping", PairingSecretState(phase: .swapping(ourHalf: half(0x11)), refusesOldForm: false)),
-    ("held, unconfirmed", PairingSecretState(phase: .held(secret: half(0x22), peerConfirmed: false), refusesOldForm: false)),
-    ("held, confirmed", PairingSecretState(phase: .held(secret: half(0x33), peerConfirmed: true), refusesOldForm: false)),
     ("derived", .derived(secret: half(0x44))),
 ]
 
@@ -72,16 +68,13 @@ struct PairingSecretCodecTests {
         #expect(try PairingSecretCodec().decode(plaintext) == state, "\(name)")
     }
 
-    @Test("A held secret and a half in the same state land in separate fields")
+    @Test("A held secret lands in its field and the rest is zeros")
     func fieldsAreSeparate() throws {
         let held = try PairingSecretCodec().encode(.derived(secret: half(0xAA)))
-        let swapping = try PairingSecretCodec().encode(
-            PairingSecretState(phase: .swapping(ourHalf: half(0xBB)), refusesOldForm: false)
-        )
-        #expect(held[3..<35] == half(0xAA))
-        #expect(swapping[35..<67] == half(0xBB))
-        #expect(held[35..<67] == Data(count: 32), "a held state keeps no half")
-        #expect(swapping[3..<35] == Data(count: 32), "a swapping state keeps no secret")
+        let empty = try PairingSecretCodec().encode(.empty)
+        #expect(held[2..<34] == half(0xAA))
+        #expect(held[34...] == Data(count: PairingSecretCodec.capacity - 34))
+        #expect(empty[1...] == Data(count: PairingSecretCodec.capacity - 1), "an empty state is zeros past the version")
     }
 
     @Test("A malformed plaintext is refused")
@@ -93,24 +86,21 @@ struct PairingSecretCodecTests {
         var wrongVersion = good; wrongVersion[0] = 0x02
         #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(wrongVersion) }
 
-        var unknownPhase = good; unknownPhase[1] = 3
-        #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(unknownPhase) }
-
-        var unknownFlag = good; unknownFlag[2] |= 0x08
-        #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(unknownFlag) }
+        var unknownPresence = good; unknownPresence[1] = 2
+        #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(unknownPresence) }
     }
 
-    @Test("A secret or half of the wrong size is refused, never padded or cut")
+    @Test("A secret of the wrong size is refused, never padded or cut")
     func encodeRefuses() {
         #expect(throws: PairingSecretCodec.CodecError.wrongSize) {
             try PairingSecretCodec().encode(.derived(secret: Data(count: 31)))
         }
         #expect(throws: PairingSecretCodec.CodecError.wrongSize) {
-            try PairingSecretCodec().encode(PairingSecretState(phase: .swapping(ourHalf: Data(count: 33)), refusesOldForm: false))
+            try PairingSecretCodec().encode(.derived(secret: Data(count: 33)))
         }
     }
 
-    @Test("A pairing that derived its secret holds it, confirmed, and refuses the old form")
+    @Test("A pairing that derived its secret holds it, sends the new form, and refuses the old form")
     func derivedState() {
         let state = PairingSecretState.derived(secret: half(7))
         #expect(state.secret == half(7))
@@ -118,14 +108,11 @@ struct PairingSecretCodecTests {
         #expect(state.refusesOldForm)
     }
 
-    @Test("Only a held and confirmed secret sends the new form; a held one already routes routing tags")
+    @Test("A pairing with no secret sends the old form and accepts it")
     func rules() {
         #expect(!PairingSecretState.empty.sendsNewForm)
+        #expect(!PairingSecretState.empty.refusesOldForm)
         #expect(PairingSecretState.empty.secret == nil)
-        let swapping = PairingSecretState(phase: .swapping(ourHalf: half(1)), refusesOldForm: false)
-        #expect(!swapping.sendsNewForm && swapping.secret == nil)
-        let unconfirmed = PairingSecretState(phase: .held(secret: half(2), peerConfirmed: false), refusesOldForm: false)
-        #expect(!unconfirmed.sendsNewForm && unconfirmed.secret == half(2))
     }
 }
 

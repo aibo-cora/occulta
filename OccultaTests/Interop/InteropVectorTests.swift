@@ -207,9 +207,6 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let routingTag: String?
         let senderPublicKey: String?
         let key: String?
-        let halfA: String?
-        let halfB: String?
-        let ownHalf: String?
         // pairingDerive
         let rawECDH: String?
         let salt: String?
@@ -217,19 +214,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let mlkemSecret2: String?
         let ourNonce: String?
         let peerNonce: String?
-        // pairingSecretField
-        let phase: String?
-        let refusesOldForm: Bool?
-        let peerConfirmed: Bool?
         // recipientPayload
-        let swap: SwapInput?
         let slotProof: String?
-    }
-
-    struct SwapInput: Decodable, Sendable {
-        let kind: String
-        let key: String
-        let confirmation: String
     }
 
     struct ChallengeSlotInput: Decodable, Sendable {
@@ -484,12 +470,6 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                         signature:             try Self.bytes($0.signature)
                     )
                 },
-                pairingSwap:              try self.pairing?.swap.map {
-                    PairingSecretSwap(
-                        kind: try #require(PairingSecretSwap.Kind(rawValue: $0.kind)),
-                        key: try Self.bytes($0.key), confirmation: try Self.bytes($0.confirmation)
-                    )
-                },
                 slotProof:                try self.pairing?.slotProof.map(Self.bytes)
             )
             // Mirrors `wrapRecipient` (Crypto+Manager+GroupEncrypt.swift), which encodes the
@@ -575,22 +555,6 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             return PairingSecret.bind(SymmetricKey(data: try Self.bytes(input.key)), secret: try Self.bytes(input.secret))
                 .withUnsafeBytes { Data($0) }
 
-        case "pairingCombine":
-            // Crossing sends: either side's half first gives the same secret.
-            let input = try #require(self.pairing)
-            let a = try Self.bytes(input.halfA), b = try Self.bytes(input.halfB)
-            let secret = try PairingSecret.combine(a, b)
-            #expect(secret == (try PairingSecret.combine(b, a)), "\(self.name): the two orders disagree")
-            return secret
-
-        case "pairingConfirmation":
-            let input = try #require(self.pairing)
-            let confirmation = PairingSecret.confirmation(secret: try Self.bytes(input.secret), ownHalf: try Self.bytes(input.ownHalf))
-            #expect(PairingSecret.isValidConfirmation(
-                confirmation, secret: try Self.bytes(input.secret), peerHalf: try Self.bytes(input.ownHalf)
-            ), "\(self.name): production verification rejected the confirmation")
-            return confirmation
-
         case "pairingDerive":
             // Both phones derive it, each with itself as "our": the nonces and the ML-KEM secrets, swapped, must agree.
             let input = try #require(self.pairing)
@@ -604,17 +568,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
 
         case "pairingSecretField":
             let input = try #require(self.pairing)
-            let phase: PairingSecretState.Phase
-            switch input.phase {
-            case "none":      phase = .none
-            case "swapping":  phase = .swapping(ourHalf: try Self.bytes(input.ownHalf))
-            case "held":      phase = .held(
-                secret: try Self.bytes(input.secret), peerConfirmed: input.peerConfirmed ?? false,
-                ourHalf: try input.ownHalf.map(Self.bytes)
-            )
-            default:          throw VectorError.unknownPairingPhase("\(self.name): \(input.phase ?? "nil")")
-            }
-            let state = PairingSecretState(phase: phase, refusesOldForm: input.refusesOldForm ?? false)
+            let state = try input.secret.map { PairingSecretState.derived(secret: try Self.bytes($0)) } ?? .empty
             let plaintext = try PairingSecretCodec().encode(state)
             #expect(plaintext.count == PairingSecretCodec.capacity, "\(self.name): the field is 128 bytes")
             #expect(try PairingSecretCodec().decode(plaintext) == state, "\(self.name): production decode disagrees")

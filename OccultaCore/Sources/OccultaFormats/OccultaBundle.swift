@@ -159,10 +159,9 @@ public struct OccultaBundle: Codable {
         /// without the receive path and the send path, TestFlight included. Such a build would be recorded at
         /// this tier and sent bundles it can't open (`ROLLOUT_PLAN.md`, release mechanics).
         case streamedBodyCapable
-        /// Capability watermark: contact's build gives each pairing a secret (`bugs.md` Bug 196): a routing tag in
-        /// every slot, the secret mixed into each slot's key, the sender proof in the slot, and the swap that gives an
-        /// existing pairing its secret (`RecipientPayload.pairingSwap`). Never written to the wire `version` field;
-        /// stored only in `Contact.Profile.maxBundleVersion` as byte 0x0B.
+        /// Capability watermark: contact's build gives a new pairing a secret (`bugs.md` Bug 196): a routing tag in
+        /// every slot, the secret mixed into each slot's key, and the sender proof in the slot. Never written to the
+        /// wire `version` field; stored only in `Contact.Profile.maxBundleVersion` as byte 0x0B.
         ///
         /// A send uses the pairing-secret form only for a recipient recorded at this tier, with a secret both sides hold.
         ///
@@ -749,10 +748,6 @@ public struct OccultaBundle: Codable {
         /// `nil` in every other message. Added with introduction cards.
         public let introduction: CardIntroduction?
 
-        /// The sender's half of the pairing secret, or filler (`PairingSecretSwap`). Present in every slot of a send
-        /// to a recipient at `.pairingSecretCapable`, so slot sizes match. `nil` from builds before that tier.
-        public let pairingSwap: PairingSecretSwap?
-
         /// `PairingSecret.slotProof(secret:routingTag:senderPublicKey:)`: the sender proof for this slot, covering the
         /// slot's `routingTag`. Random filler of the same size when the slot has no pairing secret. `nil` from builds
         /// before `.pairingSecretCapable`; `SealedPayload.senderProof` is the proof for those.
@@ -768,7 +763,6 @@ public struct OccultaBundle: Codable {
             senderEphemeralSignature: Data? = nil,
             bodyDigest: Data? = nil,
             introduction: CardIntroduction? = nil,
-            pairingSwap: PairingSecretSwap? = nil,
             slotProof: Data? = nil
         ) {
             self.sessionKey               = sessionKey
@@ -780,7 +774,6 @@ public struct OccultaBundle: Codable {
             self.senderEphemeralSignature = senderEphemeralSignature
             self.bodyDigest               = bodyDigest
             self.introduction             = introduction
-            self.pairingSwap              = pairingSwap
             self.slotProof                = slotProof
         }
 
@@ -791,7 +784,7 @@ public struct OccultaBundle: Codable {
         // shardMetadataAttempted defaults to false for the same reason — a sender
         // old enough not to know about it never attempted anything.
         enum CodingKeys: String, CodingKey {
-            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature, bodyDigest, introduction, pairingSwap, slotProof
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature, bodyDigest, introduction, slotProof
         }
 
         public init(from decoder: Decoder) throws {
@@ -805,7 +798,6 @@ public struct OccultaBundle: Codable {
             self.senderEphemeralSignature = try c.decodeIfPresent(Data.self, forKey: .senderEphemeralSignature)
             self.bodyDigest               = try c.decodeIfPresent(Data.self, forKey: .bodyDigest)
             self.introduction             = try c.decodeIfPresent(CardIntroduction.self, forKey: .introduction)
-            self.pairingSwap              = try c.decodeIfPresent(PairingSecretSwap.self, forKey: .pairingSwap)
             self.slotProof                = try c.decodeIfPresent(Data.self, forKey: .slotProof)
         }
     }

@@ -58,9 +58,6 @@ struct GroupRecipient {
     /// mixed into its key, and its sender proof is keyed by it. Resolved by the caller, like every other field here.
     let pairingSecret: Data?
 
-    /// What this slot carries toward a pairing's secret, in a one-time-prekey slot only; nil is filler (`PairingSecretState+Swap`).
-    let pairingSwap: PairingSecretSwap?
-
     init(
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
@@ -70,8 +67,7 @@ struct GroupRecipient {
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false,
         card: CardSlot? = nil,
-        pairingSecret: Data? = nil,
-        pairingSwap: PairingSecretSwap? = nil
+        pairingSecret: Data? = nil
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
@@ -82,7 +78,6 @@ struct GroupRecipient {
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
         self.card                    = card
         self.pairingSecret           = pairingSecret
-        self.pairingSwap             = pairingSwap
     }
 }
 
@@ -389,7 +384,6 @@ extension Manager.Crypto {
             shardMetadataAttempted:   false,
             senderEphemeralSignature: senderEphemeralSignature,
             bodyDigest:               bodyDigest,
-            pairingSwap:              try r.pairingSwap ?? PairingSecretSwap.filler(),
             slotProof:                slotProof
         )
         // Sorted keys, so the same payload always encodes to the same bytes. It is sealed, so

@@ -2,8 +2,8 @@
 //  PairingSecretTests.swift
 //  OccultaTests
 //
-//  Bug 196 — a secret per pairing. The wire half: routing tags, the sender proof, key binding, the swap's combining
-//  and confirmation, and the fields that carry them.
+//  Bug 196 — a secret per pairing. The wire half: routing tags, the sender proof, key binding, and the fields that
+//  carry them.
 //
 
 import Testing
@@ -67,61 +67,7 @@ struct PairingSecretTests {
         #expect(bytes(bound) != bytes(PairingSecret.bind(key, secret: self.secret(2))))
     }
 
-    // MARK: The swap
-
-    @Test("Crossing halves agree whichever side's half is first")
-    func combineIsSymmetric() throws {
-        let a = try PairingSecret.newHalf(), b = try PairingSecret.newHalf()
-        #expect(try PairingSecret.combine(a, b) == (try PairingSecret.combine(b, a)))
-        #expect(try PairingSecret.combine(a, b).count == 32)
-    }
-
-    @Test("Different halves make a different secret")
-    func combineDiffers() throws {
-        let a = try PairingSecret.newHalf(), b = try PairingSecret.newHalf(), c = try PairingSecret.newHalf()
-        #expect(try PairingSecret.combine(a, b) != (try PairingSecret.combine(a, c)))
-    }
-
-    @Test("The same half twice, or a half of the wrong size, makes no secret")
-    func combineRefusesBadHalves() throws {
-        let a = try PairingSecret.newHalf()
-        #expect(throws: PairingSecret.SecretError.identicalHalves) { try PairingSecret.combine(a, a) }
-        #expect(throws: PairingSecret.SecretError.malformed) { try PairingSecret.combine(a, Data(count: 31)) }
-    }
-
-    @Test("A confirmation verifies for the half it was made over and for no other")
-    func confirmationBindsTheSendersHalf() throws {
-        let mine = try PairingSecret.newHalf(), theirs = try PairingSecret.newHalf()
-        let secret = try PairingSecret.combine(mine, theirs)
-        let confirmation = PairingSecret.confirmation(secret: secret, ownHalf: theirs)
-        #expect(PairingSecret.isValidConfirmation(confirmation, secret: secret, peerHalf: theirs))
-        // Reflected back at its sender, over the wrong half: confirms nothing.
-        #expect(!PairingSecret.isValidConfirmation(confirmation, secret: secret, peerHalf: mine))
-        #expect(!PairingSecret.isValidConfirmation(confirmation, secret: self.secret(9), peerHalf: theirs))
-        #expect(!PairingSecret.isValidConfirmation(Data(count: 32), secret: secret, peerHalf: theirs))
-    }
-
     // MARK: Fields
-
-    @Test("A swap round-trips through JSON, and an unknown kind decodes to .unsupported")
-    func swapCodable() throws {
-        let swap = PairingSecretSwap(kind: .half, key: self.secret(3), confirmation: self.secret(4))
-        #expect(try JSONDecoder().decode(PairingSecretSwap.self, from: JSONEncoder().encode(swap)) == swap)
-        let future = #"{"kind":"rekey","key":"AA==","confirmation":"AA=="}"#
-        #expect(try JSONDecoder().decode(PairingSecretSwap.self, from: Data(future.utf8)).kind == .unsupported)
-    }
-
-    /// Foundation writes `/` in base64 as `\/`, so two random values differ in length by the slashes they happen to
-    /// hold. Real halves and filler are both random, so that spread is the same for both; with the escape off the
-    /// lengths are equal exactly.
-    @Test("Filler and a real swap encode to the same length")
-    func swapSizesMatch() throws {
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let real = PairingSecretSwap(kind: .half, key: try PairingSecret.newHalf(), confirmation: try PairingSecret.newHalf())
-        let filler = try PairingSecretSwap.filler()
-        #expect(filler.kind == .none)
-        #expect(try encoder.encode(real).count == encoder.encode(filler).count)
-    }
 
     @Test("A slot without the new fields still decodes, and a new slot carries them")
     func slotsDecodeBothWays() throws {
@@ -129,7 +75,7 @@ struct PairingSecretTests {
         #expect(try JSONDecoder().decode(OccultaBundle.Recipient.self, from: Data(old.utf8)).routingTag == nil)
         let payload = #"{"sessionKey":"AA=="}"#
         let decoded = try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: Data(payload.utf8))
-        #expect(decoded.pairingSwap == nil && decoded.slotProof == nil)
+        #expect(decoded.slotProof == nil)
 
         let tag = try PairingSecret.fillerTag()
         let slot = OccultaBundle.Recipient(
