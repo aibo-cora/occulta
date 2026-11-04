@@ -200,6 +200,34 @@ struct PairingRoutingTests {
         #expect(try cm.openGroup(bundle: try seal(from: self.sender, to: [(me, secret(3))])).ownerID == contact.identifier)
     }
 
+    // MARK: Depth
+
+    @Test("A contact hidden at the current depth routes and opens exactly as a visible one does (no depth oracle)", .ambientTestKeyManager)
+    func hiddenContactRoutesLikeAVisibleOne() throws {
+        let cm = try makeContactManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        let senderKey = try self.sender.retrieveIdentity()
+
+        let visible = try insertSender(publicKey: senderKey, state: .derived(secret: secret(1)), in: cm)
+        let hidden  = try insertSender(publicKey: senderKey, state: .derived(secret: secret(2)), in: cm)
+        hidden.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
+        try cm.modelContext.save()
+
+        // At depth 1 one is shown and the other is not.
+        #expect(visible.isVisible(atDepth: 1))
+        #expect(hidden.isVisible(atDepth: 1) == false)
+
+        // A file for either routes to its own record and opens, whatever the depth: a hidden contact's file is not refused
+        // (`Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). Only what is shown differs, later.
+        let forVisible = try seal(from: self.sender, to: [(me, secret(1))])
+        let forHidden  = try seal(from: self.sender, to: [(me, secret(2))])
+
+        #expect(try cm.identifyOwner(of: forVisible) == visible.identifier)
+        #expect(try cm.identifyOwner(of: forHidden) == hidden.identifier)
+        #expect(try cm.openGroup(bundle: forVisible).ownerID == visible.identifier)
+        #expect(try cm.openGroup(bundle: forHidden).ownerID == hidden.identifier)
+    }
+
     // MARK: The sender proof
 
     @Test("The sender proof moved into the slot: the shared one is random filler, the slot's verifies", .ambientTestKeyManager)

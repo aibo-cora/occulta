@@ -14930,7 +14930,10 @@ bound to the pairing, and the capability on phones before 2.1.0.
   updated in place (Bug 190, `Z_OPT`).
 - Deleting or soft-deleting a contact overwrites the column with the sealed empty state.
 - No keychain item. No `debugPrint` of a half, secret or label, even under `#if DEBUG`.
-- Routing computes labels only for contacts visible at the current depth, and does the same work at every depth.
+- Routing matches every non-deleted contact at every depth, as `identifyOwner` always has, and does the same work at
+  each. It must not be limited to contacts visible at the current depth: a known contact's file that routed at one depth
+  and failed at another is the duress-detection oracle of `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
+  What a depth changes is what is shown, later, in `buildOwnedBasket`. Pinned by `hiddenContactRoutesLikeAVisibleOne`.
 - **Open, needs a decision:** every write to the column is logged with row, column and time by SwiftData's history
   (Bug 190); migrated rows carry a higher `Z_OPT` than rows created after, which separates pairings made before this
   release from after; free pages and the write-ahead log may keep older ciphertext of the column (encrypted under the
@@ -15009,9 +15012,12 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
    Not closed by it: signatures checkable with `K` (the forward-secret slot signature, challenge responses, backup
    pieces sent to trustees).
 4. **Routing and depth.** `fetchAllContacts()` is not filtered by depth: `identifyOwner` matches every non-deleted
-   contact, and the visibility gate runs later, in `buildOwnedBasket`. The label match inherits that. Before building
-   it: read what happens between the match and the gate, and make sure no slot is opened and no prekey consumed for a
-   contact hidden at the current depth.
+   contact, and the visibility gate runs later, in `buildOwnedBasket`. The label match inherits that.
+   **Closed 2026-11-04: same as today, by design.** A slot is opened, and a prekey consumed, for a contact hidden at
+   the current depth, as for any other: not doing so would make a known contact's file succeed at one depth and fail
+   at another, the oracle of `Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, which says not to restore
+   that gate. The tag match scans every contact at every depth. The earlier line in "At rest" that said otherwise was
+   wrong and is corrected. `hiddenContactRoutesLikeAVisibleOne` pins it.
 5. **The version.** The tier is keyed to app version 2.0.1; `MARKETING_VERSION` is 2.0.0. The bump has to land
    before release or no phone is recorded at the tier.
 
