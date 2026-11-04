@@ -15049,8 +15049,13 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
 - **Cards.** Bootstrap slots keep the card-key fingerprint, and no secret is derived from `ss1` and `ss2` (step 6 of the Fix
   above). A card conversation uses card keys, not the identity key, so the bug doesn't arise there; what it leaves is a
   fingerprint a holder of the card file can compute. See the card SPEC §4.3.
-- **A mixed group.** One recipient without a secret keeps the real identity fingerprint and shared proof in the header for the
-  whole file, which any holder of the sender's public key can test.
+- **A mixed group: decided 2026-11-04, a transitional residual, accepted by the owner.** One recipient without a secret
+  keeps the real identity fingerprint and shared proof in the header for the whole file, which any holder of the sender's
+  public key can test. It stays because that recipient finds its sender by the header before it decrypts anything, and a
+  2.0.0 phone reads nothing else. Someone who holds `K` learns that at least one recipient lacks a secret, and nothing
+  more: they could already recognise the sender's files by that fingerprint before this fix, and without `K` the field
+  is indistinguishable from random either way. It closes as pairings settle: when every member has a secret the header
+  is random. Separate bundles per class would lose the shared ciphertext and show the split in file count and size.
 - **The inner challenge fingerprint** still binds to the identity key, as do the forward-secret slot signature, challenge
   responses and backup-piece signatures: anyone holding `K` can verify them.
 - **The version.** The tier is keyed to 2.0.1; `MARKETING_VERSION` is 2.0.1 (bumped 2026-11-04).
@@ -15070,8 +15075,7 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
 ### Tests
 
 Added 2026-11-03: every state seals to one length; no `Key` row is nil after any creation path or the migration;
-deletion and soft-deletion overwrite the column; the vault backup payload doesn't hold the secret; labels aren't
-computed for contacts hidden at the current depth; a new-form and an old-form slot encode to one length.
+deletion and soft-deletion overwrite the column; the vault backup payload doesn't hold the secret; a contact hidden at the current depth routes and opens like a visible one; a new-form and an old-form slot encode to one length.
 
 
 - Two contact records with one identity key and different secrets, standing in for two spaces: a file from each
