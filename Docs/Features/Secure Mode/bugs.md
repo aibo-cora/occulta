@@ -15009,13 +15009,20 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
    beside it, the cross-contact linkage in the audit below stays. Not for 2.0.1; for the owner. Needs a decision.
 3. **Where the identity key is visible (audit of 2026-11-03, one source reader, nothing run, commit `33a90a7f`).**
    `K` is the identity public key, `H` its SHA-256. Open, needs a decision, and unchanged by this fix:
-   - the pairing exchange sends `K` to every contact, so `K` is a stable pseudonym that two seized phones can match;
+   - the pairing exchange sends `K` to every contact, so `K` is a stable pseudonym. Matching two phones' copies needs
+     the plaintext of the key on both: the sealed `Key.material` rows (the local DB key, so the Enclave and an unlocked
+     device; a disk image alone shows ciphertext) or an unlocked app, whose screens show the hash. Two contacts can
+     also compare the hash they each see of the same person, which needs no seizure;
    - Settings shows `H` in full on every layer, the pairing confirmation shows 8 bytes of it, and a contact's detail
      shows the hash of their key;
    - `Key.owner` stores `H` (sealed) in every contact's key row.
    Closed by this fix: the cleartext header fingerprint SHA-256(`K` ‖ nonce) and the challenge routing fingerprint.
    Not closed by it: signatures checkable with `K` (the forward-secret slot signature, challenge responses, backup
    pieces sent to trustees).
+   **Decided 2026-11-04 (the owner): the hashes stay, and the rest waits on decision 2.** The displayed hash is the
+   in-person check of a key (after an identity rotation, say), and removing it from every depth would lose that to
+   close a link a key per pairing closes properly: the hash shown would then be that pairing's own. Revisit if
+   decision 2 is not taken, since then the hashes are the cheap way to raise the bar for a coercer at an unlocked app.
 4. **Routing and depth.** `fetchAllContacts()` is not filtered by depth: `identifyOwner` matches every non-deleted
    contact, and the visibility gate runs later, in `buildOwnedBasket`. The label match inherits that.
    **Closed 2026-11-04: same as today, by design.** A slot is opened, and a prekey consumed, for a contact hidden at
