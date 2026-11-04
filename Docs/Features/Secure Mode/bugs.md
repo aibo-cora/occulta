@@ -14934,10 +14934,19 @@ bound to the pairing, and the capability on phones before 2.1.0.
   each. It must not be limited to contacts visible at the current depth: a known contact's file that routed at one depth
   and failed at another is the duress-detection oracle of `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
   What a depth changes is what is shown, later, in `buildOwnedBasket`. Pinned by `hiddenContactRoutesLikeAVisibleOne`.
-- **Open, needs a decision:** every write to the column is logged with row, column and time by SwiftData's history
-  (Bug 190); migrated rows carry a higher `Z_OPT` than rows created after, which separates pairings made before this
-  release from after; free pages and the write-ahead log may keep older ciphertext of the column (encrypted under the
-  local DB key, like every sealed field).
+- **Open, needs a decision (Bug 190's, which lives on `v2.1.0/passphrase-independent-spaces`).** In the SwiftData store of
+  2.0.1 every write to the column is logged with row, column and time by SwiftData's history; migrated rows carry a higher
+  `Z_OPT` than rows created after, which separates pairings made before this release from after; free pages and the
+  write-ahead log may keep older ciphertext of the column (sealed under the local DB key, like every sealed field). The
+  column adds one more logged column and no new kind of trace: the migration writes it on every `Key` row in one
+  transaction, which dates the upgrade as any migration does; a swap step is a `Key`-row update with that column's bit
+  set, a few times per pairing; the writes are the same at every depth and no signal depends on the layer. Nothing
+  here is fixed in this entry, since a fix to the one column would leave the others logged. The 2.1.0 store is plain
+  SQLite with no history tables, no `Z_OPT` and no ordered `Z_PK` (decided 2026-11-01, not built), which removes
+  these; the SwiftData store keeps them until it is deleted, once every layer has migrated and been verified, and
+  images taken before the migration keep them. **The migration to that store must carry each `Key` row's sealed
+  pairing state as it is** (rollout item 30): a regenerated secret would leave every existing pairing without its
+  routing tag.
 
 **Version gating.** A new capability tier, wire byte `0x0B`, app 2.0.1+, never written as the wire `version`. Its doc
 carries the rule the tiers above it do: no build numbered 2.0.1 or later may ship without the receive and send paths.
