@@ -15016,14 +15016,21 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
    like a key change (`contactKeyRotated`, Bugs 82, 94, 195), and touches every use of the identity key. Group files
    would still need a tag per slot. The secret can be derived from a pairwise ECDH instead (a new derivation domain, so
    old and new pairings don't collide); the tags, the key binding, the slot proof, the swap and the state codec stay.
-   **Recorded 2026-11-04 (the owner): a candidate for the 2.1.0 design, only together with a decision on retiring `K`.**
-   With `K` kept and exchanged beside it, what the key adds over the secret is small: a hardware-bound long-term key
-   (the secret, read with the local DB key, lets files be recognised, not opened or forged, and that reader already has
-   the contacts and messages); signatures that verify only for the pair (they sit in sealed payloads, so only the
-   recipient sees them, and a trustee could show a shard attribute to a third party); and the inner challenge
-   fingerprint no longer binding to `K`. It does not remove the `K` pseudonym, the displayed hashes or the contact
-   books' copies of `K`, and it leaves depth behaviour as the secret has it. The gain is large only if `K` is retired,
-   which also ends the pseudonym and costs the "same phone re-paired" continuity check. Not for 2.0.1.
+   **Decided 2026-11-04 (the owner): build it for new exchanges, in 2.0.1, as a second PR stacked on this one.** A new
+   pairing gets its own key pair (an Enclave blob in the sealed `Key` row), exchanged through one optional `Exchange`
+   field whose presence is the capability, as `prekeyBatch`'s is. `K` is still exchanged beside it and keeps the in-person
+   hash check and the "same phone re-paired" continuity check; the hashes stay. Existing pairings keep `K` and the secret
+   and its swap: no rollover, no in-band vouching of one key by another, and no warning asking users to re-exchange
+   (dropped: with `K` kept the gain over the secret is small, so a nudge isn't worth it). The secret of a new pairing
+   derives from the pairwise ECDH under a new domain, so old and new pairings never collide; tags, binding, proof, swap
+   and the state codec stay. It reopens rollout decision 15b. Reason to do it now: every pairing made before it ships
+   would otherwise be born on the secret alone. What it adds over the secret, with `K` kept, is small: a hardware-bound
+   long-term key (the secret, read with the local DB key, lets files be recognised, not opened or forged, and that
+   reader already has the contacts and messages); signatures that verify only for the pair (they sit in sealed payloads,
+   so only the recipient sees them, and a trustee could show a shard attribute to a third party); and the inner
+   challenge fingerprint no longer binding to `K`. It does not remove the `K` pseudonym, the displayed hashes or the
+   contact books' copies of `K`, and it leaves depth behaviour as the secret has it. The plan is being written
+   (session `pairwise-key-plan`); nothing is built.
 3. **Where the identity key is visible (audit of 2026-11-03, one source reader, nothing run, commit `33a90a7f`).**
    `K` is the identity public key, `H` its SHA-256. Open, needs a decision, and unchanged by this fix:
    - the pairing exchange sends `K` to every contact, so `K` is a stable pseudonym. Matching two phones' copies needs
