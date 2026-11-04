@@ -1,8 +1,8 @@
 //
-//  PairingSecretCodec.swift
+//  PairingCodec.swift
 //  Occulta
 //
-//  Turns a `PairingSecretState` into the plaintext sealed into `Contact.Profile.Key.pairingSecretEncrypted`, and back.
+//  Turns a `PairingState` into the plaintext sealed into `Contact.Profile.Key.pairingEncrypted`, and back.
 //
 //  The plaintext is always exactly `capacity` bytes, in every state, so its sealed length says nothing about whether
 //  a pairing has a secret (`bugs.md` Bug 196):
@@ -18,7 +18,7 @@
 import Foundation
 
 nonisolated
-struct PairingSecretCodec {
+struct PairingCodec {
 
     static let capacity      = 128
     static let formatVersion: UInt8 = 0x01
@@ -32,7 +32,7 @@ struct PairingSecretCodec {
         case wrongSize
     }
 
-    func encode(_ state: PairingSecretState) throws -> Data {
+    func encode(_ state: PairingState) throws -> Data {
         var plaintext = Data(count: Self.capacity)
         plaintext[0] = Self.formatVersion
         if let secret = state.secret {
@@ -43,7 +43,7 @@ struct PairingSecretCodec {
         return plaintext
     }
 
-    func decode(_ plaintext: Data) throws -> PairingSecretState {
+    func decode(_ plaintext: Data) throws -> PairingState {
         guard plaintext.count == Self.capacity, plaintext.first == Self.formatVersion else { throw CodecError.malformed }
 
         let bytes = [UInt8](plaintext)

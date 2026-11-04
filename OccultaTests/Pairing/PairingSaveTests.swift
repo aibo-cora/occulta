@@ -65,15 +65,15 @@ private func contact(in cm: ContactManager) throws -> Contact.Profile {
 
 private func draftKey(secret: Data?, date: String = "1") throws -> Contact.Draft.Key {
     try #require(Contact.Draft.Key(
-        material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: date, pairingSecret: secret
+        material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: date, routingKey: secret
     ))
 }
 
 // MARK: - The secret both phones derive
 
 @MainActor
-@Suite("Bug 196 — the pairing secret both phones derive")
-struct PairingSecretDerivationTests {
+@Suite("Bug 196 — the routing key both phones derive")
+struct RoutingKeyDerivationTests {
 
     private let alice = TestKeyManager()
     private let bob   = TestKeyManager()
@@ -89,9 +89,9 @@ struct PairingSecretDerivationTests {
 
     @Test("Both phones derive the same classical secret, whichever nonce each calls its own")
     func classicalAgrees() throws {
-        let a = try #require(self.alice.createPairingSecret(
+        let a = try #require(self.alice.createRoutingKey(
             peerP256Material: try self.bob.retrieveIdentity(), quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2)))
-        let b = try #require(self.bob.createPairingSecret(
+        let b = try #require(self.bob.createRoutingKey(
             peerP256Material: try self.alice.retrieveIdentity(), quantumMaterial: nil, ourNonce: nonce(2), peerNonce: nonce(1)))
         #expect(a == b)
         #expect(a.count == 32)
@@ -100,9 +100,9 @@ struct PairingSecretDerivationTests {
     @Test("Both phones derive the same hybrid secret")
     func hybridAgrees() throws {
         let q = self.quantum()
-        let a = try #require(self.alice.createPairingSecret(
+        let a = try #require(self.alice.createRoutingKey(
             peerP256Material: try self.bob.retrieveIdentity(), quantumMaterial: q.alice, ourNonce: nonce(1), peerNonce: nonce(2)))
-        let b = try #require(self.bob.createPairingSecret(
+        let b = try #require(self.bob.createRoutingKey(
             peerP256Material: try self.alice.retrieveIdentity(), quantumMaterial: q.bob, ourNonce: nonce(2), peerNonce: nonce(1)))
         #expect(a == b)
     }
@@ -110,16 +110,16 @@ struct PairingSecretDerivationTests {
     @Test("Two pairings of the same two identities differ, which is the point")
     func differsPerPairing() throws {
         let bobKey = try self.bob.retrieveIdentity()
-        let first = self.alice.createPairingSecret(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
-        let second = self.alice.createPairingSecret(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(3))
+        let first = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
+        let second = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(3))
         #expect(first != nil && second != nil && first != second)
     }
 
     @Test("ML-KEM secrets change the secret")
     func quantumChangesIt() throws {
         let bobKey = try self.bob.retrieveIdentity()
-        let classical = self.alice.createPairingSecret(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
-        let hybrid = self.alice.createPairingSecret(peerP256Material: bobKey, quantumMaterial: self.quantum().alice, ourNonce: nonce(1), peerNonce: nonce(2))
+        let classical = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
+        let hybrid = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: self.quantum().alice, ourNonce: nonce(1), peerNonce: nonce(2))
         #expect(classical != hybrid)
     }
 
@@ -127,7 +127,7 @@ struct PairingSecretDerivationTests {
     func notTheDicewareKey() throws {
         let bobKey = try self.bob.retrieveIdentity()
         let q = self.quantum().alice
-        let secret = try #require(self.alice.createPairingSecret(
+        let secret = try #require(self.alice.createRoutingKey(
             peerP256Material: bobKey, quantumMaterial: q, ourNonce: nonce(1), peerNonce: nonce(2)))
         let words = try #require(self.alice.createDicewareKey(
             peerP256Material: bobKey, quantumMaterial: q, ourNonce: nonce(1), peerNonce: nonce(2)))
@@ -137,15 +137,15 @@ struct PairingSecretDerivationTests {
     @Test("A bad nonce, an equal pair of nonces, or a bad peer key derives nothing")
     func refusesBadInput() throws {
         let bobKey = try self.bob.retrieveIdentity()
-        #expect(self.alice.createPairingSecret(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(1)) == nil)
-        #expect(self.alice.createPairingSecret(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: Data(count: 15), peerNonce: nonce(2)) == nil)
-        #expect(self.alice.createPairingSecret(peerP256Material: Data(count: 64), quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2)) == nil)
+        #expect(self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(1)) == nil)
+        #expect(self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: Data(count: 15), peerNonce: nonce(2)) == nil)
+        #expect(self.alice.createRoutingKey(peerP256Material: Data(count: 64), quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2)) == nil)
     }
 
     @Test("The offer derives through the key manager with its own nonces")
     func offerDerives() throws {
         let bobKey = try self.bob.retrieveIdentity()
-        let direct = self.alice.createPairingSecret(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
+        let direct = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
         #expect(offer().secret(withPeer: bobKey, quantum: nil, using: self.alice) == direct)
     }
 }
@@ -251,10 +251,10 @@ struct PairingSaveTests {
         #expect(record.inboundBatches[0].keys.map(\.publicKey) == theirs.prekeys.map(\.publicKey))
         #expect(record.inboundLastResort?.publicKey == theirs.lastResort?.publicKey)
 
-        let state = cm.pairingSecretState(for: paired)
+        let state = cm.pairingState(for: paired)
         #expect(state == .derived(secret: Data(repeating: 0x77, count: 32)))
 
-        #expect(ContactManager.resolveTargetVersion(for: paired, using: Manager.Crypto()) == .pairingSecretCapable)
+        #expect(ContactManager.resolveTargetVersion(for: paired, using: Manager.Crypto()) == .pairingCapable)
     }
 
     @Test("The first message to the new contact is forward-secret, not long-term", .ambientTestKeyManager)
@@ -277,7 +277,7 @@ struct PairingSaveTests {
         let record = try cm.prekeyRecord(for: paired)
         #expect(record.ownBatches.count == 1 && record.ownBatches[0].isPending)
         #expect(record.inboundBatches.isEmpty && record.inboundLastResort == nil)
-        #expect(cm.pairingSecretState(for: paired).secret != nil)
+        #expect(cm.pairingState(for: paired).secret != nil)
     }
 
     @Test("A re-pair replaces what the old phone gave us and retires our old batches", .ambientTestKeyManager)
@@ -300,7 +300,7 @@ struct PairingSaveTests {
         #expect(record.ownBatches[1].isPending && record.ownBatches[1].retiredAt == nil)
         // Each pairing's secret is on its own key row. Not read through `.last`: a to-many relationship has no order of
         // its own, and which row is the current key is not what this test is about.
-        let secrets = Set((paired.contactPublicKeys ?? []).compactMap { cm.pairingSecretState(of: $0).secret })
+        let secrets = Set((paired.contactPublicKeys ?? []).compactMap { cm.pairingState(of: $0).secret })
         #expect(secrets == [Data(repeating: 0x01, count: 32), Data(repeating: 0x02, count: 32)])
     }
 
@@ -315,6 +315,6 @@ struct PairingSaveTests {
 
         #expect(try cm.prekeyRecord(for: paired) == before)
         #expect(paired.maxBundleVersion == tier)
-        #expect(cm.pairingSecretState(for: paired) == .empty)
+        #expect(cm.pairingState(for: paired) == .empty)
     }
 }

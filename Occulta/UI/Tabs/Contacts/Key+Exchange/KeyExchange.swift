@@ -306,14 +306,14 @@ struct KeyExchange: View {
                     )
                 }
 
-                // Both phones sent a prekey batch, so both can hold a pairing secret and derive the same one (Bug 196).
+                // Both phones sent a prekey batch, so both can hold a routing key and derive the same one (Bug 196).
                 let secret = self.payload.pairing.flatMap {
                     $0.secret(withPeer: self.payload.classicalKey, quantum: quantum, using: self.keyManager)
                 }
 
                 guard let key = Contact.Draft.Key(
                     material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum,
-                    pairingSecret: secret
+                    routingKey: secret
                 ) else {
                     throw SaveError.invalidKeyMaterial
                 }

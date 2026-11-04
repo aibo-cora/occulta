@@ -1,8 +1,8 @@
 //
-//  PairingSecret.swift
+//  RoutingKey.swift
 //  Occulta
 //
-//  A 32-byte secret per pairing: each slot's routing routing tag, mixed into the slot's key, and the key to the
+//  A 32-byte secret per pairing: each slot's routing tag, mixed into the slot's key, and the key to the
 //  slot's sender proof (`bugs.md` Bug 196). Held only in the contact's sealed record; the functions here are
 //  the wire half, pinned by the interop vectors.
 //
@@ -10,8 +10,8 @@
 import Foundation
 import CryptoKit
 
-/// The wire constants and pure functions of a pairing secret.
-public enum PairingSecret {
+/// The wire constants and pure functions of a routing key.
+public enum RoutingKey {
 
     public static let size = 32
 
@@ -62,7 +62,7 @@ public enum PairingSecret {
     // MARK: - Sender proof
 
     /// HMAC(secret, "occulta-pairing-proof-v1" ‖ routing tag ‖ senderPublicKey). Sits in the slot, so it covers the
-    /// slot's routing tag: a routing tag swapped in the clear no longer verifies. Keyed by the pairing secret, not the
+    /// slot's routing tag: a routing tag swapped in the clear no longer verifies. Keyed by the routing key, not the
     /// session key, which every member of a group holds.
     public static func slotProof(secret: Data, routingTag: Data, senderPublicKey: Data) -> Data {
         Self.mac(secret, domain: Self.proofDomain, routingTag + senderPublicKey)

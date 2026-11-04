@@ -197,7 +197,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let challengeSlot: ChallengeSlotInput?
 
     // pairingRoutingTag, pairingSlotProof, pairingBind, pairingCombine, pairingConfirmation, pairingDerive,
-    // pairingSecretField, recipientPayload
+    // pairingField, recipientPayload
     let pairing: PairingInput?
 
     /// A secret per pairing (`bugs.md` Bug 196). Every field is hex; each kind reads its own subset.
@@ -536,15 +536,15 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
 
         case "pairingRoutingTag":
             let input = try #require(self.pairing)
-            return PairingSecret.routingTag(secret: try Self.bytes(input.secret), nonce: try Self.bytes(input.nonce))
+            return RoutingKey.routingTag(secret: try Self.bytes(input.secret), nonce: try Self.bytes(input.nonce))
 
         case "pairingSlotProof":
             let input = try #require(self.pairing)
-            let proof = PairingSecret.slotProof(
+            let proof = RoutingKey.slotProof(
                 secret: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
                 senderPublicKey: try Self.bytes(input.senderPublicKey)
             )
-            #expect(PairingSecret.isValidSlotProof(
+            #expect(RoutingKey.isValidSlotProof(
                 proof, secret: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
                 senderPublicKey: try Self.bytes(input.senderPublicKey)
             ), "\(self.name): production verification rejected the proof")
@@ -552,7 +552,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
 
         case "pairingBind":
             let input = try #require(self.pairing)
-            return PairingSecret.bind(SymmetricKey(data: try Self.bytes(input.key)), secret: try Self.bytes(input.secret))
+            return RoutingKey.bind(SymmetricKey(data: try Self.bytes(input.key)), secret: try Self.bytes(input.secret))
                 .withUnsafeBytes { Data($0) }
 
         case "pairingDerive":
@@ -561,17 +561,17 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             let ecdh = try Self.bytes(input.rawECDH), salt = try Self.bytes(input.salt)
             let ours = try Self.bytes(input.ourNonce), theirs = try Self.bytes(input.peerNonce)
             let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
-            let derived = try #require(PairingSecret.derive(rawECDH: ecdh, salt: salt, mlkemSecrets: secrets, ourNonce: ours, peerNonce: theirs))
-            let otherSide = PairingSecret.derive(rawECDH: ecdh, salt: salt, mlkemSecrets: secrets.map { ($0.1, $0.0) }, ourNonce: theirs, peerNonce: ours)
+            let derived = try #require(RoutingKey.derive(rawECDH: ecdh, salt: salt, mlkemSecrets: secrets, ourNonce: ours, peerNonce: theirs))
+            let otherSide = RoutingKey.derive(rawECDH: ecdh, salt: salt, mlkemSecrets: secrets.map { ($0.1, $0.0) }, ourNonce: theirs, peerNonce: ours)
             #expect(derived == otherSide, "\(self.name): the two sides disagree")
             return derived
 
-        case "pairingSecretField":
+        case "pairingField":
             let input = try #require(self.pairing)
-            let state = try input.secret.map { PairingSecretState.derived(secret: try Self.bytes($0)) } ?? .empty
-            let plaintext = try PairingSecretCodec().encode(state)
-            #expect(plaintext.count == PairingSecretCodec.capacity, "\(self.name): the field is 128 bytes")
-            #expect(try PairingSecretCodec().decode(plaintext) == state, "\(self.name): production decode disagrees")
+            let state = try input.secret.map { PairingState.derived(secret: try Self.bytes($0)) } ?? .empty
+            let plaintext = try PairingCodec().encode(state)
+            #expect(plaintext.count == PairingCodec.capacity, "\(self.name): the field is 128 bytes")
+            #expect(try PairingCodec().decode(plaintext) == state, "\(self.name): production decode disagrees")
             return plaintext
 
         case "depth":

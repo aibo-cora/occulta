@@ -2,9 +2,9 @@
 //  PairingOffer.swift
 //  Occulta
 //
-//  What a key exchange hands to `save()` for the pairing secret and the first prekeys (`bugs.md` Bug 196): our batch
+//  What a key exchange hands to `save()` for the routing key and the first prekeys (`bugs.md` Bug 196): our batch
 //  as a scratch prekey record, the batch the peer sent, and the nonces both sides committed to. Present only when
-//  both phones sent a batch, which is also the signal that both can hold a pairing secret: a 2.0.0 phone sends none.
+//  both phones sent a batch, which is also the signal that both can hold a routing key: a 2.0.0 phone sends none.
 //
 
 import Foundation
@@ -44,7 +44,7 @@ struct PairingOffer: Equatable {
     /// exchange had them. Both phones get the same bytes. `nil` if the key manager couldn't derive it, in which case the
     /// pairing is made as it was before this fix.
     func secret(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
-        keyManager.createPairingSecret(
+        keyManager.createRoutingKey(
             peerP256Material: peerIdentity, quantumMaterial: quantum, ourNonce: self.ourNonce, peerNonce: self.peerNonce
         )
     }

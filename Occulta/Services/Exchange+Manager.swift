@@ -77,13 +77,13 @@ class ExchangeManager: NSObject {
     /// Our ML-KEM encapsulation key, included in the identity message.
     var encapsulationKeyData: Data?
 
-    // MARK: - Pairing secret and first prekeys (`bugs.md` Bug 196)
+    // MARK: - Routing key and first prekeys (`bugs.md` Bug 196)
 
     /// Our first prekeys: a scratch record with one pending batch, made when the peer connects and held in memory
     /// until `save()`. Nil if the Enclave couldn't make them, in which case no batch is sent and the pairing goes the
     /// way it did before.
     private var ownPrekeys: PrekeyRecord?
-    /// The batch the peer sent in its identity message. Nil from a phone that can't hold a pairing secret.
+    /// The batch the peer sent in its identity message. Nil from a phone that can't hold a routing key.
     private var peerBatch: PairingOffer.Batch?
 
     // MARK: - Card meeting check (SPEC §7)
@@ -152,7 +152,7 @@ class ExchangeManager: NSObject {
             let fingerprint: Data
             let classicalKey: Data
             let hybridResult: HybridExchangeResult?
-            /// Set when both phones sent a prekey batch: the pairing secret and first prekeys follow from it.
+            /// Set when both phones sent a prekey batch: the routing key and first prekeys follow from it.
             var pairing: PairingOffer? = nil
         }
     }
@@ -378,7 +378,7 @@ class ExchangeManager: NSObject {
     // MARK: - Final assembly
 
     /// The pairing offer for a payload built now: only when both phones sent a batch and both nonces are known.
-    /// Anything missing means the peer can't hold a pairing secret, and the pairing is made without one.
+    /// Anything missing means the peer can't hold a routing key, and the pairing is made without one.
     private func pairingOffer() -> PairingOffer? {
         guard let ourNonce, let peerNonce, let ownPrekeys, let peerBatch else { return nil }
         return PairingOffer(ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys, peerBatch: peerBatch)

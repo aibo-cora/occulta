@@ -546,7 +546,7 @@ extension KeyReseal {
                 try row.data("Key.owner", \.owner)
                 try row.data("Key.expiredOn", \.expiredOn)
                 try row.data("Key.quantumKeyMaterialEncrypted", \.quantumKeyMaterialEncrypted)
-                try row.data("Key.pairingSecretEncrypted", \.pairingSecretEncrypted)
+                try row.data("Key.pairingEncrypted", \.pairingEncrypted)
             }
         }
 

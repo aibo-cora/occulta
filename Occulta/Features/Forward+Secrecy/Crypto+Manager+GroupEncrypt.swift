@@ -53,10 +53,10 @@ struct GroupRecipient {
     /// and the slot is built by `wrapCardRecipient`. Nil for every other recipient.
     let card: CardSlot?
 
-    /// The pairing secret to seal this slot with (`bugs.md` Bug 196): non-nil only when we hold it, the recipient is known
-    /// to hold it too, and they are at the pairing-secret tier. The slot then carries its routing routing tag, the secret is
+    /// The routing key to seal this slot with (`bugs.md` Bug 196): non-nil only when we hold it, the recipient is known
+    /// to hold it too, and they are at the pairing tier. The slot then carries its routing tag, the secret is
     /// mixed into its key, and its sender proof is keyed by it. Resolved by the caller, like every other field here.
-    let pairingSecret: Data?
+    let routingKey: Data?
 
     init(
         publicKey: Data,
@@ -67,7 +67,7 @@ struct GroupRecipient {
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false,
         card: CardSlot? = nil,
-        pairingSecret: Data? = nil
+        routingKey: Data? = nil
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
@@ -77,7 +77,7 @@ struct GroupRecipient {
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
         self.card                    = card
-        self.pairingSecret           = pairingSecret
+        self.routingKey           = routingKey
     }
 }
 
@@ -255,13 +255,13 @@ extension Manager.Crypto {
 
         let senderPub = try senderIdentity ?? self.keyManager.retrieveIdentity()
 
-        // When every recipient is on the pairing-secret form, the file names its sender to nobody who lacks that
+        // When every recipient is on the pairing form, the file names its sender to nobody who lacks that
         // recipient's secret: the header's fingerprint and the shared proof are random bytes of the same size, since an
         // identity fingerprint would let anyone holding the sender's public key test the file, and a shared proof is one
         // any recipient could make for another sender (Bug 196). One recipient on the old form needs both as before.
-        let allOnSecret = recipients.allSatisfy { $0.pairingSecret != nil }
+        let allOnSecret = recipients.allSatisfy { $0.routingKey != nil }
         let senderProof = allOnSecret
-            ? try PairingSecret.fillerTag()
+            ? try RoutingKey.fillerTag()
             : Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
 
         // Per-bundle group blind: HMAC(key: groupID.rawBytes, msg: blindNonce).
@@ -294,7 +294,7 @@ extension Manager.Crypto {
             sessionKey: sessionKey, senderPublicKey: senderPub, blindNonce: blindNonce, blind: blind,
             payload: authenticatedPayload, outerSecrecy: outerSecrecy, outerNonce: outerNonce,
             senderFingerprint: allOnSecret
-                ? try PairingSecret.fillerTag()
+                ? try RoutingKey.fillerTag()
                 : OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
         )
     }
@@ -332,21 +332,21 @@ extension Manager.Crypto {
             quantumMaterial: r.quantumMaterial
         )
 
-        // The pairing secret, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
+        // The routing key, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
         // pairing that sealed it; its routing tag routes it; its proof, keyed by the secret, covers the routing tag and our key.
         // A slot with none carries random bytes of the same sizes, so the fields' presence says nothing, in a group
         // that mixes both.
         let wrappingKey: SymmetricKey
         let routingTag: Data
         let slotProof: Data
-        if let secret = r.pairingSecret {
-            wrappingKey = PairingSecret.bind(derivedKey, secret: secret)
-            routingTag = PairingSecret.routingTag(secret: secret, nonce: tagNonce)
-            slotProof = PairingSecret.slotProof(secret: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)
+        if let secret = r.routingKey {
+            wrappingKey = RoutingKey.bind(derivedKey, secret: secret)
+            routingTag = RoutingKey.routingTag(secret: secret, nonce: tagNonce)
+            slotProof = RoutingKey.slotProof(secret: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)
         } else {
             wrappingKey = derivedKey
-            routingTag = try PairingSecret.fillerTag()
-            slotProof = try PairingSecret.fillerTag()
+            routingTag = try RoutingKey.fillerTag()
+            slotProof = try RoutingKey.fillerTag()
         }
 
         // FS mode's session key is ECDH(senderEphemeral, recipientPrekey) — it never

@@ -214,7 +214,7 @@ struct PrefixedSignatureTierTests {
     /// Asserting the round trip catches it for every tier at once, including the next one.
     @Test func everyTierRoundTripsThroughItsMarkerByte() {
         let tiers: [OccultaBundle.Version] = [
-            .pairingSecretCapable, .streamedBodyCapable, .bodyDigestCapable, .prefixedSenderSignatureCapable,
+            .pairingCapable, .streamedBodyCapable, .bodyDigestCapable, .prefixedSenderSignatureCapable,
             .senderSignatureCapable, .groupShardCapable, .groupCapable, .v4
         ]
         for tier in tiers {

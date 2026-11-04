@@ -535,8 +535,8 @@ class ContactManager {
         try self.store(CardState.empty, for: contact)
         // And the challenge state, every depth's slot: a pending challenge to a deleted contact goes with them.
         try self.store(ChallengeState.empty, for: contact)
-        // The pairing secret of every key the contact held: the sealed empty state, the same size (Bug 196).
-        for key in contact.contactPublicKeys ?? [] { try self.store(PairingSecretState.empty, in: key) }
+        // The routing key of every key the contact held: the sealed empty state, the same size (Bug 196).
+        for key in contact.contactPublicKeys ?? [] { try self.store(PairingState.empty, in: key) }
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
@@ -603,8 +603,8 @@ extension ContactManager {
     ///   - identifier: Identifier of the owner.
     ///   - method: Acquisition method. Nearby Interaction - secure, or something else.
     ///   - pairing: What the exchange handed over when both phones sent a prekey batch (`bugs.md` Bug 196): our first batch
-    ///     and the peer's, installed with the key in this save, and the peer recorded at the pairing-secret tier, which a
-    ///     phone that sent a batch is. `nil` for a peer that can't hold a pairing secret, and the record is left as it was.
+    ///     and the peer's, installed with the key in this save, and the peer recorded at the pairing tier, which a
+    ///     phone that sent a batch is. `nil` for a peer that can't hold a routing key, and the record is left as it was.
     func update(key: Contact.Draft.Key, for identifier: String, pairing: PairingOffer? = nil) throws {
         guard
             let contact = try self.fetchContact(by: identifier),
@@ -640,12 +640,12 @@ extension ContactManager {
 
         // The secret goes in as the row is inserted, not in a second save, which would mark the row updated in place.
         // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.
-        let pairingState = key.pairingSecret.map(PairingSecretState.derived(secret:)) ?? PairingSecretState.empty
-        let sealedPairingSecret = try self.sealedPairingSecret(pairingState)
+        let pairingState = key.routingKey.map(PairingState.derived(secret:)) ?? PairingState.empty
+        let sealedPairing = try self.sealedPairing(pairingState)
 
         contact.contactPublicKeys?.append(Contact.Profile.Key(
             material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,
-            quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial, pairingSecretEncrypted: sealedPairingSecret
+            quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial, pairingEncrypted: sealedPairing
         ))
         
         #if DEBUG
@@ -1272,7 +1272,7 @@ extension ContactManager {
                 contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                 pendingBatch:    outboundBatch,
                 prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                pairingSecret:   self.pairingSecretForSending(to: contact, tier: targetVersion)
+                routingKey:   self.routingKeyForSending(to: contact, tier: targetVersion)
             )]
             let sent: SentBundle
             if let streamedFiles {
@@ -1333,8 +1333,8 @@ private struct PendingGroupRecipient {
     /// Whether this member's build verifies the domain-separated ephemeral signature.
     /// Resolved per member, since a group's members can be on different builds.
     let prefixesEphemeralSignature: Bool
-    /// The pairing secret to seal this member's slot with, or nil (`bugs.md` Bug 196).
-    let pairingSecret: Data?
+    /// The routing key to seal this member's slot with, or nil (`bugs.md` Bug 196).
+    let routingKey: Data?
 }
 
 extension ContactManager {
@@ -1477,7 +1477,7 @@ extension ContactManager {
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
                 prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                pairingSecret:          self.pairingSecretForSending(to: contact, tier: memberVersion)
+                routingKey:          self.routingKeyForSending(to: contact, tier: memberVersion)
             )
         }
 
@@ -1494,7 +1494,7 @@ extension ContactManager {
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
                 prefixesEphemeralSignature: p.prefixesEphemeralSignature,
-                pairingSecret:          p.pairingSecret
+                routingKey:          p.routingKey
             )
         }
 
@@ -2126,7 +2126,7 @@ extension ContactManager {
         let recipientMode: OccultaBundle.Mode
         let slotEphemeralKey: Data
         var cardOpening: CardSlotOpening?
-        /// The routing tag that routed us to the slot, for a file of the pairing-secret form (Bug 196).
+        /// The routing tag that routed us to the slot, for a file of the pairing form (Bug 196).
         var slotRoutingTag: Data?
 
         // ── 3. Find our slot (by the pairing routing tag, or trial decryption) and open it ─────
@@ -2249,11 +2249,11 @@ extension ContactManager {
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
-        if let slotRoutingTag, let secret = self.pairingSecretState(for: sender).secret {
-            // The pairing-secret form: the proof is in the slot, keyed by the secret, and covers the slot's routing tag.
+        if let slotRoutingTag, let secret = self.pairingState(for: sender).secret {
+            // The pairing form: the proof is in the slot, keyed by the secret, and covers the slot's routing tag.
             // `SealedPayload.senderProof` is random filler here and is not read.
             guard let slotProof = recipientPayload.slotProof,
-                  PairingSecret.isValidSlotProof(slotProof, secret: secret, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
+                  RoutingKey.isValidSlotProof(slotProof, secret: secret, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
             else { throw GroupDecryptError.senderProofMismatch }
         } else {
             guard let proof = decoded.senderProof,

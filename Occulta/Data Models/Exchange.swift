@@ -28,7 +28,7 @@ struct Exchange: Codable {
     /// discovery message, whose empty token fails to unarchive, so the message is dropped harmlessly.
     let cardProof: Data?
     /// Our first prekeys, in the identity message: 15 one-time keys and a last-resort key (`bugs.md` Bug 196). Its
-    /// presence is the signal that this phone can hold a pairing secret, so a phone that sends none is treated as one
+    /// presence is the signal that this phone can hold a routing key, so a phone that sends none is treated as one
     /// that can't. An older build's decoder ignores the key. `nil` in every other message.
     let prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
 

@@ -137,7 +137,7 @@ extension Manager.Crypto {
 
     /// What a pairing contributes to finding our slot (`bugs.md` Bug 196).
     struct PairingSlotContext {
-        /// The sender's pairing secret, held in our record for them.
+        /// The sender's routing key, held in our record for them.
         let secret: Data
         /// Whether a slot with no routing tag of this pairing may still be tried as an old-form slot. False for a pairing that
         /// began with a secret: an old-form file there is another pairing's.
@@ -150,14 +150,14 @@ extension Manager.Crypto {
         let used: InboundPrekeyUse
         let mode: OccultaBundle.Mode
         let ephemeralPublicKey: Data
-        /// The routing tag that routed us to the slot, when it was found by the pairing secret and not by trial. The sender
+        /// The routing tag that routed us to the slot, when it was found by the routing key and not by trial. The sender
         /// proof inside the slot is checked against it.
         let matchedRoutingTag: Data?
     }
 
-    /// `openRecipientSlot` with the sender's pairing secret, if the record holds one.
+    /// `openRecipientSlot` with the sender's routing key, if the record holds one.
     ///
-    /// With a secret, our slot is the one whose routing tag is `PairingSecret.routingTag(secret, bundle.fingerprintNonce)`: one
+    /// With a secret, our slot is the one whose routing tag is `RoutingKey.routingTag(secret, bundle.fingerprintNonce)`: one
     /// comparison per slot in place of a trial decryption, and no other slot is opened, so a group member's slot is
     /// never tried with our key. Its key has the secret mixed in. No slot with that routing tag means the file isn't of this
     /// pairing's new form: it is tried as an old-form slot only if `acceptsOldForm`, else it is not ours.
@@ -196,7 +196,7 @@ extension Manager.Crypto {
         }
 
         // The slot this pairing's secret names, if any (Bug 196).
-        let expectedRoutingTag = pairing.map { PairingSecret.routingTag(secret: $0.secret, nonce: bundle.fingerprintNonce) }
+        let expectedRoutingTag = pairing.map { RoutingKey.routingTag(secret: $0.secret, nonce: bundle.fingerprintNonce) }
         let tagged = expectedRoutingTag.map { tag in recipients.contains { $0.routingTag == tag } } ?? false
         if let pairing, !tagged, !pairing.acceptsOldForm { throw GroupDecryptError.recipientSlotNotFound }
 
@@ -210,7 +210,7 @@ extension Manager.Crypto {
                 quantumMaterial: quantumMaterial,
                 prekeys: prekeys
             ) else { continue }
-            let wrappingKey = tagged ? pairing.map { PairingSecret.bind(derivedKey, secret: $0.secret) } ?? derivedKey : derivedKey
+            let wrappingKey = tagged ? pairing.map { RoutingKey.bind(derivedKey, secret: $0.secret) } ?? derivedKey : derivedKey
             
             guard let box   = try? AES.GCM.SealedBox(combined: entry.wrappedPayload),
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),

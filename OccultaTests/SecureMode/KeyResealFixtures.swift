@@ -631,7 +631,7 @@ final class LegacyStore {
         self.data(key, "Key.owner", \.owner)
         self.data(key, "Key.expiredOn", \.expiredOn)
         self.data(key, "Key.quantumKeyMaterialEncrypted", \.quantumKeyMaterialEncrypted)
-        self.data(key, "Key.pairingSecretEncrypted", \.pairingSecretEncrypted, plaintext: Sealing.random(PairingSecretCodec.capacity))
+        self.data(key, "Key.pairingEncrypted", \.pairingEncrypted, plaintext: Sealing.random(PairingCodec.capacity))
 
         // A soft-deleted contact: the one place `Profile.deletionToken` is set. Its stamps are left nil, so the scrub
         // pass that owns soft-deleted rows has nothing to rewrite.

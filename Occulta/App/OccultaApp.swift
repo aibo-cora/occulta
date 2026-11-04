@@ -967,7 +967,7 @@ struct RootView: View {
         try? DatabaseMigration.migratePrekeyRecords(modelContext: self.contactManager.modelContext)
         try? DatabaseMigration.migrateCardFields(modelContext: self.contactManager.modelContext)
         try? DatabaseMigration.migrateChallengeFields(modelContext: self.contactManager.modelContext)
-        try? DatabaseMigration.migratePairingSecretFields(modelContext: self.contactManager.modelContext)
+        try? DatabaseMigration.migratePairingFields(modelContext: self.contactManager.modelContext)
         try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
         // Introduction cards (SPEC §6.4): every contact at every depth, unlike the prekey sweep above.
         try? self.contactManager.sweepCards()

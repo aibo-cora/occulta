@@ -1,5 +1,5 @@
 //
-//  PairingSecretStateTests.swift
+//  PairingStateTests.swift
 //  OccultaTests
 //
 //  Bug 196, stage 2: the state a pairing holds on its secret, its fixed-size codec, the sealed column on the peer's
@@ -42,7 +42,7 @@ private func pairedContact(
     let contact = try #require(try cm.fetchAllContacts().first)
     let draft = try #require(Contact.Draft.Key(
         material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65),
-        date: "1", pairingSecret: secret
+        date: "1", routingKey: secret
     ))
     try cm.update(key: draft, for: contact.identifier)
     return (contact, try #require(contact.contactPublicKeys?.last))
@@ -50,59 +50,59 @@ private func pairedContact(
 
 private func half(_ byte: UInt8) -> Data { Data(repeating: byte, count: 32) }
 
-private let everyState: [(name: String, state: PairingSecretState)] = [
+private let everyState: [(name: String, state: PairingState)] = [
     ("none", .empty),
     ("derived", .derived(secret: half(0x44))),
 ]
 
 // MARK: - The state and its codec
 
-@Suite("Bug 196 — pairing secret state and codec")
-struct PairingSecretCodecTests {
+@Suite("Bug 196 — routing key state and codec")
+struct PairingCodecTests {
 
     @Test("Every state round-trips and encodes to the capacity", arguments: everyState.indices)
     func roundTrips(_ index: Int) throws {
         let (name, state) = everyState[index]
-        let plaintext = try PairingSecretCodec().encode(state)
-        #expect(plaintext.count == PairingSecretCodec.capacity, "\(name)")
-        #expect(try PairingSecretCodec().decode(plaintext) == state, "\(name)")
+        let plaintext = try PairingCodec().encode(state)
+        #expect(plaintext.count == PairingCodec.capacity, "\(name)")
+        #expect(try PairingCodec().decode(plaintext) == state, "\(name)")
     }
 
     @Test("A held secret lands in its field and the rest is zeros")
     func fieldsAreSeparate() throws {
-        let held = try PairingSecretCodec().encode(.derived(secret: half(0xAA)))
-        let empty = try PairingSecretCodec().encode(.empty)
+        let held = try PairingCodec().encode(.derived(secret: half(0xAA)))
+        let empty = try PairingCodec().encode(.empty)
         #expect(held[2..<34] == half(0xAA))
-        #expect(held[34...] == Data(count: PairingSecretCodec.capacity - 34))
-        #expect(empty[1...] == Data(count: PairingSecretCodec.capacity - 1), "an empty state is zeros past the version")
+        #expect(held[34...] == Data(count: PairingCodec.capacity - 34))
+        #expect(empty[1...] == Data(count: PairingCodec.capacity - 1), "an empty state is zeros past the version")
     }
 
     @Test("A malformed plaintext is refused")
     func decodeRefuses() throws {
-        let good = try PairingSecretCodec().encode(.derived(secret: half(1)))
-        #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(good.dropLast()) }
-        #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(Data()) }
+        let good = try PairingCodec().encode(.derived(secret: half(1)))
+        #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(good.dropLast()) }
+        #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(Data()) }
 
         var wrongVersion = good; wrongVersion[0] = 0x02
-        #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(wrongVersion) }
+        #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(wrongVersion) }
 
         var unknownPresence = good; unknownPresence[1] = 2
-        #expect(throws: PairingSecretCodec.CodecError.malformed) { try PairingSecretCodec().decode(unknownPresence) }
+        #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(unknownPresence) }
     }
 
     @Test("A secret of the wrong size is refused, never padded or cut")
     func encodeRefuses() {
-        #expect(throws: PairingSecretCodec.CodecError.wrongSize) {
-            try PairingSecretCodec().encode(.derived(secret: Data(count: 31)))
+        #expect(throws: PairingCodec.CodecError.wrongSize) {
+            try PairingCodec().encode(.derived(secret: Data(count: 31)))
         }
-        #expect(throws: PairingSecretCodec.CodecError.wrongSize) {
-            try PairingSecretCodec().encode(.derived(secret: Data(count: 33)))
+        #expect(throws: PairingCodec.CodecError.wrongSize) {
+            try PairingCodec().encode(.derived(secret: Data(count: 33)))
         }
     }
 
     @Test("A pairing that derived its secret holds it, sends the new form, and refuses the old form")
     func derivedState() {
-        let state = PairingSecretState.derived(secret: half(7))
+        let state = PairingState.derived(secret: half(7))
         #expect(state.secret == half(7))
         #expect(state.sendsNewForm)
         #expect(state.refusesOldForm)
@@ -110,9 +110,9 @@ struct PairingSecretCodecTests {
 
     @Test("A pairing with no secret sends the old form and accepts it")
     func rules() {
-        #expect(!PairingSecretState.empty.sendsNewForm)
-        #expect(!PairingSecretState.empty.refusesOldForm)
-        #expect(PairingSecretState.empty.secret == nil)
+        #expect(!PairingState.empty.sendsNewForm)
+        #expect(!PairingState.empty.refusesOldForm)
+        #expect(PairingState.empty.secret == nil)
     }
 }
 
@@ -120,23 +120,23 @@ struct PairingSecretCodecTests {
 
 @MainActor
 @Suite("Bug 196 — the sealed column on the peer's key row", .serialized)
-struct PairingSecretColumnTests {
+struct PairingColumnTests {
 
     @Test("A key saved with a derived secret holds it, sealed", .ambientTestKeyManager)
     func savedWithSecret() throws {
         let (cm, _) = try makeContactManager()
         let (_, key) = try pairedContact(cm, secret: half(0x55))
-        #expect(key.pairingSecretEncrypted != nil)
-        #expect(cm.pairingSecretState(of: key) == .derived(secret: half(0x55)))
+        #expect(key.pairingEncrypted != nil)
+        #expect(cm.pairingState(of: key) == .derived(secret: half(0x55)))
     }
 
     @Test("A key saved with no secret holds the sealed empty state, not nil", .ambientTestKeyManager)
     func savedWithoutSecret() throws {
         let (cm, _) = try makeContactManager()
         let (contact, key) = try pairedContact(cm, secret: nil)
-        #expect(key.pairingSecretEncrypted != nil)
-        #expect(cm.pairingSecretState(of: key) == .empty)
-        #expect(cm.pairingSecretState(for: contact) == .empty)
+        #expect(key.pairingEncrypted != nil)
+        #expect(cm.pairingState(of: key) == .empty)
+        #expect(cm.pairingState(for: contact) == .empty)
     }
 
     @Test("A second pairing with the same contact has its own secret; the first stays on its row", .ambientTestKeyManager)
@@ -145,7 +145,7 @@ struct PairingSecretColumnTests {
         let (contact, first) = try pairedContact(cm, secret: half(1))
         let draft = try #require(Contact.Draft.Key(
             material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65),
-            date: "2", pairingSecret: half(2)
+            date: "2", routingKey: half(2)
         ))
         try cm.update(key: draft, for: contact.identifier)
 
@@ -153,8 +153,8 @@ struct PairingSecretColumnTests {
         // own, and which row is the current key is not what this test is about.
         let keys = try #require(contact.contactPublicKeys)
         #expect(keys.count == 2)
-        #expect(cm.pairingSecretState(of: first) == .derived(secret: half(1)))
-        let states = Set(keys.compactMap { cm.pairingSecretState(of: $0).secret })
+        #expect(cm.pairingState(of: first) == .derived(secret: half(1)))
+        let states = Set(keys.compactMap { cm.pairingState(of: $0).secret })
         #expect(states == [half(1), half(2)])
     }
 
@@ -165,10 +165,10 @@ struct PairingSecretColumnTests {
         let lengths = try everyState.map { entry -> Int in
             let key = Contact.Profile.Key(owner: Data(), date: Data())
             try cm.store(entry.state, in: key)
-            return try #require(key.pairingSecretEncrypted).count
+            return try #require(key.pairingEncrypted).count
         }
         #expect(Set(lengths).count == 1, "lengths differ: \(lengths)")
-        #expect(withSecret.pairingSecretEncrypted?.count == lengths.first)
+        #expect(withSecret.pairingEncrypted?.count == lengths.first)
     }
 
     @Test("Sealing the same state twice gives different bytes", .ambientTestKeyManager)
@@ -176,29 +176,29 @@ struct PairingSecretColumnTests {
         let (cm, _) = try makeContactManager()
         let key = Contact.Profile.Key(owner: Data(), date: Data())
         try cm.store(.empty, in: key)
-        let first = key.pairingSecretEncrypted
+        let first = key.pairingEncrypted
         try cm.store(.empty, in: key)
-        #expect(first != key.pairingSecretEncrypted, "a fixed nonce would let equal fields be compared without the key")
+        #expect(first != key.pairingEncrypted, "a fixed nonce would let equal fields be compared without the key")
     }
 
     @Test("An unreadable seal reads as empty", .ambientTestKeyManager)
     func unreadableReadsEmpty() throws {
         let (cm, _) = try makeContactManager()
-        let key = Contact.Profile.Key(owner: Data(), date: Data(), pairingSecretEncrypted: Data(repeating: 1, count: 200))
-        #expect(cm.pairingSecretState(of: key) == .empty)
-        #expect(cm.pairingSecretState(of: Contact.Profile.Key(owner: Data(), date: Data())) == .empty)
+        let key = Contact.Profile.Key(owner: Data(), date: Data(), pairingEncrypted: Data(repeating: 1, count: 200))
+        #expect(cm.pairingState(of: key) == .empty)
+        #expect(cm.pairingState(of: Contact.Profile.Key(owner: Data(), date: Data())) == .empty)
     }
 
     @Test("Deleting a contact overwrites every key's state with the sealed empty state", .ambientTestKeyManager)
     func deletionOverwrites() throws {
         let (cm, _) = try makeContactManager()
         let (contact, key) = try pairedContact(cm, secret: half(0x66))
-        let before = try #require(key.pairingSecretEncrypted).count
+        let before = try #require(key.pairingEncrypted).count
 
         try cm.deleteContact(identifier: contact.identifier)
 
-        #expect(cm.pairingSecretState(of: key) == .empty)
-        #expect(key.pairingSecretEncrypted?.count == before, "the field keeps its length")
+        #expect(cm.pairingState(of: key) == .empty)
+        #expect(key.pairingEncrypted?.count == before, "the field keeps its length")
     }
 }
 
@@ -206,7 +206,7 @@ struct PairingSecretColumnTests {
 
 @MainActor
 @Suite("Bug 196 — the launch migration that fills the column", .serialized)
-struct PairingSecretMigrationTests {
+struct PairingMigrationTests {
 
     @discardableResult
     private func insert(
@@ -221,7 +221,7 @@ struct PairingSecretMigrationTests {
         profile.deletionToken = deletionToken
         for _ in 0..<keys {
             profile.contactPublicKeys?.append(Contact.Profile.Key(
-                material: Data([1]), owner: Data(), date: Data(), pairingSecretEncrypted: field
+                material: Data([1]), owner: Data(), date: Data(), pairingEncrypted: field
             ))
         }
         context.insert(profile)
@@ -233,11 +233,11 @@ struct PairingSecretMigrationTests {
         let (cm, _) = try makeContactManager()
         let row = insert(keys: 3, in: cm.modelContext)
 
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
         for key in try #require(row.contactPublicKeys) {
-            #expect(key.pairingSecretEncrypted != nil)
-            #expect(cm.pairingSecretState(of: key) == .empty)
+            #expect(key.pairingEncrypted != nil)
+            #expect(cm.pairingState(of: key) == .empty)
         }
     }
 
@@ -246,20 +246,20 @@ struct PairingSecretMigrationTests {
         let (cm, _) = try makeContactManager()
         let row = insert(keys: 1, deletionToken: Data([1]), in: cm.modelContext)
 
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
-        #expect(row.contactPublicKeys?.first?.pairingSecretEncrypted != nil)
+        #expect(row.contactPublicKeys?.first?.pairingEncrypted != nil)
     }
 
     @Test("A row that has the field is left byte-identical", .ambientTestKeyManager)
     func leavesFilledRowsAlone() throws {
         let (cm, _) = try makeContactManager()
-        let sealed = try cm.sealedPairingSecret(.derived(secret: half(0x77)))
+        let sealed = try cm.sealedPairing(.derived(secret: half(0x77)))
         let row = insert(keys: 1, field: sealed, in: cm.modelContext)
 
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
-        #expect(row.contactPublicKeys?.first?.pairingSecretEncrypted == sealed)
+        #expect(row.contactPublicKeys?.first?.pairingEncrypted == sealed)
     }
 
     @Test("A row still at the v1 scheme is skipped until migrateToV2 has converted it", .ambientTestKeyManager)
@@ -267,9 +267,9 @@ struct PairingSecretMigrationTests {
         let (cm, _) = try makeContactManager()
         let row = insert(keys: 1, scheme: .v1_identityDerived, in: cm.modelContext)
 
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
-        #expect(row.contactPublicKeys?.first?.pairingSecretEncrypted == nil)
+        #expect(row.contactPublicKeys?.first?.pairingEncrypted == nil)
     }
 
     @Test("Running it again changes nothing", .ambientTestKeyManager)
@@ -277,13 +277,13 @@ struct PairingSecretMigrationTests {
         let (cm, _) = try makeContactManager()
         let row = insert(keys: 2, in: cm.modelContext)
 
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
         // As sets: a to-many relationship has no order of its own, and the order isn't what this test is about.
-        let first = Set(try #require(row.contactPublicKeys).compactMap(\.pairingSecretEncrypted))
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        let first = Set(try #require(row.contactPublicKeys).compactMap(\.pairingEncrypted))
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
         #expect(first.count == 2)
-        #expect(Set(try #require(row.contactPublicKeys).compactMap(\.pairingSecretEncrypted)) == first)
+        #expect(Set(try #require(row.contactPublicKeys).compactMap(\.pairingEncrypted)) == first)
     }
 
     @Test("It touches no other field of the key", .ambientTestKeyManager)
@@ -293,7 +293,7 @@ struct PairingSecretMigrationTests {
         let key = try #require(row.contactPublicKeys?.first)
         let (material, owner, date, quantum) = (key.material, key.owner, key.acquiredAt, key.quantumKeyMaterialEncrypted)
 
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
         #expect(key.material == material && key.owner == owner && key.acquiredAt == date)
         #expect(key.quantumKeyMaterialEncrypted == quantum)
@@ -331,12 +331,12 @@ struct PairingMigrationNoDataLossTests {
 
         let (prekeys, tier, scheme) = (profile.prekeyRecordEncrypted, profile.maxBundleVersion, profile.encryptionScheme)
 
-        try DatabaseMigration.migratePairingSecretFields(modelContext: cm.modelContext)
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
         #expect(profile.prekeyRecordEncrypted == prekeys)
         #expect(profile.maxBundleVersion == tier)
         #expect(profile.encryptionScheme == scheme)
-        #expect(cm.pairingSecretState(for: profile) == .empty)
+        #expect(cm.pairingState(for: profile) == .empty)
 
         // An old-form file from them still opens: nothing about the pairing changed.
         let bundle = try Manager.Crypto(keyManager: sender).seal(

@@ -95,13 +95,13 @@ struct StreamedTierTests {
     @Test("2.0.0 resolves to it, and it is at least the digest tier")
     func tierStartsAt2() {
         #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .streamedBodyCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.1") == .pairingSecretCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "2.3.1") == .pairingSecretCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.1") == .pairingCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.3.1") == .pairingCapable)
         #expect(OccultaBundle.Version.max(forAppVersion: "1.11.1") == .prefixedSenderSignatureCapable)
         #expect(OccultaBundle.Version.streamedBodyCapable.isAtLeast(.bodyDigestCapable))
         #expect(!OccultaBundle.Version.bodyDigestCapable.isAtLeast(.streamedBodyCapable))
-        #expect(OccultaBundle.Version.mostCapable == .pairingSecretCapable)
-        #expect(OccultaBundle.Version.pairingSecretCapable.isAtLeast(.streamedBodyCapable))
+        #expect(OccultaBundle.Version.mostCapable == .pairingCapable)
+        #expect(OccultaBundle.Version.pairingCapable.isAtLeast(.streamedBodyCapable))
         #expect(OccultaBundle.Version.highestKnownWireByte == 0x0B)
         #expect(OccultaBundle.Version.streamedBodyCapable.minimumAppVersion == "2.0.0")
     }

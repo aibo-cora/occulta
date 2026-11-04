@@ -410,8 +410,8 @@ extension Contact.Draft {
 
         /// The 32-byte secret both phones derived at the exchange (`bugs.md` Bug 196), or nil when the peer couldn't.
         /// Left out of `CodingKeys` so a draft written to disk never holds it: it is sealed into the key row's
-        /// `PairingSecretState` as the row is inserted, and exists in the clear only in memory until then.
-        var pairingSecret: Data?
+        /// `PairingState` as the row is inserted, and exists in the clear only in memory until then.
+        var routingKey: Data?
 
         private enum CodingKeys: String, CodingKey {
             case id, material, acquiredAt, owner, expiredOn, quantumKeyMaterial
@@ -419,7 +419,7 @@ extension Contact.Draft {
 
         init?(
             material: Data?, owner: Data, date: String, quantumKeyMaterial: QuantumKeyMaterial? = nil,
-            pairingSecret: Data? = nil
+            routingKey: Data? = nil
         ) {
             guard owner.isEmpty == false else { return nil }
 
@@ -427,7 +427,7 @@ extension Contact.Draft {
             self.owner = owner.sha256
             self.acquiredAt = date
             self.quantumKeyMaterial = quantumKeyMaterial
-            self.pairingSecret = pairingSecret
+            self.routingKey = routingKey
         }
     }
 }

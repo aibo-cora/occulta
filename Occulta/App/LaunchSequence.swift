@@ -268,12 +268,12 @@ enum LaunchSequence {
             #endif
         }
 
-        // The pairing secret (Bug 196): the field on every key row is never nil either.
+        // The routing key (Bug 196): the field on every key row is never nil either.
         do {
-            try DatabaseMigration.migratePairingSecretFields(modelContext: context)
+            try DatabaseMigration.migratePairingFields(modelContext: context)
         } catch {
             #if DEBUG
-            debugPrint("pairing secret field migration error: \(error)")
+            debugPrint("pairing field migration error: \(error)")
             #endif
         }
 

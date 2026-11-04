@@ -163,12 +163,12 @@ public struct OccultaBundle: Codable {
         /// every slot, the secret mixed into each slot's key, and the sender proof in the slot. Never written to the
         /// wire `version` field; stored only in `Contact.Profile.maxBundleVersion` as byte 0x0B.
         ///
-        /// A send uses the pairing-secret form only for a recipient recorded at this tier, with a secret both sides hold.
+        /// A send uses the pairing form only for a recipient recorded at this tier, with a secret both sides hold.
         ///
         /// ⚠️ Keyed on the app version, like `.bodyDigestCapable`: no build numbered 2.0.1 or later may ship without
         /// the receive path and the send path, TestFlight included. Such a build would be recorded at this tier and
         /// sent files it can't open (`ROLLOUT_PLAN.md`, release mechanics).
-        case pairingSecretCapable
+        case pairingCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -188,7 +188,7 @@ public struct OccultaBundle: Codable {
             case .prefixedSenderSignatureCapable: return "1.10.2"
             case .bodyDigestCapable: return "2.0.0"
             case .streamedBodyCapable: return "2.0.0"
-            case .pairingSecretCapable: return "2.0.1"
+            case .pairingCapable: return "2.0.1"
             default:                return nil
             }
         }
@@ -204,7 +204,7 @@ public struct OccultaBundle: Codable {
             case .prefixedSenderSignatureCapable: return 0x08
             case .bodyDigestCapable: return 0x09
             case .streamedBodyCapable: return 0x0A
-            case .pairingSecretCapable: return 0x0B
+            case .pairingCapable: return 0x0B
             default:                 return nil
             }
         }
@@ -231,7 +231,7 @@ public struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
-            .pairingSecretCapable, // 2.0.1+ — a secret per pairing: slot routing tags, key binding, in-slot sender proof
+            .pairingCapable, // 2.0.1+ — a secret per pairing: slot routing tags, key binding, in-slot sender proof
             .streamedBodyCapable, // 2.0.0+ — the body of a group bundle is a chunk stream (wire version 0x0A)
             .bodyDigestCapable, // 2.0.0+  — every group slot carries the body's digest
             .prefixedSenderSignatureCapable, // 1.10.2+ — domain-separated ephemeral signature
@@ -647,10 +647,10 @@ public struct OccultaBundle: Codable {
         /// The receiver finds their slot by trial-decryption — no cleartext
         /// identity hint is included, so an observer cannot confirm membership.
         public let wrappedPayload: Data
-        /// `PairingSecret.routingTag(secret:nonce:)` for the pairing this slot is sealed to, readable before decryption:
+        /// `RoutingKey.routingTag(secret:nonce:)` for the pairing this slot is sealed to, readable before decryption:
         /// the receiver matches it against one routing tag per contact, in place of the sender's fingerprint and of
         /// trial decryption (`bugs.md` Bug 196). A random filler of the same size in a slot that has no pairing
-        /// secret to tag, so the field's presence says nothing. `nil` from builds before the pairing-secret tier.
+        /// secret to tag, so the field's presence says nothing. `nil` from builds before the pairing tier.
         public let routingTag: Data?
 
         public init(secrecyContext: SecrecyContext, wrappedPayload: Data, routingTag: Data? = nil) {
@@ -748,9 +748,9 @@ public struct OccultaBundle: Codable {
         /// `nil` in every other message. Added with introduction cards.
         public let introduction: CardIntroduction?
 
-        /// `PairingSecret.slotProof(secret:routingTag:senderPublicKey:)`: the sender proof for this slot, covering the
-        /// slot's `routingTag`. Random filler of the same size when the slot has no pairing secret. `nil` from builds
-        /// before `.pairingSecretCapable`; `SealedPayload.senderProof` is the proof for those.
+        /// `RoutingKey.slotProof(secret:routingTag:senderPublicKey:)`: the sender proof for this slot, covering the
+        /// slot's `routingTag`. Random filler of the same size when the slot has no routing key. `nil` from builds
+        /// before `.pairingCapable`; `SealedPayload.senderProof` is the proof for those.
         public let slotProof: Data?
 
         public init(
