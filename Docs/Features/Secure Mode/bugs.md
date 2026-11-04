@@ -15053,9 +15053,14 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
    new-form file arrives (`PairingSecretState+Swap`). Identity challenges need no change: they route by tag like any file.
 
 **Not built, open, needs a decision:**
-- **Cards.** Bootstrap slots keep the card-key fingerprint, and no secret is derived from `ss1` and `ss2` (step 6 of the Fix
-  above). A card conversation uses card keys, not the identity key, so the bug doesn't arise there; what it leaves is a
-  fingerprint a holder of the card file can compute. See the card SPEC §4.3.
+- **Cards: decided 2026-11-04, deferred by the owner to a later release.** Bootstrap slots keep the card-key fingerprint, and
+  no secret is derived from `ss1` and `ss2` (step 6 of the Fix above). A card conversation uses card keys, not the identity
+  key, so the bug doesn't arise there; what it leaves is a fingerprint a holder of the card file can compute, and so
+  someone who holds the card and captures files can recognise a conversation. It is no worse than the 2.0.0 behaviour. A
+  secret from `ss1` and `ss2` would help only after the first reply, since the first messages exist before either side
+  holds both. Deferred because it is a different mechanism (a second fixed-size sealed state with its own capacity test,
+  a new point where a secret is made, tests that need an Enclave) in a state machine that shipped a release ago, for a
+  narrow gain. See the card SPEC §4.3.
 - **A mixed group: decided 2026-11-04, a transitional residual, accepted by the owner.** One recipient without a secret
   keeps the real identity fingerprint and shared proof in the header for the whole file, which any holder of the sender's
   public key can test. It stays because that recipient finds its sender by the header before it decrypts anything, and a

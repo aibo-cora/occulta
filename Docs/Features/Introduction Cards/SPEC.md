@@ -136,7 +136,7 @@ BootstrapLayer (binary) {
 uses the two card agreement keys, new for every card, in place of the identity keys, so the identity-key link between two
 pairings of one person (the bug) doesn't arise here, and a conversation has no routing tag. The header's fingerprint stays
 SHA-256(card key ‖ nonce), which a holder of the card file can compute. The entry's step 6, tagging bootstrap slots with
-HMAC(card key, nonce) and deriving a secret from `ss1` and `ss2` once both sides hold them, is **open, needs a decision**.
+HMAC(card key, nonce) and deriving a secret from `ss1` and `ss2` once both sides hold them, is **deferred by the owner to a later release (2026-11-04)**.
 A later in-person meeting is a new pairing and derives its own secret at the exchange (`Exchange.prekeyBatch`).
 
 **Keys.** `ecdh` is the slot's ECDH output. `own` and `peer` are the two 65-byte public keys, as in `forwardSecretSessionKey`.
