@@ -15018,8 +15018,9 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
    at another, the oracle of `Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, which says not to restore
    that gate. The tag match scans every contact at every depth. The earlier line in "At rest" that said otherwise was
    wrong and is corrected. `hiddenContactRoutesLikeAVisibleOne` pins it.
-5. **The version.** The tier is keyed to app version 2.0.1; `MARKETING_VERSION` is 2.0.0. The bump has to land
-   before release or no phone is recorded at the tier.
+5. **The version.** The tier is keyed to app version 2.0.1, and a sender writes `Bundle.main.appVersion` into its
+   payload. **Closed 2026-11-04:** `MARKETING_VERSION` is 2.0.1 in the app, the share extension and the preview target
+   (the three that were 2.0.0; the four at 1.0 are untouched). Without it no phone is recorded at the tier.
 
 ### Built (2026-11-04)
 
@@ -15047,7 +15048,7 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
   whole file, which any holder of the sender's public key can test.
 - **The inner challenge fingerprint** still binds to the identity key, as do the forward-secret slot signature, challenge
   responses and backup-piece signatures: anyone holding `K` can verify them.
-- **The version.** The tier is keyed to 2.0.1; `MARKETING_VERSION` is still 2.0.0 and must be bumped before release.
+- **The version.** The tier is keyed to 2.0.1; `MARKETING_VERSION` is 2.0.1 (bumped 2026-11-04).
 - **The "current key".** `contactPublicKeys?.last(where:)` is read as the current key throughout the app, and a SwiftData
   to-many relationship has no order of its own. Two re-pair tests failed intermittently for it; the code is unchanged.
 - **Merging with `release/v2.1.0`:** its Bug 194 fix (PR #156) also resets a record on a key change; the two overlap.
