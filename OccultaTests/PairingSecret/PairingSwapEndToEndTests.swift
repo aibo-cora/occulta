@@ -115,7 +115,7 @@ struct PairingSwapEndToEndTests {
         let a = try alice.state, b = try bob.state
         #expect(a.secret != nil && a.secret == b.secret)
         #expect(a.sendsNewForm && b.sendsNewForm)
-        #expect(!a.refusesOldForm && !b.refusesOldForm, "a swapped pairing keeps accepting the old form (the split rule)")
+        #expect(a.refusesOldForm && b.refusesOldForm, "once the peer's new-form file has arrived, a swapped pairing refuses the old form")
     }
 
     @Test("Once settled, a file is of the new form: random header, tagged slot", .enabled(if: TestSupport.secureEnclaveAvailable()))
