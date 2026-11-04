@@ -15097,7 +15097,23 @@ carries the rule the tiers above it do: no build numbered 2.0.1 or later may shi
 - **The version.** The tier is keyed to 2.0.1; `MARKETING_VERSION` is 2.0.1 (bumped 2026-11-04).
 - **The "current key".** `contactPublicKeys?.last(where:)` is read as the current key throughout the app, and a SwiftData
   to-many relationship has no order of its own. Two re-pair tests failed intermittently for it; the code is unchanged.
-- **Merging with `release/v2.1.0`:** its Bug 194 fix (PR #156) also resets a record on a key change; the two overlap.
+- **Merging with `release/v2.1.0` (checked 2026-11-04 on a scratch merge, not pushed).** Its Bug 194 fix (PR #156) drops a
+  contact's inbound prekeys on a key change; the two overlap. Three conflicts and two compile breaks that git does not show:
+  1. `Contact+Manager.swift`, `update(key:for:pairing:)`: keep Bug 194's `dropInboundPrekeys` first, then this entry's
+     `installPairingPrekeys` and the sealed secret. A peer that sent no batch (a 2.0.0 phone) gets only Bug 194's drop;
+     for a pairing the install replaces the record's prekeys as well, so dropping first changes nothing there.
+  2. `bugs.md`: keep both entries; 196 goes after 195 (release has 191, 194 and 195; the numbers don't clash).
+  3. `BodyStreamTests.swift`: take release's version of the Xcode 27.2 fix.
+  4. `TestKeyManager.createPairingSecret` called `rawECDHWithSalt`, which release's Bug 191 rewrite removed: use
+     `deriveRawECDH(privateKey:peerMaterial:)` and the salt `peerP256Material XOR identityPublicKeyData`.
+  5. `Manager.Key.createPairingSecret` called `ecdhWithSalt`, which release renamed `identityECDH`; its `ECDHResult` has
+     `ownPublicKey` and no `salt`, so the salt is `peerP256Material XOR ecdh.ownPublicKey` (the same bytes).
+  With those the merge builds. Full suite on it: 2,142 tests, exactly 6 skips, all in `KeychainMigrationSETests`. Not
+  green, and none of the failures is the merge's: six source-scan tests fail on a checkout at a path like the scratch one
+  (five of them were run on plain release there and fail identically; they read paths relative to the checkout), one is
+  the known vault-timer flake, and three prekey-conversation tests fail on this branch itself (see the split rule).
+  The conflicts' resolutions are recorded by `git rerere` in this repository, so the real merge reuses them.
+
 
 ### What the building session also changes
 
