@@ -471,7 +471,7 @@ class ContactManager {
     func currentPublicKey(forIdentifier identifier: String) throws -> Data? {
         guard
             let contact   = try self.fetchContact(by: identifier),
-            let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let keyRecord = contact.currentKey,
             let pubKey    = try? self.cryptoManager.decrypt(data: keyRecord.material)
         else { return nil }
         return pubKey
@@ -627,7 +627,7 @@ extension ContactManager {
         var keyRotated = false
         
         if let newMaterial = key.material,
-           let currentRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+           let currentRecord = contact.currentKey,
            let storedMaterial = try? self.cryptoManager.decrypt(data: currentRecord.material) {
             keyRotated = SHA256.hash(data: storedMaterial) != SHA256.hash(data: newMaterial)
         }
@@ -642,6 +642,11 @@ extension ContactManager {
         // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.
         let pairingState = key.routingKey.map(PairingState.derived(secret:)) ?? PairingState.empty
         let sealedPairing = try self.sealedPairing(pairingState)
+
+        // A re-pair retires every key the contact held, in the save that adds this one: a to-many relationship has no order
+        // of its own, so two current rows would leave "the latest" to chance, and the file key and routing key with it.
+        let retiredOn = try self.cryptoManager.encrypt(data: String(Date.now.timeIntervalSince1970).data(using: .utf8))
+        for held in contact.contactPublicKeys ?? [] where held.expiredOn == nil { held.expiredOn = retiredOn }
 
         contact.contactPublicKeys?.append(Contact.Profile.Key(
             material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,
@@ -757,7 +762,7 @@ extension ContactManager {
         }
         
         guard
-            let encrypted = contact.contactPublicKeys?.last?.material,
+            let encrypted = contact.currentKey?.material,
             let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
@@ -1038,7 +1043,9 @@ extension ContactManager {
         
         let contacts = try self.fetchAllContacts()
         
-        for contact in contacts {
+        // A pairing that began with a routing key refuses an old-form file (Bug 196): this raw trial decrypt is the oldest form
+        // of all, and matches any record that holds the sender's identity key, the twin record this fix tells apart included.
+        for contact in contacts where self.acceptsOldForm(from: contact) {
             do {
                 if let decrypted = try self.decrypt(message: data, for: contact.identifier) {
                     return (decrypted, contact.identifier)
@@ -1597,7 +1604,7 @@ extension ContactManager {
     /// are excluded; shard bundles require the hybrid session key for HNDL protection.
     func fetchTrusteeEligibleContacts() throws -> [Contact.Profile] {
         try self.fetchAllContacts().filter { contact in
-            guard let key = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }) else {
+            guard let key = contact.currentKey else {
                 return false
             }
             return key.quantumKeyMaterialEncrypted != nil
@@ -1613,7 +1620,7 @@ extension ContactManager {
         let cryptoOps = Manager.Crypto()
         
         guard
-            let keyRecord         = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let keyRecord         = contact.currentKey,
             let recipientMaterial = try? cryptoOps.decrypt(data: keyRecord.material),
             recipientMaterial.count == 65
         else { throw Errors.contactHasNoKeys }
@@ -1649,7 +1656,7 @@ extension ContactManager {
         for sender: Contact.Profile,
         using cryptoOps: Manager.Crypto
     ) throws -> QuantumKeyMaterial? {
-        let validKey = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+        let validKey = sender.currentKey
         guard
             let enc       = validKey?.quantumKeyMaterialEncrypted,
             let decrypted = try? cryptoOps.decrypt(data: enc)
@@ -1764,7 +1771,7 @@ extension ContactManager {
         for contact in contacts {
             if
                 self.acceptsOldForm(from: contact),
-                let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+                let keyRecord = contact.currentKey,
                 let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material),
                 contact.isLikelySender(of: bundle, contactPublicKey: pubKey)
             {
@@ -1940,7 +1947,7 @@ extension ContactManager {
 
     private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
         guard
-            let keyRecord = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let keyRecord = sender.currentKey,
             let decrypted = try cryptoOps.decrypt(data: keyRecord.material)
         else { throw Errors.decryptionFailed }
         return decrypted

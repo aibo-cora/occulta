@@ -44,7 +44,7 @@ extension ContactManager {
 
     /// The state on `contact`'s current key: the latest one not expired, the key every send and receive uses.
     func pairingState(for contact: Contact.Profile) -> PairingState {
-        guard let key = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }) else { return .empty }
+        guard let key = contact.currentKey else { return .empty }
         return self.pairingState(of: key)
     }
 

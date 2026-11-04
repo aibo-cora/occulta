@@ -49,8 +49,7 @@ extension Contact {
         private var subtitle:   String { [self.jobTitle, self.org].filter { !$0.isEmpty }.joined(separator: " · ") }
 
         private var needsExchange: Bool {
-            let keys = self.profile?.contactPublicKeys
-            return (keys?.isEmpty ?? true) || keys?.last?.expiredOn != nil
+            self.profile?.currentKey == nil
         }
 
         private var status: VerificationStatus { self.cachedStatus ?? self.profile?.verificationStatus ?? .pending }

@@ -189,6 +189,63 @@ struct PairingRoutingTests {
         #expect(try cm.openGroup(bundle: oldForm).ownerID == contact.identifier)
     }
 
+    // MARK: The legacy raw trial decrypt
+
+    /// A file in the oldest form: the sender's identity ECDH key AES-GCM sealed the bytes with no bundle around them.
+    private func legacyFile(to me: Data) throws -> Data {
+        try #require(try Manager.Crypto(keyManager: self.sender).encrypt(message: Data("legacy".utf8), using: me))
+    }
+
+    @Test("A raw legacy file does not open on a pairing that refuses the old form", .ambientTestKeyManager)
+    func legacyFileRefusedByRoutingKeyPairing() throws {
+        let cm = try makeContactManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .derived(secret: secret(1)), in: cm)
+
+        #expect(throws: ContactManager.Errors.self) { try cm.decrypt(data: try self.legacyFile(to: me)) }
+    }
+
+    @Test("A raw legacy file opens on the twin record that has no routing key, not on the one that has", .ambientTestKeyManager)
+    func legacyFileReachesTheTwinWithoutOne() throws {
+        let cm = try makeContactManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        let senderKey = try self.sender.retrieveIdentity()
+        try insertSender(publicKey: senderKey, state: .derived(secret: secret(1)), in: cm)
+        let twin = try insertSender(publicKey: senderKey, state: .empty, in: cm)
+
+        let opened = try cm.decrypt(data: try self.legacyFile(to: me))
+        #expect(opened.ownerID == twin.identifier)
+        #expect(opened.plaintext == Data("legacy".utf8))
+    }
+
+    @Test("A raw legacy file opens on a pairing without a routing key, as before", .ambientTestKeyManager)
+    func legacyFileOpensWithoutRoutingKey() throws {
+        let cm = try makeContactManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .empty, in: cm)
+
+        #expect(try cm.decrypt(data: try self.legacyFile(to: me)).ownerID == contact.identifier)
+    }
+
+    // MARK: The current key
+
+    @Test("A re-pair retires every earlier row, so exactly one is current and it is the new one", .ambientTestKeyManager)
+    func rePairLeavesOneCurrentKey() throws {
+        let cm = try makeContactManager()
+        let identity = try self.sender.retrieveIdentity()
+        let contact = try insertSender(publicKey: identity, state: .derived(secret: secret(1)), in: cm)
+
+        let draft = try #require(Contact.Draft.Key(material: identity, owner: Data(repeating: 1, count: 65), date: "2", routingKey: secret(2)))
+        try cm.update(key: draft, for: contact.identifier)
+
+        let rows = try #require(contact.contactPublicKeys)
+        #expect(rows.count == 2)
+        #expect(rows.filter { $0.expiredOn == nil }.count == 1)
+        #expect(cm.pairingState(for: contact) == .derived(secret: secret(2)))
+        #expect(contact.currentKey?.acquiredAt == rows.first { $0.expiredOn == nil }?.acquiredAt)
+        #expect(contact.displayedKey != nil)
+    }
+
     // MARK: Depth
 
     @Test("A contact hidden at the current depth routes and opens exactly as a visible one does (no depth oracle)", .ambientTestKeyManager)

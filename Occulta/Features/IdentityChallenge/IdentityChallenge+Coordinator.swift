@@ -102,7 +102,7 @@ extension IdentityChallenge {
                 url = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote, seal: seal)
             } else {
                 guard
-                    let keyRecord    = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+                    let keyRecord    = contact.currentKey,
                     let recipientKey = try? crypto.decrypt(data: keyRecord.material)
                 else {
                     throw IdentityChallenge.ManagerError.noIdentity
@@ -195,7 +195,7 @@ extension IdentityChallenge {
         ) -> Bool {
             let crypto = Occulta.Manager.Crypto()
             guard
-                let keyRecord = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+                let keyRecord = sender.currentKey,
                 let senderKey = try? crypto.decrypt(data: keyRecord.material)
             else {
                 self.errorMessage = "Could not open identity verification request."
