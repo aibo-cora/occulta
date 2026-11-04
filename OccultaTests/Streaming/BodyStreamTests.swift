@@ -84,7 +84,7 @@ struct BodyStreamLayoutTests {
 
     @Test("P and T convert both ways at every boundary", arguments: [
         5, C - 1, C, C + 1, 2 * C, 3 * C, 3 * C + 17, 10 * C + 1
-    ])
+    ] as [Int])
     func layoutRoundTrips(p: Int) throws {
         let fromP = try BodyStream.Layout(plaintextLength: UInt64(p))
         let fromT = try BodyStream.Layout(streamLength: fromP.streamLength)

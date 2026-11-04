@@ -535,6 +535,8 @@ class ContactManager {
         try self.store(CardState.empty, for: contact)
         // And the challenge state, every depth's slot: a pending challenge to a deleted contact goes with them.
         try self.store(ChallengeState.empty, for: contact)
+        // The pairing secret of every key the contact held: the sealed empty state, the same size (Bug 196).
+        for key in contact.contactPublicKeys ?? [] { try self.store(PairingSecretState.empty, in: key) }
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
@@ -600,7 +602,10 @@ extension ContactManager {
     ///   - key: Keying material.
     ///   - identifier: Identifier of the owner.
     ///   - method: Acquisition method. Nearby Interaction - secure, or something else.
-    func update(key: Contact.Draft.Key, for identifier: String) throws {
+    ///   - pairing: What the exchange handed over when both phones sent a prekey batch (`bugs.md` Bug 196): our first batch
+    ///     and the peer's, installed with the key in this save, and the peer recorded at the pairing-secret tier, which a
+    ///     phone that sent a batch is. `nil` for a peer that can't hold a pairing secret, and the record is left as it was.
+    func update(key: Contact.Draft.Key, for identifier: String, pairing: PairingOffer? = nil) throws {
         guard
             let contact = try self.fetchContact(by: identifier),
             let encryptedMaterial = try self.cryptoManager.encrypt(data: key.material),
@@ -630,7 +635,18 @@ extension ContactManager {
         // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
         let clearedCard = try self.clearCard(afterMeetingOf: contact)
 
-        contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
+        // The first prekeys of this pairing, and the peer's tier, in the same save as the key (Bug 196).
+        if let pairing { try self.installPairingPrekeys(pairing, in: contact) }
+
+        // The secret goes in as the row is inserted, not in a second save, which would mark the row updated in place.
+        // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.
+        let pairingState = key.pairingSecret.map(PairingSecretState.derived(secret:)) ?? PairingSecretState.empty
+        let sealedPairingSecret = try self.sealedPairingSecret(pairingState)
+
+        contact.contactPublicKeys?.append(Contact.Profile.Key(
+            material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,
+            quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial, pairingSecretEncrypted: sealedPairingSecret
+        ))
         
         #if DEBUG
         debugPrint("Updated key, owner hash = \(key.owner)")
@@ -1255,7 +1271,10 @@ extension ContactManager {
                 contactPrekey:   contactPrekey ?? lastResortPrekey,
                 contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                 pendingBatch:    outboundBatch,
-                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
+                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable),
+                pairingSecret:   self.pairingSecretForSending(to: contact, tier: targetVersion),
+                // Only a one-time key's slot may carry a half: a last-resort or long-term slot opens again.
+                pairingSwap:     try contactPrekey == nil ? nil : self.pairingSwapForSending(to: contact, tier: targetVersion)
             )]
             let sent: SentBundle
             if let streamedFiles {
@@ -1316,6 +1335,10 @@ private struct PendingGroupRecipient {
     /// Whether this member's build verifies the domain-separated ephemeral signature.
     /// Resolved per member, since a group's members can be on different builds.
     let prefixesEphemeralSignature: Bool
+    /// The pairing secret to seal this member's slot with, or nil (`bugs.md` Bug 196).
+    let pairingSecret: Data?
+    /// The swap this member's one-time-prekey slot carries, if any (`PairingSecretState+Swap`).
+    let pairingSwap: PairingSecretSwap?
 }
 
 extension ContactManager {
@@ -1457,7 +1480,9 @@ extension ContactManager {
                 contactPrekeyIsLastResort: lastResortPrekey != nil,
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
-                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
+                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable),
+                pairingSecret:          self.pairingSecretForSending(to: contact, tier: memberVersion),
+                pairingSwap:            try contactPrekey == nil ? nil : self.pairingSwapForSending(to: contact, tier: memberVersion)
             )
         }
 
@@ -1473,7 +1498,9 @@ extension ContactManager {
                 contactPrekeyIsLastResort: p.contactPrekeyIsLastResort,
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
-                prefixesEphemeralSignature: p.prefixesEphemeralSignature
+                prefixesEphemeralSignature: p.prefixesEphemeralSignature,
+                pairingSecret:          p.pairingSecret,
+                pairingSwap:            p.pairingSwap
             )
         }
 
@@ -1733,8 +1760,16 @@ extension ContactManager {
  
         let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 
+        // A pairing's routing tag names its contact outright (Bug 196): a file of the new form is not matched by identity, and an
+        // old-form file is not matched to a pairing that began with a secret. Routing tags are checked for every contact first,
+        // so a twin that holds the same identity key can't take a file whose routing tag belongs to another.
+        if let tagged = contacts.first(where: { self.bundleCarriesRoutingTag(of: $0, in: bundle) }) {
+            return tagged
+        }
+
         for contact in contacts {
             if
+                self.acceptsOldForm(from: contact),
                 let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
                 let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material),
                 contact.isLikelySender(of: bundle, contactPublicKey: pubKey)
@@ -2097,8 +2132,10 @@ extension ContactManager {
         let recipientMode: OccultaBundle.Mode
         let slotEphemeralKey: Data
         var cardOpening: CardSlotOpening?
+        /// The routing tag that routed us to the slot, for a file of the pairing-secret form (Bug 196).
+        var slotRoutingTag: Data?
 
-        // ── 3. Trial-decrypt: find our slot and open it ─────────────────
+        // ── 3. Find our slot (by the pairing routing tag, or trial decryption) and open it ─────
         if let cardContext {
             senderPublicKey = cardContext.peerAgreementKey
             let opening = try cryptoOps.openCardSlot(
@@ -2111,15 +2148,18 @@ extension ContactManager {
         } else {
             senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
             let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
-            (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
+            let opened = try cryptoOps.openSlot(
                 in: bundle,
                 blind: envelope.blind,
                 senderContactID: sender.identifier,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
                 prekeys: prekeys,
-                body: body
+                body: body,
+                pairing: self.pairingSlotContext(for: sender)
             )
+            (recipientPayload, used, recipientMode, slotEphemeralKey) = (opened.payload, opened.used, opened.mode, opened.ephemeralPublicKey)
+            slotRoutingTag = opened.matchedRoutingTag
         }
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
@@ -2215,9 +2255,17 @@ extension ContactManager {
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
-        guard let proof = decoded.senderProof,
-              HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
-            throw GroupDecryptError.senderProofMismatch
+        if let slotRoutingTag, let secret = self.pairingSecretState(for: sender).secret {
+            // The pairing-secret form: the proof is in the slot, keyed by the secret, and covers the slot's routing tag.
+            // `SealedPayload.senderProof` is random filler here and is not read.
+            guard let slotProof = recipientPayload.slotProof,
+                  PairingSecret.isValidSlotProof(slotProof, secret: secret, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
+            else { throw GroupDecryptError.senderProofMismatch }
+        } else {
+            guard let proof = decoded.senderProof,
+                  HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
+                throw GroupDecryptError.senderProofMismatch
+            }
         }
 
         // ── 6. Post-processing ────────────────────────────────────────────
@@ -2229,6 +2277,13 @@ extension ContactManager {
         debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
         debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
         #endif
+        // The pairing secret's swap (Bug 196). A half is read only from a one-time-prekey slot of a forward-secret file whose
+        // sender is authenticated, by the slot's signature or its proof, and never in a card conversation.
+        try self.applyPairingSwap(
+            recipientPayload.pairingSwap, from: sender, taggedAndProven: slotRoutingTag != nil,
+            acceptsHalf: cardOpening == nil && isFSMode && used.consumable != nil
+                && (slotRoutingTag != nil || recipientPayload.senderEphemeralSignature != nil)
+        )
         try self.acceptInboundBatch(recipientPayload.prekeyBatch, openedWith: used, into: prekeys)
         // The card field's step, stored with the record below (SPEC §6.6 step 3).
         if let cardOpening { try self.applyCardOpening(cardOpening, to: sender) }

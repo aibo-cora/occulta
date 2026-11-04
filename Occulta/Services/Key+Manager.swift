@@ -9,6 +9,7 @@ import Foundation
 import CryptoKit
 import LocalAuthentication
 import OccultaCore
+import OccultaFormats
 
 // MARK: - HKDF info strings
 
@@ -1820,6 +1821,26 @@ extension Manager.Key {
             salt: ecdhAndSalt.salt,
             info: info,
             outputByteCount: 32
+        )
+    }
+ 
+    /// The 32-byte secret one pairing holds (`bugs.md` Bug 196): `PairingSecret.derive` over the identity ECDH and, where the
+    /// exchange had them, both ML-KEM secrets and both nonces. Both phones compute the same bytes.
+    ///
+    /// SE operations: one ECDH via SE identity key.
+    func createPairingSecret(
+        peerP256Material: Data,
+        quantumMaterial: QuantumKeyMaterial?,
+        ourNonce: Data,
+        peerNonce: Data
+    ) -> Data? {
+        guard let ecdhAndSalt = self.ecdhWithSalt(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        return PairingSecret.derive(
+            rawECDH: ecdhAndSalt.rawECDH, salt: ecdhAndSalt.salt,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce
         )
     }
  

@@ -8,6 +8,7 @@ import Foundation
 import CryptoKit
 import LocalAuthentication
 import OccultaCore
+import OccultaFormats
 
 // MARK: - Bug 171 key forms
 
@@ -89,6 +90,8 @@ protocol KeyManagerProtocol {
     func createHybridFSSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
 
     func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
+    /// The per-pairing secret (`bugs.md` Bug 196). `quantumMaterial` is nil for a classical exchange.
+    func createPairingSecret(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data) -> Data?
     func generateExchangeNonce() -> Data?
 
     // MARK: - Identity challenge
@@ -1141,6 +1144,22 @@ extension TestKeyManager {
             salt: ecdh.salt,
             info: info,
             outputByteCount: 32
+        )
+    }
+
+    func createPairingSecret(
+        peerP256Material: Data,
+        quantumMaterial: QuantumKeyMaterial?,
+        ourNonce: Data,
+        peerNonce: Data
+    ) -> Data? {
+        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        return PairingSecret.derive(
+            rawECDH: ecdh.rawECDH, salt: ecdh.salt,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce
         )
     }
 

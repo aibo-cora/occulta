@@ -95,12 +95,14 @@ struct StreamedTierTests {
     @Test("2.0.0 resolves to it, and it is at least the digest tier")
     func tierStartsAt2() {
         #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .streamedBodyCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "2.3.1") == .streamedBodyCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.1") == .pairingSecretCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.3.1") == .pairingSecretCapable)
         #expect(OccultaBundle.Version.max(forAppVersion: "1.11.1") == .prefixedSenderSignatureCapable)
         #expect(OccultaBundle.Version.streamedBodyCapable.isAtLeast(.bodyDigestCapable))
         #expect(!OccultaBundle.Version.bodyDigestCapable.isAtLeast(.streamedBodyCapable))
-        #expect(OccultaBundle.Version.mostCapable == .streamedBodyCapable)
-        #expect(OccultaBundle.Version.highestKnownWireByte == 0x0A)
+        #expect(OccultaBundle.Version.mostCapable == .pairingSecretCapable)
+        #expect(OccultaBundle.Version.pairingSecretCapable.isAtLeast(.streamedBodyCapable))
+        #expect(OccultaBundle.Version.highestKnownWireByte == 0x0B)
         #expect(OccultaBundle.Version.streamedBodyCapable.minimumAppVersion == "2.0.0")
     }
 
@@ -127,14 +129,16 @@ struct StreamedTierTests {
         #expect(tier.isAtLeast(.bodyDigestCapable) && tier.isAtLeast(.streamedBodyCapable))
     }
 
-    @Test("a byte above 0x0A is read as a newer build, and sent the streamed layout", .ambientTestKeyManager)
+    @Test("a byte above 0x0B is read as a newer build, and sent the streamed layout", .ambientTestKeyManager)
     @MainActor func newerThanUs() throws {
         let cm = try TestSupport.makeContactManager()
         try insertStreamedSender(identifier: "bob", publicKey: try TestKeyManager().retrieveIdentity(), in: cm)
         let bob = try #require(try cm.fetchContact(by: "bob"))
-        bob.maxBundleVersion = try Manager.Crypto().encrypt(data: Data([0x0B]))
+        bob.maxBundleVersion = try Manager.Crypto().encrypt(data: Data([0x0C]))
 
-        #expect(ContactManager.resolveTargetVersion(for: bob, using: Manager.Crypto()) == .streamedBodyCapable)
+        let target = ContactManager.resolveTargetVersion(for: bob, using: Manager.Crypto())
+        #expect(target == OccultaBundle.Version.mostCapable)
+        #expect(target.isAtLeast(.streamedBodyCapable))
     }
 }
 

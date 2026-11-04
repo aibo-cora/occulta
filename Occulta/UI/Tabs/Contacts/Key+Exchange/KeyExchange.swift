@@ -306,11 +306,21 @@ struct KeyExchange: View {
                     )
                 }
 
-                guard let key = Contact.Draft.Key(material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum) else {
+                // Both phones sent a prekey batch, so both can hold a pairing secret and derive the same one (Bug 196).
+                let secret = self.payload.pairing.flatMap {
+                    $0.secret(withPeer: self.payload.classicalKey, quantum: quantum, using: self.keyManager)
+                }
+
+                guard let key = Contact.Draft.Key(
+                    material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum,
+                    pairingSecret: secret
+                ) else {
                     throw SaveError.invalidKeyMaterial
                 }
 
-                try self.contactManager?.update(key: key, for: self.identifier)
+                // A secret we couldn't derive leaves the pairing as it was before this fix, prekeys and all: a batch
+                // installed without a secret would make us the only side refusing nothing and sending in the old form.
+                try self.contactManager?.update(key: key, for: self.identifier, pairing: secret == nil ? nil : self.payload.pairing)
 
                 // After the key is saved and before `finish()`, which discards the peer's proof (SPEC §7).
                 let verdict = self.manager.cardMeetingVerdict(for: self.payload)

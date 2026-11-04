@@ -14819,3 +14819,337 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 ### Guard
 
 `VaultRewrapUnlockTests.rowsOnNewKeyWithEpochOneAreRepaired`: a vault rewrapped, its epoch reset to `1 classical`, then unlocked: the epoch becomes 2, the process derives the Enclave-bound key, and every label and every real backup key reads back. It failed before the change.
+
+---
+
+## Bug 196 — A file names its sender by identity key alone, so two pairings with one person can't be told apart
+
+**Status:** Fixed in the build on `v2.0.1/pairing-secret` (2026-11-04), not merged. Cards and the identity-key visibility
+below stay open, needs a decision. Design decided 2026-11-03 by the owner (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, item 30;
+`Docs/General/decisions.md`, "A secret per pairing routes and binds every bundle"), then settled with the owner in this
+build (see "Design as built"). Verified on the Simulator by the test suite, with two real phones' stores exchanging real
+bundles for the swap; **the Multipeer/NearbyInteraction exchange itself has not been run**: it needs two phones.
+
+**Number:** filed as Bug 194 on `v2.1.0/passphrase-independent-spaces`, whose docs still say 194 (rollout §8 item 30
+and its Related table, `decisions.md`, the `PASSPHRASE_*` docs). `release/v2.1.0` already holds a different Bug 194
+(stale inbound prekeys, PR #156), so this is Bug 196 here. The references on that branch need renumbering there.
+
+**Target:** release 2.0.1 (the owner chose it 2026-11-03), as its own stage (rollout §7.2, stage P). It must ship
+before the passphrase release, so pairings hold their secret before spaces exist.
+
+### Severity: Medium today, High once independent spaces ship (proposed)
+
+### What happens
+
+- **The sender is found by identity alone.** Every file's `senderFingerprint` is SHA-256(identity key ‖ nonce)
+  (`OccultaBundle.swift:549`, `Contact+Model+Profile.swift:18`), outside the slots, shared by every member
+  (`Crypto+Manager+GroupEncrypt.swift:281`).
+- **Today:** anyone holding the sender's public key can test a captured file for its sender: every contact of
+  theirs, and a coercer holding any of those phones. And a `.longTermNoPQ` file, or a `.forwardSecretNoPQ` one
+  whose prekey is unused, opens with the identity key (keychain, behind the passcode) and the sender's public key,
+  with nothing per pairing (`PASSPHRASE_LAYER_KEYS.md`, "These are the gap").
+- **Under independent spaces:** there is one identity per install (decision 15b), so a person paired in two spaces
+  matches in both. A coercer can force that: two travel companions who hold each other behind a phrase are told to
+  pair in the decoy. A prekey or ML-KEM file then fails in the other space with an error for a contact it holds,
+  in place of item 24's "deleted or cannot be found" screen. A `.longTermNoPQ` file opens in both: the decoy shows
+  the hidden pairing's message, and sends the sender a fresh batch (FORWARD_SECRECY_GUIDE, Receiving, step 6).
+- **The long-term slot is reached** after pairing ("two fallback messages each way bootstrap a new pair"), for
+  every identity challenge (`IdentityChallenge+Manager.swift:504`), which a coercer can start, and with contacts on
+  builds older than last-resort keys. Not when one-time keys run out: the last-resort key stays.
+
+### Fix (decided 2026-11-03; rollout §8, item 30)
+
+A 32-byte secret per pairing, held only in the contact's sealed record (next to `quantumKeyMaterialEncrypted`; no
+keychain item, nothing outside the record).
+
+1. **New pairings derive it** at save (`KeyExchange.swift`, `save()`), from the identity ECDH, both pairing nonces
+   (`HybridExchangeResult.ourNonce`/`peerNonce`; also present on a classical exchange with a v2 peer) and the ML-KEM
+   secrets where present, under a `SaltInfo` label of its own. It is the input the verification words come from
+   (`createDicewareKey`), so the words authenticate it. Nothing new is sent in the exchange. The nonces aren't
+   stored.
+2. **Existing pairings swap it in bundles.** A new optional field in `RecipientPayload` (`OccultaBundle.swift:661`),
+   next to `prekeyBatch`, carrying a key, its type and a confirmation. Each side sends a random half; the secret is
+   made from both, sorted, so crossing sends can't conflict. Each side keeps sending its half until the
+   confirmation shows the other holds both. A classical pairing's half goes only in a one-time-prekey slot, never a
+   long-term or last-resort one. ML-KEM pairings swap the same way (one mechanism). Not in `SealedPayload` and not
+   as a signed attribute: a group file's sealed payload reaches every member.
+3. **Each slot carries its routing label,** HMAC(pairing secret, the file's nonce), readable before decryption, in
+   `Recipient` (`OccultaBundle.swift:629`). The outer `senderFingerprint` goes, and so does trial decryption in
+   `findAndOpenRecipientSlot` (`Crypto+Manager+GroupDecrypt.swift:101`): the receiver computes one HMAC per contact
+   in the open space and matches the labels. Every file is affected, since a one-to-one file is a group of one
+   (`Contact+Manager.swift:1269`). Identity challenges (`IdentityChallenge+Manager.swift:522`) route the same way.
+4. **Key binding:** the secret is mixed into every slot's derivation (`Crypto+Manager+KeyDerivation.swift`,
+   `deriveInboundKey` and its sending side, through `TransportKeyDerivation`).
+5. **The sender proof** moves from `SealedPayload.senderProof` into each slot's `RecipientPayload` and covers that
+   slot's label as well as the sender's public key (verified at `Contact+Manager.swift`, step 5.5).
+6. **Cards:** bootstrap slots are labelled HMAC(card agreement key, nonce), the card key replacing today's card
+   fingerprint (`ContactManager+Cards.swift:722`; card SPEC §4.3, §6.6). Once both sides hold `ss1` and `ss2`, the
+   secret is derived from them as in step 1, and the labels switch with step 2's confirmation. A later in-person
+   meeting derives its own, as a new pairing.
+7. **Transition:** a new bundle version; a sender uses the new form only once the contact's `maxBundleVersion`
+   supports it. A contact with no secret keeps the identity fingerprint, and the receiver accepts it for that
+   pairing until the confirmation.
+
+### Design as built (2026-11-03; the full design, chosen over a new-pairings-only variant)
+
+**Naming (2026-11-03, the owner):** the entry and the decision call the per-slot HMAC a "routing label"; in code and on the wire
+it is `routingTag` (`Recipient.routingTag`, `PairingSecret.routingTag(secret:nonce:)`), because "label" already names vault entry
+labels, signed-attribute labels and the reseal inventory's. Read "label" below as the routing tag.
+
+Shipped in 2.0.1, which has no spaces: the cross-space case is tested with two contact records that share one identity
+key and hold different secrets. What 2.0.1 itself gives is sender testing closed for pairings with a secret, `.longTermNoPQ`
+bound to the pairing, and the capability on phones before 2.1.0.
+
+**Models.**
+
+- *Wire:* `PairingSecretSwap` in `OccultaFormats`, an optional field of `RecipientPayload` next to `prekeyBatch`:
+  `kind` (`half`, `none`, `unsupported`: a discriminator, decoded like `ShardOperation.Kind`), `key` (32 bytes: the
+  sender's random half) and `confirmation` (32 bytes: HMAC(secret, "occulta-pairing-confirm-v1" ‖ the sender's own half),
+  so a reflection confirms nothing). The label, the confirmation and the combining of two halves are pure functions in
+  one `PairingSecret` namespace there, so the interop vectors pin them.
+- *At rest:* `PairingSecretState`, a phase enum (`none`, `swapping(ourHalf)`, `held(secret, peerConfirmed)`) and a
+  sticky `refusesOldForm`, sealed by `PairingSecretCodec` (fixed layout, fixed capacity, modelled on `CardStateCodec`)
+  into `Contact.Profile.Key.pairingSecretEncrypted`. On the `Key` row because a secret belongs to a peer key: a key
+  change leaves the old secret on the retired row. Added to `KeyReseal+Inventory.swift`.
+- *Rules read off the state:* send the new form only when `held` and `peerConfirmed` and the tier allows; accept a label
+  when `held`; accept the old form unless `refusesOldForm`. A peer's half that arrives first goes straight to `held`
+  (no peer half is ever stored). `ourHalf` is saved before its first send, so a crash retries the same half.
+
+**Nothing may tell old form from new, on the wire or at rest.**
+
+- A new-form file keeps the header's 32-byte `senderFingerprint`, filled with random bytes.
+- Every slot carries a `label`, random filler in an old-form slot, and a `PairingSecretSwap`, `kind: none` with random
+  bytes unless a real half rides in it (a classical half only in a one-time-prekey slot). A test pins that the encoded
+  lengths match. Slot sizes are visible in a group envelope, so a mixed-tier group must not differ by slot.
+- Every `Key` row holds a sealed state, never nil: a migration writes the empty one onto existing rows (like
+  `migrateCardFields`), and every creation path writes one.
+
+**At rest.**
+
+- A new pairing's secret is written as its `Key` row is inserted, not in a second save, which would mark the row
+  updated in place (Bug 190, `Z_OPT`).
+- Deleting or soft-deleting a contact overwrites the column with the sealed empty state.
+- No keychain item. No `debugPrint` of a half, secret or label, even under `#if DEBUG`.
+- Routing matches every non-deleted contact at every depth, as `identifyOwner` always has, and does the same work at
+  each. It must not be limited to contacts visible at the current depth: a known contact's file that routed at one depth
+  and failed at another is the duress-detection oracle of `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
+  What a depth changes is what is shown, later, in `buildOwnedBasket`. Pinned by `hiddenContactRoutesLikeAVisibleOne`.
+- **Open, needs a decision (Bug 190's, which lives on `v2.1.0/passphrase-independent-spaces`).** In the SwiftData store of
+  2.0.1 every write to the column is logged with row, column and time by SwiftData's history; migrated rows carry a higher
+  `Z_OPT` than rows created after, which separates pairings made before this release from after; free pages and the
+  write-ahead log may keep older ciphertext of the column (sealed under the local DB key, like every sealed field). The
+  column adds one more logged column and no new kind of trace: the migration writes it on every `Key` row in one
+  transaction, which dates the upgrade as any migration does; a swap step is a `Key`-row update with that column's bit
+  set, a few times per pairing; the writes are the same at every depth and no signal depends on the layer. Nothing
+  here is fixed in this entry, since a fix to the one column would leave the others logged. The 2.1.0 store is plain
+  SQLite with no history tables, no `Z_OPT` and no ordered `Z_PK` (decided 2026-11-01, not built), which removes
+  these; the SwiftData store keeps them until it is deleted, once every layer has migrated and been verified, and
+  images taken before the migration keep them. **The migration to that store must carry each `Key` row's sealed
+  pairing state as it is** (rollout item 30): a regenerated secret would leave every existing pairing without its
+  routing tag.
+
+**Version gating.** A new capability tier, wire byte `0x0B`, app 2.0.1+, never written as the wire `version`. Its doc
+carries the rule the tiers above it do: no build numbered 2.0.1 or later may ship without the receive and send paths.
+
+### The two points the entry left open (2026-11-03)
+
+- **Refusing the old form: a split rule.** A record made by a new pairing refuses an old-form file from the start,
+  since otherwise an old-form file from the person's other pairing matches it, which is this bug. A record that
+  swapped keeps accepting old-form files after the confirmation: files travel offline and arrive late, and a file the
+  contact sent before the confirmation but opened after it would otherwise be lost. **Decided 2026-11-04 (the
+  owner): it keeps accepting.** What that leaves is an old-form file for a swapped record from any sender who holds the
+  identity key; it matches by identity as today, so two swapped records for one person stay as ambiguous as before the
+  fix, and the population shrinks as old pairings are re-made. Refusing from the peer's first new-form file on was
+  built and reverted the same day: it dropped messages that prekey continuity promises to open, and three of its tests
+  failed (`PrekeyConversationTests`: out of order within windows of 4, a message on a retired last-resort key within
+  its 30 days, a long-term reply redelivered after its batch ID aged out). A limit of 30 days after that file would
+  have passed them, at the price of a stored date and a clock dependence; not chosen.
+
+- **Restore and device migration: no path carries a contact record (found 2026-11-03, building this).** The entry
+  listed backup restore and Device Migration as paths that must carry the secret or fall back to the swap. Read from
+  the code, neither exists as one:
+  - The `.occbak` file is a vault backup (`VaultBackup`, `VaultBackupEntry`); it names contacts only as trustee
+    identifiers and holds no contact record.
+  - A contact backup was analysed and rejected (`Occulta/Features/contact-backup-analysis.md`): the identity key is
+    in the Secure Enclave, so a new phone has a new identity.
+  - Device Migration has no code (`Docs/Features/Device Migration/FINDINGS.md`, exploratory); it too ends in a
+    re-pairing, which is a new pairing with a new secret.
+  So the secret never leaves the sealed record, and a test pins that the vault backup payload doesn't hold it. A new
+  peer key (identity rotation, Bugs 82 and 94) is a new pairing: the secret sits on the peer's `Key` row, so a
+  retired key leaves its secret behind with it. No path resets a pairing's secret on the arrival of an old-form file:
+  a replayed or forged old-form file would then downgrade it. **Decided 2026-11-03: no restart rule.** A fresh
+  authenticated half from a peer we already hold a confirmed secret with does not restart the swap; a peer who loses
+  their record gets a new Enclave identity and re-pairs, which derives a new secret. The SwiftData store is excluded
+  from iCloud and iTunes backups (Bug 70, `BackupExclusionTests`), and its sealed fields wouldn't open on another
+  phone either way. When Device Migration is built, its design needs a line here: the secret is fresh per new
+  pairing and never copied (rollout item 29).
+
+### Open decisions (2026-11-03)
+
+1. **How a new pairing learns the peer can use the secret.** Step 1 says nothing new is sent in the exchange; that
+   does not hold. A classical exchange's `Payload` carries no nonces (`hybridResult` is nil; the nonces live in
+   `ExchangeManager`), which is plumbing. The real gap: a 2.0.0 phone also sends a nonce, so a secret derived at
+   pairing doesn't prove the peer holds it, and refusing the old form on such a contact would cut it off. Options:
+   (a) one optional field on `Exchange`, which the Multipeer session (`.required` encryption) shows only to the peer
+   and old builds ignore: the new form from the first message, often the `.longTermNoPQ` bootstrap this bug is about;
+   (b) nothing in the exchange: both sides hold the secret unconfirmed, and each side's first message goes in the old
+   form with the identity fingerprint, carrying a confirmation. Recommended: (a). Needs a decision.
+   **Decided 2026-11-03: a prekey batch exchanged at pairing, as an introduction card's key is (the bootstrap slot is an
+   ephemeral ECDH to the card key; `installFreshBatch(into:)` already makes Carol's batch at import).** `Exchange` gets one
+   optional field, our `PrekeySyncBatch`: 15 one-time keys and a last-resort key, the whole batch, not the last-resort
+   key alone, since a one-time key opens once and a last-resort key can be reopened for 30 days. Its presence on both
+   sides is the capability signal, so there is no flag, no `appVersion`, no `pairingNonce` and no confirmation for a new
+   pairing; a 2.0.0 phone ignores the key. `ExchangeManager` generates the batch as Enclave blobs in a scratch
+   `PrekeyRecord` (`install` assigns the IDs), held in memory: nothing reaches the keychain or the store until
+   `save()`, so an abandoned exchange leaves nothing. At `save()` the contact's record gets our batch as pending (it keeps
+   travelling until used; the peer dedupes it by batch ID) and the peer's accepted through `PrekeyBookkeeper.accept`; the
+   secret derives from the identity ECDH, the exchange nonces and the ML-KEM secrets, with the classical exchange's
+   nonces carried into its payload. The first message is then forward-secret and routed by label: no long-term
+   bootstrap and no identity fingerprint between two 2.0.1 phones. A re-pair replaces the contact's prekey record
+   (the new batch must supersede the old phone's keys; `release/v2.1.0` has this for a key change in PR #156, so the two
+   overlap when the branches meet). Residual: a relay that passes the exchange faithfully can strip the field, which
+   leaves both phones on today's form, or one phone refusing the old form the other still sends. Unverified:
+   `encryptBundle` choosing a freshly accepted batch's key for a new record in every mode, hybrid included; a test
+   settles it.
+2. **A key per pairing, beside the secret or instead of the identity key.** What is built is a shared symmetric secret per
+   pairing, not a key pair. A key per pairing (an Enclave blob in the sealed `Key` row, so no keychain item) would sign
+   and agree keys in place of `K`. It reopens rollout decision 15b, needs a rollover for existing pairings that looks
+   like a key change (`contactKeyRotated`, Bugs 82, 94, 195), and touches every use of the identity key. Group files
+   would still need a tag per slot. The secret can be derived from a pairwise ECDH instead (a new derivation domain, so
+   old and new pairings don't collide); the tags, the key binding, the slot proof, the swap and the state codec stay.
+   **Decided 2026-11-04 (the owner): build it for new exchanges, in 2.0.1, as a second PR stacked on this one.** A new
+   pairing gets its own key pair (an Enclave blob in the sealed `Key` row), exchanged through one optional `Exchange`
+   field whose presence is the capability, as `prekeyBatch`'s is. `K` is still exchanged beside it and keeps the in-person
+   hash check and the "same phone re-paired" continuity check; the hashes stay. Existing pairings keep `K` and the secret
+   and its swap: no rollover, no in-band vouching of one key by another, and no warning asking users to re-exchange
+   (dropped: with `K` kept the gain over the secret is small, so a nudge isn't worth it). The secret of a new pairing
+   derives from the pairwise ECDH under a new domain, so old and new pairings never collide; tags, binding, proof, swap
+   and the state codec stay. It reopens rollout decision 15b. Reason to do it now: every pairing made before it ships
+   would otherwise be born on the secret alone. What it adds over the secret, with `K` kept, is small: a hardware-bound
+   long-term key (the secret, read with the local DB key, lets files be recognised, not opened or forged, and that
+   reader already has the contacts and messages); signatures that verify only for the pair (they sit in sealed payloads,
+   so only the recipient sees them, and a trustee could show a shard attribute to a third party); and the inner
+   challenge fingerprint no longer binding to `K`. It does not remove the `K` pseudonym, the displayed hashes or the
+   contact books' copies of `K`, and it leaves depth behaviour as the secret has it. The plan is being written
+   (session `pairwise-key-plan`); nothing is built.
+3. **Where the identity key is visible (audit of 2026-11-03, one source reader, nothing run, commit `33a90a7f`).**
+   `K` is the identity public key, `H` its SHA-256. Open, needs a decision, and unchanged by this fix:
+   - the pairing exchange sends `K` to every contact, so `K` is a stable pseudonym. Matching two phones' copies needs
+     the plaintext of the key on both: the sealed `Key.material` rows (the local DB key, so the Enclave and an unlocked
+     device; a disk image alone shows ciphertext) or an unlocked app, whose screens show the hash. Two contacts can
+     also compare the hash they each see of the same person, which needs no seizure;
+   - Settings shows `H` in full on every layer, the pairing confirmation shows 8 bytes of it, and a contact's detail
+     shows the hash of their key;
+   - `Key.owner` stores `H` (sealed) in every contact's key row.
+   Closed by this fix: the cleartext header fingerprint SHA-256(`K` ‖ nonce) and the challenge routing fingerprint.
+   Not closed by it: signatures checkable with `K` (the forward-secret slot signature, challenge responses, backup
+   pieces sent to trustees).
+   **Decided 2026-11-04 (the owner): the hashes stay, and the rest waits on decision 2.** The displayed hash is the
+   in-person check of a key (after an identity rotation, say), and removing it from every depth would lose that to
+   close a link a key per pairing closes properly: the hash shown would then be that pairing's own. Revisit if
+   decision 2 is not taken, since then the hashes are the cheap way to raise the bar for a coercer at an unlocked app.
+4. **Routing and depth.** `fetchAllContacts()` is not filtered by depth: `identifyOwner` matches every non-deleted
+   contact, and the visibility gate runs later, in `buildOwnedBasket`. The label match inherits that.
+   **Closed 2026-11-04: same as today, by design.** A slot is opened, and a prekey consumed, for a contact hidden at
+   the current depth, as for any other: not doing so would make a known contact's file succeed at one depth and fail
+   at another, the oracle of `Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, which says not to restore
+   that gate. The tag match scans every contact at every depth. The earlier line in "At rest" that said otherwise was
+   wrong and is corrected. `hiddenContactRoutesLikeAVisibleOne` pins it.
+5. **The version.** The tier is keyed to app version 2.0.1, and a sender writes `Bundle.main.appVersion` into its
+   payload. **Closed 2026-11-04:** `MARKETING_VERSION` is 2.0.1 in the app, the share extension and the preview target
+   (the three that were 2.0.0; the four at 1.0 are untouched). Without it no phone is recorded at the tier.
+
+### Built (2026-11-04)
+
+1. **Wire:** `.pairingSecretCapable` (marker `0x0B`, app 2.0.1+, never the wire version); `Recipient.routingTag`;
+   `RecipientPayload.pairingSwap` and `slotProof`; `PairingSecret` (routing tag, slot proof, key binding, combine, confirmation,
+   derivation) in `OccultaFormats`. Old vectors are untouched; 14 new ones pin the rest.
+2. **At rest:** `PairingSecretState` and `PairingSecretCodec` (128 bytes, every state), the sealed `Key.pairingSecretEncrypted`
+   column, filled by `migratePairingSecretFields`, written with the key row, overwritten at deletion, carried by the reseal
+   (`KeyReseal+Inventory` and `+Run`, and the frozen-key fixture).
+3. **Exchange:** `Exchange.prekeyBatch` (15 one-time keys and a last-resort key), made in the Enclave when the peer connects
+   and held in memory, `PairingOffer`, installed with the key row in one save; the first message is forward-secret.
+4. **Pairing:** the secret derives at the exchange from the identity ECDH, the nonces and the ML-KEM secrets; a re-pair retires
+   the old phone's batches (`PrekeyBookkeeper.startPairing`) and drops its keys.
+5. **Send and receive:** per-slot routing tag, the secret mixed into the key, the proof in the slot; the header fingerprint
+   and shared proof are random when every recipient has a secret; `identifyOwner` matches tags first and refuses the identity
+   fingerprint for a pairing that began with a secret; `openSlot` opens only the tagged slot.
+6. **The swap** for a pairing from before the fix, in one-time-key slots only, with a half kept until the peer's first
+   new-form file arrives (`PairingSecretState+Swap`). Identity challenges need no change: they route by tag like any file.
+
+**Not built, open, needs a decision:**
+- **Cards: decided 2026-11-04, deferred by the owner to a later release.** Bootstrap slots keep the card-key fingerprint, and
+  no secret is derived from `ss1` and `ss2` (step 6 of the Fix above). A card conversation uses card keys, not the identity
+  key, so the bug doesn't arise there; what it leaves is a fingerprint a holder of the card file can compute, and so
+  someone who holds the card and captures files can recognise a conversation. It is no worse than the 2.0.0 behaviour. A
+  secret from `ss1` and `ss2` would help only after the first reply, since the first messages exist before either side
+  holds both. Deferred because it is a different mechanism (a second fixed-size sealed state with its own capacity test,
+  a new point where a secret is made, tests that need an Enclave) in a state machine that shipped a release ago, for a
+  narrow gain. See the card SPEC §4.3.
+- **A mixed group: decided 2026-11-04, a transitional residual, accepted by the owner.** One recipient without a secret
+  keeps the real identity fingerprint and shared proof in the header for the whole file, which any holder of the sender's
+  public key can test. It stays because that recipient finds its sender by the header before it decrypts anything, and a
+  2.0.0 phone reads nothing else. Someone who holds `K` learns that at least one recipient lacks a secret, and nothing
+  more: they could already recognise the sender's files by that fingerprint before this fix, and without `K` the field
+  is indistinguishable from random either way. It closes as pairings settle: when every member has a secret the header
+  is random. Separate bundles per class would lose the shared ciphertext and show the split in file count and size.
+- **The inner challenge fingerprint** still binds to the identity key, as do the forward-secret slot signature, challenge
+  responses and backup-piece signatures: anyone holding `K` can verify them.
+- **The version.** The tier is keyed to 2.0.1; `MARKETING_VERSION` is 2.0.1 (bumped 2026-11-04).
+- **The "current key".** `contactPublicKeys?.last(where:)` is read as the current key throughout the app, and a SwiftData
+  to-many relationship has no order of its own. Two re-pair tests failed intermittently for it; the code is unchanged.
+- **Merging with `release/v2.1.0` (checked 2026-11-04 on a scratch merge, not pushed).** Its Bug 194 fix (PR #156) drops a
+  contact's inbound prekeys on a key change; the two overlap. Three conflicts and two compile breaks that git does not show:
+  1. `Contact+Manager.swift`, `update(key:for:pairing:)`: keep Bug 194's `dropInboundPrekeys` first, then this entry's
+     `installPairingPrekeys` and the sealed secret. A peer that sent no batch (a 2.0.0 phone) gets only Bug 194's drop;
+     for a pairing the install replaces the record's prekeys as well, so dropping first changes nothing there.
+  2. `bugs.md`: keep both entries; 196 goes after 195 (release has 191, 194 and 195; the numbers don't clash).
+  3. `BodyStreamTests.swift`: take release's version of the Xcode 27.2 fix.
+  4. `TestKeyManager.createPairingSecret` called `rawECDHWithSalt`, which release's Bug 191 rewrite removed: use
+     `deriveRawECDH(privateKey:peerMaterial:)` and the salt `peerP256Material XOR identityPublicKeyData`.
+  5. `Manager.Key.createPairingSecret` called `ecdhWithSalt`, which release renamed `identityECDH`; its `ECDHResult` has
+     `ownPublicKey` and no `salt`, so the salt is `peerP256Material XOR ecdh.ownPublicKey` (the same bytes).
+  With those the merge builds. Full suite on it: 2,142 tests, exactly 6 skips, all in `KeychainMigrationSETests`. Not
+  green, and none of the failures is the merge's: six source-scan tests fail on a checkout at a path like the scratch one
+  (five of them were run on plain release there and fail identically; they read paths relative to the checkout), one is
+  the known vault-timer flake, and three prekey-conversation tests fail on this branch itself (see the split rule).
+  The conflicts' resolutions are recorded by `git rerere` in this repository, so the real merge reuses them.
+
+
+### What the building session also changes
+
+- `OccultaTests/Interop/InteropVectors.json`: new vectors for the new version; the old ones stay, since old-form
+  files must still open.
+- `KeyReseal+Inventory.swift`: the new contact field, so the reseal carries it.
+- Docs: FORWARD_SECRECY_GUIDE (Sending, Receiving, the wire layout); card SPEC §4 and §6.6;
+  `PASSPHRASE_LAYER_KEYS.md`'s "gap"; `OccultaCore/README.md` and `ReadmeExamplesTests` if `TransportKeyDerivation`'s
+  API changes; this entry and rollout item 30 when it lands.
+
+### Tests
+
+Added 2026-11-03: every state seals to one length; no `Key` row is nil after any creation path or the migration;
+deletion and soft-deletion overwrite the column; the vault backup payload doesn't hold the secret; a contact hidden at the current depth routes and opens like a visible one; a new-form and an old-form slot encode to one length.
+
+
+- Two contact records with one identity key and different secrets, standing in for two spaces: a file from each
+  pairing matches only its own record, in every mode, `.longTermNoPQ` included; the other record sees an unknown
+  sender.
+- A group member can't compute another member's label, or forge their slot.
+- The sender proof fails when a slot's label is swapped.
+- The swap: crossing halves agree; a half in a long-term or last-resort slot of a classical pairing is never sent;
+  the confirmation switches both sides; a lost message leaves the old form working.
+- A new pairing's derived secret is equal on both phones, and differs between two pairings of the same two
+  identities.
+- Cards: bootstrap labels from the card key, the switch after `ss1` and `ss2`.
+- Version gating: a contact on an older build gets the old form, and its files still open.
+- **Migration, no data loss:** an install with contacts from before the change keeps opening their old-form files,
+  sends them the old form until the swap completes, and loses no prekey state. Prekey round-trips need the
+  `secureEnclaveAvailable()` gate (CLAUDE.md).
+
+Written 2026-11-04: `OccultaTests/PairingSecret/` — `PairingSecretTests` (wire functions and fields), `PairingSecretStateTests` (state,
+codec, column, migration, no data loss), `PairingOfferTests` and `PairingSaveTests` (the exchange's batch, the derivation, the
+save, a re-pair), `PairingRoutingTests` (two records with one identity key and different secrets, every file in
+`.longTermNoPQ`, old form refused and accepted, the proof, groups, an identity challenge), `PairingSwapTests` (the
+transitions: crossing, loss, forged confirmation) and `PairingSwapEndToEndTests` (two phones' real bundles, Enclave-gated, and the
+install from before the change). Not covered: a member forging another's slot beyond the key and tag checks above, cards, the
+Multipeer flow.

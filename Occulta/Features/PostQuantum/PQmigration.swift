@@ -444,6 +444,34 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
+    /// Seals the empty pairing-secret state into every key row whose `pairingSecretEncrypted` is nil (`bugs.md` Bug 196).
+    ///
+    /// A copy of `migrateCardFields`, for the same reasons: one pass over every row, live, hidden and soft-deleted,
+    /// because a NULL against a fixed-size sealed field would separate the pairings the pass never reached, and without
+    /// any key; a soft-deleted row gets the same sealed empty state a deletion writes; rows still at the v1 scheme are
+    /// skipped until `migrateToV2` has converted them. A key row belongs to a contact, so the pass walks contacts.
+    ///
+    /// If it fails, the fields stay nil, read as empty (`ContactManager.pairingSecretState(of:)`), and the pass
+    /// retries at the next launch or unlock. Touches no other field. Idempotent: a row that has the field is left
+    /// byte-identical.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migratePairingSecretFields(modelContext: ModelContext) throws {
+        let v1 = EncryptionScheme.v1_identityDerived.rawValue
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.encryptionScheme != v1 })
+        )
+        var didChange = false
+
+        for key in contacts.flatMap({ $0.contactPublicKeys ?? [] }) where key.pairingSecretEncrypted == nil {
+            guard let sealed = try PairingSecretCodec().encode(.empty).encrypt() else { throw MigrationError.hybridKeyUnavailable }
+            key.pairingSecretEncrypted = sealed
+            didChange = true
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
     /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
     /// list. It used to stamp `globalTrusteeDepth = encrypt(0)` on those contacts first (the
     /// shard-custody bug doc, item 3); with Global Trustees retired it stamps nothing, which

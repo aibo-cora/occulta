@@ -77,6 +77,15 @@ class ExchangeManager: NSObject {
     /// Our ML-KEM encapsulation key, included in the identity message.
     var encapsulationKeyData: Data?
 
+    // MARK: - Pairing secret and first prekeys (`bugs.md` Bug 196)
+
+    /// Our first prekeys: a scratch record with one pending batch, made when the peer connects and held in memory
+    /// until `save()`. Nil if the Enclave couldn't make them, in which case no batch is sent and the pairing goes the
+    /// way it did before.
+    private var ownPrekeys: PrekeyRecord?
+    /// The batch the peer sent in its identity message. Nil from a phone that can't hold a pairing secret.
+    private var peerBatch: PairingOffer.Batch?
+
     // MARK: - Card meeting check (SPEC §7)
 
     /// What the contact's card field lets us sign and check; set by the caller when the exchange starts from a
@@ -143,6 +152,8 @@ class ExchangeManager: NSObject {
             let fingerprint: Data
             let classicalKey: Data
             let hybridResult: HybridExchangeResult?
+            /// Set when both phones sent a prekey batch: the pairing secret and first prekeys follow from it.
+            var pairing: PairingOffer? = nil
         }
     }
 
@@ -244,6 +255,8 @@ class ExchangeManager: NSObject {
         self.ourNonce = nil
         self.peerNonce = nil
         self.peerIdentity = nil
+        self.ownPrekeys = nil
+        self.peerBatch = nil
         self.ourSentIdentity = nil
         self.peerCardProof = nil
         self.encapsulationKeyData = nil
@@ -292,7 +305,8 @@ class ExchangeManager: NSObject {
                 token: archivedToken,
                 version: .v1,
                 identity: keyingMaterial,
-                encapsulationKey: self.encapsulationKeyData
+                encapsulationKey: self.encapsulationKeyData,
+                prekeyBatch: self.ownPrekeys.flatMap(PairingOffer.wireBatch(of:))
             )
             let encoded = try JSONEncoder().encode(exchange)
             try session.send(encoded, toPeers: [peerID], with: .reliable)
@@ -363,6 +377,13 @@ class ExchangeManager: NSObject {
 
     // MARK: - Final assembly
 
+    /// The pairing offer for a payload built now: only when both phones sent a batch and both nonces are known.
+    /// Anything missing means the peer can't hold a pairing secret, and the pairing is made without one.
+    private func pairingOffer() -> PairingOffer? {
+        guard let ourNonce, let peerNonce, let ownPrekeys, let peerBatch else { return nil }
+        return PairingOffer(ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys, peerBatch: peerBatch)
+    }
+
     private func assembleHybridResult(ours: QuantumPayload, theirs: QuantumPayload) {
         guard let peerIdentity, let ourNonce, let peerNonce else { return }
 
@@ -385,7 +406,8 @@ class ExchangeManager: NSObject {
         let payload = ExchangePhase.Payload(
             fingerprint: peerIdentity.sha256,
             classicalKey: peerIdentity,
-            hybridResult: result
+            hybridResult: result,
+            pairing: self.pairingOffer()
         )
         self.phase = .mlKemExchanged(payload)
         Task { @MainActor [weak self] in
@@ -412,6 +434,10 @@ class ExchangeManager: NSObject {
         self.phase = .found
         self.connectedPeerID = peerID
         self.isInitiator = self.multipeerSession!.myPeerID.displayName < peerID.displayName
+
+        // Our first prekeys, once, for the peer we're pinned to. Made here and not at `start()` so an exchange that
+        // never finds anyone makes none. A failure sends no batch.
+        if self.ownPrekeys == nil { self.ownPrekeys = try? PairingOffer.makeOwnPrekeys() }
 
         #if DEBUG
         debugPrint("[KE] MC connected: \(peerID.displayName) — role: \(self.isInitiator ? "initiator" : "responder")")
@@ -530,6 +556,7 @@ class ExchangeManager: NSObject {
                 #endif
 
                 self.peerIdentity = peersP256Key
+                self.peerBatch = decoded.prekeyBatch.map(PairingOffer.Batch.init)
                 self.phase = .identityExchanged(fingerprint: peersP256Key.sha256)
 
                 if let peerEncapKey = decoded.encapsulationKey,
@@ -582,7 +609,8 @@ class ExchangeManager: NSObject {
                         let payload = ExchangePhase.Payload(
                             fingerprint: peersP256Key.sha256,
                             classicalKey: peersP256Key,
-                            hybridResult: nil
+                            hybridResult: nil,
+                            pairing: self.pairingOffer()
                         )
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
@@ -598,7 +626,8 @@ class ExchangeManager: NSObject {
                         let payload = ExchangePhase.Payload(
                             fingerprint: peersP256Key.sha256,
                             classicalKey: peersP256Key,
-                            hybridResult: nil
+                            hybridResult: nil,
+                            pairing: self.pairingOffer()
                         )
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
@@ -747,7 +776,8 @@ class ExchangeManager: NSObject {
                         let payload = ExchangePhase.Payload(
                             fingerprint: peerIdentity.sha256,
                             classicalKey: peerIdentity,
-                            hybridResult: nil
+                            hybridResult: nil,
+                            pairing: self.pairingOffer()
                         )
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))

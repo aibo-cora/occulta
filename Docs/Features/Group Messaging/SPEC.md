@@ -69,8 +69,16 @@ No cleartext identity hint. The receiver finds their slot by trial-decryption �
 RecipientPayload
 ├── sessionKey: Data            // 32 bytes — decrypts the shared ciphertext
 ├── prekeyBatch: PrekeySyncBatch?  // sender's fresh prekeys for this recipient, or nil
-└── bodyDigest: Data?           // SHA-256(ciphertext); v2.0.0+, nil from older senders (Bug 165)
+├── bodyDigest: Data?           // SHA-256(ciphertext); v2.0.0+, nil from older senders (Bug 165)
+├── pairingSwap: PairingSecretSwap? // v2.0.1+: our half of the pairing secret and a confirmation, or filler (Bug 196)
+└── slotProof: Data?            // v2.0.1+: HMAC(pairing secret, routingTag || senderPublicKey), or random (Bug 196)
 ```
+
+Each `Recipient` also carries `routingTag: Data?` in the clear (v2.0.1+): HMAC(pairing secret, file nonce) for a slot sealed
+to a pairing that holds a secret, random bytes of the same size otherwise. The receiver computes one tag per contact it holds a
+secret for and matches it against the slots, which replaces trial decryption for those contacts; the secret is also mixed into
+the slot's key. When every slot has a secret the header's `senderFingerprint` and `SealedPayload.senderProof` are random. See
+`Secure Mode/bugs.md` Bug 196 and `Occulta/Features/Forward+Secrecy/FORWARD_SECRECY_GUIDE.md`.
 
 > **No quantum material in Recipient.** The ML-KEM shared secret is established during proximity key exchange and stored on the contact record. The sender retrieves it at wrap time — nothing extra travels on the wire.
 
@@ -124,7 +132,7 @@ Binds the wrapped session key to this bundle's blind. A compromised wrapping key
 ### Decrypt
 
 1. Decode bundle — `group != nil` → take group path; check `GroupEnvelope.version == 1`, else reject
-2. For each `Recipient` entry (trial-decryption):
+2. For a sender whose pairing holds a secret, the slot carrying `routingTag == HMAC(secret, fingerprintNonce)` is ours; open only it, with the secret mixed into its key (Bug 196). Otherwise, for each `Recipient` entry (trial-decryption):
    - Read `secrecyContext.mode` and derive candidate `wrappingKey` (`.forwardSecret` or `.longTermFallback` path)
    - Attempt `AES.GCM.open(wrappedPayload, authenticating: blind)` — first success is our slot
 3. If no slot opened → throw `GroupDecryptError.recipientSlotNotFound`
@@ -132,7 +140,7 @@ Binds the wrapped session key to this bundle's blind. A compromised wrapping key
 5. If `RecipientPayload.prekeyBatch != nil` → store batch for the sender
 6. Decrypt `ciphertext` authenticating `outerAAD` using `RecipientPayload.sessionKey` → `SealedPayload`
 7. Read `SealedPayload.groupID` — if nil, throw `GroupDecryptError.missingGroupID`
-8. Verify `SealedPayload.senderProof == HMAC-SHA256(key: sessionKey, msg: senderPublicKey)`. This only says the body was sealed by someone holding the session key, which every recipient does; step 4's `bodyDigest` is what ties the body to the sender. A body carrying an identity challenge without one, or claiming app version 2.0.0 or later without one, is refused whatever the sender's tier
+8. For a slot found by routing tag, verify `RecipientPayload.slotProof` against the pairing secret, the tag and the sender's key; `SealedPayload.senderProof` is random filler there. Otherwise verify `SealedPayload.senderProof == HMAC-SHA256(key: sessionKey, msg: senderPublicKey)`. This only says the body was sealed by someone holding the session key, which every recipient does; step 4's `bodyDigest` is what ties the body to the sender. A body carrying an identity challenge without one, or claiming app version 2.0.0 or later without one, is refused whatever the sender's tier
 
 ---
 

@@ -128,6 +128,49 @@ extension Manager.Crypto {
         payload: OccultaBundle.RecipientPayload, used: InboundPrekeyUse, mode: OccultaBundle.Mode,
         ephemeralPublicKey: Data
     ) {
+        let opened = try self.openSlot(
+            in: bundle, blind: blind, senderContactID: senderContactID, senderPublicKey: senderPublicKey,
+            quantumMaterial: quantumMaterial, prekeys: prekeys, body: body, pairing: nil
+        )
+        return (opened.payload, opened.used, opened.mode, opened.ephemeralPublicKey)
+    }
+
+    /// What a pairing contributes to finding our slot (`bugs.md` Bug 196).
+    struct PairingSlotContext {
+        /// The sender's pairing secret, held in our record for them.
+        let secret: Data
+        /// Whether a slot with no routing tag of this pairing may still be tried as an old-form slot. False for a pairing that
+        /// began with a secret: an old-form file there is another pairing's.
+        let acceptsOldForm: Bool
+    }
+
+    /// A slot we opened.
+    struct OpenedSlot {
+        let payload: OccultaBundle.RecipientPayload
+        let used: InboundPrekeyUse
+        let mode: OccultaBundle.Mode
+        let ephemeralPublicKey: Data
+        /// The routing tag that routed us to the slot, when it was found by the pairing secret and not by trial. The sender
+        /// proof inside the slot is checked against it.
+        let matchedRoutingTag: Data?
+    }
+
+    /// `openRecipientSlot` with the sender's pairing secret, if the record holds one.
+    ///
+    /// With a secret, our slot is the one whose routing tag is `PairingSecret.routingTag(secret, bundle.fingerprintNonce)`: one
+    /// comparison per slot in place of a trial decryption, and no other slot is opened, so a group member's slot is
+    /// never tried with our key. Its key has the secret mixed in. No slot with that routing tag means the file isn't of this
+    /// pairing's new form: it is tried as an old-form slot only if `acceptsOldForm`, else it is not ours.
+    func openSlot(
+        in bundle: OccultaBundle,
+        blind: Data,
+        senderContactID: String,
+        senderPublicKey: Data,
+        quantumMaterial: QuantumKeyMaterial?,
+        prekeys: PrekeyPrivateKeys,
+        body: BundleBody? = nil,
+        pairing: PairingSlotContext?
+    ) throws -> OpenedSlot {
         // The body this bundle's slot commits to: inline unless the caller holds a streamed one (`BundleBody`).
         let body = body ?? .inline(bundle)
         guard let recipients = bundle.group?.recipients else {
@@ -152,14 +195,22 @@ extension Manager.Crypto {
             }
         }
 
+        // The slot this pairing's secret names, if any (Bug 196).
+        let expectedRoutingTag = pairing.map { PairingSecret.routingTag(secret: $0.secret, nonce: bundle.fingerprintNonce) }
+        let tagged = expectedRoutingTag.map { tag in recipients.contains { $0.routingTag == tag } } ?? false
+        if let pairing, !tagged, !pairing.acceptsOldForm { throw GroupDecryptError.recipientSlotNotFound }
+
         for entry in recipients {
-            guard let (wrappingKey, used) = try? self.deriveInboundKey(
+            if tagged, entry.routingTag != expectedRoutingTag { continue }
+
+            guard let (derivedKey, used) = try? self.deriveInboundKey(
                 secrecy: entry.secrecyContext,
                 senderContactID: senderContactID,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
                 prekeys: prekeys
             ) else { continue }
+            let wrappingKey = tagged ? pairing.map { PairingSecret.bind(derivedKey, secret: $0.secret) } ?? derivedKey : derivedKey
             
             guard let box   = try? AES.GCM.SealedBox(combined: entry.wrappedPayload),
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),
@@ -196,7 +247,10 @@ extension Manager.Crypto {
                     senderPublicKey: senderPublicKey
                 ) else { throw GroupDecryptError.senderEphemeralSignatureMismatch }
             }
-            return (payload, used, entry.secrecyContext.mode, entry.secrecyContext.ephemeralPublicKey)
+            return OpenedSlot(
+                payload: payload, used: used, mode: entry.secrecyContext.mode,
+                ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey, matchedRoutingTag: tagged ? expectedRoutingTag : nil
+            )
         }
         throw GroupDecryptError.recipientSlotNotFound
     }
