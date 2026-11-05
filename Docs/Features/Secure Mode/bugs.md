@@ -15293,8 +15293,8 @@ re-recorded from the independent Python reference (`present` 1) and the routing-
 and `PairwiseRoutingTests` now test the routing tag, the proof, the group slots, the twin records and the old-form refusal on pair
 keys (software keys behind `SoftwareCardKeys`, no Enclave); the two Enclave-gated conversation tests that used the removed state
 now forge a signing key and refuse an old-form file respectively. The column rename `pairingSecretEncrypted` to `pairingEncrypted`
-has no `@Attribute(originalName:)`: a store that ran a #157 build drops the column and refills it empty, which assumption A makes
-harmless (the owner's own test phones aside).
+(inside the #157 branch) has no `@Attribute(originalName:)`, and nothing reads #157's version-1, 128-byte column format: #157 was never
+released or run on any phone, so there is no store holding either, and no migration is written for them.
 
 **Release notes line:** "Contacts you paired before this version can be upgraded by exchanging keys again in person; they show a
 small arrow until you do."
