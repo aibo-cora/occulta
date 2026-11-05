@@ -15251,8 +15251,10 @@ Simulator cannot unlock the vault; only the model is tested). Pairing a 2.0.1 ph
 18-25 phones, is part of the two-phone check.
 
 **Bug 190.** The new writes are logged like the column's others: the insert, the migration's filler on every row, the overwrite at
-re-pair and at deletion, and the draft files' new modification times at the first launch after the update (stage 4b). The 2.1.0
-store must carry the pairing column as it is.
+re-pair and at deletion, and the draft files' new modification times at the first launch after the update (stage 4b). A re-pair
+also rewrites the contact's sealed challenge state, but only if some depth held an outstanding challenge to this contact, so the
+column changes in one image and not in another taken around the same re-pair. That one is open, needs a decision, with the other
+at-rest writes. The 2.1.0 store must carry the pairing column as it is.
 
 **Review fixes, 2026-11-05** (an independent security review and code review of the eleven commits; neither found a path where a
 contact or coercer can read or forge, or a fallback to the identity key on send or receive; reports in the session notes folder).
@@ -15295,6 +15297,36 @@ keys (software keys behind `SoftwareCardKeys`, no Enclave); the two Enclave-gate
 now forge a signing key and refuse an old-form file respectively. The column rename `pairingSecretEncrypted` to `pairingEncrypted`
 (inside the #157 branch) has no `@Attribute(originalName:)`, and nothing reads #157's version-1, 128-byte column format: #157 was never
 released or run on any phone, so there is no store holding either, and no migration is written for them.
+
+**Follow-up review, 2026-11-05** (a second security and code review of `9fe37c45..3300c313`; 0 critical, 0 high, 0 medium; every
+earlier finding fixed or reduced to a note; reports `review-security-bug196-followup.md` and `review-code-bug196-followup.md`).
+Fixed, with tests:
+- The batch id in the digest had no length in front, unlike every other variable part (`pairing.batchDigest` is re-recorded from the
+  independent reference; unreleased). No attack was found, but a swapped batch is now a property of the format and not of the argument.
+- The digest of our own batch is taken once, when the `pairing` field is made, and kept on the offer. It was read back from the
+  Enclave blobs each time the transcript was computed (every render of the words screen), and a blob that failed to import in one
+  evaluation would have shortened the batch and made the two phones' words differ with no error.
+- The owner-named open (`openGroup(bundle:ownerID:)`) and the three challenge entry points (create, respond, verify) refuse a
+  pairing that cannot be read, where before only identification and the 1:1 and group sends did. No production path reached the gap.
+- A refused weaker re-exchange showed "Couldn't save key" with a Retry that could only fail again. It now says the other phone gave
+  no pair keys and to ask them to update, and offers Done only. The way on is a new exchange once their phone gives pair keys.
+- The v1 form's `keyIsRevocable` read `.last`; it asks whether any key is not retired. The attachment listing moved into a
+  synchronous helper (a Swift 6 diagnostic in an async context). Stale "secret" wording and one test title were corrected.
+- New tests: a group send to an unreadable pairing, an owner-named open of one and the challenge drop over an unreadable column
+  (each shown to fail without its code: mutation run, then reverted); and a crafted slot sealed with the identity key under the
+  right tag and routing key, which a pair-key pairing opens nothing of (the coverage the removal had taken; no mutation run on it).
+
+Not changed, on purpose or open:
+- The rollback in `update(key:)` has no test that fails without it. Nothing in the block can be made to throw after it has changed
+  something without adding a seam for the purpose. `rollback()` also discards any other pending change in the manager's context
+  (a used one-time prekey whose save failed, before another save), as `PQmigration` does.
+- The attachment pass picks the new key from the first contact seen for an old key. Two records of the same identity key where
+  one has rotated would move a draft file to the other's new key; one draft attachment, and it needs a twin record.
+- "Costs nothing" for a phone with nothing to move is true only with no sealed file; a phone with any draft attachment derives the
+  keys at each unlock (the doc comment says so now).
+- `PairingState` is a struct whose private initializer keeps the routing key and pair keys together, not an enum with one case.
+- Tests for `KeyExchange.save()`, `pairingNotDerived`, the confirmation note and the new "refused" screen do not exist; they need the
+  UI.
 
 **Release notes line:** "Contacts you paired before this version can be upgraded by exchanging keys again in person; they show a
 small arrow until you do."
