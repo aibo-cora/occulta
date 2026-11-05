@@ -15220,8 +15220,9 @@ identity key in it, so holding `K`'s private half opens nothing of such a pairin
 **Send and receive.** A pair-key pairing's long-term slots use the pair-key ECDH; its forward-secret slots are signed by the pair
 signing key (prefixed form only) and checked against the one the peer sent. A slot made the old way, a pair-key slot to a pairing
 without pair keys, a wrong routing key and an old-form file all give `recipientSlotNotFound`; a pairing whose Enclave blob will not
-import neither seals nor opens, and never falls back to the identity key. `routingKeyForSending` returns the routing key to a
-pair-key contact whatever tier is stored; the pre-1.9.0 single-recipient form refuses one.
+import neither seals nor opens, and never falls back to the identity key. `pairingSlotKeys(for:)` (the routing key with the pair
+keys, which travel as one `PairingSlotKeys`) is non-nil for a pair-key contact whatever tier is stored; the pre-1.9.0
+single-recipient form refuses one.
 
 **Identity challenges.** For a pair-key pairing the inner fingerprint is made from the challenger's pair signing key and the
 response is signed by the responder's; the long-term challenge format is refused in both directions.
@@ -15279,12 +15280,21 @@ Fixed, each with tests:
   mutation that filtered the attachment pass by visibility fails one of them (run, then reverted). The UI copy says the contacts
   hold the main key's public half. The duplicated test helpers are one `PairingTestSupport.swift`.
 
-**Left as it is, on purpose.** `PairingState.derived(secret:)`, the "routing key alone" state (`present == 1` in the codec) and the
-code that serves it (`sendsNewForm`, the tier clause in `routingKeyForSending`, a `PairingSlotContext` with no pair keys) are not
-produced by production after stage 3, but `PairingRoutingTests` and several storage tests build them to test the routing tag, the
-proof and the old-form refusal in isolation. Removing the state means rewriting those tests on pair keys. The column rename
-`pairingSecretEncrypted` to `pairingEncrypted` has no `@Attribute(originalName:)`: a store that ran a #157 build drops the column and
-refills it empty, which assumption A makes harmless (the owner's own test phones aside).
+**The routing-key-only state is gone.** After stage 3 production never made a pairing with a routing key and no pair keys, but the
+type, the codec, the draft key, the send and receive paths and about thirty tests still allowed one. They no longer do: a
+`PairingState` is empty or a routing key with its pair keys, built only by `.empty` and `.paired` (its initializer is private); the
+draft key holds a `PairingState`; the codec's `present` is 0 or 1 (it was 0, 1 or 2, and 1 meant the removed state, so an old 2 is
+now refused as malformed; nothing of the format has shipped); `PairingSlotKeys` carries the routing key beside the pair keys, so
+`GroupRecipient` and `openSlot` take one optional in place of a routing key and a pair-key option that had to agree; and
+`routingKeyForSending`, `pairingSlotContext`, `PairingSlotContext` and `PairingState.derived`, `sendsNewForm` and `secret` are
+deleted. The tier clause in `routingKeyForSending` could only apply to a routing key without pair keys, so it went too: a
+pair-key pairing is in the routing-key form whatever tier is stored, as before. The two codec vectors for a paired state are
+re-recorded from the independent Python reference (`present` 1) and the routing-key-alone vector is dropped. `PairingRoutingTests`
+and `PairwiseRoutingTests` now test the routing tag, the proof, the group slots, the twin records and the old-form refusal on pair
+keys (software keys behind `SoftwareCardKeys`, no Enclave); the two Enclave-gated conversation tests that used the removed state
+now forge a signing key and refuse an old-form file respectively. The column rename `pairingSecretEncrypted` to `pairingEncrypted`
+has no `@Attribute(originalName:)`: a store that ran a #157 build drops the column and refills it empty, which assumption A makes
+harmless (the owner's own test phones aside).
 
 **Release notes line:** "Contacts you paired before this version can be upgraded by exchanging keys again in person; they show a
 small arrow until you do."
