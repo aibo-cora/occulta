@@ -144,25 +144,43 @@ struct AttachmentKeyResealTests {
         #expect(AttachmentManager(contactKey: try self.newKey(for: self.peer)).opens(at: file))
     }
 
-    @Test("A file that will not move stops the run and stays exactly as it was, with no temporary left", .ambientTestKeyManager)
-    func failureLeavesTheOriginal() async throws {
+    @Test("A file that will not move stays exactly as it was, with no temporary left, and does not hold back the files after it", .ambientTestKeyManager)
+    func failureLeavesTheOriginalAndTheRunGoesOn() async throws {
         let cm = try makeContactManager()
         try insertContact(publicKeys: [try self.peer.retrieveIdentity()], in: cm)
         let directory = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("a.bin")
-        try AttachmentManager(contactKey: try self.oldKey(for: self.peer)).encrypt(plaintext, to: file)
+        let old = AttachmentManager(contactKey: try self.oldKey(for: self.peer))
+        let poison = directory.appendingPathComponent("a-poison.bin"), good = directory.appendingPathComponent("b-good.bin")
+        try old.encrypt(plaintext, to: poison)
+        try old.encrypt(plaintext, to: good)
 
         // The header still authenticates, so the file is found; a byte in a chunk is wrong, so it cannot be read through.
-        var bytes = try Data(contentsOf: file)
+        var bytes = try Data(contentsOf: poison)
         bytes[bytes.count - 40] ^= 0xFF
-        try bytes.write(to: file)
+        try bytes.write(to: poison)
 
         let result = await cm.resealAttachmentKeys(in: [directory], using: self.me)
 
-        #expect(result == .init(resealed: 0, failed: 1))
-        #expect(try Data(contentsOf: file) == bytes)
-        #expect(!FileManager.default.fileExists(atPath: AttachmentManager.resealingURL(for: file).path))
+        #expect(result == .init(resealed: 1, failed: 1))
+        #expect(try Data(contentsOf: poison) == bytes)
+        #expect(!FileManager.default.fileExists(atPath: AttachmentManager.resealingURL(for: poison).path))
+        #expect(AttachmentManager(contactKey: try self.newKey(for: self.peer)).opens(at: good), "the file after the poison one moved")
+    }
+
+    @Test("Two rows that hold one identity key are tried once, and a file for either still moves", .ambientTestKeyManager)
+    func duplicateKeysAreDeduplicated() async throws {
+        let cm = try makeContactManager()
+        let key = try self.peer.retrieveIdentity()
+        try insertContact(publicKeys: [key, key], in: cm)
+        let pairs = try cm.attachmentKeyPairs(using: self.me)
+        #expect(pairs.count == 1)
+
+        let directory = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("a.bin")
+        try AttachmentManager(contactKey: try self.oldKey(for: self.peer)).encrypt(plaintext, to: file)
+        #expect(await cm.resealAttachmentKeys(in: [directory], using: self.me) == .init(resealed: 1, failed: 0))
     }
 
     @Test("A plaintext file, a file under another key and a file under the new key are left alone", .ambientTestKeyManager)
