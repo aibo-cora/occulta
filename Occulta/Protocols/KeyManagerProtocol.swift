@@ -153,6 +153,10 @@ protocol KeyManagerProtocol {
     /// sender-ephemeral signature, in both directions. Prefixing `wrapRecipient` is the real
     /// fix and is a wire-format change; see §3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`.
     ///
+    /// A pair-key pairing (`bugs.md` Bug 196, stage 2) has a second signing key of its own, in the Enclave, which signs
+    /// that pairing's forward-secret slots (prefixed form only) and identity-challenge responses, and which this method
+    /// never touches. The same rule holds for it: sign only bytes with a domain-separation prefix.
+    ///
     /// - Returns: DER-encoded ECDSA signature.
     func signData(_ data: Data) throws -> Data
 

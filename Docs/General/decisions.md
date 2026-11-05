@@ -1261,6 +1261,13 @@ the share staging key.
 **Decision:**
 - **15a.** The passphrase work's new per-install Enclave key is a keychain item.
 - **15b.** The identity key stays in the keychain.
+  - *Revisited 2026-11-05 (`bugs.md` Bug 196, stage 2):* there is still one identity key per install, in the keychain. For a
+    pairing made with pair keys it is no longer the long-term agreement key or the key that signs that pairing's slots and
+    challenges: each such pairing has its own Enclave key pair. It stays the pseudonym, the in-person hash check, `Key.owner`,
+    the continuity check, and the key for backup pieces, signed attributes and the Sign tab. Under spaces, one person paired in
+    two spaces still shares an identity key across records, so linking by it is unchanged; their long-term slots and signatures
+    no longer work across spaces. Pair keys are Enclave blobs in the app container, so they go with the app, while the keychain
+    identity key survives a reinstall.
 - **15c.** The keys graduation retires (the local DB key and its random component, which is shared with other
   tier U keys since Bug 171's fix, 2026-10-24; the Secure Mode PIN key; the
   vault key) aren't moved first.
