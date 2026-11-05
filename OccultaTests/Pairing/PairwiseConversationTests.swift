@@ -118,20 +118,25 @@ struct PairwiseConversationTests {
         #expect(modes.contains { $0 == .forwardSecretNoPQ || $0 == .forwardSecret }, "a forward-secret message was signed by the pair key and verified: \(modes)")
         // Both pairings still hold the pair keys and the routing key, unchanged by the conversation.
         #expect(try alice.run { alice.contactManager.pairingState(for: try alice.contact).keys } != nil)
-        #expect(try bob.run { bob.contactManager.pairingState(for: try bob.contact).secret } == self.routingKey)
+        #expect(try bob.run { bob.contactManager.pairingState(for: try bob.contact).routingKey } == self.routingKey)
     }
 
-    @Test("A forward-secret file signed by the identity key is refused by a pair-key pairing", .enabled(if: TestSupport.secureEnclaveAvailable()))
-    func identityKeySignatureIsRefused() throws {
-        let (alice, bob, _) = try self.pair()
+    @Test("A forward-secret file signed by a key other than the pair signing key is refused", .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func otherSigningKeyIsRefused() throws {
+        let (alice, bob, keys) = try self.pair()
         // Get both phones past the first long-term message so Alice holds one of Bob's prekeys.
         try bob.receive(try alice.send())
         try alice.receive(try bob.send())
         try bob.receive(try alice.send())
         try alice.receive(try bob.send())
 
-        // Alice now seals as a plain pairing would: the routing key, but the identity key and no pair keys.
-        try alice.setState(.derived(secret: self.routingKey))
+        // Alice now signs with a key that is not the one Bob holds as her pair signing key (the identity key is the case that
+        // matters, and is a key Bob does not hold there either). The slot opens, so this is forgery, not a slot that isn't his.
+        var forged = keys.a
+        let other = try SoftwareCardKeys().makeSigningKey()
+        forged.ourSigningBlob = other.blob
+        forged.ourSigningKey = other.publicKey
+        try alice.setState(.paired(routingKey: self.routingKey, keys: forged))
         let file = try alice.send()
         let kind = try #require(try mode(of: file))
         try #require(kind == .forwardSecretNoPQ || kind == .forwardSecret)
@@ -139,8 +144,8 @@ struct PairwiseConversationTests {
         #expect(throws: GroupDecryptError.senderEphemeralSignatureMismatch) { try bob.receive(file) }
     }
 
-    @Test("A forward-secret file signed by the pair key is refused by a pairing that has no pair keys", .enabled(if: TestSupport.secureEnclaveAvailable()))
-    func pairKeySignatureIsNotTheIdentityKeys() throws {
+    @Test("A pair-key file opens nothing of a pairing that has no pair keys", .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func pairKeyFileIsNotForAPlainPairing() throws {
         let (alice, bob, _) = try self.pair()
         try bob.receive(try alice.send())
         try alice.receive(try bob.send())
@@ -151,8 +156,8 @@ struct PairwiseConversationTests {
         let kind = try #require(try mode(of: file))
         try #require(kind == .forwardSecretNoPQ || kind == .forwardSecret)
 
-        // Bob holds the routing key but no pair keys, so he checks the signature against the identity key.
-        try bob.setState(.derived(secret: self.routingKey))
-        #expect(throws: GroupDecryptError.senderEphemeralSignatureMismatch) { try bob.receive(file) }
+        // Bob holds no pair keys for her now, so he can only try her slot as an old-form one, which its key does not open.
+        try bob.setState(.empty)
+        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try bob.receive(file) }
     }
 }

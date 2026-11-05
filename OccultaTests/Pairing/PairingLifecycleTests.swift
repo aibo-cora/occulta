@@ -133,7 +133,7 @@ struct PairingLifecycleTests {
 
         let again = try #require(Contact.Draft.Key(
             material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 2, count: 32), pairKeys: samplePairKeys()
+            pairing: .paired(routingKey: Data(repeating: 2, count: 32), keys: samplePairKeys())
         ))
         try cm.update(key: again, for: paired.identifier)
         #expect(cm.pairingState(for: paired).keys != nil)
@@ -157,7 +157,7 @@ struct PairingLifecycleTests {
 
         let draft = try #require(Contact.Draft.Key(
             material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 2, count: 32), pairKeys: samplePairKeys(blob: PairingCodec.p256BlobRoom + 1)
+            pairing: .paired(routingKey: Data(repeating: 2, count: 32), keys: samplePairKeys(blob: PairingCodec.p256BlobRoom + 1))
         ))
         #expect(throws: PairingCodec.CodecError.wrongSize) { try cm.update(key: draft, for: contact.identifier) }
 
@@ -184,7 +184,7 @@ struct PairingLifecycleTests {
 
         let upgrade = try #require(Contact.Draft.Key(
             material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 3, count: 32), pairKeys: samplePairKeys()
+            pairing: .paired(routingKey: Data(repeating: 3, count: 32), keys: samplePairKeys())
         ))
         try cm.update(key: upgrade, for: id)
 

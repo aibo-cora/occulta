@@ -5,7 +5,7 @@
 //  Turns a `PairingState` into the plaintext sealed into `Contact.Profile.Key.pairingEncrypted`, and back.
 //
 //  The plaintext is always exactly `capacity` bytes, in every state, so its sealed length says nothing about whether a
-//  pairing has a routing key or pair keys (`bugs.md` Bug 196). The fields sit at fixed offsets, each blob in a
+//  pairing has a routing key and pair keys (`bugs.md` Bug 196). The fields sit at fixed offsets, each blob in a
 //  fixed-size room with its length in front:
 //  ```
 //  [ version 1 | present 1 | routingKey 32
@@ -14,8 +14,7 @@
 //  | ML-DSA blob: length 2, room 12288 | peer ML-DSA key: present 1, 2592
 //  | zeros to capacity ]
 //  ```
-//  `present` is 0 for no routing key, 1 for a routing key alone, 2 for a routing key with pair keys. A field a state
-//  doesn't use is zeros. The filler is inside the encryption, so zeros are as good as random. A blob too large for its
+//  `present` is 0 for neither, 1 for a routing key with pair keys. A field a state doesn't use is zeros. The filler is inside the encryption, so zeros are as good as random. A blob too large for its
 //  room is refused, never cut: the room is the measured size with headroom (143 bytes for a P-256 Enclave blob and 7,540
 //  for ML-DSA-87 on the Simulator).
 //
@@ -60,15 +59,11 @@ struct PairingCodec {
         var plaintext = Data(count: Self.capacity)
         plaintext[0] = Self.formatVersion
 
-        guard let routingKey = state.routingKey else {
-            guard state.keys == nil else { throw CodecError.wrongSize }
-            return plaintext
-        }
+        guard let routingKey = state.routingKey, let keys = state.keys else { return plaintext }
         guard routingKey.count == RoutingKey.size else { throw CodecError.wrongSize }
-        plaintext[1] = state.keys == nil ? 1 : 2
+        plaintext[1] = 1
         plaintext.replaceSubrange(Self.routingKeyAt..<(Self.routingKeyAt + 32), with: routingKey)
 
-        guard let keys = state.keys else { return plaintext }
         try Self.put(keys.ourAgreementBlob, room: Self.p256BlobRoom, at: Self.agreementBlobAt, in: &plaintext, mustBeNonEmpty: true)
         try Self.put(keys.ourSigningBlob, room: Self.p256BlobRoom, at: Self.signingBlobAt, in: &plaintext, mustBeNonEmpty: true)
         try Self.putKey(keys.ourAgreementKey, at: Self.ourAgreementKeyAt, in: &plaintext)
@@ -94,8 +89,6 @@ struct PairingCodec {
         case 0:
             return .empty
         case 1:
-            return .derived(secret: Data(bytes[Self.routingKeyAt..<(Self.routingKeyAt + 32)]))
-        case 2:
             let routingKey = Data(bytes[Self.routingKeyAt..<(Self.routingKeyAt + 32)])
             let agreementBlob = try Self.get(bytes, room: Self.p256BlobRoom, at: Self.agreementBlobAt)
             let signingBlob = try Self.get(bytes, room: Self.p256BlobRoom, at: Self.signingBlobAt)

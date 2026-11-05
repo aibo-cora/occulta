@@ -408,14 +408,11 @@ extension Contact.Draft {
         /// Whether this contact was exchanged with hybrid PQ protection.
         var isHybridPQ: Bool { self.quantumKeyMaterial != nil }
 
-        /// The 32-byte secret both phones derived at the exchange (`bugs.md` Bug 196), or nil when the peer couldn't.
-        /// Left out of `CodingKeys` so a draft written to disk never holds it: it is sealed into the key row's
-        /// `PairingState` as the row is inserted, and exists in the clear only in memory until then.
-        var routingKey: Data?
-
-        /// The pair keys of a pairing made with a peer that sent its own (`bugs.md` Bug 196, stage 2): Enclave blobs and the
-        /// peer's public keys. Kept out of `CodingKeys` for the same reason as `routingKey`; only with a routing key.
-        var pairKeys: PairKeys?
+        /// What the pairing holds (`bugs.md` Bug 196): the routing key both phones derived at the exchange and the pair keys
+        /// (Enclave blobs and the peer's public keys), or neither when the peer couldn't. Left out of `CodingKeys` so a draft
+        /// written to disk never holds it: it is sealed into the key row as the row is inserted, and exists in the clear
+        /// only in memory until then.
+        var pairing: PairingState = .empty
 
         private enum CodingKeys: String, CodingKey {
             case id, material, acquiredAt, owner, expiredOn, quantumKeyMaterial
@@ -423,7 +420,7 @@ extension Contact.Draft {
 
         init?(
             material: Data?, owner: Data, date: String, quantumKeyMaterial: QuantumKeyMaterial? = nil,
-            routingKey: Data? = nil, pairKeys: PairKeys? = nil
+            pairing: PairingState = .empty
         ) {
             guard owner.isEmpty == false else { return nil }
 
@@ -431,8 +428,7 @@ extension Contact.Draft {
             self.owner = owner.sha256
             self.acquiredAt = date
             self.quantumKeyMaterial = quantumKeyMaterial
-            self.routingKey = routingKey
-            self.pairKeys = pairKeys
+            self.pairing = pairing
         }
     }
 }

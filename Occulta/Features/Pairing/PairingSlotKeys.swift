@@ -7,8 +7,9 @@
 //  the one the peer sent. The private halves are Enclave blobs held in the pairing's sealed column; this type reads them
 //  through the injected provider and keeps nothing.
 //
-//  The slot's routing key, tag and proof are unchanged (`RoutingKey`), and so is everything else that stays on the identity
-//  key: the sender proof's key, backup pieces, signed attributes.
+//  It carries the pairing's routing key too, since a slot to or from a pair-key pairing always has both: the routing tag,
+//  the key mixed into the slot's key and the sender proof come from it (`RoutingKey`). Everything else stays on the
+//  identity key: backup pieces, signed attributes.
 //
 
 import Foundation
@@ -23,6 +24,9 @@ struct PairingSlotKeys {
         case unavailable
     }
 
+    /// The routing key of the pairing: it routes the slot, binds its key and keys the sender proof.
+    let routingKey: Data
+
     private let keys: PairKeys
     private let provider: any CardKeyProviding
 
@@ -31,7 +35,8 @@ struct PairingSlotKeys {
     var ourSigningKey: Data { self.keys.ourSigningKey }
     var peerSigningKey: Data { self.keys.peerSigningKey }
 
-    init(keys: PairKeys, provider: any CardKeyProviding) {
+    init(routingKey: Data, keys: PairKeys, provider: any CardKeyProviding) {
+        self.routingKey = routingKey
         self.keys = keys
         self.provider = provider
     }

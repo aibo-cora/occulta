@@ -144,7 +144,7 @@ struct PairingCapabilitiesTests {
 
         let draft = try #require(Contact.Draft.Key(
             material: Data(repeating: 4, count: 65), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 1, count: 32), pairKeys: samplePairKeys()
+            pairing: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys())
         ))
         try cm.update(key: draft, for: contact.identifier)
 

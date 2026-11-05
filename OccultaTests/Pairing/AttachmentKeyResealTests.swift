@@ -287,7 +287,7 @@ struct AttachmentKeyResealTests {
         try AttachmentManager(contactKey: try self.newKey(for: self.peer)).encrypt(plaintext, to: file)
         let before = try Data(contentsOf: file)
 
-        let draft = try #require(Contact.Draft.Key(material: peerKey, owner: Data(repeating: 1, count: 65), date: "2", routingKey: Data(repeating: 7, count: 32)))
+        let draft = try #require(Contact.Draft.Key(material: peerKey, owner: Data(repeating: 1, count: 65), date: "2", pairing: .paired(routingKey: Data(repeating: 7, count: 32), keys: samplePairKeys())))
         try cm.update(key: draft, for: contact.identifier)
 
         let result = await cm.resealAttachmentKeys(in: [directory], using: self.me)

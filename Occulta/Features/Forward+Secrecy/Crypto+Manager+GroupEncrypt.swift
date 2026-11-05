@@ -53,14 +53,10 @@ struct GroupRecipient {
     /// and the slot is built by `wrapCardRecipient`. Nil for every other recipient.
     let card: CardSlot?
 
-    /// The routing key to seal this slot with (`bugs.md` Bug 196): non-nil only when we hold it, the recipient is known
-    /// to hold it too, and they are at the pairing tier. The slot then carries its routing tag, the secret is
-    /// mixed into its key, and its sender proof is keyed by it. Resolved by the caller, like every other field here.
-    let routingKey: Data?
-
-    /// The pair keys to seal this slot with, for a pair-key pairing (`bugs.md` Bug 196, stage 2): the long-term slot key comes
-    /// from the pair-key ECDH and a forward-secret slot is signed by the pair signing key, in place of the identity key.
-    /// Non-nil only with a routing key.
+    /// The pair keys and routing key to seal this slot with, for a pair-key pairing (`bugs.md` Bug 196): the long-term
+    /// slot key comes from the pair-key ECDH and a forward-secret slot is signed by the pair signing key, in place of the
+    /// identity key. The slot then carries its routing tag, the routing key is mixed into its key, and its sender proof is
+    /// keyed by it. Resolved by the caller, like every other field here. Nil for a pairing without them.
     let pairing: PairingSlotKeys?
 
     init(
@@ -72,7 +68,6 @@ struct GroupRecipient {
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false,
         card: CardSlot? = nil,
-        routingKey: Data? = nil,
         pairing: PairingSlotKeys? = nil
     ) {
         self.publicKey              = publicKey
@@ -83,7 +78,6 @@ struct GroupRecipient {
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
         self.card                    = card
-        self.routingKey           = routingKey
         self.pairing              = pairing
     }
 }
@@ -266,7 +260,7 @@ extension Manager.Crypto {
         // recipient's secret: the header's fingerprint and the shared proof are random bytes of the same size, since an
         // identity fingerprint would let anyone holding the sender's public key test the file, and a shared proof is one
         // any recipient could make for another sender (Bug 196). One recipient on the old form needs both as before.
-        let allOnSecret = recipients.allSatisfy { $0.routingKey != nil }
+        let allOnSecret = recipients.allSatisfy { $0.pairing != nil }
         let senderProof = allOnSecret
             ? try RoutingKey.fillerTag()
             : Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
@@ -340,9 +334,6 @@ extension Manager.Crypto {
             pairing: r.pairing
         )
 
-        // A pair-key slot is always a routing-key slot: a pairing's keys never seal a slot that its routing key does not.
-        if r.pairing != nil, r.routingKey == nil { throw EncryptionError.invalidRecipientMaterial }
-
         // The routing key, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
         // pairing that sealed it; its routing tag routes it; its proof, keyed by the secret, covers the routing tag and our key.
         // A slot with none carries random bytes of the same sizes, so the fields' presence says nothing, in a group
@@ -350,7 +341,7 @@ extension Manager.Crypto {
         let wrappingKey: SymmetricKey
         let routingTag: Data
         let slotProof: Data
-        if let secret = r.routingKey {
+        if let secret = r.pairing?.routingKey {
             wrappingKey = RoutingKey.bind(derivedKey, routingKey: secret)
             routingTag = RoutingKey.routingTag(routingKey: secret, nonce: tagNonce)
             slotProof = RoutingKey.slotProof(routingKey: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)

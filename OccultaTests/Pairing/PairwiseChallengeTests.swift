@@ -29,7 +29,7 @@ private struct Side {
 
     init(keys: PairKeys, provider: any CardKeyProviding = SoftwareCardKeys(), ledger: (any IdentityChallenge.ChallengeLedger)? = nil) {
         let identity = self.identity
-        self.slot = PairingSlotKeys(keys: keys, provider: provider)
+        self.slot = PairingSlotKeys(routingKey: Data(repeating: 1, count: 32), keys: keys, provider: provider)
         self.manager = IdentityChallenge.Manager(
             crypto: Occulta.Manager.Crypto(keyManager: identity), ledger: ledger ?? self.ledger
         )
@@ -176,14 +176,14 @@ struct PairwiseChallengeTests {
         // The two meet again: a new pairing, new pair keys, the same identity key.
         let draft = try #require(Contact.Draft.Key(
             material: try b.identity.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 2, count: 32), pairKeys: second.a
+            pairing: .paired(routingKey: Data(repeating: 2, count: 32), keys: second.a)
         ))
         try cm.update(key: draft, for: "b")
 
         #expect(cm.challenge(for: "b") == nil, "the retired pair signing key can't verify it")
         let stale = try a.manager.verifyResponse(
             envelope: sent.response, senderKey: try b.identity.retrieveIdentity(), senderID: "b",
-            pairing: PairingSlotKeys(keys: second.a, provider: SoftwareCardKeys())
+            pairing: PairingSlotKeys(routingKey: Data(repeating: 2, count: 32), keys: second.a, provider: SoftwareCardKeys())
         )
         #expect(stale == .notOurs)
     }

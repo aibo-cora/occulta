@@ -640,15 +640,14 @@ extension ContactManager {
 
         // Everything that can fail on its own, before anything changes: a pairing state that does not fit its column, the
         // retired rows' empty state and the stamp (the challenge state is sealed inside the guarded block below). Nothing below can then leave the context half-changed for the next save to commit.
-        let pairingState = key.routingKey.map { PairingState(routingKey: $0, keys: key.pairKeys) } ?? PairingState.empty
-        let sealedPairing = try self.sealedPairing(pairingState)
+        let sealedPairing = try self.sealedPairing(key.pairing)
         let sealedEmpty = try self.sealedPairing(PairingState.empty)
         let retiredOn = try self.cryptoManager.encrypt(data: String(Date.now.timeIntervalSince1970).data(using: .utf8))
 
         // A re-exchange that gives no pair keys to a contact whose pairing has them would overwrite their Enclave blobs with a
         // plainer pairing: a peer on an older build can't be that contact, so it is a message that went missing, a phone
         // whose Enclave failed, or someone interfering. Nothing is saved; the exchange can be run again.
-        if let current = contact.currentKey, key.routingKey == nil, self.readablePairingState(of: current)?.keys != nil {
+        if let current = contact.currentKey, key.pairing.keys == nil, self.readablePairingState(of: current)?.keys != nil {
             throw ContactManager.Errors.pairingWouldBeWeaker
         }
 
@@ -664,7 +663,7 @@ extension ContactManager {
             // of its own, so two current rows would leave "the latest" to chance, and the file key and routing key with it.
             // What a retired pairing held goes with it: its pair keys are Enclave blobs this phone could still use, so the
             // column is overwritten with the sealed empty state, the same size as any other (Bug 196).
-            var formChanges = key.pairKeys != nil
+            var formChanges = key.pairing.keys != nil
             for held in contact.contactPublicKeys ?? [] where held.expiredOn == nil {
                 // An unreadable column may have held pair keys: its challenge goes too.
                 let heldState = self.readablePairingState(of: held)
@@ -1330,7 +1329,6 @@ extension ContactManager {
                 custodyManifest:   onFallback ? nil : custodyManifest,
                 appVersion:        Bundle.main.appVersion
             )
-            let routingKey = self.routingKeyForSending(to: contact, tier: targetVersion)
             let recipients = [GroupRecipient(
                 publicKey:       recipientMaterial,
                 quantumMaterial: quantumMaterial,
@@ -1338,8 +1336,7 @@ extension ContactManager {
                 contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                 pendingBatch:    outboundBatch,
                 prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                routingKey:   routingKey,
-                pairing:      routingKey == nil ? nil : self.pairingSlotKeys(for: contact)
+                pairing:      self.pairingSlotKeys(for: contact)
             )]
             let sent: SentBundle
             if let streamedFiles {
@@ -1405,9 +1402,7 @@ private struct PendingGroupRecipient {
     /// Whether this member's build verifies the domain-separated ephemeral signature.
     /// Resolved per member, since a group's members can be on different builds.
     let prefixesEphemeralSignature: Bool
-    /// The routing key to seal this member's slot with, or nil (`bugs.md` Bug 196).
-    let routingKey: Data?
-    /// The pair keys to seal this member's slot with, for a pair-key pairing.
+    /// The pair keys and routing key to seal this member's slot with, for a pair-key pairing (`bugs.md` Bug 196).
     let pairing: PairingSlotKeys?
 }
 
@@ -1544,7 +1539,6 @@ extension ContactManager {
             // expected-shards list is present" — and a missing list as "delete
             // everything you hold from me" (bugs.md Bug 141). 1:1 bundles carry it.
 
-            let memberRoutingKey = self.routingKeyForSending(to: contact, tier: memberVersion)
             return PendingGroupRecipient(
                 publicKey:              recipientMaterial,
                 quantumMaterial:        quantumMaterial,
@@ -1553,8 +1547,7 @@ extension ContactManager {
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
                 prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                routingKey:          memberRoutingKey,
-                pairing:             memberRoutingKey == nil ? nil : self.pairingSlotKeys(for: contact)
+                pairing:             self.pairingSlotKeys(for: contact)
             )
         }
 
@@ -1571,7 +1564,6 @@ extension ContactManager {
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
                 prefixesEphemeralSignature: p.prefixesEphemeralSignature,
-                routingKey:          p.routingKey,
                 pairing:             p.pairing
             )
         }
@@ -2228,7 +2220,7 @@ extension ContactManager {
                 quantumMaterial: quantumMaterial,
                 prekeys: prekeys,
                 body: body,
-                pairing: self.pairingSlotContext(for: sender)
+                pairing: self.pairingSlotKeys(for: sender)
             )
             (recipientPayload, used, recipientMode, slotEphemeralKey) = (opened.payload, opened.used, opened.mode, opened.ephemeralPublicKey)
             slotRoutingTag = opened.matchedRoutingTag
@@ -2330,11 +2322,11 @@ extension ContactManager {
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
-        if let slotRoutingTag, let secret = self.pairingState(for: sender).secret {
+        if let slotRoutingTag, let routingKey = self.pairingState(for: sender).routingKey {
             // The pairing form: the proof is in the slot, keyed by the secret, and covers the slot's routing tag.
             // `SealedPayload.senderProof` is random filler here and is not read.
             guard let slotProof = recipientPayload.slotProof,
-                  RoutingKey.isValidSlotProof(slotProof, routingKey: secret, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
+                  RoutingKey.isValidSlotProof(slotProof, routingKey: routingKey, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
             else { throw GroupDecryptError.senderProofMismatch }
         } else {
             guard let proof = decoded.senderProof,

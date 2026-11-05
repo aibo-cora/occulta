@@ -37,7 +37,9 @@ private struct PairKeyFixture {
     }
 
     /// The sender's side of a slot to the receiver.
-    func slot(for sender: TestKeyManager) -> PairingSlotKeys { PairingSlotKeys(keys: self.senderKeys, provider: self.provider) }
+    func slot(routingKey: Data) -> PairingSlotKeys {
+        PairingSlotKeys(routingKey: routingKey, keys: self.senderKeys, provider: self.provider)
+    }
 }
 
 @MainActor
@@ -95,7 +97,6 @@ private func payload(_ text: String = "hello") -> OccultaBundle.SealedPayload {
 
 private struct Recipient {
     let publicKey: Data
-    let routingKey: Data?
     var pairing: PairingSlotKeys? = nil
     var quantum: QuantumKeyMaterial? = nil
 }
@@ -106,8 +107,7 @@ private func seal(from sender: TestKeyManager, to recipients: [Recipient]) throw
         sealedPayload: payload(), groupID: UUID(),
         recipients: recipients.map {
             GroupRecipient(
-                publicKey: $0.publicKey, quantumMaterial: $0.quantum, contactPrekey: nil, pendingBatch: nil,
-                routingKey: $0.routingKey, pairing: $0.pairing
+                publicKey: $0.publicKey, quantumMaterial: $0.quantum, contactPrekey: nil, pendingBatch: nil, pairing: $0.pairing
             )
         }
     )
@@ -130,7 +130,7 @@ struct PairwiseRoutingTests {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
 
-        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: keys.slot(for: self.sender))])
+        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: keys.slot(routingKey: routingKey(1)))])
         let opened = try cm.openGroup(bundle: bundle)
 
         #expect(opened.ownerID == contact.identifier)
@@ -149,38 +149,13 @@ struct PairwiseRoutingTests {
             quantum: q.receiver, in: cm
         )
 
-        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: keys.slot(for: self.sender), quantum: q.sender)])
+        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: keys.slot(routingKey: routingKey(1)), quantum: q.sender)])
 
         #expect(bundle.group?.recipients.first?.secrecyContext.mode == .longTermFallback)
         #expect(try cm.openGroup(bundle: bundle).ownerID == contact.identifier)
     }
 
     // MARK: It does not open the old way
-
-    @Test("A long-term slot made with the identity key, even with the right routing key, opens nothing of a pair-key pairing", .ambientTestKeyManager)
-    func identityKeySlotIsRefused() throws {
-        let keys = try PairKeyFixture()
-        let cm = try makeContactManager(provider: keys.provider)
-        let me = try Manager.Ambient.keyManager.retrieveIdentity()
-        let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
-
-        // The sender holds the routing key but seals as a plain pairing would: with the identity key.
-        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1))])
-
-        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: bundle, ownerID: contact.identifier) }
-    }
-
-    @Test("A pair-key slot opens nothing of a pairing that holds a routing key but no pair keys", .ambientTestKeyManager)
-    func pairKeySlotIsRefusedByAPlainRoutingKey() throws {
-        let keys = try PairKeyFixture()
-        let cm = try makeContactManager(provider: keys.provider)
-        let me = try Manager.Ambient.keyManager.retrieveIdentity()
-        let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .derived(secret: routingKey(1)), in: cm)
-
-        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: keys.slot(for: self.sender))])
-
-        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: bundle, ownerID: contact.identifier) }
-    }
 
     @Test("An old-form file is refused by a pair-key pairing, whoever made it", .ambientTestKeyManager)
     func oldFormIsRefused() throws {
@@ -189,7 +164,7 @@ struct PairwiseRoutingTests {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
 
-        let oldForm = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: nil)])
+        let oldForm = try seal(from: self.sender, to: [Recipient(publicKey: me)])
 
         #expect(throws: ContactManager.Errors.self) { try cm.identifyOwner(of: oldForm) }
         #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: oldForm, ownerID: contact.identifier) }
@@ -202,10 +177,10 @@ struct PairwiseRoutingTests {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
 
-        let wrongRoutingKey = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(9), pairing: keys.slot(for: self.sender))])
-        let identityKey = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1))])
-        let oldForm = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: nil)])
-        for bundle in [wrongRoutingKey, identityKey, oldForm] {
+        let wrongRoutingKey = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: keys.slot(routingKey: routingKey(9)))])
+        let wrongPairKeys = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: PairKeyFixture().slot(routingKey: routingKey(1)))])
+        let oldForm = try seal(from: self.sender, to: [Recipient(publicKey: me)])
+        for bundle in [wrongRoutingKey, wrongPairKeys, oldForm] {
             #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: bundle, ownerID: contact.identifier) }
         }
     }
@@ -222,8 +197,8 @@ struct PairwiseRoutingTests {
         let second = try insertSender(publicKey: senderKey, state: .paired(routingKey: routingKey(2), keys: two.receiverKeys), in: cm)
         let provider = SoftwareCardKeys()
 
-        let toFirst = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: PairingSlotKeys(keys: one.senderKeys, provider: provider))])
-        let toSecond = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(2), pairing: PairingSlotKeys(keys: two.senderKeys, provider: provider))])
+        let toFirst = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: PairingSlotKeys(routingKey: routingKey(1), keys: one.senderKeys, provider: provider))])
+        let toSecond = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: PairingSlotKeys(routingKey: routingKey(2), keys: two.senderKeys, provider: provider))])
 
         #expect(try cm.openGroup(bundle: toFirst).ownerID == first.identifier)
         #expect(try cm.openGroup(bundle: toSecond).ownerID == second.identifier)
@@ -243,7 +218,7 @@ struct PairwiseRoutingTests {
         cm.security.applyVerifyState(for: .normal(depth: 1))
         #expect(!hidden.isVisible(atDepth: cm.security.currentDepth))
 
-        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: keys.slot(for: self.sender))])
+        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: keys.slot(routingKey: routingKey(1)))])
 
         // Found by routing tag at every depth, hidden or not, and the decoy that holds the same identity key can't take it.
         #expect(try cm.openGroup(bundle: bundle).ownerID == hidden.identifier)
@@ -256,29 +231,27 @@ struct PairwiseRoutingTests {
     /// Foundation writes `/` in base64 as `\/`, so two slots that hold the same fields differ by a few bytes by the slashes
     /// they happen to hold. That is true of every slot, pair-key or not. A slot that differed in what it carries would differ
     /// by tens of bytes, not by a handful, so the spread over many seals is what is pinned.
-    @Test("A pair-key slot is the same size as an identity-key slot and a plain one, to within the noise random fields make", .ambientTestKeyManager)
+    @Test("A pair-key slot is the same size as a plain one, to within the noise random fields make", .ambientTestKeyManager)
     func slotLengthsMatch() throws {
         let keys = try PairKeyFixture()
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let other = try TestKeyManager().retrieveIdentity()
-        let third = try TestKeyManager().retrieveIdentity()
 
         for q in [nil, quantum().sender] as [QuantumKeyMaterial?] {
-            var pairKey = [Int](), identityKey = [Int](), plain = [Int]()
+            var pairKey = [Int](), plain = [Int]()
             for _ in 0..<30 {
                 let bundle = try seal(from: self.sender, to: [
-                    Recipient(publicKey: me, routingKey: routingKey(1), pairing: keys.slot(for: self.sender), quantum: q),
-                    Recipient(publicKey: other, routingKey: routingKey(2), quantum: q),
-                    Recipient(publicKey: third, routingKey: nil, quantum: q),
+                    Recipient(publicKey: me, pairing: keys.slot(routingKey: routingKey(1)), quantum: q),
+                    Recipient(publicKey: other, quantum: q),
                 ])
                 let lengths = try #require(bundle.group?.recipients).map(\.wrappedPayload.count)
-                pairKey.append(lengths[0]); identityKey.append(lengths[1]); plain.append(lengths[2])
+                pairKey.append(lengths[0]); plain.append(lengths[1])
             }
-            let all = pairKey + identityKey + plain
+            let all = pairKey + plain
             #expect((all.max()! - all.min()!) <= 16, "slot lengths range \(all.min()!)...\(all.max()!)")
             // Neither kind is systematically larger: the same range, not shifted.
-            let meanPair = Double(pairKey.reduce(0, +)) / 30, meanIdentity = Double(identityKey.reduce(0, +)) / 30
-            #expect(abs(meanPair - meanIdentity) < 4, "means \(meanPair) and \(meanIdentity)")
+            let meanPair = Double(pairKey.reduce(0, +)) / 30, meanPlain = Double(plain.reduce(0, +)) / 30
+            #expect(abs(meanPair - meanPlain) < 4, "means \(meanPair) and \(meanPlain)")
         }
     }
 
@@ -291,7 +264,7 @@ struct PairwiseRoutingTests {
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
 
-        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: keys.slot(for: self.sender))])
+        let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: keys.slot(routingKey: routingKey(1)))])
 
         #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: bundle, ownerID: contact.identifier) }
     }
@@ -299,21 +272,11 @@ struct PairwiseRoutingTests {
     @Test("Sealing to a pair-key pairing whose blob won't import fails, and never falls back to the identity key", .ambientTestKeyManager)
     func sealingWithAnUnimportableBlobFails() throws {
         let keys = try PairKeyFixture()
-        let broken = PairingSlotKeys(keys: keys.senderKeys, provider: BrokenCardKeys())
+        let broken = PairingSlotKeys(routingKey: routingKey(1), keys: keys.senderKeys, provider: BrokenCardKeys())
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
 
         #expect(throws: PairingSlotKeys.SlotKeyError.unavailable) {
-            try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: broken)])
-        }
-    }
-
-    @Test("A pair-key slot without a routing key is refused rather than sealed", .ambientTestKeyManager)
-    func pairKeysNeedARoutingKey() throws {
-        let keys = try PairKeyFixture()
-        let me = try Manager.Ambient.keyManager.retrieveIdentity()
-
-        #expect(throws: Manager.Crypto.EncryptionError.invalidRecipientMaterial) {
-            try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: nil, pairing: keys.slot(for: self.sender))])
+            try seal(from: self.sender, to: [Recipient(publicKey: me, pairing: broken)])
         }
     }
 
@@ -331,18 +294,16 @@ struct PairwiseRoutingTests {
         #expect(throws: ContactManager.Errors.noPublicKeyToEncryptWith) { try cm.encryptBundle(basket: Basket(files: []), for: contact.identifier) }
     }
 
-    @Test("The routing key goes to a pair-key contact whatever tier is stored, and to a plain pairing only at the tier", .ambientTestKeyManager)
-    func routingKeyForSendingRule() throws {
+    @Test("A pair-key contact gets the pair-key slot whatever tier is stored; a plain pairing gets none", .ambientTestKeyManager)
+    func pairingSlotKeysRule() throws {
         let keys = try PairKeyFixture()
         let cm = try makeContactManager(provider: keys.provider)
         let key = try self.sender.retrieveIdentity()
         let paired = try insertSender(publicKey: key, state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
-        let plain = try insertSender(publicKey: key, state: .derived(secret: routingKey(2)), in: cm)
+        let plain = try insertSender(publicKey: key, state: .empty, in: cm)
 
-        #expect(cm.routingKeyForSending(to: paired, tier: .v3fs) == routingKey(1))
-        #expect(cm.routingKeyForSending(to: plain, tier: .v3fs) == nil)
-        #expect(cm.routingKeyForSending(to: plain, tier: .pairingCapable) == routingKey(2))
-        #expect(cm.pairingSlotKeys(for: paired) != nil && cm.pairingSlotKeys(for: plain) == nil)
+        #expect(cm.pairingSlotKeys(for: paired)?.routingKey == routingKey(1))
+        #expect(cm.pairingSlotKeys(for: plain) == nil)
     }
 
     @Test("A re-pair keeps the identity key, so a trustee's pieces keep their fingerprint and aren't deleted", .ambientTestKeyManager)
@@ -354,7 +315,7 @@ struct PairwiseRoutingTests {
         let before = try cm.currentPublicKey(forIdentifier: contact.identifier)
 
         let draft = try #require(Contact.Draft.Key(
-            material: senderKey, owner: Data(repeating: 1, count: 65), date: "2", routingKey: routingKey(2), pairKeys: second.receiverKeys
+            material: senderKey, owner: Data(repeating: 1, count: 65), date: "2", pairing: .paired(routingKey: routingKey(2), keys: second.receiverKeys)
         ))
         try cm.update(key: draft, for: contact.identifier)
 

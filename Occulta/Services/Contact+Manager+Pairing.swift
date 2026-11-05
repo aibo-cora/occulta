@@ -64,40 +64,22 @@ extension ContactManager {
 
     // MARK: - Sending and receiving
 
-    /// The secret to seal a file to `contact` with, or nil: the pairing holds one, the peer is known to hold it too, and
-    /// the peer is at the pairing tier. Anything less sends as before.
-    func routingKeyForSending(to contact: Contact.Profile, tier: OccultaBundle.Version) -> Data? {
-        let state = self.pairingState(for: contact)
-        // A pair-key pairing is in the routing-key form whatever tier is stored: it never falls back to the identity key,
-        // which holds nothing of it (Bug 196, stage 2).
-        guard state.keys != nil || tier.isAtLeast(.pairingCapable) else { return nil }
-        return state.sendsNewForm ? state.secret : nil
-    }
-
-    /// The pair keys to seal a slot to `contact` with, or nil for a pairing without them. Used only beside a routing key.
+    /// The keys to seal a slot to `contact` with, and to open one from them: the routing key and the pair keys, or nil for a
+    /// pairing without them, which sends and receives as before. A pair-key pairing is in this form whatever tier is stored,
+    /// and never falls back to the identity key, which holds nothing of it (Bug 196, stage 2).
     func pairingSlotKeys(for contact: Contact.Profile) -> PairingSlotKeys? {
-        self.pairingState(for: contact).keys.map { PairingSlotKeys(keys: $0, provider: self.pairKeys) }
-    }
-
-    /// What a pairing contributes to opening a file from `contact`: its secret, once held, and whether an old-form file
-    /// may still be tried against it. nil when there is no secret to route by.
-    func pairingSlotContext(for contact: Contact.Profile) -> Manager.Crypto.PairingSlotContext? {
         let state = self.pairingState(for: contact)
-        return state.secret.map {
-            Manager.Crypto.PairingSlotContext(
-                secret: $0, acceptsOldForm: !state.refusesOldForm,
-                pair: state.keys.map { PairingSlotKeys(keys: $0, provider: self.pairKeys) }
-            )
-        }
+        guard let routingKey = state.routingKey, let keys = state.keys else { return nil }
+        return PairingSlotKeys(routingKey: routingKey, keys: keys, provider: self.pairKeys)
     }
 
     /// Whether `bundle` names `contact` as its sender by a pairing routing tag: some slot carries
-    /// `RoutingKey.routingTag(secret, bundle.fingerprintNonce)` for the secret `contact` holds.
+    /// `RoutingKey.routingTag(routingKey, bundle.fingerprintNonce)` for the routing key `contact` holds.
     func bundleCarriesRoutingTag(of contact: Contact.Profile, in bundle: OccultaBundle) -> Bool {
-        guard let secret = self.pairingState(for: contact).secret, let recipients = bundle.group?.recipients else {
+        guard let routingKey = self.pairingState(for: contact).routingKey, let recipients = bundle.group?.recipients else {
             return false
         }
-        let tag = RoutingKey.routingTag(routingKey: secret, nonce: bundle.fingerprintNonce)
+        let tag = RoutingKey.routingTag(routingKey: routingKey, nonce: bundle.fingerprintNonce)
         return recipients.contains { $0.routingTag == tag }
     }
 

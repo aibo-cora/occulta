@@ -326,17 +326,17 @@ struct KeyExchange: View {
 
                 // Both phones sent a `pairing` field, so both hold a routing key and a pair of keys and derive the same one
                 // (Bug 196). One we can't derive is not a weaker pairing to save: nothing is saved, and the screen says so.
-                var routingKey: Data? = nil
-                if let pairing = self.payload.pairing {
-                    guard let derived = pairing.routingKey(withPeer: self.payload.classicalKey, quantum: quantum, using: self.keyManager) else {
+                var pairing = PairingState.empty
+                if let offer = self.payload.pairing {
+                    guard let derived = offer.routingKey(withPeer: self.payload.classicalKey, quantum: quantum, using: self.keyManager) else {
                         throw SaveError.pairingNotDerived
                     }
-                    routingKey = derived
+                    pairing = .paired(routingKey: derived, keys: offer.pairKeys)
                 }
 
                 guard let key = Contact.Draft.Key(
                     material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum,
-                    routingKey: routingKey, pairKeys: self.payload.pairing?.pairKeys
+                    pairing: pairing
                 ) else {
                     throw SaveError.invalidKeyMaterial
                 }

@@ -652,21 +652,17 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
             let input = try #require(self.pairing)
             let state: PairingState
             if let routingKey = try input.routingKey.map(Self.bytes) {
-                if input.ourAgreementBlob == nil {
-                    state = .derived(secret: routingKey)
-                } else {
-                    state = .paired(routingKey: routingKey, keys: PairKeys(
-                        ourAgreementBlob: try Self.bytes(input.ourAgreementBlob), ourAgreementKey: try Self.bytes(input.ourAgreementKey),
-                        ourSigningBlob: try Self.bytes(input.ourSigningBlob), ourSigningKey: try Self.bytes(input.ourSigningKey),
-                        peerAgreementKey: try Self.bytes(input.peerAgreementKey), peerSigningKey: try Self.bytes(input.peerSigningKey),
-                        ourMLDSABlob: try input.ourMLDSABlobFill.map { fill in
-                            Data(repeating: try Self.bytes(fill)[0], count: try #require(input.ourMLDSABlobLength))
-                        },
-                        peerMLDSAKey: try input.peerMLDSAKeyFill.map { fill in
-                            Data(repeating: try Self.bytes(fill)[0], count: PairingCodec.mldsaKeySize)
-                        }
-                    ))
-                }
+                state = .paired(routingKey: routingKey, keys: PairKeys(
+                    ourAgreementBlob: try Self.bytes(input.ourAgreementBlob), ourAgreementKey: try Self.bytes(input.ourAgreementKey),
+                    ourSigningBlob: try Self.bytes(input.ourSigningBlob), ourSigningKey: try Self.bytes(input.ourSigningKey),
+                    peerAgreementKey: try Self.bytes(input.peerAgreementKey), peerSigningKey: try Self.bytes(input.peerSigningKey),
+                    ourMLDSABlob: try input.ourMLDSABlobFill.map { fill in
+                        Data(repeating: try Self.bytes(fill)[0], count: try #require(input.ourMLDSABlobLength))
+                    },
+                    peerMLDSAKey: try input.peerMLDSAKeyFill.map { fill in
+                        Data(repeating: try Self.bytes(fill)[0], count: PairingCodec.mldsaKeySize)
+                    }
+                ))
             } else {
                 state = .empty
             }

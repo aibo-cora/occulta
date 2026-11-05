@@ -78,9 +78,10 @@ private func contact(in cm: ContactManager) throws -> Contact.Profile {
     return try #require(try cm.fetchAllContacts().first)
 }
 
-private func draftKey(secret: Data?, date: String = "1") throws -> Contact.Draft.Key {
+private func draftKey(routingKey: Data?, date: String = "1") throws -> Contact.Draft.Key {
     try #require(Contact.Draft.Key(
-        material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: date, routingKey: secret
+        material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: date,
+        pairing: routingKey.map { .paired(routingKey: $0, keys: samplePairKeys()) } ?? .empty
     ))
 }
 
@@ -286,7 +287,7 @@ struct PairingSaveTests {
         let paired = try contact(in: cm)
         let theirs = peerBatch()
 
-        try cm.update(key: draftKey(secret: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: theirs))
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: theirs))
 
         let record = try cm.prekeyRecord(for: paired)
         #expect(record.ownBatches.count == 1)
@@ -298,7 +299,7 @@ struct PairingSaveTests {
         #expect(record.inboundLastResort?.publicKey == theirs.lastResort?.publicKey)
 
         let state = cm.pairingState(for: paired)
-        #expect(state == .derived(secret: Data(repeating: 0x77, count: 32)))
+        #expect(state == .paired(routingKey: Data(repeating: 0x77, count: 32), keys: samplePairKeys()))
 
         #expect(ContactManager.resolveTargetVersion(for: paired, using: Manager.Crypto()) == .pairingCapable)
     }
@@ -309,7 +310,7 @@ struct PairingSaveTests {
         let paired = try contact(in: cm)
 
         #expect(cm.nextSendSecrecy(for: paired) == .longTerm, "before the pairing: the bootstrap")
-        try cm.update(key: draftKey(secret: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer())
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer())
         #expect(cm.nextSendSecrecy(for: paired) == .forwardSecret)
     }
 
@@ -318,12 +319,12 @@ struct PairingSaveTests {
         let cm = try makeContactManager()
         let paired = try contact(in: cm)
 
-        try cm.update(key: draftKey(secret: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: peerBatch(keys: 16)))
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: peerBatch(keys: 16)))
 
         let record = try cm.prekeyRecord(for: paired)
         #expect(record.ownBatches.count == 1 && record.ownBatches[0].isPending)
         #expect(record.inboundBatches.isEmpty && record.inboundLastResort == nil)
-        #expect(cm.pairingState(for: paired).secret != nil)
+        #expect(cm.pairingState(for: paired).routingKey != nil)
     }
 
     @Test("A save with pair keys seals them with the routing key on the new row, and the pairing reads back as paired", .ambientTestKeyManager)
@@ -333,24 +334,24 @@ struct PairingSaveTests {
         let pairing = offer()
         let key = try #require(Contact.Draft.Key(
             material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: "1",
-            routingKey: Data(repeating: 0x77, count: 32), pairKeys: pairing.pairKeys
+            pairing: .paired(routingKey: Data(repeating: 0x77, count: 32), keys: pairing.pairKeys)
         ))
         try cm.update(key: key, for: paired.identifier, pairing: pairing)
 
         #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x77, count: 32), keys: pairing.pairKeys))
-        #expect(cm.routingKeyForSending(to: paired, tier: .pairingCapable) == Data(repeating: 0x77, count: 32))
+        #expect(cm.pairingSlotKeys(for: paired)?.routingKey == Data(repeating: 0x77, count: 32))
     }
 
     @Test("A re-pair replaces what the old phone gave us and retires our old batches", .ambientTestKeyManager)
     func rePairResets() throws {
         let cm = try makeContactManager()
         let paired = try contact(in: cm)
-        try cm.update(key: draftKey(secret: Data(repeating: 0x01, count: 32)), for: paired.identifier,
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x01, count: 32)), for: paired.identifier,
                       pairing: offer(own: ownBatch(id: 0x11), peer: peerBatch()))
         let oldInbound = try cm.prekeyRecord(for: paired).inboundBatches
 
         let newPeer = peerBatch(keys: 5)
-        try cm.update(key: draftKey(secret: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier,
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier,
                       pairing: offer(own: ownBatch(id: 0x22), peer: newPeer))
 
         let record = try cm.prekeyRecord(for: paired)
@@ -361,9 +362,9 @@ struct PairingSaveTests {
         #expect(record.ownBatches[1].isPending && record.ownBatches[1].retiredAt == nil)
         // The new pairing's routing key is on the current key row; the retired row's was overwritten with the sealed
         // empty state, because a retired pairing's keys go with it.
-        let secrets = (paired.contactPublicKeys ?? []).compactMap { cm.pairingState(of: $0).secret }
-        #expect(secrets == [Data(repeating: 0x02, count: 32)])
-        #expect(cm.pairingState(for: paired).secret == Data(repeating: 0x02, count: 32))
+        let routingKeys = (paired.contactPublicKeys ?? []).compactMap { cm.pairingState(of: $0).routingKey }
+        #expect(routingKeys == [Data(repeating: 0x02, count: 32)])
+        #expect(cm.pairingState(for: paired).routingKey == Data(repeating: 0x02, count: 32))
     }
 
     @Test("A peer that sent no batch leaves the record and the tier as they were", .ambientTestKeyManager)
@@ -373,7 +374,7 @@ struct PairingSaveTests {
         let before = try cm.prekeyRecord(for: paired)
         let tier = paired.maxBundleVersion
 
-        try cm.update(key: draftKey(secret: nil), for: paired.identifier)
+        try cm.update(key: draftKey(routingKey: nil), for: paired.identifier)
 
         #expect(try cm.prekeyRecord(for: paired) == before)
         #expect(paired.maxBundleVersion == tier)

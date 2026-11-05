@@ -952,20 +952,10 @@
       "expected": "716ad7538f92bb3cb749146290fa25419ab65b4dfe2cffc980566194d825e0a3"
     },
     {
-      "name": "pairing.field.routingKeyAlone",
-      "kind": "pairingField",
-      "digest": true,
-      "note": "Bug 196. A routing key without pair keys: present 1, the key at offset 2, all else zero. `expected` is the SHA-256 of the 16,384 bytes.",
-      "pairing": {
-        "routingKey": "4545454545454545454545454545454545454545454545454545454545454545"
-      },
-      "expected": "a87ecb393fd33e44863ee4b0876f37137fabb7814f4789a26da5dac0d803e1f9"
-    },
-    {
       "name": "pairing.field.paired",
       "kind": "pairingField",
       "digest": true,
-      "note": "Bug 196, stage 2. A routing key with pair keys and no ML-DSA key: present 2; two 2-byte-length 256-byte blob rooms from offset 34; four 65-byte keys; an empty ML-DSA blob room (length 0) and a peer ML-DSA flag of 0. `expected` is the SHA-256 of the 16,384 bytes.",
+      "note": "Bug 196, stage 2. A routing key with pair keys and no ML-DSA key: present 1; two 2-byte-length 256-byte blob rooms from offset 34; four 65-byte keys; an empty ML-DSA blob room (length 0) and a peer ML-DSA flag of 0. `expected` is the SHA-256 of the 16,384 bytes.",
       "pairing": {
         "routingKey": "4545454545454545454545454545454545454545454545454545454545454545",
         "ourAgreementBlob": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -975,7 +965,7 @@
         "peerAgreementKey": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
         "peerSigningKey": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
       },
-      "expected": "42c41c36e94198c874ec61472d325ca159f4d8b9b0a721b85c16bd97a3e0dff2"
+      "expected": "5202963b6a13594949280d1d5a78efae5fc817809e9e488410f7b5dcfb1000c8"
     },
     {
       "name": "pairing.field.pairedWithMLDSA",
@@ -994,7 +984,7 @@
         "ourMLDSABlobLength": 7540,
         "peerMLDSAKeyFill": "d1"
       },
-      "expected": "50679c63c9f803abe111839acf492046f1f7692d4de7a3a62c2ca5a417472efa"
+      "expected": "bb4029d8780d0489b6dfbe18de7ac00dd10e78c0b4bd85c3fafc3735bc916c94"
     },
     {
       "name": "pairing.transcript",

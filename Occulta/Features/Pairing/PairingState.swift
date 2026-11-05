@@ -2,8 +2,8 @@
 //  PairingState.swift
 //  Occulta
 //
-//  What a pairing holds (`bugs.md` Bug 196): the routing key both phones derived at the exchange and, for a pairing made
-//  with a peer that sent pair keys, the keys of the pair. Data only: `PairingCodec` stores it, and
+//  What a pairing holds (`bugs.md` Bug 196): nothing, for a pairing made without pair keys, or the routing key both phones
+//  derived at the exchange together with the keys of the pair. Data only: `PairingCodec` stores it, and
 //  `ContactManager+Pairing` reads and writes it on the contact's `Key` row.
 //
 
@@ -31,29 +31,31 @@ struct PairKeys: Equatable {
     var peerMLDSAKey: Data?
 }
 
-/// The routing key one pairing holds, or none, and its pair keys.
+/// The routing key one pairing holds and its pair keys, or neither.
 ///
 /// Sealed on `Contact.Profile.Key` because a routing key belongs to the peer key it was made with: a key change leaves
 /// the old one on the retired row, and nothing has to remember to drop it.
 ///
-/// A pairing is made with its routing key at the exchange, with a peer that made it too, or it never has one: there is no
-/// way to give an existing pairing one afterwards, so the state never changes once written.
+/// A pairing is made with its routing key and pair keys at the exchange, with a peer that sent its own, or it never has
+/// either: there is no way to give an existing pairing them afterwards, so the state never changes once written. The two
+/// are one thing. A routing key is derived from the pair-key ECDH, so no pairing holds one without the other, and the
+/// initializer is private so that none can be built.
 nonisolated
 struct PairingState: Equatable {
 
     /// The routing key, once the exchange made it. `nil` for a pairing from before this fix, or with a peer that can't
     /// make one. Also what every such row holds as filler, so the column says nothing about which rows have one.
-    var routingKey: Data?
+    let routingKey: Data?
 
-    /// The pair keys of a pairing made with a peer that sent its own. Only ever present with a routing key.
-    var keys: PairKeys?
+    /// The pair keys of a pairing made with a peer that sent its own. Present exactly when the routing key is.
+    let keys: PairKeys?
+
+    private init(routingKey: Data?, keys: PairKeys?) {
+        self.routingKey = routingKey
+        self.keys = keys
+    }
 
     static let empty = PairingState(routingKey: nil, keys: nil)
-
-    /// A pairing that derived its routing key at the exchange, without pair keys.
-    static func derived(secret: Data) -> PairingState {
-        PairingState(routingKey: secret, keys: nil)
-    }
 
     /// A pairing that derived its routing key from a pair of keys.
     static func paired(routingKey: Data, keys: PairKeys) -> PairingState {
@@ -64,10 +66,4 @@ struct PairingState: Equatable {
     /// file from the person's other pairing matches it, which is the bug. A pairing without a routing key keeps accepting
     /// old form.
     var refusesOldForm: Bool { self.routingKey != nil }
-
-    /// Whether files to this peer go in the routing-key form: the pairing holds the key, and the peer made it too.
-    var sendsNewForm: Bool { self.routingKey != nil }
-
-    /// The routing key, once held. Routing tags are accepted from this point.
-    var secret: Data? { self.routingKey }
 }
