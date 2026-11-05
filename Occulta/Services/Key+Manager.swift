@@ -15,6 +15,9 @@ import OccultaFormats
 
 struct SaltInfo {
     static let kTransportKeyInfo = "Occulta-v1-transport-2025".data(using: .utf8)!
+    /// The base key a contact's attachments are sealed under at rest (`bugs.md` Bug 196): the same ECDH as the transport
+    /// key, under a label of its own, so one key is not both an AEAD key for a slot and the input to the attachments' HKDF.
+    static let kAttachmentBaseKeyInfo = "Occulta-v2-attachment-base-2026".data(using: .utf8)!
     static let kLocalDBKeyInfo   = "Occulta-v1-encryption-key-2025".data(using: .utf8)!
     /// Domain separator for the hybrid local DB key, **legacy form** (ECDH against G, a function of the key's public point;
     /// the current form is `kLocalDBEnclaveBoundKeyInfo`). Distinct from kLocalDBKeyInfo
@@ -350,6 +353,16 @@ extension Manager {
         ///
         /// Returns nil — never crashes — on: nil/wrong-length material, SE unavailable, ECDH failure.
         func createSharedSecret(using material: Data?) -> SymmetricKey? {
+            self.identityDerivedKey(using: material, info: SaltInfo.kTransportKeyInfo)
+        }
+
+        /// The base key a contact's attachments are sealed under at rest: `createSharedSecret(using:)` under its own label.
+        /// Local to this phone: nothing of it is sent, so changing it breaks no interop.
+        func createAttachmentBaseKey(using material: Data?) -> SymmetricKey? {
+            self.identityDerivedKey(using: material, info: SaltInfo.kAttachmentBaseKeyInfo)
+        }
+
+        private func identityDerivedKey(using material: Data?, info: Data) -> SymmetricKey? {
             guard let peerKey = self.convert(material: material) else { return nil }
             guard let ourPriv = try? self.retrievePrivateKey()   else { return nil }
 
@@ -370,7 +383,7 @@ extension Manager {
             let salt = Data(zip(peerData.map { $0 }, ourData.map { $0 }).map { $0 ^ $1 })
             return HKDF<SHA256>.deriveKey(
                 inputKeyMaterial: SymmetricKey(data: rawSecret),
-                salt: salt, info: SaltInfo.kTransportKeyInfo, outputByteCount: 32
+                salt: salt, info: info, outputByteCount: 32
             )
         }
 

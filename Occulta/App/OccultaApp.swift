@@ -971,6 +971,9 @@ struct RootView: View {
         try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
         // Introduction cards (SPEC §6.4): every contact at every depth, unlike the prekey sweep above.
         try? self.contactManager.sweepCards()
+        // The attachments sealed under a contact's old base key move to the new one (Bug 196): every contact at every
+        // depth, and a pass that finds nothing to move changes nothing.
+        Task { await self.contactManager.resealAttachmentKeys() }
     }
 
     /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,

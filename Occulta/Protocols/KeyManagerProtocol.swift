@@ -80,6 +80,8 @@ protocol KeyManagerProtocol {
     func deriveComposeStagingKey() throws -> SymmetricKey?
     /// Transport path — uses `kTransportKeyInfo`.
     func createSharedSecret(using material: Data?) -> SymmetricKey?
+    /// The base key a contact's attachments are sealed under at rest: the transport path's ECDH under `kAttachmentBaseKeyInfo`.
+    func createAttachmentBaseKey(using material: Data?) -> SymmetricKey?
     /// Transport path (ephemeral/prekey) — uses `kTransportKeyInfo`.
     func createSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey?
     func generateEphemeralKeyPair() -> (privateKey: SecKey, publicKeyData: Data)?
@@ -782,6 +784,16 @@ final class TestKeyManager: KeyManagerProtocol, LegacyLocalKeyProviding {
             ourPublicKeyData: self.identityPublicKeyData,
             peerMaterial: material,
             info: SaltInfo.kTransportKeyInfo
+        )
+    }
+
+    func createAttachmentBaseKey(using material: Data?) -> SymmetricKey? {
+        guard let material else { return nil }
+        return self.deriveKey(
+            privateKey: self.identityPrivateKey,
+            ourPublicKeyData: self.identityPublicKeyData,
+            peerMaterial: material,
+            info: SaltInfo.kAttachmentBaseKeyInfo
         )
     }
 

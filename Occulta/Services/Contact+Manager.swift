@@ -742,14 +742,19 @@ extension ContactManager {
     
     /// Derives the stable per-contact base key used to encrypt file attachments at rest.
     /// Callers pass this into `AttachmentManager(contactKey:)`.
+    ///
+    /// The identity ECDH under a label of its own (`SaltInfo.kAttachmentBaseKeyInfo`), not the transport key's: before
+    /// Bug 196 this was the same key as a classical long-term slot's. Files sealed under that one are moved to this one by
+    /// `resealAttachmentKeys` (`Contact+Manager+AttachmentKey.swift`). It stays a function of the identity keys, so a re-pair,
+    /// which changes the pair keys and not the identity key, leaves every file readable.
     func fileEncryptionKey(for identifier: String) throws -> SymmetricKey {
         guard let contact = try self.fetchContact(by: identifier) else {
             throw ContactManager.Errors.contactNotFound
         }
-        guard let encrypted = contact.contactPublicKeys?.last?.material,
+        guard let encrypted = contact.displayedKey?.material,
               let material   = try? self.cryptoManager.decrypt(data: encrypted)
         else { throw ContactManager.Errors.contactHasNoKeys }
-        guard let key = Manager.Key().createSharedSecret(using: material) else {
+        guard let key = Manager.Key().createAttachmentBaseKey(using: material) else {
             throw ContactManager.Errors.contactHasNoKeys
         }
         return key
