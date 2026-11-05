@@ -67,18 +67,24 @@ class ContactManager {
     let cardKeys: any CardKeyProviding
     @ObservationIgnored
     let cardPostQuantum: (any PostQuantumProvider)?
+    /// Opens the Enclave blobs of a pair-key pairing's keys (`bugs.md` Bug 196, stage 2). Injected so tests can run with
+    /// software keys.
+    @ObservationIgnored
+    let pairKeys: any CardKeyProviding
 
     init(
         modelContainer: ModelContainer,
         security: Manager.Security,
         cardKeys: any CardKeyProviding = EnclaveCardKeys(),
-        cardPostQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.create()
+        cardPostQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.create(),
+        pairKeys: any CardKeyProviding = EnclaveCardKeys()
     ) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
         self.security = security
         self.cardKeys = cardKeys
         self.cardPostQuantum = cardPostQuantum
+        self.pairKeys = pairKeys
     }
     
     var dateFormatter: DateFormatter {
@@ -1277,6 +1283,7 @@ extension ContactManager {
                 custodyManifest:   onFallback ? nil : custodyManifest,
                 appVersion:        Bundle.main.appVersion
             )
+            let routingKey = self.routingKeyForSending(to: contact, tier: targetVersion)
             let recipients = [GroupRecipient(
                 publicKey:       recipientMaterial,
                 quantumMaterial: quantumMaterial,
@@ -1284,7 +1291,8 @@ extension ContactManager {
                 contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                 pendingBatch:    outboundBatch,
                 prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                routingKey:   self.routingKeyForSending(to: contact, tier: targetVersion)
+                routingKey:   routingKey,
+                pairing:      routingKey == nil ? nil : self.pairingSlotKeys(for: contact)
             )]
             let sent: SentBundle
             if let streamedFiles {
@@ -1299,6 +1307,11 @@ extension ContactManager {
             if contactPrekey != nil { try self.modelContext.save() }
             return sent
         }
+
+        // The pre-1.9.0 form seals with the identity key, which holds nothing of a pair-key pairing: such a pairing has
+        // no key of its own to seal it with here, and falling back to the identity key would be the downgrade it exists
+        // to prevent (Bug 196, stage 2).
+        guard self.pairingState(for: contact).keys == nil else { throw Errors.noPublicKeyToEncryptWith }
 
         let sealedPayload = OccultaBundle.SealedPayload(
             message:         messageData,
@@ -1347,6 +1360,8 @@ private struct PendingGroupRecipient {
     let prefixesEphemeralSignature: Bool
     /// The routing key to seal this member's slot with, or nil (`bugs.md` Bug 196).
     let routingKey: Data?
+    /// The pair keys to seal this member's slot with, for a pair-key pairing.
+    let pairing: PairingSlotKeys?
 }
 
 extension ContactManager {
@@ -1481,6 +1496,7 @@ extension ContactManager {
             // expected-shards list is present" — and a missing list as "delete
             // everything you hold from me" (bugs.md Bug 141). 1:1 bundles carry it.
 
+            let memberRoutingKey = self.routingKeyForSending(to: contact, tier: memberVersion)
             return PendingGroupRecipient(
                 publicKey:              recipientMaterial,
                 quantumMaterial:        quantumMaterial,
@@ -1489,7 +1505,8 @@ extension ContactManager {
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
                 prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable),
-                routingKey:          self.routingKeyForSending(to: contact, tier: memberVersion)
+                routingKey:          memberRoutingKey,
+                pairing:             memberRoutingKey == nil ? nil : self.pairingSlotKeys(for: contact)
             )
         }
 
@@ -1506,7 +1523,8 @@ extension ContactManager {
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
                 prefixesEphemeralSignature: p.prefixesEphemeralSignature,
-                routingKey:          p.routingKey
+                routingKey:          p.routingKey,
+                pairing:             p.pairing
             )
         }
 
@@ -2237,11 +2255,14 @@ extension ContactManager {
             if isFSMode {
                 // The signature verified in `openRecipientSlot` against our slot's ephemeral key, in either form.
                 // Once more against that key, in the prefixed form only.
+                // A pair-key pairing's slot was signed by the pair signing key, so that is what it is checked against.
+                let pair = slotRoutingTag == nil ? nil : self.pairingSlotKeys(for: sender)
                 guard let signature = recipientPayload.senderEphemeralSignature,
-                      cryptoOps.verifySenderEphemeralSignature(
-                          signature, ephemeralPublicKey: slotEphemeralKey,
-                          senderPublicKey: senderPublicKey, acceptsBareForm: false
-                      )
+                      pair.map({ $0.verifies(signature, ephemeralPublicKey: slotEphemeralKey, using: cryptoOps) })
+                        ?? cryptoOps.verifySenderEphemeralSignature(
+                            signature, ephemeralPublicKey: slotEphemeralKey,
+                            senderPublicKey: senderPublicKey, acceptsBareForm: false
+                        )
                 else { throw GroupDecryptError.missingSenderEphemeralSignature }
             }
             challenge = IdentityChallenge.Authenticated(identityChallenge)

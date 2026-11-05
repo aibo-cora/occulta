@@ -53,16 +53,28 @@ extension ContactManager {
     /// The secret to seal a file to `contact` with, or nil: the pairing holds one, the peer is known to hold it too, and
     /// the peer is at the pairing tier. Anything less sends as before.
     func routingKeyForSending(to contact: Contact.Profile, tier: OccultaBundle.Version) -> Data? {
-        guard tier.isAtLeast(.pairingCapable) else { return nil }
         let state = self.pairingState(for: contact)
+        // A pair-key pairing is in the routing-key form whatever tier is stored: it never falls back to the identity key,
+        // which holds nothing of it (Bug 196, stage 2).
+        guard state.keys != nil || tier.isAtLeast(.pairingCapable) else { return nil }
         return state.sendsNewForm ? state.secret : nil
+    }
+
+    /// The pair keys to seal a slot to `contact` with, or nil for a pairing without them. Used only beside a routing key.
+    func pairingSlotKeys(for contact: Contact.Profile) -> PairingSlotKeys? {
+        self.pairingState(for: contact).keys.map { PairingSlotKeys(keys: $0, provider: self.pairKeys) }
     }
 
     /// What a pairing contributes to opening a file from `contact`: its secret, once held, and whether an old-form file
     /// may still be tried against it. nil when there is no secret to route by.
     func pairingSlotContext(for contact: Contact.Profile) -> Manager.Crypto.PairingSlotContext? {
         let state = self.pairingState(for: contact)
-        return state.secret.map { Manager.Crypto.PairingSlotContext(secret: $0, acceptsOldForm: !state.refusesOldForm) }
+        return state.secret.map {
+            Manager.Crypto.PairingSlotContext(
+                secret: $0, acceptsOldForm: !state.refusesOldForm,
+                pair: state.keys.map { PairingSlotKeys(keys: $0, provider: self.pairKeys) }
+            )
+        }
     }
 
     /// Whether `bundle` names `contact` as its sender by a pairing routing tag: some slot carries

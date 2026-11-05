@@ -58,6 +58,11 @@ struct GroupRecipient {
     /// mixed into its key, and its sender proof is keyed by it. Resolved by the caller, like every other field here.
     let routingKey: Data?
 
+    /// The pair keys to seal this slot with, for a pair-key pairing (`bugs.md` Bug 196, stage 2): the long-term slot key comes
+    /// from the pair-key ECDH and a forward-secret slot is signed by the pair signing key, in place of the identity key.
+    /// Non-nil only with a routing key.
+    let pairing: PairingSlotKeys?
+
     init(
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
@@ -67,7 +72,8 @@ struct GroupRecipient {
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false,
         card: CardSlot? = nil,
-        routingKey: Data? = nil
+        routingKey: Data? = nil,
+        pairing: PairingSlotKeys? = nil
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
@@ -78,6 +84,7 @@ struct GroupRecipient {
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
         self.card                    = card
         self.routingKey           = routingKey
+        self.pairing              = pairing
     }
 }
 
@@ -329,8 +336,12 @@ extension Manager.Crypto {
             contactPrekey: r.contactPrekey,
             isLastResort: r.contactPrekeyIsLastResort,
             recipientPublicKey: r.publicKey,
-            quantumMaterial: r.quantumMaterial
+            quantumMaterial: r.quantumMaterial,
+            pairing: r.pairing
         )
+
+        // A pair-key slot is always a routing-key slot: a pairing's keys never seal a slot that its routing key does not.
+        if r.pairing != nil, r.routingKey == nil { throw EncryptionError.invalidRecipientMaterial }
 
         // The routing key, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
         // pairing that sealed it; its routing tag routes it; its proof, keyed by the secret, covers the routing tag and our key.
@@ -366,11 +377,16 @@ extension Manager.Crypto {
             // unconditionally would make every message unopenable by 1.10.0/1.10.1, which
             // verify against the bare key — a break in the one direction we cannot patch,
             // since those installs are already deployed. See `.prefixedSenderSignatureCapable`.
-            senderEphemeralSignature = try self.keyManager.signData(
-                r.prefixesEphemeralSignature
-                    ? Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey)
-                    : secrecyContext.ephemeralPublicKey
-            )
+            if let pairing = r.pairing {
+                // The pair signing key, in the prefixed form only: no build before 1.10.2 has a pair key.
+                senderEphemeralSignature = try pairing.sign(Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey))
+            } else {
+                senderEphemeralSignature = try self.keyManager.signData(
+                    r.prefixesEphemeralSignature
+                        ? Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey)
+                        : secrecyContext.ephemeralPublicKey
+                )
+            }
         case .longTermFallback, .longTermNoPQ, .group, .unsupported:
             senderEphemeralSignature = Self.randomEphemeralSignatureFiller()
         }

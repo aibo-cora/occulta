@@ -142,6 +142,10 @@ extension Manager.Crypto {
         /// Whether a slot with no routing tag of this pairing may still be tried as an old-form slot. False for a pairing that
         /// began with a secret: an old-form file there is another pairing's.
         let acceptsOldForm: Bool
+        /// The pair keys of a pair-key pairing (`bugs.md` Bug 196, stage 2): its long-term slot key comes from the pair-key ECDH
+        /// and a forward-secret slot's signature is the peer's pair signing key's, in place of the identity key. `nil` for a
+        /// pairing with a routing key alone, and for no pairing.
+        let pair: PairingSlotKeys?
     }
 
     /// A slot we opened.
@@ -208,7 +212,8 @@ extension Manager.Crypto {
                 senderContactID: senderContactID,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
-                prekeys: prekeys
+                prekeys: prekeys,
+                pairing: tagged ? pairing?.pair : nil
             ) else { continue }
             let wrappingKey = tagged ? pairing.map { RoutingKey.bind(derivedKey, secret: $0.secret) } ?? derivedKey : derivedKey
             
@@ -241,11 +246,16 @@ extension Manager.Crypto {
             let isFSMode = entry.secrecyContext.mode == .forwardSecret
                         || entry.secrecyContext.mode == .forwardSecretNoPQ
             if isFSMode, let signature = payload.senderEphemeralSignature {
-                guard self.verifySenderEphemeralSignature(
-                    signature,
-                    ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey,
-                    senderPublicKey: senderPublicKey
-                ) else { throw GroupDecryptError.senderEphemeralSignatureMismatch }
+                // A pair-key pairing's signature is the peer's pair signing key's, in the prefixed form only; the identity key
+                // signs nothing of such a pairing.
+                let verified = tagged && pairing?.pair != nil
+                    ? pairing?.pair?.verifies(signature, ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey, using: self) ?? false
+                    : self.verifySenderEphemeralSignature(
+                        signature,
+                        ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey,
+                        senderPublicKey: senderPublicKey
+                    )
+                guard verified else { throw GroupDecryptError.senderEphemeralSignatureMismatch }
             }
             return OpenedSlot(
                 payload: payload, used: used, mode: entry.secrecyContext.mode,
