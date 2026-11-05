@@ -26,6 +26,11 @@ struct PairingSlotKeys {
     private let keys: PairKeys
     private let provider: any CardKeyProviding
 
+    /// The public halves of the pair signing keys: ours, which an identity challenge's inner fingerprint is made from, and the
+    /// peer's, which a response is verified against.
+    var ourSigningKey: Data { self.keys.ourSigningKey }
+    var peerSigningKey: Data { self.keys.peerSigningKey }
+
     init(keys: PairKeys, provider: any CardKeyProviding) {
         self.keys = keys
         self.provider = provider

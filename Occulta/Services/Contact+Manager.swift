@@ -654,10 +654,16 @@ extension ContactManager {
         let retiredOn = try self.cryptoManager.encrypt(data: String(Date.now.timeIntervalSince1970).data(using: .utf8))
         // What a retired pairing held goes with it: its pair keys are Enclave blobs this phone could still use, so the
         // column is overwritten with the sealed empty state, the same size as any other (Bug 196).
+        var retiredPairKeys = false
         for held in contact.contactPublicKeys ?? [] where held.expiredOn == nil {
+            retiredPairKeys = retiredPairKeys || self.pairingState(of: held).keys != nil
             held.expiredOn = retiredOn
             try self.store(PairingState.empty, in: held)
         }
+        // A challenge outstanding to a pairing that had pair keys was made with the pair signing key that was just retired,
+        // so no response can ever verify. It is dropped, at every depth's slot, so a stale answer reads as "not ours" and
+        // shows nothing (the Bug 166 rule), in place of "verification failed" (Bug 196).
+        if retiredPairKeys { try self.store(ChallengeState.empty, for: contact) }
 
         contact.contactPublicKeys?.append(Contact.Profile.Key(
             material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,
