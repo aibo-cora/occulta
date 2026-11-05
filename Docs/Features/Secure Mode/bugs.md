@@ -15253,8 +15253,10 @@ Simulator cannot unlock the vault; only the model is tested). Pairing a 2.0.1 ph
 **Bug 190.** The new writes are logged like the column's others: the insert, the migration's filler on every row, the overwrite at
 re-pair and at deletion, and the draft files' new modification times at the first launch after the update (stage 4b). A re-pair
 also rewrites the contact's sealed challenge state, but only if some depth held an outstanding challenge to this contact, so the
-column changes in one image and not in another taken around the same re-pair. That one is open, needs a decision, with the other
-at-rest writes. The 2.1.0 store must carry the pairing column as it is.
+column changes in one image and not in another taken around the same re-pair. **Decided 2026-11-05: not changed on this branch.** It
+is left for Bug 190's migration to the 2.1.0 store, which has no history tables, with the other at-rest writes; it stays open until
+that store is built. Writing the challenge state on every re-pair was the alternative and was not taken. The 2.1.0 store must carry
+the pairing column as it is.
 
 **Review fixes, 2026-11-05** (an independent security review and code review of the eleven commits; neither found a path where a
 contact or coercer can read or forge, or a fallback to the identity key on send or receive; reports in the session notes folder).
