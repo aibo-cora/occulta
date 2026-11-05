@@ -236,6 +236,17 @@ extension Contact {
                     .foregroundColor(.occultaAccent)
             }
 
+            // The glyph in the list leads here: said once, where it can be acted on, without opening the key details (Bug 196).
+            if let p = self.profile, !self.needsExchange, !self.cardState.isCardContact, p.pairingCapabilities.upgradeAvailable {
+                NavigationLink {
+                    KeyExchange(identifier: self.identifier)
+                } label: {
+                    Label("Re-exchange in person to upgrade", systemImage: "arrow.up.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                }
+            }
+
             if let p = self.profile, !self.needsExchange {
                 KeyDetailsDisclosureV2(profile: p, expanded: self.$keyDetailsExpanded)
             }
@@ -819,6 +830,8 @@ private struct KeyDetailsDisclosureV2: View {
                     KeyDetailRow(label: "SCHEME", value: self.profile.encryptionSchemeLabel)
                     Divider().padding(.leading, 64)
                     KeyDetailRow(label: "SINCE",  value: self.profile.exchangedDateLabel)
+                    Divider().padding(.leading, 14)
+                    PairingCapabilityRows(identifier: self.profile.identifier, capabilities: self.profile.pairingCapabilities)
                 }
                 .padding(.bottom, 4)
             } else if let fp = self.profile.fingerprintPreview {
