@@ -70,13 +70,13 @@ extension Contact {
         var needsExchange: Bool {
             let keys = self.contacts.first?.contactPublicKeys
             let contactHasNoKeys = keys?.isEmpty ?? true
-            let currentKeyRevoked = keys?.last?.expiredOn != nil
+            let currentKeyRevoked = self.contacts.first?.displayedKey?.expiredOn != nil
             
             return contactHasNoKeys || currentKeyRevoked
         }
         /// Was this contact verified by this device?
         var verified: Bool {
-            let encryptedOwner = self.contacts.first?.contactPublicKeys?.last?.owner
+            let encryptedOwner = self.contacts.first?.displayedKey?.owner
             let decryptedOwnerHash = try? Manager.Crypto().decrypt(data: encryptedOwner)
             let ourIdentity = try? Manager.Key().retrieveIdentity()
             let ourIdentityHash = ourIdentity?.sha256

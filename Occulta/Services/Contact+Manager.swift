@@ -693,7 +693,9 @@ extension ContactManager {
         let expiration = String(Date.now.timeIntervalSince1970).data(using: .utf8)
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
         
-        contact.contactPublicKeys?.last?.expiredOn = encrypted
+        // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
+        // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
+        contact.currentKey?.expiredOn = encrypted
         
         try self.modelContext.save()
     }
@@ -729,7 +731,7 @@ extension ContactManager {
         }
         
         guard
-            let encrypted = contact.contactPublicKeys?.last?.material,
+            let encrypted = contact.displayedKey?.material,
             let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys

@@ -71,7 +71,7 @@ extension Contact {
         }
 
         private var statusInputs: StatusInputs {
-            let last = self.profile?.contactPublicKeys?.last
+            let last = self.profile?.displayedKey
             return StatusInputs(
                 card:           self.profile?.introductionCardEncrypted,
                 keyCount:       self.profile?.contactPublicKeys?.count ?? 0,
