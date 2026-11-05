@@ -30,7 +30,8 @@ struct InteropVectorTests {
 
     @Test("Every vector reproduces its recorded bytes", arguments: try loadVectors())
     func vectorMatches(_ vector: Vector) throws {
-        let actual = try vector.compute().hex
+        let computed = try vector.compute()
+        let actual = vector.digest == true ? Data(SHA256.hash(data: computed)).hex : computed.hex
         // Opt-in recording mode: write the bytes instead of comparing them. One file per
         // vector, so parameterized cases running in parallel never share a file. Recording
         // is not a separate test, because a test that skips in every normal run would break
@@ -108,6 +109,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let name: String
     let kind: String
     let expected: String
+    /// For an output too large to record in full: `expected` is the SHA-256 of the bytes `compute()` returns.
+    let digest: Bool?
 
     // aad, envelope
     let version: String?
@@ -214,6 +217,15 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let mlkemSecret2: String?
         let ourNonce: String?
         let peerNonce: String?
+        // pairingField (stage 2)
+        let routingKey: String?
+        let ourAgreementBlob: String?
+        let ourSigningBlob: String?
+        let ourSigningKey: String?
+        let peerSigningKey: String?
+        let ourMLDSABlobFill: String?
+        let ourMLDSABlobLength: Int?
+        let peerMLDSAKeyFill: String?
         // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript (stage 2)
         let pairwiseECDH: String?
         let identityECDH: String?
@@ -631,9 +643,28 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
 
         case "pairingField":
             let input = try #require(self.pairing)
-            let state = try input.secret.map { PairingState.derived(secret: try Self.bytes($0)) } ?? .empty
+            let state: PairingState
+            if let routingKey = try input.routingKey.map(Self.bytes) {
+                if input.ourAgreementBlob == nil {
+                    state = .derived(secret: routingKey)
+                } else {
+                    state = .paired(routingKey: routingKey, keys: PairKeys(
+                        ourAgreementBlob: try Self.bytes(input.ourAgreementBlob), ourAgreementKey: try Self.bytes(input.ourAgreementKey),
+                        ourSigningBlob: try Self.bytes(input.ourSigningBlob), ourSigningKey: try Self.bytes(input.ourSigningKey),
+                        peerAgreementKey: try Self.bytes(input.peerAgreementKey), peerSigningKey: try Self.bytes(input.peerSigningKey),
+                        ourMLDSABlob: try input.ourMLDSABlobFill.map { fill in
+                            Data(repeating: try Self.bytes(fill)[0], count: try #require(input.ourMLDSABlobLength))
+                        },
+                        peerMLDSAKey: try input.peerMLDSAKeyFill.map { fill in
+                            Data(repeating: try Self.bytes(fill)[0], count: PairingCodec.mldsaKeySize)
+                        }
+                    ))
+                }
+            } else {
+                state = .empty
+            }
             let plaintext = try PairingCodec().encode(state)
-            #expect(plaintext.count == PairingCodec.capacity, "\(self.name): the field is 128 bytes")
+            #expect(plaintext.count == PairingCodec.capacity, "\(self.name): the field is \(PairingCodec.capacity) bytes")
             #expect(try PairingCodec().decode(plaintext) == state, "\(self.name): production decode disagrees")
             return plaintext
 

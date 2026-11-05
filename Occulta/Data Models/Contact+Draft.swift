@@ -413,13 +413,17 @@ extension Contact.Draft {
         /// `PairingState` as the row is inserted, and exists in the clear only in memory until then.
         var routingKey: Data?
 
+        /// The pair keys of a pairing made with a peer that sent its own (`bugs.md` Bug 196, stage 2): Enclave blobs and the
+        /// peer's public keys. Kept out of `CodingKeys` for the same reason as `routingKey`; only with a routing key.
+        var pairKeys: PairKeys?
+
         private enum CodingKeys: String, CodingKey {
             case id, material, acquiredAt, owner, expiredOn, quantumKeyMaterial
         }
 
         init?(
             material: Data?, owner: Data, date: String, quantumKeyMaterial: QuantumKeyMaterial? = nil,
-            routingKey: Data? = nil
+            routingKey: Data? = nil, pairKeys: PairKeys? = nil
         ) {
             guard owner.isEmpty == false else { return nil }
 
@@ -428,6 +432,7 @@ extension Contact.Draft {
             self.acquiredAt = date
             self.quantumKeyMaterial = quantumKeyMaterial
             self.routingKey = routingKey
+            self.pairKeys = pairKeys
         }
     }
 }

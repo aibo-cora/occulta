@@ -640,13 +640,18 @@ extension ContactManager {
 
         // The secret goes in as the row is inserted, not in a second save, which would mark the row updated in place.
         // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.
-        let pairingState = key.routingKey.map(PairingState.derived(secret:)) ?? PairingState.empty
+        let pairingState = key.routingKey.map { PairingState(routingKey: $0, keys: key.pairKeys) } ?? PairingState.empty
         let sealedPairing = try self.sealedPairing(pairingState)
 
         // A re-pair retires every key the contact held, in the save that adds this one: a to-many relationship has no order
         // of its own, so two current rows would leave "the latest" to chance, and the file key and routing key with it.
         let retiredOn = try self.cryptoManager.encrypt(data: String(Date.now.timeIntervalSince1970).data(using: .utf8))
-        for held in contact.contactPublicKeys ?? [] where held.expiredOn == nil { held.expiredOn = retiredOn }
+        // What a retired pairing held goes with it: its pair keys are Enclave blobs this phone could still use, so the
+        // column is overwritten with the sealed empty state, the same size as any other (Bug 196).
+        for held in contact.contactPublicKeys ?? [] where held.expiredOn == nil {
+            held.expiredOn = retiredOn
+            try self.store(PairingState.empty, in: held)
+        }
 
         contact.contactPublicKeys?.append(Contact.Profile.Key(
             material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,

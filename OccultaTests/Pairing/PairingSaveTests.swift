@@ -298,10 +298,11 @@ struct PairingSaveTests {
         #expect(record.ownBatches.count == 2)
         #expect(record.ownBatches[0].retiredAt != nil && !record.ownBatches[0].isPending)
         #expect(record.ownBatches[1].isPending && record.ownBatches[1].retiredAt == nil)
-        // Each pairing's secret is on its own key row. Not read through `.last`: a to-many relationship has no order of
-        // its own, and which row is the current key is not what this test is about.
-        let secrets = Set((paired.contactPublicKeys ?? []).compactMap { cm.pairingState(of: $0).secret })
-        #expect(secrets == [Data(repeating: 0x01, count: 32), Data(repeating: 0x02, count: 32)])
+        // The new pairing's routing key is on the current key row; the retired row's was overwritten with the sealed
+        // empty state, because a retired pairing's keys go with it.
+        let secrets = (paired.contactPublicKeys ?? []).compactMap { cm.pairingState(of: $0).secret }
+        #expect(secrets == [Data(repeating: 0x02, count: 32)])
+        #expect(cm.pairingState(for: paired).secret == Data(repeating: 0x02, count: 32))
     }
 
     @Test("A peer that sent no batch leaves the record and the tier as they were", .ambientTestKeyManager)

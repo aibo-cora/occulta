@@ -849,22 +849,6 @@
       "expected": "1ec2d3e4e7b3572863a5794f7770dff132570efe28dc5d9e143ee4a92c9fc641"
     },
     {
-      "name": "pairing.field.none",
-      "kind": "pairingField",
-      "note": "Bug 196. The sealed state of a pairing with no secret: 128 bytes, version 1, present 0, all else zero.",
-      "pairing": {},
-      "expected": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-    },
-    {
-      "name": "pairing.field.derived",
-      "kind": "pairingField",
-      "note": "Bug 196. A secret derived at the pairing: version 1, present 1, the secret at offset 2.",
-      "pairing": {
-        "secret": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-      },
-      "expected": "0101a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-    },
-    {
       "name": "groupEnvelope.v4.routingTag",
       "kind": "groupEnvelope",
       "note": "Bug 196. A slot carrying its routing tag in the clear, next to its secrecy context and wrapped payload. The slot of a build before the fix has none, and encodes as it always did.",
@@ -997,6 +981,59 @@
         "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232"
       },
       "expected": "7c965853745ed3b4e473c927edfe2083e8cc8a92d42c87e89a0d35a0c472bf68"
+    },
+    {
+      "name": "pairing.field.none",
+      "kind": "pairingField",
+      "digest": true,
+      "note": "Bug 196. The sealed state of a pairing with no routing key: 16,384 bytes, version 2, present 0, all else zero. `expected` is the SHA-256 of those bytes (`digest`).",
+      "pairing": {},
+      "expected": "716ad7538f92bb3cb749146290fa25419ab65b4dfe2cffc980566194d825e0a3"
+    },
+    {
+      "name": "pairing.field.routingKeyAlone",
+      "kind": "pairingField",
+      "digest": true,
+      "note": "Bug 196. A routing key without pair keys: present 1, the key at offset 2, all else zero. `expected` is the SHA-256 of the 16,384 bytes.",
+      "pairing": {
+        "routingKey": "4545454545454545454545454545454545454545454545454545454545454545"
+      },
+      "expected": "a87ecb393fd33e44863ee4b0876f37137fabb7814f4789a26da5dac0d803e1f9"
+    },
+    {
+      "name": "pairing.field.paired",
+      "kind": "pairingField",
+      "digest": true,
+      "note": "Bug 196, stage 2. A routing key with pair keys and no ML-DSA key: present 2; two 2-byte-length 256-byte blob rooms from offset 34; four 65-byte keys; an empty ML-DSA blob room (length 0) and a peer ML-DSA flag of 0. `expected` is the SHA-256 of the 16,384 bytes.",
+      "pairing": {
+        "routingKey": "4545454545454545454545454545454545454545454545454545454545454545",
+        "ourAgreementBlob": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "ourSigningBlob": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+        "ourAgreementKey": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+        "ourSigningKey": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+        "peerAgreementKey": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "peerSigningKey": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      },
+      "expected": "42c41c36e94198c874ec61472d325ca159f4d8b9b0a721b85c16bd97a3e0dff2"
+    },
+    {
+      "name": "pairing.field.pairedWithMLDSA",
+      "kind": "pairingField",
+      "digest": true,
+      "note": "Bug 196, stage 2. The same with our 7,540-byte ML-DSA-87 blob (every byte c1) at offset 812 and the peer's 2,592-byte ML-DSA-87 public key (every byte d1) after a flag of 1 at offset 13,100. `expected` is the SHA-256 of the 16,384 bytes.",
+      "pairing": {
+        "routingKey": "4545454545454545454545454545454545454545454545454545454545454545",
+        "ourAgreementBlob": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "ourSigningBlob": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+        "ourAgreementKey": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+        "ourSigningKey": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+        "peerAgreementKey": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "peerSigningKey": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "ourMLDSABlobFill": "c1",
+        "ourMLDSABlobLength": 7540,
+        "peerMLDSAKeyFill": "d1"
+      },
+      "expected": "50679c63c9f803abe111839acf492046f1f7692d4de7a3a62c2ca5a417472efa"
     }
   ]
 }

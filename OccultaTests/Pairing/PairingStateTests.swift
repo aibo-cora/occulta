@@ -50,9 +50,25 @@ private func pairedContact(
 
 private func half(_ byte: UInt8) -> Data { Data(repeating: byte, count: 32) }
 
+/// Pair keys with recognisable bytes. `mldsa` adds our ML-DSA blob, `peerMLDSA` the peer's ML-DSA public key.
+private func sampleKeys(mldsa: Bool = false, peerMLDSA: Bool = false) -> PairKeys {
+    func key(_ byte: UInt8) -> Data { Data(repeating: byte, count: 65) }
+    return PairKeys(
+        ourAgreementBlob: Data(repeating: 0xA1, count: 143), ourAgreementKey: key(0xA2),
+        ourSigningBlob: Data(repeating: 0xA3, count: 143), ourSigningKey: key(0xA4),
+        peerAgreementKey: key(0xB1), peerSigningKey: key(0xB2),
+        ourMLDSABlob: mldsa ? Data(repeating: 0xC1, count: 7_540) : nil,
+        peerMLDSAKey: peerMLDSA ? Data(repeating: 0xD1, count: PairingCodec.mldsaKeySize) : nil
+    )
+}
+
 private let everyState: [(name: String, state: PairingState)] = [
     ("none", .empty),
-    ("derived", .derived(secret: half(0x44))),
+    ("routing key alone", .derived(secret: half(0x44))),
+    ("paired, P-256 only", .paired(routingKey: half(0x45), keys: sampleKeys())),
+    ("paired, our ML-DSA key", .paired(routingKey: half(0x46), keys: sampleKeys(mldsa: true))),
+    ("paired, the peer's ML-DSA key", .paired(routingKey: half(0x47), keys: sampleKeys(peerMLDSA: true))),
+    ("paired, both ML-DSA keys", .paired(routingKey: half(0x48), keys: sampleKeys(mldsa: true, peerMLDSA: true))),
 ]
 
 // MARK: - The state and its codec
@@ -68,36 +84,89 @@ struct PairingCodecTests {
         #expect(try PairingCodec().decode(plaintext) == state, "\(name)")
     }
 
-    @Test("A held secret lands in its field and the rest is zeros")
+    @Test("The capacity holds the whole layout, with room left for a field a later release adds")
+    func capacityHoldsTheLayout() {
+        // 2 + 32 routing key, two 258-byte P-256 blob rooms, four 65-byte keys, a 12,290-byte ML-DSA blob room, 1 + 2,592.
+        #expect(2 + 32 + 258 * 2 + 65 * 4 + (2 + PairingCodec.mldsaBlobRoom) + (1 + PairingCodec.mldsaKeySize) == 15_693)
+        #expect(PairingCodec.capacity >= 15_693)
+    }
+
+    @Test("A held routing key lands in its field and the rest is zeros; an empty state is zeros past the version")
     func fieldsAreSeparate() throws {
         let held = try PairingCodec().encode(.derived(secret: half(0xAA)))
         let empty = try PairingCodec().encode(.empty)
         #expect(held[2..<34] == half(0xAA))
         #expect(held[34...] == Data(count: PairingCodec.capacity - 34))
-        #expect(empty[1...] == Data(count: PairingCodec.capacity - 1), "an empty state is zeros past the version")
+        #expect(empty[1...] == Data(count: PairingCodec.capacity - 1))
+    }
+
+    @Test("Each pair key lands at its own offset and a state's unused room stays zero")
+    func pairKeysLandAtTheirOffsets() throws {
+        let plaintext = [UInt8](try PairingCodec().encode(.paired(routingKey: half(0x45), keys: sampleKeys())))
+        #expect(plaintext[1] == 2)
+        #expect(Array(plaintext[34..<36]) == [0, 143], "the agreement blob's length, big-endian")
+        #expect(Set(plaintext[36..<(36 + 143)]) == [0xA1])
+        #expect(Set(plaintext[(36 + 143)..<292]) == [0], "the rest of that blob's room is zero")
+        #expect(Set(plaintext[550..<615]) == [0xA2] && Set(plaintext[615..<680]) == [0xA4])
+        #expect(Set(plaintext[680..<745]) == [0xB1] && Set(plaintext[745..<810]) == [0xB2])
+        #expect(Array(plaintext[810..<812]) == [0, 0], "no ML-DSA blob: length zero")
+        #expect(plaintext[13_100] == 0, "no peer ML-DSA key")
+        #expect(Set(plaintext[15_693...]) == [0])
     }
 
     @Test("A malformed plaintext is refused")
     func decodeRefuses() throws {
-        let good = try PairingCodec().encode(.derived(secret: half(1)))
+        let good = try PairingCodec().encode(.paired(routingKey: half(1), keys: sampleKeys(mldsa: true, peerMLDSA: true)))
         #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(good.dropLast()) }
         #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(Data()) }
 
-        var wrongVersion = good; wrongVersion[0] = 0x02
+        var wrongVersion = good; wrongVersion[0] = 0x01
         #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(wrongVersion) }
 
-        var unknownPresence = good; unknownPresence[1] = 2
+        var unknownPresence = good; unknownPresence[1] = 3
         #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(unknownPresence) }
+
+        var blobLongerThanItsRoom = good; blobLongerThanItsRoom[34] = 0x02; blobLongerThanItsRoom[35] = 0x00
+        #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(blobLongerThanItsRoom) }
+
+        var noAgreementBlob = good; noAgreementBlob[34] = 0; noAgreementBlob[35] = 0
+        #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(noAgreementBlob) }
+
+        var unknownPeerMLDSAFlag = good; unknownPeerMLDSAFlag[13_100] = 2
+        #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(unknownPeerMLDSAFlag) }
     }
 
-    @Test("A secret of the wrong size is refused, never padded or cut")
+    @Test("A key or blob that doesn't fit is refused, never padded or cut")
     func encodeRefuses() {
-        #expect(throws: PairingCodec.CodecError.wrongSize) {
-            try PairingCodec().encode(.derived(secret: Data(count: 31)))
+        #expect(throws: PairingCodec.CodecError.wrongSize) { try PairingCodec().encode(.derived(secret: Data(count: 31))) }
+        #expect(throws: PairingCodec.CodecError.wrongSize) { try PairingCodec().encode(.derived(secret: Data(count: 33))) }
+
+        func paired(_ edit: (inout PairKeys) -> Void) -> PairingState {
+            var keys = sampleKeys(mldsa: true, peerMLDSA: true)
+            edit(&keys)
+            return .paired(routingKey: half(1), keys: keys)
         }
-        #expect(throws: PairingCodec.CodecError.wrongSize) {
-            try PairingCodec().encode(.derived(secret: Data(count: 33)))
+        let cases: [PairingState] = [
+            paired { $0.ourAgreementBlob = Data(count: PairingCodec.p256BlobRoom + 1) },
+            paired { $0.ourSigningBlob = Data() },
+            paired { $0.ourAgreementKey = Data(count: 64) },
+            paired { $0.peerSigningKey = Data(count: 66) },
+            paired { $0.ourMLDSABlob = Data(count: PairingCodec.mldsaBlobRoom + 1) },
+            paired { $0.peerMLDSAKey = Data(count: 2_591) },
+            PairingState(routingKey: nil, keys: sampleKeys()),
+        ]
+        for state in cases {
+            #expect(throws: PairingCodec.CodecError.wrongSize) { try PairingCodec().encode(state) }
         }
+    }
+
+    @Test("An ML-DSA blob exactly as large as its room fits")
+    func fullRoomFits() throws {
+        var keys = sampleKeys(peerMLDSA: true)
+        keys.ourMLDSABlob = Data(repeating: 0x5A, count: PairingCodec.mldsaBlobRoom)
+        keys.ourAgreementBlob = Data(repeating: 0x5B, count: PairingCodec.p256BlobRoom)
+        let state = PairingState.paired(routingKey: half(2), keys: keys)
+        #expect(try PairingCodec().decode(try PairingCodec().encode(state)) == state)
     }
 
     @Test("A pairing that derived its secret holds it, sends the new form, and refuses the old form")
@@ -108,8 +177,10 @@ struct PairingCodecTests {
         #expect(state.refusesOldForm)
     }
 
-    @Test("A pairing with no secret sends the old form and accepts it")
+    @Test("A pairing with pair keys holds them with its routing key; one without sends the old form and accepts it")
     func rules() {
+        let paired = PairingState.paired(routingKey: half(3), keys: sampleKeys())
+        #expect(paired.secret == half(3) && paired.sendsNewForm && paired.refusesOldForm && paired.keys != nil)
         #expect(!PairingState.empty.sendsNewForm)
         #expect(!PairingState.empty.refusesOldForm)
         #expect(PairingState.empty.secret == nil)
@@ -139,23 +210,25 @@ struct PairingColumnTests {
         #expect(cm.pairingState(for: contact) == .empty)
     }
 
-    @Test("A second pairing with the same contact has its own secret; the first stays on its row", .ambientTestKeyManager)
-    func rePairKeepsOldRow() throws {
+    @Test("A second pairing with the same contact has its own routing key; the first row is retired and wiped", .ambientTestKeyManager)
+    func rePairRetiresAndWipesTheOldRow() throws {
         let (cm, _) = try makeContactManager()
         let (contact, first) = try pairedContact(cm, secret: half(1))
+        #expect(cm.pairingState(of: first) == .derived(secret: half(1)))
         let draft = try #require(Contact.Draft.Key(
             material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65),
-            date: "2", routingKey: half(2)
+            date: "2", routingKey: half(2), pairKeys: sampleKeys(mldsa: true)
         ))
         try cm.update(key: draft, for: contact.identifier)
 
-        // Each row holds its own pairing's secret. Not read through `.last`: a to-many relationship has no order of its
-        // own, and which row is the current key is not what this test is about.
+        // Not read through `.last`: a to-many relationship has no order of its own. The current key is the one not retired.
         let keys = try #require(contact.contactPublicKeys)
         #expect(keys.count == 2)
-        #expect(cm.pairingState(of: first) == .derived(secret: half(1)))
-        let states = Set(keys.compactMap { cm.pairingState(of: $0).secret })
-        #expect(states == [half(1), half(2)])
+        #expect(cm.pairingState(of: first) == .empty, "a retired pairing's Enclave blobs are overwritten with the sealed empty state")
+        #expect(first.expiredOn != nil)
+        let current = try #require(contact.currentKey)
+        #expect(cm.pairingState(of: current) == .paired(routingKey: half(2), keys: sampleKeys(mldsa: true)))
+        #expect(first.pairingEncrypted?.count == current.pairingEncrypted?.count, "one sealed length for every row")
     }
 
     @Test("Every state seals to one length, and a created key's field is that length", .ambientTestKeyManager)
@@ -270,6 +343,23 @@ struct PairingMigrationTests {
         try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
 
         #expect(row.contactPublicKeys?.first?.pairingEncrypted == nil)
+    }
+
+    @Test("A row converted from v1 gets the field on the next pass, at the same sealed length as every other", .ambientTestKeyManager)
+    func convertedRowIsFilledNextPass() throws {
+        let (cm, _) = try makeContactManager()
+        let converted = insert(keys: 1, scheme: .v1_identityDerived, in: cm.modelContext)
+        let steady = insert(keys: 1, in: cm.modelContext)
+
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
+        #expect(converted.contactPublicKeys?.first?.pairingEncrypted == nil)
+
+        converted.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        try DatabaseMigration.migratePairingFields(modelContext: cm.modelContext)
+
+        let sealed = try #require(converted.contactPublicKeys?.first?.pairingEncrypted)
+        #expect(sealed.count == steady.contactPublicKeys?.first?.pairingEncrypted?.count)
+        #expect(cm.pairingState(of: try #require(converted.contactPublicKeys?.first)) == .empty)
     }
 
     @Test("Running it again changes nothing", .ambientTestKeyManager)
