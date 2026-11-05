@@ -15189,14 +15189,15 @@ section is what was built, and it replaces the swap.
 | Stripping the `pairing` field in both directions | Accepted; mitigation is a one-line note on the confirmation screen when we offered pair keys and the peer sent none |
 | Backup pieces and signed attributes | Stay on `K` (a re-pair would otherwise delete a trustee's pieces through the mismatch cleanup, and pair keys do not survive a reinstall) |
 | Attachment base key | Fixed in 2.0.1: its own label and a one-time reseal pass (stage 4b; see the addendum below) |
-| Identity challenges | Move to the pair signing keys for a pair-key pairing; an outstanding challenge is dropped at re-pair |
+| Identity challenges | Move to the pair signing keys for a pair-key pairing; an outstanding challenge is dropped when the form of the pairing changes at a re-pair, and what was verified is kept |
 | v1 rows | The pairing pass keeps the `!= v1` predicate its siblings use; a row converted from v1 is filled on the next pass |
 
 **Safety invariant.** The identity ECDH is in both the routing key and the verification words, beside the pair-key ECDH. Without
 it `K` would be a bare claim: it is public, the Multipeer session authenticates nobody (`securityIdentity: nil`), and someone
 who sent a contact's public key and their own pair keys would pass the "same phone re-paired" check. What authenticates the
 exchange is the words both people compare; they cover the identity ECDH, the pair-key ECDH and a transcript of both phones'
-pair keys and ML-DSA keys, so a key added, removed or swapped in transit changes them. `PairwiseDerivationTests` pins each.
+pair keys, ML-DSA keys and a digest of the prekey batch each sent beside them, so a key or a batch added, removed or swapped in
+transit changes them. `PairwiseDerivationTests` pins each.
 
 **What a pair-key pairing holds.** `PairingState` is a routing key and `PairKeys`: our two P-256 Enclave blobs and public keys,
 the peer's two public keys, our ML-DSA-87 blob and the peer's ML-DSA-87 public key where either exists. `PairingCodec` seals it
@@ -15210,7 +15211,7 @@ are valid distinct P-256 points, neither is either phone's identity key, and nei
 is dropped; it is never checked against another contact's keys (that would make a hidden contact show). The message grows to
 about 10 KB; a test pins its size.
 
-**Derivations** (`PairwiseDerivation.swift`; vectors `pairing.transcript`, `pairing.routingKey.*`, `pairing.words.*`,
+**Derivations** (`PairwiseDerivation.swift`; vectors `pairing.transcript`, `pairing.batchDigest*`, `pairing.routingKey.*`, `pairing.words.*`,
 `pairing.longTerm.*`, `pairing.field.*`, recorded from an independent Python implementation): routing key = HKDF(pk ‖ ik ‖ ML-KEM
 secrets, salt the two agreement keys XORed, info `Occulta-v2-routing-key-2026` ‖ nonces ‖ transcript); words key likewise under
 `Occulta-v2-pairwise-diceware-2026`; long-term slot key = HKDF(pk ‖ ML-KEM secrets, salt the agreement keys XORed), with no
@@ -15252,6 +15253,39 @@ Simulator cannot unlock the vault; only the model is tested). Pairing a 2.0.1 ph
 re-pair and at deletion, and the draft files' new modification times at the first launch after the update (stage 4b). The 2.1.0
 store must carry the pairing column as it is.
 
+**Review fixes, 2026-11-05** (an independent security review and code review of the eleven commits; neither found a path where a
+contact or coercer can read or forge, or a fallback to the identity key on send or receive; reports in the session notes folder).
+Fixed, each with tests:
+- Revoke (`reset(identity:)`) and the status, challenge-button and v1 readers used "the last key row", which after a re-pair can be
+  the retired one: Revoke could re-stamp it and leave the current key in use. They read `currentKey` (or `displayedKey`).
+- The attachment pass stopped at the first file it could not move, leaving every later file under the old key and unreadable at every
+  unlock. It now counts the failure and goes on, lists the sealed files first and derives keys only if there is one, dedupes keys, and
+  yields after every file.
+- `update(key:for:pairing:)` changed the context before the step that could throw and rolled nothing back. Everything that can fail
+  on its own is sealed first and the rest runs in a block that rolls back. A P-256 blob over its room is found when the keys are
+  made (no `pairing` field is sent), not at Save.
+- An unreadable pairing column read as empty, so a pair-key pairing whose column would not open or decode was sent the old way and
+  accepted old-form files. `readablePairingState` tells "never filled" (a plain pairing) from "cannot be read"; a send to the latter
+  throws `pairingUnreadable` and it refuses the old form.
+- A re-exchange that gave no pair keys to a contact whose pairing has them overwrote the working pair keys with a plainer pairing.
+  It is refused (`pairingWouldBeWeaker`) and saves nothing. This is decision D11 ("refuse to save a weaker pairing") applied to the
+  accidental case as well as to a derivation that fails.
+- A re-pair dropped the outstanding challenge only when the retired pairing had pair keys (so the upgrade from plain left a challenge
+  the new pairing could not answer) and replaced the whole challenge state, losing verified-at times. It now drops the outstanding
+  challenges whenever the form of the pairing changes and keeps what was verified.
+- The prekey batch was outside the transcript, so a man in the middle could swap it without the words changing. A digest of each
+  phone's batch is now in its block (`pairing.batchDigest`; the transcript vector is re-recorded, unreleased).
+- Three tests that made a contact "hidden" while the session could still see it now put the session one level deeper, and a
+  mutation that filtered the attachment pass by visibility fails one of them (run, then reverted). The UI copy says the contacts
+  hold the main key's public half. The duplicated test helpers are one `PairingTestSupport.swift`.
+
+**Left as it is, on purpose.** `PairingState.derived(secret:)`, the "routing key alone" state (`present == 1` in the codec) and the
+code that serves it (`sendsNewForm`, the tier clause in `routingKeyForSending`, a `PairingSlotContext` with no pair keys) are not
+produced by production after stage 3, but `PairingRoutingTests` and several storage tests build them to test the routing tag, the
+proof and the old-form refusal in isolation. Removing the state means rewriting those tests on pair keys. The column rename
+`pairingSecretEncrypted` to `pairingEncrypted` has no `@Attribute(originalName:)`: a store that ran a #157 build drops the column and
+refills it empty, which assumption A makes harmless (the owner's own test phones aside).
+
 **Release notes line:** "Contacts you paired before this version can be upgraded by exchanging keys again in person; they show a
 small arrow until you do."
 
@@ -15278,9 +15312,12 @@ key row, else the latest, instead of "the last".
 received attachment not yet opened (`tmp/`). `ContactManager.resealAttachmentKeys` moves them, modelled on `resealDraftFiles`: a file
 is found by trial, streamed to a temporary, read back and renamed. It covers every non-deleted contact at every depth, tries every
 key row a contact has held and moves a file to the current row's key, leaves plaintext, other-key and already-moved files alone,
-removes a killed run's temporary, and stops at a file that will not move, leaving it as it was. No marker: a file already moved no
-longer opens under an old key, so a second run changes nothing. It runs on unlock beside the other sweeps and yields between files.
+removes a killed run's temporary, and leaves a file that will not move as it was while it goes on to the next. No marker: a file already moved no
+longer opens under an old key, so a second run changes nothing. It runs on unlock beside the other sweeps and yields after every file.
+A file it cannot move is counted, left as it was, and does not hold back the files after it.
 
 **Cost.** It rewrites draft files, so their modification times change at the first launch after the update (the same at every depth,
-and not in the database). A very large attachment holds the main actor for as long as its one streamed pass takes. Tests:
+and not in the database). A very large attachment holds the main actor for as long as its one streamed pass takes, and a draft opened
+at unlock before the run reaches it may not open until the run has (drafts are listed first). A phone with nothing to move pays for a
+directory listing, not for a key derivation per contact. Tests:
 `AttachmentKeyResealTests`.
