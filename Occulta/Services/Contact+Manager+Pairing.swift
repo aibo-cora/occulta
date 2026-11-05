@@ -1,5 +1,5 @@
 //
-//  Contact+Manager+RoutingKey.swift
+//  Contact+Manager+Pairing.swift
 //  Occulta
 //
 //  ContactManager's side of the per-routing key (`bugs.md` Bug 196): the only code that reads or writes a peer
@@ -62,7 +62,7 @@ extension ContactManager {
         return self.pairingState(of: key)
     }
 
-    // MARK: - Sending and receiving (stage 5)
+    // MARK: - Sending and receiving
 
     /// The secret to seal a file to `contact` with, or nil: the pairing holds one, the peer is known to hold it too, and
     /// the peer is at the pairing tier. Anything less sends as before.
@@ -97,7 +97,7 @@ extension ContactManager {
         guard let secret = self.pairingState(for: contact).secret, let recipients = bundle.group?.recipients else {
             return false
         }
-        let tag = RoutingKey.routingTag(secret: secret, nonce: bundle.fingerprintNonce)
+        let tag = RoutingKey.routingTag(routingKey: secret, nonce: bundle.fingerprintNonce)
         return recipients.contains { $0.routingTag == tag }
     }
 

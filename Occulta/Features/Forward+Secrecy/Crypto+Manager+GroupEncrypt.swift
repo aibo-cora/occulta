@@ -351,9 +351,9 @@ extension Manager.Crypto {
         let routingTag: Data
         let slotProof: Data
         if let secret = r.routingKey {
-            wrappingKey = RoutingKey.bind(derivedKey, secret: secret)
-            routingTag = RoutingKey.routingTag(secret: secret, nonce: tagNonce)
-            slotProof = RoutingKey.slotProof(secret: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)
+            wrappingKey = RoutingKey.bind(derivedKey, routingKey: secret)
+            routingTag = RoutingKey.routingTag(routingKey: secret, nonce: tagNonce)
+            slotProof = RoutingKey.slotProof(routingKey: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)
         } else {
             wrappingKey = derivedKey
             routingTag = try RoutingKey.fillerTag()

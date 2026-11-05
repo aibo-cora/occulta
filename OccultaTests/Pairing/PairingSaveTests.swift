@@ -111,19 +111,26 @@ struct PairingOfferDerivationTests {
             return try PairingOffer.makeOwnPairKeys(using: keys)
         }
         let a = try make(mldsaAvailable: mldsa), b = try make(mldsaAvailable: false)
-        func offer(ours: PairingOffer.OwnPairKeys, theirs: PairingOffer.OwnPairKeys, ourNonce: Data, peerNonce: Data) throws -> PairingOffer {
-            var record = PrekeyRecord.empty
-            record.ownBatches = [ownBatch(id: 0xAA)]
-            return PairingOffer(
-                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, peerBatch: peerBatch(),
+        // Each phone's own batch is the other's peer batch, as it is on the wire.
+        var recordA = PrekeyRecord.empty, recordB = PrekeyRecord.empty
+        recordA.ownBatches = [ownBatch(id: 0xAA)]
+        recordB.ownBatches = [ownBatch(id: 0xBB)]
+        let batchA = PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: recordA)))
+        let batchB = PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: recordB)))
+        func offer(
+            record: PrekeyRecord, peerBatch: PairingOffer.Batch, ours: PairingOffer.OwnPairKeys, theirs: PairingOffer.OwnPairKeys,
+            ourNonce: Data, peerNonce: Data
+        ) throws -> PairingOffer {
+            PairingOffer(
+                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, peerBatch: peerBatch,
                 ours: ours,
                 theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
                 pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: self.provider)
             )
         }
         return (
-            try offer(ours: a, theirs: b, ourNonce: nonce(1), peerNonce: nonce(2)),
-            try offer(ours: b, theirs: a, ourNonce: nonce(2), peerNonce: nonce(1))
+            try offer(record: recordA, peerBatch: batchB, ours: a, theirs: b, ourNonce: nonce(1), peerNonce: nonce(2)),
+            try offer(record: recordB, peerBatch: batchA, ours: b, theirs: a, ourNonce: nonce(2), peerNonce: nonce(1))
         )
     }
 
@@ -153,6 +160,24 @@ struct PairingOfferDerivationTests {
         #expect(a == b)
         #expect(withKey.alice.ours.mldsaKey != nil && withKey.bob.theirs.mldsaKey == withKey.alice.ours.mldsaKey)
         #expect(a != plain.alice.routingKey(withPeer: bobKey, quantum: q.alice, using: self.alice), "other keys, other pairing")
+    }
+
+    @Test("A prekey batch swapped on the way makes the two phones' words and routing keys differ")
+    func swappedBatchIsSeen() throws {
+        let (a, b) = try self.offers()
+        let aliceKey = try self.alice.retrieveIdentity(), bobKey = try self.bob.retrieveIdentity()
+        // Bob is shown Alice's keys with another batch beside them; everything else is honest.
+        let other = PairingOffer.Batch(OccultaBundle.SealedPayload.PrekeySyncBatch(
+            generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_999), prekeys: [OccultaBundle.WirePrekey(id: "x", publicKey: Data(repeating: 9, count: 65))],
+            id: Data(repeating: 0x99, count: 16), lastResort: nil
+        ))
+        let tampered = PairingOffer(
+            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, peerBatch: other, ours: b.ours, theirs: b.theirs,
+            pairwiseECDH: b.pairwiseECDH
+        )
+
+        #expect(a.wordsKey(withPeer: bobKey, quantum: nil, using: self.alice) != tampered.wordsKey(withPeer: aliceKey, quantum: nil, using: self.bob))
+        #expect(a.routingKey(withPeer: bobKey, quantum: nil, using: self.alice) != tampered.routingKey(withPeer: aliceKey, quantum: nil, using: self.bob))
     }
 
     @Test("A routing key we can't derive is nil, never a weaker one")

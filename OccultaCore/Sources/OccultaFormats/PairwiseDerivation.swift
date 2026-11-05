@@ -19,40 +19,73 @@ extension RoutingKey {
 
     // MARK: - The transcript
 
-    /// What one phone sent in its `pairing` field: its two P-256 pair keys and, from a phone that could make one, an
-    /// ML-DSA-87 public key.
+    /// What one phone sent in its `pairing` field: its two P-256 pair keys, from a phone that could make one an ML-DSA-87
+    /// public key, and a digest of the prekey batch that rode beside them. The batch is in the transcript so a man in the
+    /// middle who leaves the keys alone and swaps the prekeys changes the words, like one who swaps a key.
     public struct PairBlock: Equatable, Sendable {
 
         public static let p256KeySize = 65
         /// An ML-DSA-87 public key, FIPS 204.
         public static let mldsaKeySize = 2592
+        /// SHA-256.
+        public static let batchDigestSize = 32
 
         public let agreementKey: Data
         public let signingKey: Data
         public let mldsaKey: Data?
+        public let batchDigest: Data
 
-        /// `nil` for a P-256 key that isn't 65 bytes, an ML-DSA key that isn't 2,592, or two P-256 keys that are the same.
-        public init?(agreementKey: Data, signingKey: Data, mldsaKey: Data? = nil) {
-            guard agreementKey.count == Self.p256KeySize, signingKey.count == Self.p256KeySize, agreementKey != signingKey else {
-                return nil
-            }
+        /// `nil` for a P-256 key that isn't 65 bytes, an ML-DSA key that isn't 2,592, a digest that isn't 32 bytes, or two
+        /// P-256 keys that are the same.
+        public init?(agreementKey: Data, signingKey: Data, mldsaKey: Data? = nil, batchDigest: Data) {
+            guard
+                agreementKey.count == Self.p256KeySize, signingKey.count == Self.p256KeySize, agreementKey != signingKey,
+                batchDigest.count == Self.batchDigestSize
+            else { return nil }
             if let mldsaKey, mldsaKey.count != Self.mldsaKeySize { return nil }
             self.agreementKey = agreementKey
             self.signingKey   = signingKey
             self.mldsaKey     = mldsaKey
+            self.batchDigest  = batchDigest
         }
 
-        /// `0x01 ‖ agreement ‖ signing ‖ UInt16 big-endian length of the ML-DSA key ‖ the ML-DSA key`. The length is 0 when
-        /// the phone sent none, so a missing key and a present one can't be mistaken for each other.
+        /// `0x02 ‖ agreement ‖ signing ‖ UInt16 big-endian length of the ML-DSA key ‖ the ML-DSA key ‖ the batch digest`. The
+        /// length is 0 when the phone sent none, so a missing key and a present one can't be mistaken for each other.
         var encoded: Data {
-            var out = Data([0x01])
+            var out = Data([0x02])
             out.append(self.agreementKey)
             out.append(self.signingKey)
             let length = UInt16(self.mldsaKey?.count ?? 0)
             out.append(contentsOf: [UInt8(length >> 8), UInt8(length & 0xFF)])
             if let mldsaKey { out.append(mldsaKey) }
+            out.append(self.batchDigest)
             return out
         }
+    }
+
+    /// SHA-256("occulta-pairing-batch-v1" ‖ the batch, in a fixed layout): `0x00` or `0x01 ‖ id` (16 bytes), `generatedAt` as
+    /// the big-endian bits of its `Double`, a UInt16 count, then for each prekey a UInt16 length and the bytes of its id and a
+    /// UInt16 length and the bytes of its public key, then `0x00` or `0x01 ‖` a prekey in the same layout for the last-resort
+    /// key. Both phones compute it over the batch as it was sent and as it was received, so they agree on an honest channel.
+    public static func batchDigest(
+        id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], lastResort: OccultaBundle.WirePrekey?
+    ) -> Data {
+        func put(_ value: UInt16, into out: inout Data) { out.append(contentsOf: [UInt8(value >> 8), UInt8(value & 0xFF)]) }
+        func put(_ prekey: OccultaBundle.WirePrekey, into out: inout Data) {
+            let identifier = Data(prekey.id.utf8)
+            put(UInt16(truncatingIfNeeded: identifier.count), into: &out)
+            out.append(identifier)
+            put(UInt16(truncatingIfNeeded: prekey.publicKey.count), into: &out)
+            out.append(prekey.publicKey)
+        }
+
+        var out = Self.batchDomain
+        if let id { out.append(0x01); out.append(id) } else { out.append(0x00) }
+        withUnsafeBytes(of: generatedAt.timeIntervalSinceReferenceDate.bitPattern.bigEndian) { out.append(contentsOf: $0) }
+        put(UInt16(truncatingIfNeeded: prekeys.count), into: &out)
+        for prekey in prekeys { put(prekey, into: &out) }
+        if let lastResort { out.append(0x01); put(lastResort, into: &out) } else { out.append(0x00) }
+        return Data(SHA256.hash(data: out))
     }
 
     /// SHA-256("occulta-pairing-transcript-v1" ‖ the two blocks' encodings, sorted bytewise). Both phones see the same two
@@ -130,6 +163,7 @@ extension RoutingKey {
     // MARK: - Internals
 
     static let transcriptDomain       = Data("occulta-pairing-transcript-v1".utf8)
+    static let batchDomain            = Data("occulta-pairing-batch-v1".utf8)
     static let pairingDomain          = Data("Occulta-v2-routing-key-2026".utf8)
     static let wordsDomain            = Data("Occulta-v2-pairwise-diceware-2026".utf8)
     static let longTermClassicalDomain = Data("Occulta-v1-pairwise-transport-2026".utf8)

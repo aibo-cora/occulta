@@ -200,7 +200,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let challengeSlot: ChallengeSlotInput?
 
     // pairingRoutingTag, pairingSlotProof, pairingBind, pairingField, recipientPayload,
-    // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript
+    // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript, pairingBatchDigest
     let pairing: PairingInput?
 
     /// A secret per pairing (`bugs.md` Bug 196). Every field is hex; each kind reads its own subset.
@@ -223,6 +223,13 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let ourMLDSABlobFill: String?
         let ourMLDSABlobLength: Int?
         let peerMLDSAKeyFill: String?
+        // pairingBatchDigest
+        let batchId: String?
+        let batchGeneratedAt: Double?
+        let batchPrekeyIds: [String]?
+        let batchPrekeyKeys: [String]?
+        let batchLastResortId: String?
+        let batchLastResortKey: String?
         // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript (stage 2)
         let pairwiseECDH: String?
         let identityECDH: String?
@@ -233,6 +240,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let blockOneAgreement: String?
         let blockOneSigning: String?
         let blockOneMLDSA: String?
+        let blockOneBatch: String?
+        let blockTwoBatch: String?
         let blockTwoAgreement: String?
         let blockTwoSigning: String?
         let blockTwoMLDSA: String?
@@ -326,7 +335,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let ephemeralPublicKey: String
         let prekeyID: String?
         let wrappedPayload: String
-        /// Absent from the vectors recorded before a secret per pairing (`bugs.md` Bug 196), which must keep their bytes.
+        /// Absent from the vectors recorded before a routing key per pairing (`bugs.md` Bug 196), which must keep their bytes.
         let routingTag: String?
     }
 
@@ -558,33 +567,45 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
 
         case "pairingRoutingTag":
             let input = try #require(self.pairing)
-            return RoutingKey.routingTag(secret: try Self.bytes(input.secret), nonce: try Self.bytes(input.nonce))
+            return RoutingKey.routingTag(routingKey: try Self.bytes(input.secret), nonce: try Self.bytes(input.nonce))
 
         case "pairingSlotProof":
             let input = try #require(self.pairing)
             let proof = RoutingKey.slotProof(
-                secret: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
+                routingKey: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
                 senderPublicKey: try Self.bytes(input.senderPublicKey)
             )
             #expect(RoutingKey.isValidSlotProof(
-                proof, secret: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
+                proof, routingKey: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
                 senderPublicKey: try Self.bytes(input.senderPublicKey)
             ), "\(self.name): production verification rejected the proof")
             return proof
 
         case "pairingBind":
             let input = try #require(self.pairing)
-            return RoutingKey.bind(SymmetricKey(data: try Self.bytes(input.key)), secret: try Self.bytes(input.secret))
+            return RoutingKey.bind(SymmetricKey(data: try Self.bytes(input.key)), routingKey: try Self.bytes(input.secret))
                 .withUnsafeBytes { Data($0) }
+
+        case "pairingBatchDigest":
+            let input = try #require(self.pairing)
+            let keys = try #require(input.batchPrekeyKeys), ids = try #require(input.batchPrekeyIds)
+            let prekeys = try zip(ids, keys).map { OccultaBundle.WirePrekey(id: $0, publicKey: try Self.bytes($1)) }
+            let lastResort = try input.batchLastResortId.map {
+                OccultaBundle.WirePrekey(id: $0, publicKey: try Self.bytes(input.batchLastResortKey))
+            }
+            return RoutingKey.batchDigest(
+                id: try input.batchId.map(Self.bytes), generatedAt: Date(timeIntervalSinceReferenceDate: try #require(input.batchGeneratedAt)),
+                prekeys: prekeys, lastResort: lastResort
+            )
 
         case "pairingTranscript":
             let input = try #require(self.pairing)
             let one = try #require(RoutingKey.PairBlock(
                 agreementKey: try Self.bytes(input.blockOneAgreement), signingKey: try Self.bytes(input.blockOneSigning),
-                mldsaKey: try input.blockOneMLDSA.map(Self.bytes)))
+                mldsaKey: try input.blockOneMLDSA.map(Self.bytes), batchDigest: try Self.bytes(input.blockOneBatch)))
             let two = try #require(RoutingKey.PairBlock(
                 agreementKey: try Self.bytes(input.blockTwoAgreement), signingKey: try Self.bytes(input.blockTwoSigning),
-                mldsaKey: try input.blockTwoMLDSA.map(Self.bytes)))
+                mldsaKey: try input.blockTwoMLDSA.map(Self.bytes), batchDigest: try Self.bytes(input.blockTwoBatch)))
             let transcript = RoutingKey.transcript(one, two)
             #expect(transcript == RoutingKey.transcript(two, one), "\(self.name): the two orders disagree")
             return transcript

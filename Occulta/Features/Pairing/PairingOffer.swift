@@ -48,6 +48,11 @@ struct PairingOffer: Equatable {
             self.prekeys     = wire.prekeys
             self.lastResort  = wire.lastResort
         }
+
+        /// The digest the transcript carries (`RoutingKey.batchDigest`): the same bytes the sender computes over this batch.
+        var digest: Data {
+            RoutingKey.batchDigest(id: self.id, generatedAt: self.generatedAt, prekeys: self.prekeys, lastResort: self.lastResort)
+        }
     }
 
     /// The two Enclave keys one exchange made for us, and an ML-DSA-87 key where the phone could make one.
@@ -67,12 +72,20 @@ struct PairingOffer: Equatable {
         let mldsaKey: Data?
     }
 
-    /// What each phone sent, as `RoutingKey.transcript` takes it.
+    /// What each phone sent, as `RoutingKey.transcript` takes it: its keys and a digest of the prekey batch beside them. Ours is
+    /// read back from the record the field was made from, which is the batch that was sent.
     var ourBlock: RoutingKey.PairBlock? {
-        RoutingKey.PairBlock(agreementKey: self.ours.agreementKey, signingKey: self.ours.signingKey, mldsaKey: self.ours.mldsaKey)
+        guard let batch = Self.wireBatch(of: self.ownPrekeys) else { return nil }
+        return RoutingKey.PairBlock(
+            agreementKey: self.ours.agreementKey, signingKey: self.ours.signingKey, mldsaKey: self.ours.mldsaKey,
+            batchDigest: Batch(batch).digest
+        )
     }
     var theirBlock: RoutingKey.PairBlock? {
-        RoutingKey.PairBlock(agreementKey: self.theirs.agreementKey, signingKey: self.theirs.signingKey, mldsaKey: self.theirs.mldsaKey)
+        RoutingKey.PairBlock(
+            agreementKey: self.theirs.agreementKey, signingKey: self.theirs.signingKey, mldsaKey: self.theirs.mldsaKey,
+            batchDigest: self.peerBatch.digest
+        )
     }
 
     /// Both phones' transcript. `nil` only for a block that does not validate, which `accepted` has already refused.
@@ -154,9 +167,10 @@ extension PairingOffer {
 
         // A block validates the lengths and that the two P-256 keys differ; the ML-DSA key is checked on its own so a bad
         // one doesn't cost the pair.
-        guard RoutingKey.PairBlock(agreementKey: agreement, signingKey: signing) != nil else { return nil }
+        let digest = Batch(field.prekeyBatch).digest
+        guard RoutingKey.PairBlock(agreementKey: agreement, signingKey: signing, batchDigest: digest) != nil else { return nil }
         let mldsa = field.mldsaKey.flatMap {
-            RoutingKey.PairBlock(agreementKey: agreement, signingKey: signing, mldsaKey: $0) == nil ? nil : $0
+            RoutingKey.PairBlock(agreementKey: agreement, signingKey: signing, mldsaKey: $0, batchDigest: digest) == nil ? nil : $0
         }
         return (Batch(field.prekeyBatch), PeerPairKeys(agreementKey: agreement, signingKey: signing, mldsaKey: mldsa))
     }

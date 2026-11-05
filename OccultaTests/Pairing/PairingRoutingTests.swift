@@ -123,7 +123,7 @@ struct PairingRoutingTests {
         let bundle = try seal(from: self.sender, to: [(me, secret(1))])
         let tag = try #require(bundle.group?.recipients.first?.routingTag)
 
-        #expect(tag == RoutingKey.routingTag(secret: secret(1), nonce: bundle.fingerprintNonce))
+        #expect(tag == RoutingKey.routingTag(routingKey: secret(1), nonce: bundle.fingerprintNonce))
     }
 
     // MARK: Two pairings, one identity key
@@ -290,8 +290,8 @@ struct PairingRoutingTests {
         #expect(opened.sealed.senderProof?.count == 32)
         #expect(opened.sealed.senderProof != Data(HMAC<SHA256>.authenticationCode(for: senderKey, using: SymmetricKey(data: Data(count: 32)))))
         #expect(RoutingKey.isValidSlotProof(
-            RoutingKey.slotProof(secret: secret(1), routingTag: tag, senderPublicKey: senderKey),
-            secret: secret(1), routingTag: tag, senderPublicKey: senderKey
+            RoutingKey.slotProof(routingKey: secret(1), routingTag: tag, senderPublicKey: senderKey),
+            routingKey: secret(1), routingTag: tag, senderPublicKey: senderKey
         ))
     }
 
@@ -305,7 +305,7 @@ struct PairingRoutingTests {
         // A file whose slot carries a proof made over some other routing tag.
         let bundle = try sealWithProof(
             from: self.sender, to: me, secret: secret(1),
-            proof: RoutingKey.slotProof(secret: secret(1), routingTag: Data(repeating: 0xEE, count: 32), senderPublicKey: senderKey)
+            proof: RoutingKey.slotProof(routingKey: secret(1), routingTag: Data(repeating: 0xEE, count: 32), senderPublicKey: senderKey)
         )
 
         #expect(throws: GroupDecryptError.senderProofMismatch) { try cm.openGroup(bundle: bundle) }
@@ -331,11 +331,11 @@ struct PairingRoutingTests {
         let bundle = try seal(from: self.sender, to: [(me, secret(1)), (other, secret(2))])
         let tags = try #require(bundle.group?.recipients.map(\.routingTag))
 
-        #expect(tags[0] == RoutingKey.routingTag(secret: secret(1), nonce: bundle.fingerprintNonce))
-        #expect(tags[1] == RoutingKey.routingTag(secret: secret(2), nonce: bundle.fingerprintNonce))
+        #expect(tags[0] == RoutingKey.routingTag(routingKey: secret(1), nonce: bundle.fingerprintNonce))
+        #expect(tags[1] == RoutingKey.routingTag(routingKey: secret(2), nonce: bundle.fingerprintNonce))
         #expect(tags[0] != tags[1])
         // A member holding the other secret computes the other routing tag, never ours.
-        #expect(RoutingKey.routingTag(secret: secret(2), nonce: bundle.fingerprintNonce) != tags[0])
+        #expect(RoutingKey.routingTag(routingKey: secret(2), nonce: bundle.fingerprintNonce) != tags[0])
     }
 
     @Test("A group member opens their own slot and not another's", .ambientTestKeyManager)
@@ -370,7 +370,7 @@ struct PairingRoutingTests {
 
         #expect(recipients.allSatisfy { $0.routingTag?.count == 32 })
         // A filler routing tag belongs to no secret.
-        #expect(recipients[1].routingTag != RoutingKey.routingTag(secret: secret(1), nonce: bundle.fingerprintNonce))
+        #expect(recipients[1].routingTag != RoutingKey.routingTag(routingKey: secret(1), nonce: bundle.fingerprintNonce))
     }
 
     // MARK: Identity challenges
@@ -449,7 +449,7 @@ private func sealWithProof(
     let (derived, context) = try Manager.Crypto(keyManager: sender).deriveOutboundKey(
         contactPrekey: nil, recipientPublicKey: recipientPublicKey, quantumMaterial: nil
     )
-    let wrappingKey = RoutingKey.bind(derived, secret: secret)
+    let wrappingKey = RoutingKey.bind(derived, routingKey: secret)
     let encoder = JSONEncoder()
     encoder.outputFormatting = .sortedKeys
     let slot = try encoder.encode(OccultaBundle.RecipientPayload(
@@ -463,7 +463,7 @@ private func sealWithProof(
         group: OccultaBundle.GroupEnvelope(blind: blind, blindNonce: blindNonce, recipients: [OccultaBundle.Recipient(
             secrecyContext: context,
             wrappedPayload: try #require(try AES.GCM.seal(slot, using: wrappingKey, authenticating: blind).combined),
-            routingTag: RoutingKey.routingTag(secret: secret, nonce: outerNonce)
+            routingTag: RoutingKey.routingTag(routingKey: secret, nonce: outerNonce)
         )])
     )
 }

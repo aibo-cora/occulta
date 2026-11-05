@@ -200,7 +200,7 @@ extension Manager.Crypto {
         }
 
         // The slot this pairing's secret names, if any (Bug 196).
-        let expectedRoutingTag = pairing.map { RoutingKey.routingTag(secret: $0.secret, nonce: bundle.fingerprintNonce) }
+        let expectedRoutingTag = pairing.map { RoutingKey.routingTag(routingKey: $0.secret, nonce: bundle.fingerprintNonce) }
         let tagged = expectedRoutingTag.map { tag in recipients.contains { $0.routingTag == tag } } ?? false
         if let pairing, !tagged, !pairing.acceptsOldForm { throw GroupDecryptError.recipientSlotNotFound }
 
@@ -215,7 +215,7 @@ extension Manager.Crypto {
                 prekeys: prekeys,
                 pairing: tagged ? pairing?.pair : nil
             ) else { continue }
-            let wrappingKey = tagged ? pairing.map { RoutingKey.bind(derivedKey, secret: $0.secret) } ?? derivedKey : derivedKey
+            let wrappingKey = tagged ? pairing.map { RoutingKey.bind(derivedKey, routingKey: $0.secret) } ?? derivedKey : derivedKey
             
             guard let box   = try? AES.GCM.SealedBox(combined: entry.wrappedPayload),
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),

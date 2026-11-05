@@ -26,11 +26,14 @@ private struct Phone {
     let agreement = P256.KeyAgreement.PrivateKey()
     let signing = P256.Signing.PrivateKey()
     var mldsaKey: Data?
+    /// The digest of the prekey batch this phone sent beside its keys.
+    var batchDigest = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
 
     var agreementPublic: Data { self.agreement.publicKey.x963Representation }
     var block: RoutingKey.PairBlock {
         RoutingKey.PairBlock(
-            agreementKey: self.agreementPublic, signingKey: self.signing.publicKey.x963Representation, mldsaKey: self.mldsaKey
+            agreementKey: self.agreementPublic, signingKey: self.signing.publicKey.x963Representation, mldsaKey: self.mldsaKey,
+            batchDigest: self.batchDigest
         )!
     }
 
@@ -180,6 +183,52 @@ struct PairwiseDerivationTests {
         #expect(seenByBob != honestWords)
     }
 
+    @Test("A prekey batch a man in the middle swapped changes the words and the routing key, like a swapped key")
+    func swappedBatchChangesBoth() throws {
+        let honest = try self.both()
+        // Alice is shown Bob's own keys with another batch beside them.
+        var tampered = self.bob
+        tampered.batchDigest = Data(repeating: 0xEE, count: 32)
+        let a = try #require(try derive(
+            me: self.alice, peerIdentity: try self.bob.identity.retrieveIdentity(), peerAgreement: self.bob.agreementPublic,
+            theirBlock: tampered.block, quantum: nil, ourNonce: nonce(1), peerNonce: nonce(2)))
+        #expect(a.words != honest.bob.words)
+        #expect(a.routingKey != honest.bob.routingKey)
+    }
+
+    @Test("A batch's digest follows every field of the batch and is stable across a JSON round trip")
+    func batchDigestFollowsTheBatch() throws {
+        func prekey(_ n: UInt8, id: String = "k") -> OccultaBundle.WirePrekey {
+            OccultaBundle.WirePrekey(id: "\(id)\(n)", publicKey: Data(repeating: n, count: 65))
+        }
+        let date = Date(timeIntervalSinceReferenceDate: 800_000_000.123456)
+        let id = Data(repeating: 1, count: 16)
+        let base = RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9))
+
+        #expect(base.count == 32)
+        #expect(base == RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)))
+        let variants: [Data] = [
+            RoutingKey.batchDigest(id: Data(repeating: 2, count: 16), generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
+            RoutingKey.batchDigest(id: nil, generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
+            RoutingKey.batchDigest(id: id, generatedAt: date.addingTimeInterval(1), prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
+            RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(2), prekey(1)], lastResort: prekey(9)),
+            RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(1)], lastResort: prekey(9)),
+            RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(8)),
+            RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: nil),
+            RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9, id: "other")),
+        ]
+        for variant in variants { #expect(variant != base) }
+        #expect(Set(variants).count == variants.count)
+
+        // The receiver decodes what the sender encoded and must compute the same digest.
+        let wire = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: date, prekeys: [prekey(1), prekey(2)], id: id, lastResort: prekey(9))
+        let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.PrekeySyncBatch.self, from: JSONEncoder().encode(wire))
+        #expect(
+            RoutingKey.batchDigest(id: decoded.id, generatedAt: decoded.generatedAt, prekeys: decoded.prekeys, lastResort: decoded.lastResort) == base,
+            "the date and every key survive the wire exactly"
+        )
+    }
+
     @Test("A phone that presents a contact's public identity key without its private half derives something else")
     func publicIdentityKeyProvesNothing() throws {
         // Mallory meets Alice and presents Bob's public identity key beside her own pair keys.
@@ -251,11 +300,13 @@ struct PairwiseDerivationTests {
     @Test("A pair block refuses a key of the wrong size or two equal P-256 keys")
     func blockValidates() {
         let key = self.alice.agreementPublic, other = self.alice.signing.publicKey.x963Representation
-        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: other) != nil)
-        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: key) == nil)
-        #expect(RoutingKey.PairBlock(agreementKey: Data(count: 64), signingKey: other) == nil)
-        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: other, mldsaKey: Data(count: 100)) == nil)
-        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: other, mldsaKey: mldsaKeyBytes(1)) != nil)
+        let digest = Data(repeating: 7, count: 32)
+        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: other, batchDigest: digest) != nil)
+        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: key, batchDigest: digest) == nil)
+        #expect(RoutingKey.PairBlock(agreementKey: Data(count: 64), signingKey: other, batchDigest: digest) == nil)
+        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: other, mldsaKey: Data(count: 100), batchDigest: digest) == nil)
+        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: other, mldsaKey: mldsaKeyBytes(1), batchDigest: digest) != nil)
+        #expect(RoutingKey.PairBlock(agreementKey: key, signingKey: other, batchDigest: Data(count: 31)) == nil, "a digest is 32 bytes")
     }
 
     @Test("The transcript is the same whichever block is first, and tells a missing ML-DSA key from a present one")

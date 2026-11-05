@@ -33,7 +33,7 @@ struct PairingCapabilityRows: View {
                 title: "Pair keys", present: self.capabilities.pairKeys,
                 explanation: self.capabilities.pairKeys
                     ? "A key made only for this contact."
-                    : "A key made only for this contact. Without it, files between you are tied to your device's main key, which every contact you've paired with holds."
+                    : "A key made only for this contact. Without it, files between you are tied to your device's main key, whose public half every contact you've paired with holds."
             )
             Divider().padding(.leading, 14)
             self.row(

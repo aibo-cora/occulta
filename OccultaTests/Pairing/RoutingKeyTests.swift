@@ -2,7 +2,7 @@
 //  RoutingKeyTests.swift
 //  OccultaTests
 //
-//  Bug 196 — a secret per pairing. The wire half: routing tags, the sender proof, key binding, and the fields that
+//  Bug 196 — a routing key per pairing. The wire half: routing tags, the sender proof, key binding, and the fields that
 //  carry them.
 //
 
@@ -21,18 +21,18 @@ struct RoutingKeyTests {
     @Test("A routing tag is 32 bytes and follows the secret and the nonce")
     func tagDependsOnSecretAndNonce() {
         let nonce = Data(repeating: 0x11, count: 16)
-        let tag = RoutingKey.routingTag(secret: self.secret(1), nonce: nonce)
+        let tag = RoutingKey.routingTag(routingKey: self.secret(1), nonce: nonce)
         #expect(tag.count == 32)
-        #expect(tag == RoutingKey.routingTag(secret: self.secret(1), nonce: nonce))
-        #expect(tag != RoutingKey.routingTag(secret: self.secret(2), nonce: nonce))
-        #expect(tag != RoutingKey.routingTag(secret: self.secret(1), nonce: Data(repeating: 0x12, count: 16)))
+        #expect(tag == RoutingKey.routingTag(routingKey: self.secret(1), nonce: nonce))
+        #expect(tag != RoutingKey.routingTag(routingKey: self.secret(2), nonce: nonce))
+        #expect(tag != RoutingKey.routingTag(routingKey: self.secret(1), nonce: Data(repeating: 0x12, count: 16)))
     }
 
     @Test("A routing tag is not the identity fingerprint of anything it was made from")
     func tagIsNotTheFingerprint() {
         let nonce = Data(repeating: 0x11, count: 16)
         let key = self.secret(1)
-        #expect(RoutingKey.routingTag(secret: key, nonce: nonce)
+        #expect(RoutingKey.routingTag(routingKey: key, nonce: nonce)
                 != OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: nonce))
     }
 
@@ -48,11 +48,11 @@ struct RoutingKeyTests {
     @Test("The slot proof fails when the routing tag or the sender key is swapped, or the secret is another's")
     func slotProofCoversTagAndSender() {
         let tag = Data(repeating: 0xAA, count: 32), sender = Data(repeating: 0x04, count: 65)
-        let proof = RoutingKey.slotProof(secret: self.secret(1), routingTag: tag, senderPublicKey: sender)
-        #expect(proof == RoutingKey.slotProof(secret: self.secret(1), routingTag: tag, senderPublicKey: sender))
-        #expect(proof != RoutingKey.slotProof(secret: self.secret(1), routingTag: Data(repeating: 0xAB, count: 32), senderPublicKey: sender))
-        #expect(proof != RoutingKey.slotProof(secret: self.secret(1), routingTag: tag, senderPublicKey: Data(repeating: 0x05, count: 65)))
-        #expect(proof != RoutingKey.slotProof(secret: self.secret(2), routingTag: tag, senderPublicKey: sender))
+        let proof = RoutingKey.slotProof(routingKey: self.secret(1), routingTag: tag, senderPublicKey: sender)
+        #expect(proof == RoutingKey.slotProof(routingKey: self.secret(1), routingTag: tag, senderPublicKey: sender))
+        #expect(proof != RoutingKey.slotProof(routingKey: self.secret(1), routingTag: Data(repeating: 0xAB, count: 32), senderPublicKey: sender))
+        #expect(proof != RoutingKey.slotProof(routingKey: self.secret(1), routingTag: tag, senderPublicKey: Data(repeating: 0x05, count: 65)))
+        #expect(proof != RoutingKey.slotProof(routingKey: self.secret(2), routingTag: tag, senderPublicKey: sender))
     }
 
     // MARK: Key binding
@@ -60,11 +60,11 @@ struct RoutingKeyTests {
     @Test("Binding changes the key, deterministically, and differs per secret")
     func bindingChangesTheKey() {
         let key = SymmetricKey(data: Data(repeating: 0x42, count: 32))
-        let bound = RoutingKey.bind(key, secret: self.secret(1))
+        let bound = RoutingKey.bind(key, routingKey: self.secret(1))
         func bytes(_ k: SymmetricKey) -> Data { k.withUnsafeBytes { Data($0) } }
         #expect(bytes(bound) != bytes(key))
-        #expect(bytes(bound) == bytes(RoutingKey.bind(key, secret: self.secret(1))))
-        #expect(bytes(bound) != bytes(RoutingKey.bind(key, secret: self.secret(2))))
+        #expect(bytes(bound) == bytes(RoutingKey.bind(key, routingKey: self.secret(1))))
+        #expect(bytes(bound) != bytes(RoutingKey.bind(key, routingKey: self.secret(2))))
     }
 
     // MARK: Fields

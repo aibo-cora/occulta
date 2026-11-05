@@ -2334,7 +2334,7 @@ extension ContactManager {
             // The pairing form: the proof is in the slot, keyed by the secret, and covers the slot's routing tag.
             // `SealedPayload.senderProof` is random filler here and is not read.
             guard let slotProof = recipientPayload.slotProof,
-                  RoutingKey.isValidSlotProof(slotProof, secret: secret, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
+                  RoutingKey.isValidSlotProof(slotProof, routingKey: secret, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
             else { throw GroupDecryptError.senderProofMismatch }
         } else {
             guard let proof = decoded.senderProof,
