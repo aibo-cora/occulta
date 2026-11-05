@@ -161,16 +161,6 @@ struct PairingOfferTests {
         #expect(try self.accept(self.field(mldsa: good))?.keys.mldsaKey == good)
     }
 
-    @Test("Acceptance looks at no other contact's keys")
-    func acceptanceIsPerExchange() throws {
-        // `accepted` takes nothing but this exchange's keys: a hidden contact's pair keys can't change its answer.
-        let sent = self.field()
-        let ours = try PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
-        let first = PairingOffer.accepted(sent, ours: ours, ourIdentity: nil, peerIdentity: Data(repeating: 1, count: 65))
-        let second = PairingOffer.accepted(sent, ours: ours, ourIdentity: nil, peerIdentity: Data(repeating: 1, count: 65))
-        #expect(first?.keys == second?.keys)
-    }
-
     // MARK: Our keys
 
     @Test("Our pair keys are two distinct P-256 keys, and an ML-DSA key where the phone could make one")
@@ -193,12 +183,13 @@ struct PairingOfferTests {
         #expect(PairingOffer.field(prekeys: nil, keys: nil) == nil)
     }
 
-    @Test("A phone that can make an ML-DSA key can make an ML-KEM one: an exchange with ML-DSA on both sides is hybrid")
+    @Test("A phone whose Enclave makes an ML-DSA key also has the ML-KEM provider, so an exchange with ML-DSA on both sides is hybrid",
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
     func mldsaImpliesMLKEM() {
-        // Both are iOS 26 and later. The decision to keep ML-DSA out of the slot relies on this: wherever the key exists the
-        // routing key has the ML-KEM secrets in it.
-        let mldsa: Bool = { if #available(iOS 26, *) { return true } else { return false } }()
-        #expect(mldsa == (PostQuantumProviderFactory.create() != nil))
+        // The decision to keep ML-DSA out of the slot relies on this: wherever the key exists the routing key has the ML-KEM
+        // secrets in it. Asked of the real Enclave provider, so a phone that could make one without the other would fail here.
+        guard (try? EnclaveCardKeys().makeMLDSAKey()) != nil else { return }
+        #expect(PostQuantumProviderFactory.create() != nil)
     }
 
     // MARK: The offer

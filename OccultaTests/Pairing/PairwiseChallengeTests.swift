@@ -37,34 +37,8 @@ private struct Side {
 }
 
 private func mirroredKeys() throws -> (a: PairKeys, b: PairKeys) {
-    let provider = SoftwareCardKeys()
-    let aa = try provider.makeAgreementKey(), asig = try provider.makeSigningKey()
-    let ba = try provider.makeAgreementKey(), bsig = try provider.makeSigningKey()
-    return (
-        PairKeys(
-            ourAgreementBlob: aa.blob, ourAgreementKey: aa.publicKey, ourSigningBlob: asig.blob, ourSigningKey: asig.publicKey,
-            peerAgreementKey: ba.publicKey, peerSigningKey: bsig.publicKey, ourMLDSABlob: nil, peerMLDSAKey: nil
-        ),
-        PairKeys(
-            ourAgreementBlob: ba.blob, ourAgreementKey: ba.publicKey, ourSigningBlob: bsig.blob, ourSigningKey: bsig.publicKey,
-            peerAgreementKey: aa.publicKey, peerSigningKey: asig.publicKey, ourMLDSABlob: nil, peerMLDSAKey: nil
-        )
-    )
-}
-
-/// A provider whose keys never import.
-private struct BrokenKeys: CardKeyProviding {
-    struct Refused: Error {}
-    func makeAgreementKey() throws -> (publicKey: Data, blob: Data) { throw Refused() }
-    func makeSigningKey() throws -> (publicKey: Data, blob: Data) { throw Refused() }
-    func signRaw(_ payload: Data, signingBlob: Data) throws -> Data { throw Refused() }
-    func signDER(_ payload: Data, signingBlob: Data) throws -> Data { throw Refused() }
-    func sharedSecret(agreementBlob: Data, peerPublicKey: Data) throws -> Data { throw Refused() }
-    func agreementPublicKey(blob: Data) throws -> Data { throw Refused() }
-    func signingPublicKey(blob: Data) throws -> Data { throw Refused() }
-    func makeMLDSAKey() throws -> (publicKey: Data, blob: Data) { throw Refused() }
-    func mldsaSign(_ payload: Data, blob: Data) throws -> Data { throw Refused() }
-    func mldsaPublicKey(blob: Data) throws -> Data { throw Refused() }
+    let keys = try MirroredPairKeys()
+    return (keys.a, keys.b)
 }
 
 // MARK: - Suite
@@ -155,14 +129,14 @@ struct PairwiseChallengeTests {
     @Test("A responder whose pair signing key won't import produces no response, and never signs with the identity key", .ambientTestKeyManager)
     func unimportableKeyProducesNoResponse() throws {
         let keys = try mirroredKeys()
-        let a = Side(keys: keys.a), b = Side(keys: keys.b, provider: BrokenKeys())
+        let a = Side(keys: keys.a), b = Side(keys: keys.b, provider: BrokenCardKeys())
         let challenge = try a.manager.createChallenge(contactID: "b", pairing: a.slot) { $0 }
         let pending = try b.manager.decryptChallenge(
             envelope: challenge, senderKey: try a.identity.retrieveIdentity(), senderQuantum: nil, senderID: "a", senderName: "A",
             pairing: b.slot
         )
 
-        #expect(throws: (any Error).self) { try b.manager.respond(to: pending, pairing: b.slot) { $0 } }
+        #expect(throws: PairingSlotKeys.SlotKeyError.unavailable) { try b.manager.respond(to: pending, pairing: b.slot) { $0 } }
     }
 
     // MARK: A re-pair

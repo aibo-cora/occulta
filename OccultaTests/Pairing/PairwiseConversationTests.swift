@@ -91,11 +91,11 @@ struct PairwiseConversationTests {
     private let routingKey = Data(repeating: 0x42, count: 32)
 
     /// Two phones, each holding the other as a pair-key pairing with one shared routing key.
-    private func pair(aliceState: ((PairKeys) -> PairingState)? = nil) throws -> (alice: Phone, bob: Phone, keys: PairKeyFixtureLike) {
+    private func pair(aliceState: ((PairKeys) -> PairingState)? = nil) throws -> (alice: Phone, bob: Phone, keys: MirroredPairKeys) {
         let alice = try Phone(contactID: "bob"), bob = try Phone(contactID: "alice")
-        let keys = try PairKeyFixtureLike()
-        try alice.add(bob, state: aliceState?(keys.alice) ?? .paired(routingKey: self.routingKey, keys: keys.alice))
-        try bob.add(alice, state: .paired(routingKey: self.routingKey, keys: keys.bob))
+        let keys = try MirroredPairKeys()
+        try alice.add(bob, state: aliceState?(keys.a) ?? .paired(routingKey: self.routingKey, keys: keys.a))
+        try bob.add(alice, state: .paired(routingKey: self.routingKey, keys: keys.b))
         return (alice, bob, keys)
     }
 
@@ -154,25 +154,5 @@ struct PairwiseConversationTests {
         // Bob holds the routing key but no pair keys, so he checks the signature against the identity key.
         try bob.setState(.derived(secret: self.routingKey))
         #expect(throws: GroupDecryptError.senderEphemeralSignatureMismatch) { try bob.receive(file) }
-    }
-}
-
-/// Mirrored pair keys for two phones.
-private struct PairKeyFixtureLike {
-    let alice: PairKeys
-    let bob: PairKeys
-
-    init() throws {
-        let provider = SoftwareCardKeys()
-        let aa = try provider.makeAgreementKey(), asig = try provider.makeSigningKey()
-        let ba = try provider.makeAgreementKey(), bsig = try provider.makeSigningKey()
-        self.alice = PairKeys(
-            ourAgreementBlob: aa.blob, ourAgreementKey: aa.publicKey, ourSigningBlob: asig.blob, ourSigningKey: asig.publicKey,
-            peerAgreementKey: ba.publicKey, peerSigningKey: bsig.publicKey, ourMLDSABlob: nil, peerMLDSAKey: nil
-        )
-        self.bob = PairKeys(
-            ourAgreementBlob: ba.blob, ourAgreementKey: ba.publicKey, ourSigningBlob: bsig.blob, ourSigningKey: bsig.publicKey,
-            peerAgreementKey: aa.publicKey, peerSigningKey: asig.publicKey, ourMLDSABlob: nil, peerMLDSAKey: nil
-        )
     }
 }

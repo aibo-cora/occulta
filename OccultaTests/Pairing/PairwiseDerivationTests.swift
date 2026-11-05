@@ -154,13 +154,13 @@ struct PairwiseDerivationTests {
             me: self.bob, peerIdentity: aliceIdentity, peerAgreement: alice.agreementPublic, theirBlock: alice.block,
             quantum: nil, ourNonce: nonce(2), peerNonce: nonce(1))).words
 
-        func aliceWords(whatBobSaw: RoutingKey.PairBlock) throws -> Data {
+        func aliceWords() throws -> Data {
             // Alice's own view of the transcript is her own block and Bob's; what differs is what Bob was shown of hers.
             try #require(try derive(
                 me: alice, peerIdentity: bobIdentity, peerAgreement: self.bob.agreementPublic, theirBlock: self.bob.block,
                 quantum: nil, ourNonce: nonce(1), peerNonce: nonce(2))).words
         }
-        #expect(try aliceWords(whatBobSaw: alice.block) == bobsWords, "untouched: the words match")
+        #expect(try aliceWords() == bobsWords, "untouched: the words match")
 
         var removed = alice; removed.mldsaKey = nil
         var swapped = alice; swapped.mldsaKey = mldsaKeyBytes(0xB2)
@@ -168,7 +168,7 @@ struct PairwiseDerivationTests {
             let seenByBob = try #require(try derive(
                 me: self.bob, peerIdentity: aliceIdentity, peerAgreement: alice.agreementPublic, theirBlock: tampered.block,
                 quantum: nil, ourNonce: nonce(2), peerNonce: nonce(1))).words
-            #expect(seenByBob != (try aliceWords(whatBobSaw: alice.block)), "a tampered ML-DSA key changes Bob's words")
+            #expect(seenByBob != (try aliceWords()), "a tampered ML-DSA key changes Bob's words")
         }
 
         var added = self.alice  // Alice sent none; the man in the middle added one for Bob.

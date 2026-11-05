@@ -82,7 +82,7 @@ class ExchangeManager: NSObject {
     /// Our first prekeys: a scratch record with one pending batch, made when the peer connects and held in memory
     /// until `save()`. Nil if the Enclave couldn't make them, in which case no `pairing` field is sent and the pairing
     /// goes the way it did before.
-    private var ownPrekeys: PrekeyRecord?
+    private(set) var ownPrekeys: PrekeyRecord?
     /// Our pair keys, made with the prekeys: both or neither, because a phone sends all of the `pairing` field or none.
     private(set) var ownPairKeys: PairingOffer.OwnPairKeys?
     /// Makes our pair keys. The Enclave in production; a test injects software keys.
@@ -401,7 +401,7 @@ class ExchangeManager: NSObject {
 
     /// The peer's `pairing` field once validated, with the pair-key ECDH made from it. Nil if we sent none, the peer sent
     /// none, or it is not one we can use: the pairing is then made without pair keys.
-    private func acceptedPairing(
+    func acceptedPairing(
         _ field: Exchange.PairingField?, peerIdentity: Data
     ) -> (batch: PairingOffer.Batch, keys: PairingOffer.PeerPairKeys, ecdh: Data)? {
         guard let field, let ours = self.ownPairKeys else { return nil }

@@ -76,7 +76,7 @@ struct AttachmentKeyResealTests {
 
     // MARK: The key
 
-    @Test("The new base key is not the transport key, both ends derive it, and it is not a function of anything a re-pair changes")
+    @Test("The new base key is not the transport key, and both ends derive it")
     func keyIsSeparateAndShared() throws {
         let a = TestKeyManager(), b = TestKeyManager()
         let fromA = try #require(a.createAttachmentBaseKey(using: try b.retrieveIdentity()))
@@ -224,7 +224,10 @@ struct AttachmentKeyResealTests {
         let cm = try makeContactManager()
         let visible = TestKeyManager(), hidden = TestKeyManager()
         try insertContact(publicKeys: [try visible.retrieveIdentity()], in: cm)
-        try insertContact(publicKeys: [try hidden.retrieveIdentity()], hidden: true, in: cm)
+        let hiddenContact = try insertContact(publicKeys: [try hidden.retrieveIdentity()], hidden: true, in: cm)
+        // The session is one level deeper than the contact is visible through, so it really is hidden here.
+        cm.security.applyVerifyState(for: .normal(depth: 1))
+        #expect(!hiddenContact.isVisible(atDepth: cm.security.currentDepth))
         let directory = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let one = directory.appendingPathComponent("one.bin"), two = directory.appendingPathComponent("two.bin")

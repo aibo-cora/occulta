@@ -147,10 +147,6 @@ extension ContactManager: IdentityChallenge.ChallengeSealer {
 
     /// A contact is sent a challenge or response in group format when recorded at `.bodyDigestCapable`, which only
     /// rises. Below it, or with a stranded marker, the long-term format, which every build reads (prekey continuity §3.4).
-    func pairKeys(for contactID: String) -> PairingSlotKeys? {
-        (try? self.fetchContact(by: contactID)).flatMap { self.pairingSlotKeys(for: $0) }
-    }
-
     func groupSealer(for contactID: String) -> ((IdentityChallengeEnvelope) throws -> URL)? {
         guard
             let contact = try? self.fetchContact(by: contactID),
@@ -168,5 +164,9 @@ extension ContactManager: IdentityChallenge.ChallengeSealer {
             )
             return url
         }
+    }
+
+    func pairKeys(for contactID: String) -> PairingSlotKeys? {
+        (try? self.fetchContact(by: contactID)).flatMap { self.pairingSlotKeys(for: $0) }
     }
 }

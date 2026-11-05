@@ -24,24 +24,16 @@ import SwiftData
 
 private func routingKey(_ byte: UInt8) -> Data { Data(repeating: byte, count: 32) }
 
-/// Two phones' pair keys, mirrored: each sees its own blobs and the other's public keys.
+/// Two phones' pair keys, mirrored (`MirroredPairKeys`), and the provider that opens them.
 private struct PairKeyFixture {
     let provider = SoftwareCardKeys()
     let senderKeys: PairKeys
     let receiverKeys: PairKeys
 
     init() throws {
-        let provider = SoftwareCardKeys()
-        let sa = try provider.makeAgreementKey(), ss = try provider.makeSigningKey()
-        let ra = try provider.makeAgreementKey(), rs = try provider.makeSigningKey()
-        self.senderKeys = PairKeys(
-            ourAgreementBlob: sa.blob, ourAgreementKey: sa.publicKey, ourSigningBlob: ss.blob, ourSigningKey: ss.publicKey,
-            peerAgreementKey: ra.publicKey, peerSigningKey: rs.publicKey, ourMLDSABlob: nil, peerMLDSAKey: nil
-        )
-        self.receiverKeys = PairKeys(
-            ourAgreementBlob: ra.blob, ourAgreementKey: ra.publicKey, ourSigningBlob: rs.blob, ourSigningKey: rs.publicKey,
-            peerAgreementKey: sa.publicKey, peerSigningKey: ss.publicKey, ourMLDSABlob: nil, peerMLDSAKey: nil
-        )
+        let keys = try MirroredPairKeys()
+        self.senderKeys = keys.a
+        self.receiverKeys = keys.b
     }
 
     /// The sender's side of a slot to the receiver.
@@ -119,21 +111,6 @@ private func seal(from sender: TestKeyManager, to recipients: [Recipient]) throw
             )
         }
     )
-}
-
-/// A provider whose keys never import: the Enclave refusing a blob.
-private struct BrokenKeys: CardKeyProviding {
-    struct Refused: Error {}
-    func makeAgreementKey() throws -> (publicKey: Data, blob: Data) { throw Refused() }
-    func makeSigningKey() throws -> (publicKey: Data, blob: Data) { throw Refused() }
-    func signRaw(_ payload: Data, signingBlob: Data) throws -> Data { throw Refused() }
-    func signDER(_ payload: Data, signingBlob: Data) throws -> Data { throw Refused() }
-    func sharedSecret(agreementBlob: Data, peerPublicKey: Data) throws -> Data { throw Refused() }
-    func agreementPublicKey(blob: Data) throws -> Data { throw Refused() }
-    func signingPublicKey(blob: Data) throws -> Data { throw Refused() }
-    func makeMLDSAKey() throws -> (publicKey: Data, blob: Data) { throw Refused() }
-    func mldsaSign(_ payload: Data, blob: Data) throws -> Data { throw Refused() }
-    func mldsaPublicKey(blob: Data) throws -> Data { throw Refused() }
 }
 
 // MARK: - Suite
@@ -262,6 +239,9 @@ struct PairwiseRoutingTests {
         let hidden = try insertSender(publicKey: senderKey, state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
         hidden.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
         let decoy = try insertSender(publicKey: senderKey, state: .empty, in: cm)
+        // One level deeper than the contact is visible through: it really is hidden here.
+        cm.security.applyVerifyState(for: .normal(depth: 1))
+        #expect(!hidden.isVisible(atDepth: cm.security.currentDepth))
 
         let bundle = try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: keys.slot(for: self.sender))])
 
@@ -307,7 +287,7 @@ struct PairwiseRoutingTests {
     @Test("A pair-key pairing whose blob won't import can't be opened, and is refused like any slot that isn't ours", .ambientTestKeyManager)
     func unimportableBlobOpensNothing() throws {
         let keys = try PairKeyFixture()
-        let cm = try makeContactManager(provider: BrokenKeys())
+        let cm = try makeContactManager(provider: BrokenCardKeys())
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
         let contact = try insertSender(publicKey: try self.sender.retrieveIdentity(), state: .paired(routingKey: routingKey(1), keys: keys.receiverKeys), in: cm)
 
@@ -319,10 +299,10 @@ struct PairwiseRoutingTests {
     @Test("Sealing to a pair-key pairing whose blob won't import fails, and never falls back to the identity key", .ambientTestKeyManager)
     func sealingWithAnUnimportableBlobFails() throws {
         let keys = try PairKeyFixture()
-        let broken = PairingSlotKeys(keys: keys.senderKeys, provider: BrokenKeys())
+        let broken = PairingSlotKeys(keys: keys.senderKeys, provider: BrokenCardKeys())
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
 
-        #expect(throws: (any Error).self) {
+        #expect(throws: PairingSlotKeys.SlotKeyError.unavailable) {
             try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: routingKey(1), pairing: broken)])
         }
     }
@@ -332,7 +312,7 @@ struct PairwiseRoutingTests {
         let keys = try PairKeyFixture()
         let me = try Manager.Ambient.keyManager.retrieveIdentity()
 
-        #expect(throws: (any Error).self) {
+        #expect(throws: Manager.Crypto.EncryptionError.invalidRecipientMaterial) {
             try seal(from: self.sender, to: [Recipient(publicKey: me, routingKey: nil, pairing: keys.slot(for: self.sender))])
         }
     }
@@ -348,7 +328,7 @@ struct PairwiseRoutingTests {
             tier: nil, in: cm
         )
 
-        #expect(throws: (any Error).self) { try cm.encryptBundle(basket: Basket(files: []), for: contact.identifier) }
+        #expect(throws: ContactManager.Errors.noPublicKeyToEncryptWith) { try cm.encryptBundle(basket: Basket(files: []), for: contact.identifier) }
     }
 
     @Test("The routing key goes to a pair-key contact whatever tier is stored, and to a plain pairing only at the tier", .ambientTestKeyManager)

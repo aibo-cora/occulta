@@ -36,13 +36,13 @@ private func makeContactManager() throws -> (ContactManager, ModelContainer) {
 /// A contact with one key, saved the way a pairing saves it.
 @MainActor
 private func pairedContact(
-    _ cm: ContactManager, secret: Data?
+    _ cm: ContactManager, secret: Data?, keys: PairKeys? = nil
 ) throws -> (contact: Contact.Profile, key: Contact.Profile.Key) {
     try cm.save(contact: Contact.Draft(identifier: UUID().uuidString, givenName: "A", familyName: "B"))
     let contact = try #require(try cm.fetchAllContacts().first)
     let draft = try #require(Contact.Draft.Key(
         material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65),
-        date: "1", routingKey: secret
+        date: "1", routingKey: secret, pairKeys: keys
     ))
     try cm.update(key: draft, for: contact.identifier)
     return (contact, try #require(contact.contactPublicKeys?.last))
@@ -50,25 +50,13 @@ private func pairedContact(
 
 private func half(_ byte: UInt8) -> Data { Data(repeating: byte, count: 32) }
 
-/// Pair keys with recognisable bytes. `mldsa` adds our ML-DSA blob, `peerMLDSA` the peer's ML-DSA public key.
-private func sampleKeys(mldsa: Bool = false, peerMLDSA: Bool = false) -> PairKeys {
-    func key(_ byte: UInt8) -> Data { Data(repeating: byte, count: 65) }
-    return PairKeys(
-        ourAgreementBlob: Data(repeating: 0xA1, count: 143), ourAgreementKey: key(0xA2),
-        ourSigningBlob: Data(repeating: 0xA3, count: 143), ourSigningKey: key(0xA4),
-        peerAgreementKey: key(0xB1), peerSigningKey: key(0xB2),
-        ourMLDSABlob: mldsa ? Data(repeating: 0xC1, count: 7_540) : nil,
-        peerMLDSAKey: peerMLDSA ? Data(repeating: 0xD1, count: PairingCodec.mldsaKeySize) : nil
-    )
-}
-
 private let everyState: [(name: String, state: PairingState)] = [
     ("none", .empty),
     ("routing key alone", .derived(secret: half(0x44))),
-    ("paired, P-256 only", .paired(routingKey: half(0x45), keys: sampleKeys())),
-    ("paired, our ML-DSA key", .paired(routingKey: half(0x46), keys: sampleKeys(mldsa: true))),
-    ("paired, the peer's ML-DSA key", .paired(routingKey: half(0x47), keys: sampleKeys(peerMLDSA: true))),
-    ("paired, both ML-DSA keys", .paired(routingKey: half(0x48), keys: sampleKeys(mldsa: true, peerMLDSA: true))),
+    ("paired, P-256 only", .paired(routingKey: half(0x45), keys: samplePairKeys())),
+    ("paired, our ML-DSA key", .paired(routingKey: half(0x46), keys: samplePairKeys(mldsa: true))),
+    ("paired, the peer's ML-DSA key", .paired(routingKey: half(0x47), keys: samplePairKeys(peerMLDSA: true))),
+    ("paired, both ML-DSA keys", .paired(routingKey: half(0x48), keys: samplePairKeys(mldsa: true, peerMLDSA: true))),
 ]
 
 // MARK: - The state and its codec
@@ -102,7 +90,7 @@ struct PairingCodecTests {
 
     @Test("Each pair key lands at its own offset and a state's unused room stays zero")
     func pairKeysLandAtTheirOffsets() throws {
-        let plaintext = [UInt8](try PairingCodec().encode(.paired(routingKey: half(0x45), keys: sampleKeys())))
+        let plaintext = [UInt8](try PairingCodec().encode(.paired(routingKey: half(0x45), keys: samplePairKeys())))
         #expect(plaintext[1] == 2)
         #expect(Array(plaintext[34..<36]) == [0, 143], "the agreement blob's length, big-endian")
         #expect(Set(plaintext[36..<(36 + 143)]) == [0xA1])
@@ -116,7 +104,7 @@ struct PairingCodecTests {
 
     @Test("A malformed plaintext is refused")
     func decodeRefuses() throws {
-        let good = try PairingCodec().encode(.paired(routingKey: half(1), keys: sampleKeys(mldsa: true, peerMLDSA: true)))
+        let good = try PairingCodec().encode(.paired(routingKey: half(1), keys: samplePairKeys(mldsa: true, peerMLDSA: true)))
         #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(good.dropLast()) }
         #expect(throws: PairingCodec.CodecError.malformed) { try PairingCodec().decode(Data()) }
 
@@ -142,7 +130,7 @@ struct PairingCodecTests {
         #expect(throws: PairingCodec.CodecError.wrongSize) { try PairingCodec().encode(.derived(secret: Data(count: 33))) }
 
         func paired(_ edit: (inout PairKeys) -> Void) -> PairingState {
-            var keys = sampleKeys(mldsa: true, peerMLDSA: true)
+            var keys = samplePairKeys(mldsa: true, peerMLDSA: true)
             edit(&keys)
             return .paired(routingKey: half(1), keys: keys)
         }
@@ -153,7 +141,7 @@ struct PairingCodecTests {
             paired { $0.peerSigningKey = Data(count: 66) },
             paired { $0.ourMLDSABlob = Data(count: PairingCodec.mldsaBlobRoom + 1) },
             paired { $0.peerMLDSAKey = Data(count: 2_591) },
-            PairingState(routingKey: nil, keys: sampleKeys()),
+            PairingState(routingKey: nil, keys: samplePairKeys()),
         ]
         for state in cases {
             #expect(throws: PairingCodec.CodecError.wrongSize) { try PairingCodec().encode(state) }
@@ -162,7 +150,7 @@ struct PairingCodecTests {
 
     @Test("An ML-DSA blob exactly as large as its room fits")
     func fullRoomFits() throws {
-        var keys = sampleKeys(peerMLDSA: true)
+        var keys = samplePairKeys(peerMLDSA: true)
         keys.ourMLDSABlob = Data(repeating: 0x5A, count: PairingCodec.mldsaBlobRoom)
         keys.ourAgreementBlob = Data(repeating: 0x5B, count: PairingCodec.p256BlobRoom)
         let state = PairingState.paired(routingKey: half(2), keys: keys)
@@ -179,7 +167,7 @@ struct PairingCodecTests {
 
     @Test("A pairing with pair keys holds them with its routing key; one without sends the old form and accepts it")
     func rules() {
-        let paired = PairingState.paired(routingKey: half(3), keys: sampleKeys())
+        let paired = PairingState.paired(routingKey: half(3), keys: samplePairKeys())
         #expect(paired.secret == half(3) && paired.sendsNewForm && paired.refusesOldForm && paired.keys != nil)
         #expect(!PairingState.empty.sendsNewForm)
         #expect(!PairingState.empty.refusesOldForm)
@@ -217,7 +205,7 @@ struct PairingColumnTests {
         #expect(cm.pairingState(of: first) == .derived(secret: half(1)))
         let draft = try #require(Contact.Draft.Key(
             material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65),
-            date: "2", routingKey: half(2), pairKeys: sampleKeys(mldsa: true)
+            date: "2", routingKey: half(2), pairKeys: samplePairKeys(mldsa: true)
         ))
         try cm.update(key: draft, for: contact.identifier)
 
@@ -227,7 +215,7 @@ struct PairingColumnTests {
         #expect(cm.pairingState(of: first) == .empty, "a retired pairing's Enclave blobs are overwritten with the sealed empty state")
         #expect(first.expiredOn != nil)
         let current = try #require(contact.currentKey)
-        #expect(cm.pairingState(of: current) == .paired(routingKey: half(2), keys: sampleKeys(mldsa: true)))
+        #expect(cm.pairingState(of: current) == .paired(routingKey: half(2), keys: samplePairKeys(mldsa: true)))
         #expect(first.pairingEncrypted?.count == current.pairingEncrypted?.count, "one sealed length for every row")
     }
 
@@ -265,7 +253,8 @@ struct PairingColumnTests {
     @Test("Deleting a contact overwrites every key's state with the sealed empty state", .ambientTestKeyManager)
     func deletionOverwrites() throws {
         let (cm, _) = try makeContactManager()
-        let (contact, key) = try pairedContact(cm, secret: half(0x66))
+        let (contact, key) = try pairedContact(cm, secret: half(0x66), keys: samplePairKeys(mldsa: true, peerMLDSA: true))
+        #expect(cm.pairingState(of: key).keys != nil, "a pair-key row is the case the overwrite exists for")
         let before = try #require(key.pairingEncrypted).count
 
         try cm.deleteContact(identifier: contact.identifier)

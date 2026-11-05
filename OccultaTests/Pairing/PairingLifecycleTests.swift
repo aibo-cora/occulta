@@ -26,14 +26,6 @@ private func makeContactManager() throws -> ContactManager {
     )
 }
 
-private func keys(blob: Int = 143) -> PairKeys {
-    func key(_ byte: UInt8) -> Data { Data(repeating: byte, count: 65) }
-    return PairKeys(
-        ourAgreementBlob: Data(repeating: 1, count: blob), ourAgreementKey: key(2), ourSigningBlob: Data(repeating: 3, count: 143),
-        ourSigningKey: key(4), peerAgreementKey: key(5), peerSigningKey: key(6), ourMLDSABlob: nil, peerMLDSAKey: nil
-    )
-}
-
 /// A contact with one key row whose pairing column holds `column` as given, with a pending batch of ours so a long-term
 /// file from them makes no new batch (which would need an Enclave).
 @MainActor
@@ -103,7 +95,7 @@ struct PairingLifecycleTests {
     @Test("A readable pair-key column still refuses the old form, and one with a routing key alone too", .ambientTestKeyManager)
     func readableStatesAreAsBefore() throws {
         let cm = try makeContactManager()
-        let paired = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: keys()))
+        let paired = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))
         let plain = try insert(cm, state: .empty)
 
         #expect(cm.pairingIsReadable(for: paired) && !cm.acceptsOldForm(from: paired))
@@ -116,7 +108,7 @@ struct PairingLifecycleTests {
     func weakerRePairIsRefused() throws {
         let cm = try makeContactManager()
         let peer = TestKeyManager()
-        let state = PairingState.paired(routingKey: Data(repeating: 1, count: 32), keys: keys())
+        let state = PairingState.paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys())
         let contact = try insert(cm, peer: peer, state: state)
         let before = try #require(contact.currentKey)
         let sealedBefore = before.pairingEncrypted
@@ -136,12 +128,12 @@ struct PairingLifecycleTests {
     func equalOrBetterIsSaved() throws {
         let cm = try makeContactManager()
         let peer = TestKeyManager()
-        let paired = try insert(cm, peer: peer, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: keys()))
+        let paired = try insert(cm, peer: peer, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))
         let plain = try insert(cm, peer: peer, state: .empty)
 
         let again = try #require(Contact.Draft.Key(
             material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 2, count: 32), pairKeys: keys()
+            routingKey: Data(repeating: 2, count: 32), pairKeys: samplePairKeys()
         ))
         try cm.update(key: again, for: paired.identifier)
         #expect(cm.pairingState(for: paired).keys != nil)
@@ -165,7 +157,7 @@ struct PairingLifecycleTests {
 
         let draft = try #require(Contact.Draft.Key(
             material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 2, count: 32), pairKeys: keys(blob: PairingCodec.p256BlobRoom + 1)
+            routingKey: Data(repeating: 2, count: 32), pairKeys: samplePairKeys(blob: PairingCodec.p256BlobRoom + 1)
         ))
         #expect(throws: PairingCodec.CodecError.wrongSize) { try cm.update(key: draft, for: contact.identifier) }
 
@@ -192,7 +184,7 @@ struct PairingLifecycleTests {
 
         let upgrade = try #require(Contact.Draft.Key(
             material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 3, count: 32), pairKeys: keys()
+            routingKey: Data(repeating: 3, count: 32), pairKeys: samplePairKeys()
         ))
         try cm.update(key: upgrade, for: id)
 

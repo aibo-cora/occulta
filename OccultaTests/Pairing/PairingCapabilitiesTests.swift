@@ -24,16 +24,6 @@ private func makeContactManager() throws -> ContactManager {
     return ContactManager(modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
 }
 
-private func pairKeys(mldsa: Bool = false, peerMLDSA: Bool = false) -> PairKeys {
-    func key(_ byte: UInt8) -> Data { Data(repeating: byte, count: 65) }
-    return PairKeys(
-        ourAgreementBlob: Data(repeating: 1, count: 143), ourAgreementKey: key(2), ourSigningBlob: Data(repeating: 3, count: 143),
-        ourSigningKey: key(4), peerAgreementKey: key(5), peerSigningKey: key(6),
-        ourMLDSABlob: mldsa ? Data(repeating: 7, count: 100) : nil,
-        peerMLDSAKey: peerMLDSA ? Data(repeating: 8, count: PairingCodec.mldsaKeySize) : nil
-    )
-}
-
 @MainActor
 @discardableResult
 private func insert(
@@ -67,7 +57,7 @@ struct PairingCapabilitiesTests {
     @Test("A pairing with pair keys offers no upgrade and says so", .ambientTestKeyManager)
     func pairedHasNothingToUpgrade() throws {
         let cm = try makeContactManager()
-        let contact = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: pairKeys()))
+        let contact = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))
 
         let caps = contact.pairingCapabilities
         #expect(caps.pairKeys && !caps.upgradeAvailable)
@@ -78,9 +68,8 @@ struct PairingCapabilitiesTests {
     func plainWithACapablePeerOffersAnUpgrade() throws {
         let cm = try makeContactManager()
         let capable = try insert(cm, tier: .pairingCapable)
-        let newer = try insert(cm, tier: .pairingCapable)
         #expect(capable.pairingCapabilities.upgradeAvailable)
-        #expect(newer.pairingCapabilities == capable.pairingCapabilities)
+        #expect(capable.pairingCapabilities.peerCanPair && !capable.pairingCapabilities.pairKeys)
     }
 
     @Test("A contact on an older build, or one never heard from, shows no upgrade: a re-exchange could not help", .ambientTestKeyManager)
@@ -102,8 +91,8 @@ struct PairingCapabilitiesTests {
     @Test("ML-KEM comes from the exchange being hybrid, and ML-DSA only when both phones made a key", .ambientTestKeyManager)
     func postQuantumRows() throws {
         let cm = try makeContactManager()
-        let hybrid = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: pairKeys(mldsa: true, peerMLDSA: true)), quantum: true)
-        let classical = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: pairKeys(mldsa: true)), quantum: false)
+        let hybrid = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys(mldsa: true, peerMLDSA: true)), quantum: true)
+        let classical = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys(mldsa: true)), quantum: false)
 
         #expect(hybrid.pairingCapabilities.postQuantumAgreement && hybrid.pairingCapabilities.postQuantumSignatures)
         #expect(!classical.pairingCapabilities.postQuantumAgreement && !classical.pairingCapabilities.postQuantumSignatures, "one side's key is not enough")
@@ -112,7 +101,7 @@ struct PairingCapabilitiesTests {
     @Test("The ML-DSA row never drives the upgrade", .ambientTestKeyManager)
     func mldsaNeverDrivesTheIcon() throws {
         let cm = try makeContactManager()
-        let contact = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: pairKeys()))
+        let contact = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))
         #expect(!contact.pairingCapabilities.postQuantumSignatures)
         #expect(!contact.pairingCapabilities.upgradeAvailable)
     }
@@ -122,11 +111,14 @@ struct PairingCapabilitiesTests {
         let cm = try makeContactManager()
         let visible = try insert(cm, tier: .pairingCapable)
         let hidden = try insert(cm, tier: .pairingCapable, hidden: true)
+        // One level deeper than the hidden contact is visible through: it really is hidden here, and the other is not.
+        cm.security.applyVerifyState(for: .normal(depth: 1))
+        #expect(!hidden.isVisible(atDepth: cm.security.currentDepth))
         let before = visible.pairingCapabilities
 
         #expect(hidden.pairingCapabilities == before)
         // Another contact's row, hidden or not, changes nothing of a contact's own.
-        try insert(cm, state: .paired(routingKey: Data(repeating: 9, count: 32), keys: pairKeys()), hidden: true)
+        try insert(cm, state: .paired(routingKey: Data(repeating: 9, count: 32), keys: samplePairKeys()), hidden: true)
         #expect(visible.pairingCapabilities == before)
     }
 
@@ -152,7 +144,7 @@ struct PairingCapabilitiesTests {
 
         let draft = try #require(Contact.Draft.Key(
             material: Data(repeating: 4, count: 65), owner: Data(repeating: 1, count: 65), date: "2",
-            routingKey: Data(repeating: 1, count: 32), pairKeys: pairKeys()
+            routingKey: Data(repeating: 1, count: 32), pairKeys: samplePairKeys()
         ))
         try cm.update(key: draft, for: contact.identifier)
 
