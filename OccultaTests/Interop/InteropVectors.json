@@ -823,32 +823,6 @@
       "expected": "fcec1c43db6a5e48b62628944289082a4aa2ae5a278f95b23ac961db3c04bc7f"
     },
     {
-      "name": "pairing.derive.classical",
-      "kind": "pairingDerive",
-      "note": "Bug 196. The secret two phones derive at an exchange without ML-KEM: HKDF-SHA256(ikm: ECDH output, salt: the two public keys XORed, info: \"Occulta-v1-pairing-secret-2026\" || the two 16-byte nonces sorted bytewise).",
-      "pairing": {
-        "rawECDH": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
-        "salt": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-        "ourNonce": "0102030405060708090a0b0c0d0e0f10",
-        "peerNonce": "1112131415161718191a1b1c1d1e1f20"
-      },
-      "expected": "4a1e74f3ac4460e49a2d36a0ec390cf744695a7f3a1ed5da5abc83cf8586a6e2"
-    },
-    {
-      "name": "pairing.derive.hybrid",
-      "kind": "pairingDerive",
-      "note": "Bug 196. As the classical one, with both ML-KEM secrets sorted bytewise and appended to the ECDH output as the keying material.",
-      "pairing": {
-        "rawECDH": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
-        "salt": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
-        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232",
-        "ourNonce": "0102030405060708090a0b0c0d0e0f10",
-        "peerNonce": "1112131415161718191a1b1c1d1e1f20"
-      },
-      "expected": "1ec2d3e4e7b3572863a5794f7770dff132570efe28dc5d9e143ee4a92c9fc641"
-    },
-    {
       "name": "groupEnvelope.v4.routingTag",
       "kind": "groupEnvelope",
       "note": "Bug 196. A slot carrying its routing tag in the clear, next to its secrecy context and wrapped payload. The slot of a build before the fix has none, and encodes as it always did.",

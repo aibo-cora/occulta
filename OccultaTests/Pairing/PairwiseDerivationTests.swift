@@ -212,15 +212,10 @@ struct PairwiseDerivationTests {
         #expect(hybrid.alice.words != one.alice.words)
     }
 
-    @Test("The words' key is not the routing key, and a routing key of this domain is not one of the identity-only domain")
+    @Test("The words' key is not the routing key")
     func domainsAreSeparate() throws {
         let a = try self.both().alice
         #expect(a.words != a.routingKey)
-
-        let old = self.alice.identity.createRoutingKey(
-            peerP256Material: try self.bob.identity.retrieveIdentity(), quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2)
-        )
-        #expect(old != nil && old != a.routingKey)
     }
 
     // MARK: Refusals

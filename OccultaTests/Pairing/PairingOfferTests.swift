@@ -2,17 +2,20 @@
 //  PairingOfferTests.swift
 //  OccultaTests
 //
-//  Bug 196, stage 3: the prekey batch an exchange carries, and what it hands to `save()`. The exchange flow itself
-//  (MultipeerConnectivity and NearbyInteraction between two phones) cannot run in a unit test; what is pinned here is
-//  the message, the offer and the scratch record the flow is built from.
+//  Bug 196, stage 3: the `pairing` field an exchange carries (prekey batch, pair keys, an optional ML-DSA key), what the
+//  peer's field is accepted as, and what the offer hands to `save()`. The exchange flow itself (MultipeerConnectivity and
+//  NearbyInteraction between two phones) cannot run in a unit test; what is pinned here is the message, the validation,
+//  the offer and the scratch record the flow is built from.
 //
 
 import Testing
 import Foundation
+import CryptoKit
+import OccultaCore
 @testable import Occulta
 @testable import OccultaFormats
 
-@Suite("Bug 196 — the exchange's prekey batch")
+@Suite("Bug 196 — the exchange's pairing field")
 struct PairingOfferTests {
 
     private func wirePrekey(_ n: UInt8) -> OccultaBundle.WirePrekey {
@@ -30,34 +33,172 @@ struct PairingOfferTests {
 
     // MARK: The message
 
-    @Test("An identity message carries the batch and is still an identity message")
-    func identityMessageCarriesBatch() throws {
-        let sent = batch()
+    private func field(
+        agreement: Data? = nil, signing: Data? = nil, mldsa: Data? = nil
+    ) -> Exchange.PairingField {
+        Exchange.PairingField(
+            prekeyBatch: self.batch(), agreementKey: agreement ?? Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation),
+            signingKey: signing ?? Data(P256.Signing.PrivateKey().publicKey.x963Representation), mldsaKey: mldsa
+        )
+    }
+
+    @Test("An identity message carries the pairing field and is still an identity message")
+    func identityMessageCarriesTheField() throws {
+        let sent = self.field(mldsa: Data(repeating: 7, count: RoutingKey.PairBlock.mldsaKeySize))
         let exchange = Exchange(
-            id: "x", token: Data([1]), identity: Data(repeating: 4, count: 65), encapsulationKey: Data([9]),
-            prekeyBatch: sent
+            id: "x", token: Data([1]), identity: Data(repeating: 4, count: 65), encapsulationKey: Data([9]), pairing: sent
         )
         let decoded = try JSONDecoder().decode(Exchange.self, from: JSONEncoder().encode(exchange))
 
         #expect(decoded.isIdentity)
         #expect(!decoded.isDiscovery)
-        #expect(decoded.prekeyBatch?.prekeys == sent.prekeys)
-        #expect(decoded.prekeyBatch?.lastResort == sent.lastResort)
-        #expect(decoded.prekeyBatch?.id == sent.id)
+        #expect(decoded.pairing?.prekeyBatch.prekeys == sent.prekeyBatch.prekeys)
+        #expect(decoded.pairing?.prekeyBatch.lastResort == sent.prekeyBatch.lastResort)
+        #expect(decoded.pairing?.agreementKey == sent.agreementKey && decoded.pairing?.signingKey == sent.signingKey)
+        #expect(decoded.pairing?.mldsaKey == sent.mldsaKey)
     }
 
-    @Test("A message from a build that sends no batch decodes with none")
-    func olderMessageDecodes() throws {
+    @Test("A message from a build that sends no field decodes with none, and a 2.0.0-shaped decoder ignores ours")
+    func olderMessagesDecode() throws {
         let old = #"{"id":"x","token":"AQ==","version":1,"identity":"BAQ=","nonce":null,"encapsulationKey":null}"#
         let decoded = try JSONDecoder().decode(Exchange.self, from: Data(old.utf8))
-        #expect(decoded.prekeyBatch == nil)
+        #expect(decoded.pairing == nil)
         #expect(decoded.isIdentity)
+
+        // The decoder of a build before this fix: the fields it knows, and nothing for a key it doesn't.
+        struct Legacy: Decodable { let id: String; let token: Data; let identity: Data?; let encapsulationKey: Data? }
+        let sent = Exchange(id: "x", token: Data([1]), identity: Data(repeating: 4, count: 65), pairing: self.field())
+        let legacy = try JSONDecoder().decode(Legacy.self, from: JSONEncoder().encode(sent))
+        #expect(legacy.id == "x" && legacy.identity?.count == 65)
     }
 
-    @Test("Messages other than the identity message carry no batch")
+    @Test("Messages other than the identity message carry no pairing field")
     func otherMessagesCarryNone() {
-        #expect(Exchange(id: "x", token: Data([1]), nonce: Data(count: 16)).prekeyBatch == nil)
-        #expect(Exchange(id: "x", token: Data([1]), ciphertext: Data([1])).prekeyBatch == nil)
+        #expect(Exchange(id: "x", token: Data([1]), nonce: Data(count: 16)).pairing == nil)
+        #expect(Exchange(id: "x", token: Data([1]), ciphertext: Data([1])).pairing == nil)
+    }
+
+    @Test("An identity message with the field and an ML-DSA key stays well under a megabyte, and about 10 KB")
+    func messageSize() throws {
+        var record = PrekeyRecord.empty
+        record.ownBatches = [PrekeyRecord.OwnBatch(
+            id: Data(repeating: 1, count: 16), createdAt: Date(timeIntervalSinceReferenceDate: 1), retiredAt: nil, isPending: true,
+            keys: (0..<15).map { PrekeyRecord.OwnKey(id: Data(repeating: UInt8($0 + 1), count: 16), blob: nil, publicKey: Data(repeating: UInt8($0 + 1), count: 65)) },
+            lastResort: PrekeyRecord.OwnKey(id: Data(repeating: 0xEE, count: 16), blob: nil, publicKey: Data(repeating: 0xEE, count: 65))
+        )]
+        let ours = PairingOffer.OwnPairKeys(
+            agreementBlob: Data(count: 143), agreementKey: Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation),
+            signingBlob: Data(count: 143), signingKey: Data(P256.Signing.PrivateKey().publicKey.x963Representation),
+            mldsaBlob: nil, mldsaKey: Data((0..<RoutingKey.PairBlock.mldsaKeySize).map { UInt8($0 & 0xFF) })
+        )
+        let exchange = Exchange(
+            id: UUID().uuidString, token: Data(count: 200), identity: Data(repeating: 4, count: 65),
+            encapsulationKey: Data(count: 1568), pairing: PairingOffer.field(prekeys: record, keys: ours)
+        )
+        let size = try JSONEncoder().encode(exchange).count
+        // Pinned so a regression in what the identity message carries shows here: roughly 3.6 KB of the pair keys and
+        // the ML-DSA key on top of the 2.0.0 message.
+        #expect((8_000...16_000).contains(size), "the identity message is \(size) bytes")
+    }
+
+    // MARK: What the peer's field is accepted as
+
+    private func accept(
+        _ field: Exchange.PairingField, ours: PairingOffer.OwnPairKeys? = nil, ourIdentity: Data? = Data(repeating: 0x11, count: 65),
+        peerIdentity: Data = Data(repeating: 0x22, count: 65)
+    ) throws -> (batch: PairingOffer.Batch, keys: PairingOffer.PeerPairKeys)? {
+        let ours = try ours ?? PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
+        return PairingOffer.accepted(field, ours: ours, ourIdentity: ourIdentity, peerIdentity: peerIdentity)
+    }
+
+    @Test("A well-formed field is accepted as sent")
+    func acceptsAGoodField() throws {
+        let sent = self.field()
+        let accepted = try #require(try self.accept(sent))
+        #expect(accepted.keys.agreementKey == sent.agreementKey && accepted.keys.signingKey == sent.signingKey)
+        #expect(accepted.keys.mldsaKey == nil)
+        #expect(accepted.batch.prekeys == sent.prekeyBatch.prekeys)
+    }
+
+    @Test("A key that is the wrong size or not a point on the curve refuses the field")
+    func refusesBadKeys() throws {
+        #expect(try self.accept(self.field(agreement: Data(repeating: 4, count: 64))) == nil)
+        #expect(try self.accept(self.field(signing: Data(repeating: 4, count: 66))) == nil)
+        #expect(try self.accept(self.field(agreement: Data(repeating: 0x04, count: 65))) == nil, "65 bytes that are not a point")
+        #expect(try self.accept(self.field(agreement: Data(count: 65))) == nil)
+    }
+
+    @Test("Two keys that are the same refuse the field")
+    func refusesEqualKeys() throws {
+        let key = Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation)
+        #expect(try self.accept(self.field(agreement: key, signing: key)) == nil)
+    }
+
+    @Test("A key equal to either phone's identity key refuses the field")
+    func refusesIdentityKeys() throws {
+        let ours = Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation)
+        let theirs = Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation)
+        #expect(try self.accept(self.field(agreement: theirs), ourIdentity: ours, peerIdentity: theirs) == nil)
+        #expect(try self.accept(self.field(signing: theirs), ourIdentity: ours, peerIdentity: theirs) == nil)
+        #expect(try self.accept(self.field(agreement: ours), ourIdentity: ours, peerIdentity: theirs) == nil)
+        #expect(try self.accept(self.field(), ourIdentity: nil, peerIdentity: theirs) != nil, "an identity we can't read is not a reason to refuse")
+    }
+
+    @Test("A reflection of one of our own pair keys refuses the field")
+    func refusesReflection() throws {
+        let ours = try PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
+        #expect(try self.accept(self.field(agreement: ours.agreementKey), ours: ours) == nil)
+        #expect(try self.accept(self.field(signing: ours.signingKey), ours: ours) == nil)
+        #expect(try self.accept(self.field(signing: ours.agreementKey), ours: ours) == nil)
+    }
+
+    @Test("A malformed ML-DSA key is dropped and the P-256 pair stays; a good one is kept")
+    func malformedMLDSAIsDroppedAlone() throws {
+        let bad = try #require(try self.accept(self.field(mldsa: Data(count: 100))))
+        #expect(bad.keys.mldsaKey == nil)
+
+        let good = Data(repeating: 9, count: RoutingKey.PairBlock.mldsaKeySize)
+        #expect(try self.accept(self.field(mldsa: good))?.keys.mldsaKey == good)
+    }
+
+    @Test("Acceptance looks at no other contact's keys")
+    func acceptanceIsPerExchange() throws {
+        // `accepted` takes nothing but this exchange's keys: a hidden contact's pair keys can't change its answer.
+        let sent = self.field()
+        let ours = try PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
+        let first = PairingOffer.accepted(sent, ours: ours, ourIdentity: nil, peerIdentity: Data(repeating: 1, count: 65))
+        let second = PairingOffer.accepted(sent, ours: ours, ourIdentity: nil, peerIdentity: Data(repeating: 1, count: 65))
+        #expect(first?.keys == second?.keys)
+    }
+
+    // MARK: Our keys
+
+    @Test("Our pair keys are two distinct P-256 keys, and an ML-DSA key where the phone could make one")
+    func ownPairKeys() throws {
+        let plain = SoftwareCardKeys(); plain.mldsaAvailable = false
+        let without = try PairingOffer.makeOwnPairKeys(using: plain)
+        #expect(without.agreementKey.count == 65 && without.signingKey.count == 65 && without.agreementKey != without.signingKey)
+        #expect(without.mldsaKey == nil && without.mldsaBlob == nil, "a phone that can't make one sends none")
+
+        guard #available(iOS 26, *) else { return }
+        let with = try PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
+        #expect(with.mldsaKey?.count == RoutingKey.PairBlock.mldsaKeySize && with.mldsaBlob != nil)
+    }
+
+    @Test("A phone that can't make a P-256 key sends none of the field")
+    func failureSendsNothing() {
+        let keys = SoftwareCardKeys()
+        keys.failing = true
+        #expect(throws: (any Error).self) { try PairingOffer.makeOwnPairKeys(using: keys) }
+        #expect(PairingOffer.field(prekeys: nil, keys: nil) == nil)
+    }
+
+    @Test("A phone that can make an ML-DSA key can make an ML-KEM one: an exchange with ML-DSA on both sides is hybrid")
+    func mldsaImpliesMLKEM() {
+        // Both are iOS 26 and later. The decision to keep ML-DSA out of the slot relies on this: wherever the key exists the
+        // routing key has the ML-KEM secrets in it.
+        let mldsa: Bool = { if #available(iOS 26, *) { return true } else { return false } }()
+        #expect(mldsa == (PostQuantumProviderFactory.create() != nil))
     }
 
     // MARK: The offer

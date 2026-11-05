@@ -1824,26 +1824,6 @@ extension Manager.Key {
         )
     }
  
-    /// The 32-byte secret one pairing holds (`bugs.md` Bug 196): `RoutingKey.derive` over the identity ECDH and, where the
-    /// exchange had them, both ML-KEM secrets and both nonces. Both phones compute the same bytes.
-    ///
-    /// SE operations: one ECDH via SE identity key.
-    func createRoutingKey(
-        peerP256Material: Data,
-        quantumMaterial: QuantumKeyMaterial?,
-        ourNonce: Data,
-        peerNonce: Data
-    ) -> Data? {
-        guard let ecdhAndSalt = self.ecdhWithSalt(peerP256Material: peerP256Material) else { return nil }
-        if let quantumMaterial, !quantumMaterial.isValid { return nil }
-
-        return RoutingKey.derive(
-            rawECDH: ecdhAndSalt.rawECDH, salt: ecdhAndSalt.salt,
-            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
-            ourNonce: ourNonce, peerNonce: peerNonce
-        )
-    }
- 
     /// The routing key of a pair-key pairing (`bugs.md` Bug 196, stage 2): `RoutingKey.derive` over the pair-key ECDH the
     /// caller made and the identity ECDH made here. No raw identity ECDH output leaves this type.
     ///

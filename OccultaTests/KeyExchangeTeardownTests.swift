@@ -42,6 +42,34 @@ struct KeyExchangeTeardownTests {
 
     /// Control: the screen staying up must not reset the exchange, or the test above proves nothing.
     /// It takes the same steps minus the removal, including the layout pass the removal runs in.
+    @Test("The pair keys are made once for the peer we're pinned to, both with the prekeys or neither, and dropped at teardown",
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func pairKeysDoNotOutliveTheExchange() throws {
+        let manager = ExchangeManager()
+        manager.pairKeyProvider = SoftwareCardKeys()
+        #expect(manager.ownPairKeys == nil, "an exchange that never finds anyone makes none")
+
+        manager.makeOwnPairing()
+        let first = try #require(manager.ownPairKeys)
+        manager.makeOwnPairing()
+        #expect(manager.ownPairKeys == first, "made once, not again for the same peer")
+
+        manager.finish()
+        #expect(manager.ownPairKeys == nil, "the blobs do not outlive the exchange")
+    }
+
+    @Test("A failure making the pair keys leaves the prekeys and the pair keys both unmade",
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func pairKeyFailureSendsNothing() {
+        let manager = ExchangeManager()
+        let keys = SoftwareCardKeys()
+        keys.failing = true
+        manager.pairKeyProvider = keys
+
+        manager.makeOwnPairing()
+        #expect(manager.ownPairKeys == nil)
+    }
+
     @Test("The exchange keeps running while the screen stays up")
     func stayingKeepsExchange() throws {
         let manager = ExchangeManager()

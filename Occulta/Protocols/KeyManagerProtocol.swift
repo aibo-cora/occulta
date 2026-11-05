@@ -90,8 +90,6 @@ protocol KeyManagerProtocol {
     func createHybridFSSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
 
     func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
-    /// The per-routing key (`bugs.md` Bug 196). `quantumMaterial` is nil for a classical exchange.
-    func createRoutingKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data) -> Data?
     /// The routing key of a pair-key pairing (`bugs.md` Bug 196, stage 2): `RoutingKey.derive` over the pair-key ECDH
     /// the caller made and the identity ECDH made here, so no raw identity ECDH output leaves the key manager.
     func createRoutingKey(
@@ -1155,22 +1153,6 @@ extension TestKeyManager {
             salt: ecdh.salt,
             info: info,
             outputByteCount: 32
-        )
-    }
-
-    func createRoutingKey(
-        peerP256Material: Data,
-        quantumMaterial: QuantumKeyMaterial?,
-        ourNonce: Data,
-        peerNonce: Data
-    ) -> Data? {
-        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
-        if let quantumMaterial, !quantumMaterial.isValid { return nil }
-
-        return RoutingKey.derive(
-            rawECDH: ecdh.rawECDH, salt: ecdh.salt,
-            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
-            ourNonce: ourNonce, peerNonce: peerNonce
         )
     }
 

@@ -20,34 +20,6 @@ public enum RoutingKey {
         case entropyUnavailable
     }
 
-    // MARK: - Derivation at a pairing
-
-    /// The secret two phones derive at an exchange: HKDF-SHA256 over the identity ECDH output and, where the exchange had
-    /// them, both ML-KEM secrets sorted, salted with the ECDH salt (the two public keys XORed), with both exchange nonces
-    /// sorted after `deriveDomain` as the info. Both phones get the same bytes. The domain is not the verification
-    /// words', so what a screen shows reveals nothing of it.
-    ///
-    /// - Returns: `nil` for a nonce that isn't 16 bytes, two equal nonces, or ML-KEM secrets that aren't 32 bytes.
-    public static func derive(
-        rawECDH: Data, salt: Data, mlkemSecrets: (Data, Data)?, ourNonce: Data, peerNonce: Data
-    ) -> Data? {
-        guard ourNonce.count == 16, peerNonce.count == 16, ourNonce != peerNonce else { return nil }
-
-        var ikm = rawECDH
-        if let (one, other) = mlkemSecrets {
-            guard one.count == Self.size, other.count == Self.size else { return nil }
-            let (low, high) = one.lexicographicallyPrecedes(other) ? (one, other) : (other, one)
-            ikm.append(low)
-            ikm.append(high)
-        }
-
-        let (lowNonce, highNonce) = ourNonce.lexicographicallyPrecedes(peerNonce) ? (ourNonce, peerNonce) : (peerNonce, ourNonce)
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm), salt: salt, info: Self.deriveDomain + lowNonce + highNonce,
-            outputByteCount: Self.size
-        ).withUnsafeBytes { Data($0) }
-    }
-
     // MARK: - Routing
 
     /// HMAC(secret, "occulta-pairing-routing-tag-v1" ‖ nonce) — 32 bytes. The routing tag a slot carries, readable before
@@ -89,7 +61,6 @@ public enum RoutingKey {
     // MARK: - Internals
 
     static let routingTagDomain   = Data("occulta-pairing-routing-tag-v1".utf8)
-    static let deriveDomain       = Data("Occulta-v1-pairing-secret-2026".utf8)
     static let proofDomain   = Data("occulta-pairing-proof-v1".utf8)
     static let bindDomain    = Data("occulta-pairing-bind-v1".utf8)
 

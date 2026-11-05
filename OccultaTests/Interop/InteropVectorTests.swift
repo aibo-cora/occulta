@@ -199,7 +199,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let challengeState: String?
     let challengeSlot: ChallengeSlotInput?
 
-    // pairingRoutingTag, pairingSlotProof, pairingBind, pairingDerive, pairingField, recipientPayload,
+    // pairingRoutingTag, pairingSlotProof, pairingBind, pairingField, recipientPayload,
     // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript
     let pairing: PairingInput?
 
@@ -210,9 +210,6 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let routingTag: String?
         let senderPublicKey: String?
         let key: String?
-        // pairingDerive
-        let rawECDH: String?
-        let salt: String?
         let mlkemSecret1: String?
         let mlkemSecret2: String?
         let ourNonce: String?
@@ -629,17 +626,6 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                 mlkemSecrets: secrets.map { ($0.1, $0.0) })
             #expect(key.withUnsafeBytes { Data($0) } == otherSide?.withUnsafeBytes { Data($0) }, "\(self.name): the two sides disagree")
             return key.withUnsafeBytes { Data($0) }
-
-        case "pairingDerive":
-            // Both phones derive it, each with itself as "our": the nonces and the ML-KEM secrets, swapped, must agree.
-            let input = try #require(self.pairing)
-            let ecdh = try Self.bytes(input.rawECDH), salt = try Self.bytes(input.salt)
-            let ours = try Self.bytes(input.ourNonce), theirs = try Self.bytes(input.peerNonce)
-            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
-            let derived = try #require(RoutingKey.derive(rawECDH: ecdh, salt: salt, mlkemSecrets: secrets, ourNonce: ours, peerNonce: theirs))
-            let otherSide = RoutingKey.derive(rawECDH: ecdh, salt: salt, mlkemSecrets: secrets.map { ($0.1, $0.0) }, ourNonce: theirs, peerNonce: ours)
-            #expect(derived == otherSide, "\(self.name): the two sides disagree")
-            return derived
 
         case "pairingField":
             let input = try #require(self.pairing)

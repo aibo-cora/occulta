@@ -147,7 +147,7 @@ struct KeyExchange: View {
         @Environment(\.dismiss) private var dismiss
 
         private enum SaveState { case confirming, saving, saved, failed }
-        private enum SaveError: Error { case invalidKeyMaterial }
+        private enum SaveError: Error { case invalidKeyMaterial, pairingNotDerived }
         @State private var saveState: SaveState = .confirming
         /// What the in-person check found about an earlier card conversation. Held only while its screen is up;
         /// nothing about it is stored.
@@ -190,6 +190,16 @@ struct KeyExchange: View {
                         Label("Quantum-resistant exchange", systemImage: "shield.checkered")
                             .font(.caption2)
                             .foregroundStyle(Color.occultaVerified)
+                    }
+
+                    // We sent pair keys and the other phone sent none we could use: the pairing is made as before, and
+                    // both people can see it here, where a phone on an older version looks the same as one whose message
+                    // was interfered with. Shown on this screen only; nothing about it is stored.
+                    if self.payload.offeredPairing && self.payload.pairing == nil {
+                        Text("Pair keys weren't exchanged. If both phones are on the latest version, try again.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
 
                     switch self.saveState {
@@ -256,7 +266,15 @@ struct KeyExchange: View {
         private var words: [String] {
             let sharedKey: Data?
             
-            if let result = self.payload.hybridResult {
+            if let pairing = self.payload.pairing {
+                // A pair-key exchange: the words cover both phones' pair keys and the identity ECDH (Bug 196, stage 2), so a
+                // key a man in the middle added, removed or swapped changes them. A failure to derive shows words that
+                // cannot match, and `save()` refuses the pairing.
+                sharedKey = pairing.wordsKey(
+                    withPeer: self.payload.classicalKey, quantum: self.payload.hybridResult.map(QuantumKeyMaterial.init(from:)),
+                    using: self.keyManager
+                )
+            } else if let result = self.payload.hybridResult {
                 let material = QuantumKeyMaterial(from: result)
                 sharedKey = self.keyManager.createDicewareKey(
                     peerP256Material: result.peerP256PublicKey,
@@ -306,21 +324,24 @@ struct KeyExchange: View {
                     )
                 }
 
-                // Both phones sent a prekey batch, so both can hold a routing key and derive the same one (Bug 196).
-                let secret = self.payload.pairing.flatMap {
-                    $0.secret(withPeer: self.payload.classicalKey, quantum: quantum, using: self.keyManager)
+                // Both phones sent a `pairing` field, so both hold a routing key and a pair of keys and derive the same one
+                // (Bug 196). One we can't derive is not a weaker pairing to save: nothing is saved, and the screen says so.
+                var routingKey: Data? = nil
+                if let pairing = self.payload.pairing {
+                    guard let derived = pairing.routingKey(withPeer: self.payload.classicalKey, quantum: quantum, using: self.keyManager) else {
+                        throw SaveError.pairingNotDerived
+                    }
+                    routingKey = derived
                 }
 
                 guard let key = Contact.Draft.Key(
                     material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum,
-                    routingKey: secret
+                    routingKey: routingKey, pairKeys: self.payload.pairing?.pairKeys
                 ) else {
                     throw SaveError.invalidKeyMaterial
                 }
 
-                // A secret we couldn't derive leaves the pairing as it was before this fix, prekeys and all: a batch
-                // installed without a secret would make us the only side refusing nothing and sending in the old form.
-                try self.contactManager?.update(key: key, for: self.identifier, pairing: secret == nil ? nil : self.payload.pairing)
+                try self.contactManager?.update(key: key, for: self.identifier, pairing: self.payload.pairing)
 
                 // After the key is saved and before `finish()`, which discards the peer's proof (SPEC §7).
                 let verdict = self.manager.cardMeetingVerdict(for: self.payload)
