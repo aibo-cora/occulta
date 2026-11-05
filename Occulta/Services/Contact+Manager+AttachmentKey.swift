@@ -57,26 +57,14 @@ extension ContactManager {
         return pairs
     }
 
-    /// Moves every attachment under `directories` that is sealed under a contact's old base key to that contact's new one.
-    ///
-    /// Runs on the main actor, like `AttachmentManager.reseal`, which writes through `StreamingEncryptor`. A file is one
-    /// streamed pass, so a large video holds the main actor for as long as that takes; the run yields after every file,
-    /// moved or not. The sealed files are listed first and the keys derived only if there is one, so a phone with nothing
-    /// to move pays for a directory listing and not for an Enclave round trip per contact. A file opened before the run
-    /// reaches it, by a draft opened right at unlock, may not open until the run has: drafts are listed first.
-    @discardableResult
-    func resealAttachmentKeys(
-        in directories: [URL] = [Message.Draft.attachmentsRoot, FileManager.default.temporaryDirectory],
-        using keyManager: any KeyManagerProtocol = Manager.Key()
-    ) async -> AttachmentReseal {
-        var result = AttachmentReseal()
+    /// Every sealed file under `directories`, removing the temporaries a killed run left (the file beside one is still the
+    /// original). Synchronous: an enumerator's iterator can't be made in an async context under Swift 6.
+    private static func sealedFiles(in directories: [URL]) -> [URL] {
         let files = FileManager.default
-
         var sealed: [URL] = []
         for directory in directories {
             guard let enumerator = files.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
             for case let file as URL in enumerator {
-                // A temporary a killed run left; the file beside it is still the original.
                 if file.pathExtension == AttachmentManager.resealingSuffix {
                     try? files.removeItem(at: file)
                     continue
@@ -88,6 +76,25 @@ extension ContactManager {
                 sealed.append(file)
             }
         }
+        return sealed
+    }
+
+    /// Moves every attachment under `directories` that is sealed under a contact's old base key to that contact's new one.
+    ///
+    /// Runs on the main actor, like `AttachmentManager.reseal`, which writes through `StreamingEncryptor`. A file is one
+    /// streamed pass, so a large video holds the main actor for as long as that takes; the run yields after every file,
+    /// moved or not. The sealed files are listed first and the keys derived only if there is one, so a phone with no sealed
+    /// file pays for a directory listing and not for an Enclave round trip per contact. A phone with any sealed file, which
+    /// is every phone with a draft attachment, derives the keys at each unlock. A file opened before the run
+    /// reaches it, by a draft opened right at unlock, may not open until the run has: drafts are listed first.
+    @discardableResult
+    func resealAttachmentKeys(
+        in directories: [URL] = [Message.Draft.attachmentsRoot, FileManager.default.temporaryDirectory],
+        using keyManager: any KeyManagerProtocol = Manager.Key()
+    ) async -> AttachmentReseal {
+        var result = AttachmentReseal()
+
+        let sealed = Self.sealedFiles(in: directories)
         guard !sealed.isEmpty, let pairs = try? self.attachmentKeyPairs(using: keyManager), !pairs.isEmpty else { return result }
 
         for file in sealed {

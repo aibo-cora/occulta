@@ -146,7 +146,7 @@ struct KeyExchange: View {
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         @Environment(\.dismiss) private var dismiss
 
-        private enum SaveState { case confirming, saving, saved, failed }
+        private enum SaveState { case confirming, saving, saved, failed, refusedWeaker }
         private enum SaveError: Error { case invalidKeyMaterial, pairingNotDerived }
         @State private var saveState: SaveState = .confirming
         /// What the in-person check found about an earlier card conversation. Held only while its screen is up;
@@ -230,6 +230,26 @@ struct KeyExchange: View {
                         Label("Key saved", systemImage: "checkmark.circle.fill")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(Color.occultaVerified)
+
+                    case .refusedWeaker:
+                        // A retry runs the same exchange and is refused the same way, so none is offered: the way on is a new
+                        // exchange once the other person's phone can give pair keys (Bug 196).
+                        Label("Not saved: the other phone gave no pair keys", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.occultaDanger)
+
+                        Text("You and this contact already share a stronger pairing than this exchange would make, so it was kept as it was. Ask them to update Occulta, then exchange keys again.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button("Done") {
+                            self.manager.finish()
+                            self.dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.occultaAccent)
+                        .frame(maxWidth: .infinity)
 
                     case .failed:
                         Label("Couldn't save key", systemImage: "exclamationmark.triangle.fill")
@@ -358,6 +378,8 @@ struct KeyExchange: View {
                     // The exchange closes from the verdict screen: after "I understand", or when W-12 is closed.
                     self.cardVerdict = verdict
                 }
+            } catch ContactManager.Errors.pairingWouldBeWeaker {
+                self.saveState = .refusedWeaker
             } catch {
                 self.saveState = .failed
             }

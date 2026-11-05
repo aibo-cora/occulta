@@ -1004,7 +1004,7 @@
     {
       "name": "pairing.batchDigest",
       "kind": "pairingBatchDigest",
-      "note": "Bug 196, stage 2. SHA-256(\"occulta-pairing-batch-v1\" || 0x01 || id || the big-endian bits of generatedAt as a Double (seconds since 2001-01-01) || a UInt16 count || each prekey as UInt16 length + id bytes + UInt16 length + public key || 0x01 and the last-resort key in the same layout). A man in the middle who swaps the batch changes it, and so the transcript.",
+      "note": "Bug 196, stage 2. SHA-256(\"occulta-pairing-batch-v1\" || 0x01 || a UInt16 length and the id || the big-endian bits of generatedAt as a Double (seconds since 2001-01-01) || a UInt16 count || each prekey as UInt16 length + id bytes + UInt16 length + public key || 0x01 and the last-resort key in the same layout). A man in the middle who swaps the batch changes it, and so the transcript.",
       "pairing": {
         "batchId": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
         "batchGeneratedAt": 800000000.5,
@@ -1013,7 +1013,7 @@
         "batchLastResortId": "33333333-3333-3333-3333-333333333333",
         "batchLastResortKey": "4343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343"
       },
-      "expected": "9c0b65d485ca36c16b1b92c826d52417e89b8194578617bd050aeb16bebaabcc"
+      "expected": "12f77ad7d462503114d266b8a8810cbd0b0399d8037583d198e194d8d55b12f5"
     },
     {
       "name": "pairing.batchDigest.bare",

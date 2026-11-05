@@ -55,13 +55,9 @@ extension Contact {
             case .create:
                 return false
             case .edit:
-                if let key = self.contact.contactPublicKeys.last {
-                    if key.expiredOn == nil {
-                        return true
-                    }
-                }
-                
-                return false
+                // Any key not retired is current: "the last" is whichever row the relationship lists last, which after a re-pair
+                // can be the retired one (Bug 196).
+                return self.contact.contactPublicKeys.contains { $0.expiredOn == nil }
             }
         }
         

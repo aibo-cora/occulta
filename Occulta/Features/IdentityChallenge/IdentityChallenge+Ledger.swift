@@ -82,5 +82,9 @@ extension IdentityChallenge {
         /// The pair keys of a pair-key pairing with this contact (`bugs.md` Bug 196, stage 2), or nil. A challenge and its
         /// response are then made and checked with the pair signing keys, and never in the long-term format.
         func pairKeys(for contactID: String) -> PairingSlotKeys?
+
+        /// Whether the pairing with this contact can be read. A pairing that cannot may be a pair-key pairing, so
+        /// nothing is made or checked with the identity key for it (Bug 196).
+        func pairingIsReadable(for contactID: String) -> Bool
     }
 }

@@ -84,7 +84,7 @@ extension ContactManager {
     }
 
     /// Whether an old-form file (the sender named by identity fingerprint) may be attributed to `contact`. Not once the
-    /// pairing began with a secret: such a file is another pairing's (Bug 196).
+    /// pairing holds a routing key: such a file is another pairing's (Bug 196).
     func acceptsOldForm(from contact: Contact.Profile) -> Bool {
         // A pairing whose column can't be read may be a pair-key pairing: it refuses the old form (Bug 196).
         guard let key = contact.currentKey else { return true }
@@ -102,7 +102,7 @@ extension ContactManager {
     /// pairing is retired (`PrekeyBookkeeper.startPairing`).
     ///
     /// The peer sent a batch, so it runs 2.0.1 or later: the tier is recorded now, which lets the first message be
-    /// sent in the group format, and in the pairing form once stage 5's gate allows.
+    /// sent in the group format.
     func installPairingPrekeys(_ pairing: PairingOffer, in contact: Contact.Profile) throws {
         guard let ownBatch = pairing.ownPrekeys.ownBatches.first(where: \.isPending) else { return }
 

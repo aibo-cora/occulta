@@ -210,6 +210,9 @@ struct PairwiseDerivationTests {
         let variants: [Data] = [
             RoutingKey.batchDigest(id: Data(repeating: 2, count: 16), generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
             RoutingKey.batchDigest(id: nil, generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
+            // An id of another length has its length in front, so it can't run into the fields after it.
+            RoutingKey.batchDigest(id: id + Data([0]), generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
+            RoutingKey.batchDigest(id: id.dropLast(), generatedAt: date, prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
             RoutingKey.batchDigest(id: id, generatedAt: date.addingTimeInterval(1), prekeys: [prekey(1), prekey(2)], lastResort: prekey(9)),
             RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(2), prekey(1)], lastResort: prekey(9)),
             RoutingKey.batchDigest(id: id, generatedAt: date, prekeys: [prekey(1)], lastResort: prekey(9)),

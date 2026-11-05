@@ -85,6 +85,9 @@ class ExchangeManager: NSObject {
     private(set) var ownPrekeys: PrekeyRecord?
     /// Our pair keys, made with the prekeys: both or neither, because a phone sends all of the `pairing` field or none.
     private(set) var ownPairKeys: PairingOffer.OwnPairKeys?
+    /// The `pairing` field we send, made once with the keys. Its batch is read back from the Enclave blobs one time, so the
+    /// batch sent and the digest of it in the transcript are the same evaluation and cannot differ.
+    private(set) var ownPairingField: Exchange.PairingField?
     /// Makes our pair keys. The Enclave in production; a test injects software keys.
     var pairKeyProvider: any CardKeyProviding = EnclaveCardKeys()
     /// What the peer's `pairing` field came to once validated, and the pair-key ECDH with it. Nil from a phone that can't
@@ -265,6 +268,7 @@ class ExchangeManager: NSObject {
         self.peerIdentity = nil
         self.ownPrekeys = nil
         self.ownPairKeys = nil
+        self.ownPairingField = nil
         self.peerPairing = nil
         self.ourSentIdentity = nil
         self.peerCardProof = nil
@@ -315,7 +319,7 @@ class ExchangeManager: NSObject {
                 version: .v1,
                 identity: keyingMaterial,
                 encapsulationKey: self.encapsulationKeyData,
-                pairing: PairingOffer.field(prekeys: self.ownPrekeys, keys: self.ownPairKeys)
+                pairing: self.ownPairingField
             )
             let encoded = try JSONEncoder().encode(exchange)
             try session.send(encoded, toPeers: [peerID], with: .reliable)
@@ -390,13 +394,18 @@ class ExchangeManager: NSObject {
     /// `pairing` field or none, so a failure making either sends none and the pairing goes the way it did before.
     func makeOwnPairing() {
         guard self.ownPrekeys == nil else { return }
-        guard let prekeys = try? PairingOffer.makeOwnPrekeys(), let keys = try? PairingOffer.makeOwnPairKeys(using: self.pairKeyProvider) else {
+        guard
+            let prekeys = try? PairingOffer.makeOwnPrekeys(), let keys = try? PairingOffer.makeOwnPairKeys(using: self.pairKeyProvider),
+            let field = PairingOffer.field(prekeys: prekeys, keys: keys)
+        else {
             self.ownPrekeys = nil
             self.ownPairKeys = nil
+            self.ownPairingField = nil
             return
         }
         self.ownPrekeys = prekeys
         self.ownPairKeys = keys
+        self.ownPairingField = field
     }
 
     /// The peer's `pairing` field once validated, with the pair-key ECDH made from it. Nil if we sent none, the peer sent
@@ -418,9 +427,10 @@ class ExchangeManager: NSObject {
     /// The pairing offer for a payload built now: only when both phones sent a `pairing` field and both nonces are known.
     /// Anything missing means the peer can't hold a routing key, and the pairing is made without one.
     private func pairingOffer() -> PairingOffer? {
-        guard let ourNonce, let peerNonce, let ownPrekeys, let ownPairKeys, let peerPairing else { return nil }
+        guard let ourNonce, let peerNonce, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing else { return nil }
         return PairingOffer(
-            ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys, peerBatch: peerPairing.batch,
+            ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys,
+            ownBatchDigest: PairingOffer.Batch(ownPairingField.prekeyBatch).digest, peerBatch: peerPairing.batch,
             ours: ownPairKeys, theirs: peerPairing.keys, pairwiseECDH: peerPairing.ecdh
         )
     }

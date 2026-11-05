@@ -169,4 +169,8 @@ extension ContactManager: IdentityChallenge.ChallengeSealer {
     func pairKeys(for contactID: String) -> PairingSlotKeys? {
         (try? self.fetchContact(by: contactID)).flatMap { self.pairingSlotKeys(for: $0) }
     }
+
+    func pairingIsReadable(for contactID: String) -> Bool {
+        (try? self.fetchContact(by: contactID)).map { self.pairingIsReadable(for: $0) } ?? true
+    }
 }

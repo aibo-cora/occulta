@@ -273,8 +273,8 @@ struct PairingRoutingTests {
 
         // A file whose slot carries a proof made over some other routing tag.
         let bundle = try sealWithProof(
-            from: self.sender, to: me, pairing: pairing.slot,
-            proof: RoutingKey.slotProof(routingKey: secret(1), routingTag: Data(repeating: 0xEE, count: 32), senderPublicKey: senderKey)
+            from: self.sender, to: me, routingKey: pairing.routingKey, pairing: pairing.slot,
+            proof: { _ in RoutingKey.slotProof(routingKey: secret(1), routingTag: Data(repeating: 0xEE, count: 32), senderPublicKey: senderKey) }
         )
 
         #expect(throws: GroupDecryptError.senderProofMismatch) { try cm.openGroup(bundle: bundle) }
@@ -287,9 +287,27 @@ struct PairingRoutingTests {
         let pairing = try Pairing(1)
         try insertSender(publicKey: try self.sender.retrieveIdentity(), state: pairing.state, in: cm)
 
-        let bundle = try sealWithProof(from: self.sender, to: me, pairing: pairing.slot, proof: nil)
+        let bundle = try sealWithProof(from: self.sender, to: me, routingKey: pairing.routingKey, pairing: pairing.slot, proof: { _ in nil })
 
         #expect(throws: GroupDecryptError.senderProofMismatch) { try cm.openGroup(bundle: bundle) }
+    }
+
+    @Test("A slot sealed with the identity key under the right tag and routing key opens nothing of a pair-key pairing", .ambientTestKeyManager)
+    func identityKeySlotUnderTheRightTagIsRefused() throws {
+        let cm = try makeContactManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        let senderKey = try self.sender.retrieveIdentity()
+        let pairing = try Pairing(1)
+        let contact = try insertSender(publicKey: senderKey, state: pairing.state, in: cm)
+
+        // Someone who holds the routing key and the identity key, but not the pair keys, makes a slot a plain pairing would
+        // open: the identity key's ECDH, bound to the routing key, with a proof that verifies. It carries the right tag.
+        let bundle = try sealWithProof(
+            from: self.sender, to: me, routingKey: pairing.routingKey, pairing: nil,
+            proof: { RoutingKey.slotProof(routingKey: pairing.routingKey, routingTag: $0, senderPublicKey: senderKey) }
+        )
+
+        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: bundle, ownerID: contact.identifier) }
     }
 
     // MARK: Groups
@@ -387,7 +405,8 @@ struct PairingRoutingTests {
 /// A one-recipient file of the new form with the slot proof given, which the real seal always gets right.
 @MainActor
 private func sealWithProof(
-    from sender: TestKeyManager, to recipientPublicKey: Data, pairing: PairingSlotKeys, proof: Data?
+    from sender: TestKeyManager, to recipientPublicKey: Data, routingKey: Data, pairing: PairingSlotKeys?,
+    proof: (_ routingTag: Data) -> Data?
 ) throws -> OccultaBundle {
     let groupID    = UUID()
     let contentKey = SymmetricKey(size: .bits256)
@@ -407,12 +426,13 @@ private func sealWithProof(
     let (derived, context) = try Manager.Crypto(keyManager: sender).deriveOutboundKey(
         contactPrekey: nil, recipientPublicKey: recipientPublicKey, quantumMaterial: nil, pairing: pairing
     )
-    let wrappingKey = RoutingKey.bind(derived, routingKey: pairing.routingKey)
+    let wrappingKey = RoutingKey.bind(derived, routingKey: routingKey)
     let encoder = JSONEncoder()
     encoder.outputFormatting = .sortedKeys
+    let routingTag = RoutingKey.routingTag(routingKey: routingKey, nonce: outerNonce)
     let slot = try encoder.encode(OccultaBundle.RecipientPayload(
         sessionKey: contentKey.withUnsafeBytes { Data($0) }, senderEphemeralSignature: Data(count: 72),
-        slotProof: proof
+        slotProof: proof(routingTag)
     ))
     return OccultaBundle(
         version: .v4, secrecy: outerSecrecy,
@@ -421,7 +441,7 @@ private func sealWithProof(
         group: OccultaBundle.GroupEnvelope(blind: blind, blindNonce: blindNonce, recipients: [OccultaBundle.Recipient(
             secrecyContext: context,
             wrappedPayload: try #require(try AES.GCM.seal(slot, using: wrappingKey, authenticating: blind).combined),
-            routingTag: RoutingKey.routingTag(routingKey: pairing.routingKey, nonce: outerNonce)
+            routingTag: routingTag
         )])
     )
 }

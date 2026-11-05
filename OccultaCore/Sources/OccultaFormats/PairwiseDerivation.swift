@@ -63,10 +63,11 @@ extension RoutingKey {
         }
     }
 
-    /// SHA-256("occulta-pairing-batch-v1" ‖ the batch, in a fixed layout): `0x00` or `0x01 ‖ id` (16 bytes), `generatedAt` as
-    /// the big-endian bits of its `Double`, a UInt16 count, then for each prekey a UInt16 length and the bytes of its id and a
-    /// UInt16 length and the bytes of its public key, then `0x00` or `0x01 ‖` a prekey in the same layout for the last-resort
-    /// key. Both phones compute it over the batch as it was sent and as it was received, so they agree on an honest channel.
+    /// SHA-256("occulta-pairing-batch-v1" ‖ the batch, in a fixed layout): `0x00` or `0x01 ‖` a UInt16 length and the batch id,
+    /// `generatedAt` as the big-endian bits of its `Double`, a UInt16 count, then for each prekey a UInt16 length and the bytes
+    /// of its id and a UInt16 length and the bytes of its public key, then `0x00` or `0x01 ‖` a prekey in the same layout for
+    /// the last-resort key. Every variable part has a length in front, so two different batches never encode alike. Both
+    /// phones compute it over the batch as it was sent and as it was received, so they agree on an honest channel.
     public static func batchDigest(
         id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], lastResort: OccultaBundle.WirePrekey?
     ) -> Data {
@@ -80,7 +81,7 @@ extension RoutingKey {
         }
 
         var out = Self.batchDomain
-        if let id { out.append(0x01); out.append(id) } else { out.append(0x00) }
+        if let id { out.append(0x01); put(UInt16(truncatingIfNeeded: id.count), into: &out); out.append(id) } else { out.append(0x00) }
         withUnsafeBytes(of: generatedAt.timeIntervalSinceReferenceDate.bitPattern.bigEndian) { out.append(contentsOf: $0) }
         put(UInt16(truncatingIfNeeded: prekeys.count), into: &out)
         for prekey in prekeys { put(prekey, into: &out) }

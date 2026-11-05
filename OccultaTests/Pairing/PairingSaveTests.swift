@@ -40,11 +40,16 @@ private func peerBatch(keys: Int = 15) -> PairingOffer.Batch {
     ))
 }
 
+/// The digest of the batch `record` would send, as the exchange takes it once when it makes the field.
+private func sentDigest(of record: PrekeyRecord) -> Data {
+    PairingOffer.Batch(PairingOffer.wireBatch(of: record)!).digest
+}
+
 private func offer(own: PrekeyRecord.OwnBatch? = nil, peer: PairingOffer.Batch? = nil) -> PairingOffer {
     var record = PrekeyRecord.empty
     record.ownBatches = [own ?? ownBatch(id: 0xAA)]
     return PairingOffer(
-        ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, peerBatch: peer ?? peerBatch(),
+        ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peer ?? peerBatch(),
         ours: ownPairKeys(), theirs: peerPairKeys(), pairwiseECDH: Data(repeating: 0x33, count: 32)
     )
 }
@@ -123,7 +128,7 @@ struct PairingOfferDerivationTests {
             ourNonce: Data, peerNonce: Data
         ) throws -> PairingOffer {
             PairingOffer(
-                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, peerBatch: peerBatch,
+                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peerBatch,
                 ours: ours,
                 theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
                 pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: self.provider)
@@ -173,7 +178,7 @@ struct PairingOfferDerivationTests {
             id: Data(repeating: 0x99, count: 16), lastResort: nil
         ))
         let tampered = PairingOffer(
-            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, peerBatch: other, ours: b.ours, theirs: b.theirs,
+            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, ownBatchDigest: b.ownBatchDigest, peerBatch: other, ours: b.ours, theirs: b.theirs,
             pairwiseECDH: b.pairwiseECDH
         )
 

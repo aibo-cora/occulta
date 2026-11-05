@@ -74,6 +74,46 @@ struct PairingLifecycleTests {
         #expect(throws: ContactManager.Errors.pairingUnreadable) { try cm.encryptBundle(basket: Basket(files: []), for: contact.identifier) }
     }
 
+    @Test("A group send to a contact whose pairing can't be read is refused, not sent with the identity key", .ambientTestKeyManager)
+    func groupSendToUnreadablePairingIsRefused() throws {
+        let cm = try makeContactManager()
+        let contact = try insert(cm, rawColumn: try Data(repeating: 0xAB, count: 4_000).encrypt())
+        let group = try cm.createGroup(name: "G")
+        try group.addMember(contact.identifier, atDepth: 0)
+
+        #expect(throws: ContactManager.Errors.pairingUnreadable) {
+            try cm.encryptGroupBundle(basket: Basket(files: []), groupID: try #require(group.readID()))
+        }
+    }
+
+    @Test("A caller that names the owner of a file gets no slot tried with the identity key for an unreadable pairing", .ambientTestKeyManager)
+    func namedOwnerWithUnreadablePairingIsRefused() throws {
+        let cm = try makeContactManager()
+        let sender = TestKeyManager()
+        let me = try Manager.Ambient.keyManager.retrieveIdentity()
+        let contact = try insert(cm, peer: sender, rawColumn: try Data(repeating: 0xAB, count: 4_000).encrypt())
+        let plain = try insert(cm, peer: sender, state: .empty)
+
+        let bundle = try Manager.Crypto(keyManager: sender).seal(
+            sealedPayload: OccultaBundle.SealedPayload(message: Data("hello".utf8), appVersion: "1.11.1"), groupID: UUID(),
+            recipients: [GroupRecipient(publicKey: me, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)]
+        )
+
+        #expect(throws: GroupDecryptError.recipientSlotNotFound) { try cm.openGroup(bundle: bundle, ownerID: contact.identifier) }
+        #expect(try cm.openGroup(bundle: bundle, ownerID: plain.identifier).ownerID == plain.identifier, "a plain pairing still opens it")
+    }
+
+    @Test("The challenge entry points ask whether the pairing is readable", .ambientTestKeyManager)
+    func challengeSealerSeesAnUnreadablePairing() throws {
+        let cm = try makeContactManager()
+        let unreadable = try insert(cm, rawColumn: try Data(repeating: 0xAB, count: 4_000).encrypt())
+        let plain = try insert(cm)
+
+        #expect(!cm.pairingIsReadable(for: unreadable.identifier))
+        #expect(cm.pairingIsReadable(for: plain.identifier))
+        #expect(cm.pairingIsReadable(for: "nobody"), "no contact is not an unreadable one")
+    }
+
     @Test("A column that won't open under the local key is unreadable too", .ambientTestKeyManager)
     func undecryptableColumnFailsClosed() throws {
         let cm = try makeContactManager()
@@ -92,7 +132,7 @@ struct PairingLifecycleTests {
         #expect(cm.readablePairingState(of: try #require(contact.currentKey)) == .empty)
     }
 
-    @Test("A readable pair-key column still refuses the old form, and one with a routing key alone too", .ambientTestKeyManager)
+    @Test("A readable pair-key column still refuses the old form, and a plain one accepts it", .ambientTestKeyManager)
     func readableStatesAreAsBefore() throws {
         let cm = try makeContactManager()
         let paired = try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))
@@ -167,6 +207,25 @@ struct PairingLifecycleTests {
     }
 
     // MARK: The challenge
+
+    @Test("A re-pair over a column that can't be read drops the outstanding challenge", .ambientTestKeyManager)
+    func unreadableColumnDropsTheChallenge() throws {
+        let cm = try makeContactManager()
+        let peer = TestKeyManager()
+        let contact = try insert(cm, peer: peer, rawColumn: try Data(repeating: 0xAB, count: 4_000).encrypt())
+        let id = contact.identifier
+        try cm.record(
+            IdentityChallenge.OutstandingChallenge(nonce: Data(repeating: 1, count: 32), issuedAt: UInt64(Date().timeIntervalSince1970)),
+            for: id, now: Date()
+        )
+        #expect(cm.challenge(for: id) != nil)
+
+        // The new pairing is plain: nothing about the form of the new one drops the challenge, only the old column that may have held pair keys.
+        let draft = try #require(Contact.Draft.Key(material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2"))
+        try cm.update(key: draft, for: id)
+
+        #expect(cm.challenge(for: id) == nil)
+    }
 
     @Test("An upgrade from plain to pair keys drops an outstanding challenge and keeps what was verified", .ambientTestKeyManager)
     func upgradeDropsTheChallengeButKeepsVerified() throws {

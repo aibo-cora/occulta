@@ -25,6 +25,11 @@ struct PairingOffer: Equatable {
     /// keychain item.
     let ownPrekeys: PrekeyRecord
 
+    /// The digest of the batch we sent in our identity message (`RoutingKey.batchDigest`), taken from the field as it was
+    /// sent. It is not read back from `ownPrekeys`: that costs an Enclave import per key each time the transcript is
+    /// computed, and a blob that failed to import then would shorten the batch and make the two phones' words differ.
+    let ownBatchDigest: Data
+
     /// The batch the peer sent in its identity message, as received.
     let peerBatch: Batch
 
@@ -72,13 +77,11 @@ struct PairingOffer: Equatable {
         let mldsaKey: Data?
     }
 
-    /// What each phone sent, as `RoutingKey.transcript` takes it: its keys and a digest of the prekey batch beside them. Ours is
-    /// read back from the record the field was made from, which is the batch that was sent.
+    /// What each phone sent, as `RoutingKey.transcript` takes it: its keys and a digest of the prekey batch beside them.
     var ourBlock: RoutingKey.PairBlock? {
-        guard let batch = Self.wireBatch(of: self.ownPrekeys) else { return nil }
-        return RoutingKey.PairBlock(
+        RoutingKey.PairBlock(
             agreementKey: self.ours.agreementKey, signingKey: self.ours.signingKey, mldsaKey: self.ours.mldsaKey,
-            batchDigest: Batch(batch).digest
+            batchDigest: self.ownBatchDigest
         )
     }
     var theirBlock: RoutingKey.PairBlock? {

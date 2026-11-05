@@ -98,6 +98,8 @@ extension IdentityChallenge {
         ) throws {
             let crypto = Occulta.Manager.Crypto()
             let url: URL
+            // A pairing that can't be read may hold pair keys: nothing is made with the identity key for it.
+            guard self.sealer.pairingIsReadable(for: contact.identifier) else { throw IdentityChallenge.ManagerError.noIdentity }
             let pair = self.sealer.pairKeys(for: contact.identifier)
             if let seal = self.sealer.groupSealer(for: contact.identifier) {
                 url = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote, pairing: pair, seal: seal)
@@ -217,6 +219,11 @@ extension IdentityChallenge {
             }()
             let senderID   = sender.identifier
             let senderName = { let n = sender.givenName.decrypt(); return n.isEmpty ? "Unknown" : n }()
+            // Nothing is checked against the identity key for a pairing that can't be read: it fails like an unauthenticated one.
+            guard self.sealer.pairingIsReadable(for: senderID) else {
+                self.errorMessage = "Could not open identity verification request."
+                return true
+            }
             let pair       = self.sealer.pairKeys(for: senderID)
 
             switch kind {
@@ -283,6 +290,7 @@ extension IdentityChallenge {
                     guard authenticated else { return }
                     do {
                         let url: URL
+                        guard self.sealer.pairingIsReadable(for: pending.challengerID) else { throw IdentityChallenge.ManagerError.noIdentity }
                         let pair = self.sealer.pairKeys(for: pending.challengerID)
                         if let seal = self.sealer.groupSealer(for: pending.challengerID) {
                             url = try self.manager.respond(to: pending, pairing: pair, seal: seal)

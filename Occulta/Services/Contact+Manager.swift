@@ -1825,7 +1825,7 @@ extension ContactManager {
         let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 
         // A pairing's routing tag names its contact outright (Bug 196): a file of the new form is not matched by identity, and an
-        // old-form file is not matched to a pairing that began with a secret. Routing tags are checked for every contact first,
+        // old-form file is not matched to a pairing that holds a routing key. Routing tags are checked for every contact first,
         // so a twin that holds the same identity key can't take a file whose routing tag belongs to another.
         if let tagged = contacts.first(where: { self.bundleCarriesRoutingTag(of: $0, in: bundle) }) {
             return tagged
@@ -2185,6 +2185,9 @@ extension ContactManager {
         } else {
             sender = try self.identifyOwner(for: bundle, body: body)
         }
+        // A pairing that can't be read may be a pair-key pairing: a caller that names the owner does not get a slot tried with
+        // the identity key, as identification does not give one (Bug 196). The same error as any slot that is not ours.
+        guard self.pairingIsReadable(for: sender) else { throw GroupDecryptError.recipientSlotNotFound }
         let prekeys = try self.senderPrekeys(for: sender)
 
         // ── 2. Resolve sender key material ─────────────────────────────
@@ -2323,7 +2326,7 @@ extension ContactManager {
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
         if let slotRoutingTag, let routingKey = self.pairingState(for: sender).routingKey {
-            // The pairing form: the proof is in the slot, keyed by the secret, and covers the slot's routing tag.
+            // The pairing form: the proof is in the slot, keyed by the routing key, and covers the slot's routing tag.
             // `SealedPayload.senderProof` is random filler here and is not read.
             guard let slotProof = recipientPayload.slotProof,
                   RoutingKey.isValidSlotProof(slotProof, routingKey: routingKey, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)

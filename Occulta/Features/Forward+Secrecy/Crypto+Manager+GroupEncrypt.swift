@@ -257,11 +257,11 @@ extension Manager.Crypto {
         let senderPub = try senderIdentity ?? self.keyManager.retrieveIdentity()
 
         // When every recipient is on the pairing form, the file names its sender to nobody who lacks that
-        // recipient's secret: the header's fingerprint and the shared proof are random bytes of the same size, since an
+        // recipient's routing key: the header's fingerprint and the shared proof are random bytes of the same size, since an
         // identity fingerprint would let anyone holding the sender's public key test the file, and a shared proof is one
         // any recipient could make for another sender (Bug 196). One recipient on the old form needs both as before.
-        let allOnSecret = recipients.allSatisfy { $0.pairing != nil }
-        let senderProof = allOnSecret
+        let allPaired = recipients.allSatisfy { $0.pairing != nil }
+        let senderProof = allPaired
             ? try RoutingKey.fillerTag()
             : Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
 
@@ -294,7 +294,7 @@ extension Manager.Crypto {
         return GroupSealContext(
             sessionKey: sessionKey, senderPublicKey: senderPub, blindNonce: blindNonce, blind: blind,
             payload: authenticatedPayload, outerSecrecy: outerSecrecy, outerNonce: outerNonce,
-            senderFingerprint: allOnSecret
+            senderFingerprint: allPaired
                 ? try RoutingKey.fillerTag()
                 : OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
         )
@@ -335,16 +335,16 @@ extension Manager.Crypto {
         )
 
         // The routing key, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
-        // pairing that sealed it; its routing tag routes it; its proof, keyed by the secret, covers the routing tag and our key.
+        // pairing that sealed it; its routing tag routes it; its proof, keyed by the routing key, covers the routing tag and our key.
         // A slot with none carries random bytes of the same sizes, so the fields' presence says nothing, in a group
         // that mixes both.
         let wrappingKey: SymmetricKey
         let routingTag: Data
         let slotProof: Data
-        if let secret = r.pairing?.routingKey {
-            wrappingKey = RoutingKey.bind(derivedKey, routingKey: secret)
-            routingTag = RoutingKey.routingTag(routingKey: secret, nonce: tagNonce)
-            slotProof = RoutingKey.slotProof(routingKey: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)
+        if let routingKey = r.pairing?.routingKey {
+            wrappingKey = RoutingKey.bind(derivedKey, routingKey: routingKey)
+            routingTag = RoutingKey.routingTag(routingKey: routingKey, nonce: tagNonce)
+            slotProof = RoutingKey.slotProof(routingKey: routingKey, routingTag: routingTag, senderPublicKey: senderPublicKey)
         } else {
             wrappingKey = derivedKey
             routingTag = try RoutingKey.fillerTag()
