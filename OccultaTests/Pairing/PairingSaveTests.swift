@@ -141,8 +141,8 @@ struct PairingOfferDerivationTests {
     }
 
     @Test("They agree with ML-KEM secrets and with an ML-DSA key on one side, and differ from the exchange without")
+    @available(iOS 26, *)
     func hybridAndMLDSA() throws {
-        guard #available(iOS 26, *) else { return }
         let aliceKey = try self.alice.retrieveIdentity(), bobKey = try self.bob.retrieveIdentity()
         let q = self.quantum()
         let plain = try self.offers()

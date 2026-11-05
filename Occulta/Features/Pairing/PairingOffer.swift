@@ -188,6 +188,11 @@ extension PairingOffer {
     static func makeOwnPairKeys(using provider: any CardKeyProviding) throws -> OwnPairKeys {
         let agreement = try provider.makeAgreementKey()
         let signing = try provider.makeSigningKey()
+        // A blob that would not fit its room in the sealed column is found here, where it costs no pairing, and not at Save,
+        // where it would fail an exchange both people sat through. A phone that makes such blobs sends no `pairing` field.
+        guard agreement.blob.count <= PairingCodec.p256BlobRoom, signing.blob.count <= PairingCodec.p256BlobRoom else {
+            throw PairingCodec.CodecError.wrongSize
+        }
         let mldsa = try? provider.makeMLDSAKey()
         let fits = mldsa.map { $0.blob.count <= PairingCodec.mldsaBlobRoom && $0.publicKey.count == PairingCodec.mldsaKeySize } ?? false
         return OwnPairKeys(

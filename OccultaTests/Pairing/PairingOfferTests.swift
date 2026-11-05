@@ -268,3 +268,60 @@ struct PairingOfferTests {
         #expect(first.id != second.id)
     }
 }
+
+// MARK: - A blob that does not fit
+
+/// Software keys whose agreement blob is larger than its room in the sealed column.
+private struct OversizedBlobKeys: CardKeyProviding {
+    let inner = SoftwareCardKeys()
+    func makeAgreementKey() throws -> (publicKey: Data, blob: Data) {
+        let key = try self.inner.makeAgreementKey()
+        return (key.publicKey, key.blob + Data(count: PairingCodec.p256BlobRoom))
+    }
+    func makeSigningKey() throws -> (publicKey: Data, blob: Data) { try self.inner.makeSigningKey() }
+    func signRaw(_ payload: Data, signingBlob: Data) throws -> Data { try self.inner.signRaw(payload, signingBlob: signingBlob) }
+    func signDER(_ payload: Data, signingBlob: Data) throws -> Data { try self.inner.signDER(payload, signingBlob: signingBlob) }
+    func sharedSecret(agreementBlob: Data, peerPublicKey: Data) throws -> Data {
+        try self.inner.sharedSecret(agreementBlob: agreementBlob, peerPublicKey: peerPublicKey)
+    }
+    func agreementPublicKey(blob: Data) throws -> Data { try self.inner.agreementPublicKey(blob: blob) }
+    func signingPublicKey(blob: Data) throws -> Data { try self.inner.signingPublicKey(blob: blob) }
+    func makeMLDSAKey() throws -> (publicKey: Data, blob: Data) { try self.inner.makeMLDSAKey() }
+    func mldsaSign(_ payload: Data, blob: Data) throws -> Data { try self.inner.mldsaSign(payload, blob: blob) }
+    func mldsaPublicKey(blob: Data) throws -> Data { try self.inner.mldsaPublicKey(blob: blob) }
+}
+
+@Suite("Bug 196 — pair keys that would not fit the sealed column")
+struct OversizedPairKeyTests {
+
+    @Test("A P-256 blob larger than its room makes the phone send no pairing field, instead of failing at Save")
+    func oversizedP256BlobSendsNothing() {
+        #expect(throws: PairingCodec.CodecError.wrongSize) { try PairingOffer.makeOwnPairKeys(using: OversizedBlobKeys()) }
+    }
+
+    @Test("An ML-DSA blob larger than its room is left out and the P-256 pair stands")
+    @available(iOS 26, *)
+    func oversizedMLDSABlobIsLeftOut() throws {
+        struct BigMLDSA: CardKeyProviding {
+            let inner = SoftwareCardKeys()
+            func makeAgreementKey() throws -> (publicKey: Data, blob: Data) { try self.inner.makeAgreementKey() }
+            func makeSigningKey() throws -> (publicKey: Data, blob: Data) { try self.inner.makeSigningKey() }
+            func signRaw(_ payload: Data, signingBlob: Data) throws -> Data { try self.inner.signRaw(payload, signingBlob: signingBlob) }
+            func signDER(_ payload: Data, signingBlob: Data) throws -> Data { try self.inner.signDER(payload, signingBlob: signingBlob) }
+            func sharedSecret(agreementBlob: Data, peerPublicKey: Data) throws -> Data {
+                try self.inner.sharedSecret(agreementBlob: agreementBlob, peerPublicKey: peerPublicKey)
+            }
+            func agreementPublicKey(blob: Data) throws -> Data { try self.inner.agreementPublicKey(blob: blob) }
+            func signingPublicKey(blob: Data) throws -> Data { try self.inner.signingPublicKey(blob: blob) }
+            func makeMLDSAKey() throws -> (publicKey: Data, blob: Data) {
+                let key = try self.inner.makeMLDSAKey()
+                return (key.publicKey, key.blob + Data(count: PairingCodec.mldsaBlobRoom))
+            }
+            func mldsaSign(_ payload: Data, blob: Data) throws -> Data { try self.inner.mldsaSign(payload, blob: blob) }
+            func mldsaPublicKey(blob: Data) throws -> Data { try self.inner.mldsaPublicKey(blob: blob) }
+        }
+        let keys = try PairingOffer.makeOwnPairKeys(using: BigMLDSA())
+        #expect(keys.mldsaKey == nil && keys.mldsaBlob == nil)
+        #expect(keys.agreementKey.count == 65 && keys.signingKey.count == 65)
+    }
+}

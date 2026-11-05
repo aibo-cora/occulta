@@ -15,15 +15,29 @@ extension ContactManager {
         case sealFailed
     }
 
-    /// The state sealed on `key`. A row without one, or whose seal won't open, reads as empty: the migration fills
-    /// the first, and an unreadable state can only mean no secret we could use.
-    func pairingState(of key: Contact.Profile.Key) -> PairingState {
-        guard
-            let sealed = key.pairingEncrypted,
-            let plaintext = sealed.decrypt(),
-            let state = try? PairingCodec().decode(plaintext)
-        else { return .empty }
+    /// The state sealed on `key`, or `nil` if the column holds something that can't be read: it won't open under the local
+    /// key (a launch left on legacy keys over a resealed store) or won't decode (a codec this build doesn't know, after a
+    /// downgrade). A column never filled, which only a row the launch migration has yet to reach has, is an empty state.
+    ///
+    /// The two are different: an empty state is a plain pairing, which is sent to the old way and accepts the old form. A
+    /// column that can't be read may be a pair-key pairing, and sending it the old way, or accepting an old-form file for it,
+    /// is the fallback to the identity key that pair keys exist to end. So a send and a receive treat it as neither.
+    func readablePairingState(of key: Contact.Profile.Key) -> PairingState? {
+        guard let sealed = key.pairingEncrypted else { return .empty }
+        guard let plaintext = sealed.decrypt(), let state = try? PairingCodec().decode(plaintext) else { return nil }
         return state
+    }
+
+    /// The state sealed on `key`; an unreadable column reads as empty, which suits a display and nothing that sends or
+    /// receives (see `readablePairingState`).
+    func pairingState(of key: Contact.Profile.Key) -> PairingState {
+        self.readablePairingState(of: key) ?? .empty
+    }
+
+    /// Whether `contact`'s current pairing can be read. A contact with no current key has none to read.
+    func pairingIsReadable(for contact: Contact.Profile) -> Bool {
+        guard let key = contact.currentKey else { return true }
+        return self.readablePairingState(of: key) != nil
     }
 
     /// Seals `state` into `key`. Doesn't save; the caller does.
@@ -90,7 +104,9 @@ extension ContactManager {
     /// Whether an old-form file (the sender named by identity fingerprint) may be attributed to `contact`. Not once the
     /// pairing began with a secret: such a file is another pairing's (Bug 196).
     func acceptsOldForm(from contact: Contact.Profile) -> Bool {
-        !self.pairingState(for: contact).refusesOldForm
+        // A pairing whose column can't be read may be a pair-key pairing: it refuses the old form (Bug 196).
+        guard let key = contact.currentKey else { return true }
+        return self.readablePairingState(of: key).map { !$0.refusesOldForm } ?? false
     }
 
     // MARK: - The first prekeys of a pairing
