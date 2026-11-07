@@ -158,6 +158,7 @@ key pair for the pairing (`Exchange.pairing`: the prekey batch, two P-256 pair k
 **Opening.**
 - A side still in bootstrap tries the ordinary hybrid slot key first, then the bootstrap layer. Both derive from the same ECDH output, so the second try is two HKDFs and a GCM check.
 - **Bob** derives Carol's bootstrap slots from his card agreement key. He takes that path when the slot's `prekeyID` names none of his prekeys.
+- **Carol** never takes that path: nothing is sealed to her card agreement key, so a forward-secret slot naming a prekey she doesn't hold is refused as a missing prekey without trying the key. `openCardSlot` reports how far each slot got (`CardSlotFailure`) in DEBUG logs only; the user-facing text is the same for every stage, so it can't be used to tell which keys a phone holds.
 - A side out of bootstrap tries only the ordinary key, except that Carol also accepts a late bootstrap from Bob.
 
 Nothing on the wire says which one it is.

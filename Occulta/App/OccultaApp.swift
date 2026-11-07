@@ -922,7 +922,11 @@ struct RootView: View {
             self.showError = true
         // A bundle whose structure or chunks don't hold together. One string for every way that can happen:
         // none of them depends on the depth, and none is worth telling apart to whoever holds the phone.
-        } catch OccultaBundle.BundleError.malformedBundle, is BodyStream.StreamError {
+        //
+        // A card conversation's slot that didn't open is among them, whichever stage it stopped at (`CardSlotFailure`): a
+        // string per stage would tell whoever holds the phone which of the keys this device holds, and the stage is in the
+        // DEBUG log for whoever is diagnosing it.
+        } catch OccultaBundle.BundleError.malformedBundle, is BodyStream.StreamError, GroupDecryptError.cardSlotNotOpened {
             self.errorMessage = "This message couldn't be opened."
             self.showError = true
         } catch {

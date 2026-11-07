@@ -636,4 +636,4 @@ The direct route is also the better form of Sweep 4's contact card (D-05), with 
 
 | # | Summary | Status |
 |---|---|---|
-| — | None filed. | — |
+| — | Carol (2.0.0) could not open Bob's (2.0.1) first reply: "Group decrypt error 1", `recipientSlotNotFound`, which `openCardSlot` returned for every failure on the card path. Root cause **open, needs a decision**: not reproduced. Leading hypothesis: Carol's one-time prekey was already spent, because a first open that got past the slot and failed a later check consumes it, and every retry then reads the same. `openCardSlot` now throws `cardSlotNotOpened(CardSlotFailure)` and logs the stage in DEBUG builds only; the user sees the uniform "This message couldn't be opened." The 2.0.1 (`v2.0.1/pair-keys`) diff of the card path was read: card sealing and opening are untouched, and the new wire fields are optional. | Open, diagnosing |

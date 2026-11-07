@@ -58,6 +58,9 @@ enum GroupDecryptError: Error, Equatable {
     /// A card conversation's bootstrap message carries no introduction, or one other than the introduction redeemed
     /// (`Docs/Features/Introduction Cards/SPEC.md` §6.6).
     case cardIntroductionMismatch
+    /// No slot of a card conversation's bundle opened, and `CardSlotFailure` is how far the best of them got. Appended
+    /// last so the codes of the cases above don't move. `processInboundFile` shows the text of every card failure alike.
+    case cardSlotNotOpened(CardSlotFailure)
 }
 
 // MARK: - Group-decrypt crypto helpers
