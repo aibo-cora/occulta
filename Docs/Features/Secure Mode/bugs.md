@@ -15319,9 +15319,15 @@ Fixed, with tests:
   right tag and routing key, which a pair-key pairing opens nothing of (the coverage the removal had taken; no mutation run on it).
 
 Not changed, on purpose or open:
-- The rollback in `update(key:)` has no test that fails without it. Nothing in the block can be made to throw after it has changed
-  something without adding a seam for the purpose. `rollback()` also discards any other pending change in the manager's context
-  (a used one-time prekey whose save failed, before another save), as `PQmigration` does.
+- `rollback()` does not put the values back on objects already in memory (probe, 2026-11-07: after a rollback the object still held
+  the unsaved value and `hasChanges` was false; a later edit of the same object saved it). `update(key:)` therefore records what
+  it can change (the contact's card state, prekey record, tier and challenge state; each held row's `expiredOn` and pairing
+  column) and puts it back before `rollback()`, and removes the new row. `failureAfterChangesIsRolledBack` makes the prekey
+  record overflow, which throws after the card state has been rewritten, and fails without the restore (mutation run). It does
+  not reach the restore of the retired rows, the tier, the challenge state or the new row, or a failing final `save()`: nothing
+  makes those throw without a seam. The other `rollback()` calls (`PQmigration`, `KeyReseal+*`, `Vault+Manager+Backup`) were not
+  checked for the same thing. `rollback()` also discards any other pending change in the manager's context (a used one-time
+  prekey whose save failed, before another save), as `PQmigration` does.
 - The attachment pass picks the new key from the first contact seen for an old key. Two records of the same identity key where
   one has rotated would move a draft file to the other's new key; one draft attachment, and it needs a twin record.
 - "Costs nothing" for a phone with nothing to move is true only with no sealed file; a phone with any draft attachment derives the
