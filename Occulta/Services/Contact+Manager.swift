@@ -618,11 +618,13 @@ extension ContactManager {
             encryptedQuantumKeyMaterial = try self.cryptoManager.encrypt(data: encodedQuantum)
         }
         
-        // Detect fingerprint change before appending the new key.
+        // Detect fingerprint change before appending the new key. Against the most recent record, revoked or not:
+        // `reset(identity:)` expires the last key and leaves no unexpired one, so comparing with that would never see a
+        // revoked contact's new phone (Bug 195).
         var keyRotated = false
-        
+
         if let newMaterial = key.material,
-           let currentRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+           let currentRecord = contact.contactPublicKeys?.last,
            let storedMaterial = try? self.cryptoManager.decrypt(data: currentRecord.material) {
             keyRotated = SHA256.hash(data: storedMaterial) != SHA256.hash(data: newMaterial)
         }
