@@ -1325,3 +1325,30 @@ the share staging key.
 - The tier secrets are never created by a read. A missing one is nil, a loud failure, once data is sealed under it.
 
 **Full reasoning:** `bugs.md` Bug 171 (Fix, with the stages; Guard).
+
+## A draft attachment may be lost when two contact records share an identity key and only one has re-paired
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, narrow.
+
+**Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) moved the key a contact's attachments are sealed under, so
+`ContactManager.resealAttachmentKeys` moves the files that are still sealed under the old key: a draft to one contact and a
+received attachment not yet opened. It works from pairs of an old key and a new key, one pair per old key. Two records that hold
+one identity key share an old key but not always the new one: if one has re-paired and the other has not, they need different
+new keys. The pass keeps the first pair it meets, so a file belonging to the other record can be moved to the wrong key and then
+not open (security review, round 2, N1).
+
+**Decision:** Leave it. A file affected is lost for the draft or the unopened received attachment; no message, key or history is.
+The user attaches the file again, or asks for it again.
+
+**Why:**
+- It needs all of these at once: two records for one identity key, only one of them re-paired, a draft or unopened attachment for the
+  other record, and the one-time pass at the first unlock after the update (files sealed afterwards use the new key directly).
+- Resolving the target from a draft's recipient does not help received files in `tmp/`, which have no recipient. A fall-back to the
+  old key on the open path would touch every attachment and keep the old key in use for a release.
+
+**Not chosen:** (1) picking the target from the draft's recipient; (2) a fall-back open under the old key for one release.
+Either can be taken up if a real case turns up.
+
+**Consequences:** `bugs.md` Bug 196 keeps the finding in its "Not changed, on purpose or open" list, pointing here.
+
+**Full reasoning:** `bugs.md` Bug 196 addendum and the follow-up review (N1).

@@ -15329,7 +15329,9 @@ Not changed, on purpose or open:
   checked for the same thing. `rollback()` also discards any other pending change in the manager's context (a used one-time
   prekey whose save failed, before another save), as `PQmigration` does.
 - The attachment pass picks the new key from the first contact seen for an old key. Two records of the same identity key where
-  one has rotated would move a draft file to the other's new key; one draft attachment, and it needs a twin record.
+  one has rotated would move a draft file to the other's new key; one draft attachment, and it needs a twin record. **Decided
+  2026-11-07: documented, not fixed** (`Docs/General/decisions.md`, "A draft attachment may be lost when two contact records share an
+  identity key and only one has re-paired").
 - "Costs nothing" for a phone with nothing to move is true only with no sealed file; a phone with any draft attachment derives the
   keys at each unlock (the doc comment says so now).
 - `PairingState` is a struct whose private initializer keeps the routing key and pair keys together, not an enum with one case.
