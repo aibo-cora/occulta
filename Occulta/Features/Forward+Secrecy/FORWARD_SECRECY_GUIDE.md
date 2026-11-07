@@ -364,8 +364,8 @@ PrekeySyncBatch {            — inside SealedPayload (single-recipient) or Reci
 
 `WirePrekey` carries no `contactID`: our identifier for the contact must not travel, or it would leak the
 relationship graph. The receiver supplies its own. `OccultaTests/Interop/InteropVectors.json` pins these bytes,
-`prekeyBatchWithID` included, and the routing-key ones (`pairing.*`, `groupEnvelope.v4.routingTag`,
-`recipientPayload.pairingSecret`).
+`prekeyBatchWithID` included, and the routing-key ones (`pairing.*`, which include `pairing.slotProof`, and
+`groupEnvelope.v4.routingTag`).
 
 ---
 
