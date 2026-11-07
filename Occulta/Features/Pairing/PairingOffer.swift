@@ -100,6 +100,7 @@ struct PairingOffer: Equatable {
     /// The routing key this pairing holds, from the pair-key ECDH, the identity ECDH made inside `keyManager`, the ML-KEM
     /// secrets where the exchange had them and both nonces. Both phones get the same bytes. `nil` if anything is missing
     /// or the key manager couldn't derive it, in which case nothing is saved.
+    @MainActor
     func routingKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
         guard let transcript = self.transcript else { return nil }
         return keyManager.createRoutingKey(
@@ -111,6 +112,7 @@ struct PairingOffer: Equatable {
 
     /// The key the verification words come from. It covers both pair blocks, so a pair key or an ML-DSA key a man in the
     /// middle added, removed or swapped changes the words.
+    @MainActor
     func wordsKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
         guard let transcript = self.transcript else { return nil }
         return keyManager.createPairwiseDicewareKey(
@@ -179,7 +181,7 @@ extension PairingOffer {
     }
 
     /// Whether `key` is a 65-byte X9.63 point on P-256.
-    static func isP256Point(_ key: Data) -> Bool {
+    nonisolated static func isP256Point(_ key: Data) -> Bool {
         key.count == 65 && (try? P256.KeyAgreement.PublicKey(x963Representation: key)) != nil
     }
 }

@@ -90,12 +90,14 @@ extension ContactManager {
     @discardableResult
     func resealAttachmentKeys(
         in directories: [URL] = [Message.Draft.attachmentsRoot, FileManager.default.temporaryDirectory],
-        using keyManager: any KeyManagerProtocol = Manager.Key()
+        using keyManager: (any KeyManagerProtocol)? = nil
     ) async -> AttachmentReseal {
         var result = AttachmentReseal()
 
         let sealed = Self.sealedFiles(in: directories)
-        guard !sealed.isEmpty, let pairs = try? self.attachmentKeyPairs(using: keyManager), !pairs.isEmpty else { return result }
+        guard
+            !sealed.isEmpty, let pairs = try? self.attachmentKeyPairs(using: keyManager ?? Manager.Key()), !pairs.isEmpty
+        else { return result }
 
         for file in sealed {
             if let match = pairs.first(where: { $0.old.opens(at: file) }) {
