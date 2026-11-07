@@ -14842,7 +14842,9 @@ A trustee who lost a phone, was revoked and then re-exchanged keys holds backup-
 
 `reconcileBackupPieces()` with no `keyChangedFor` re-sends a confirmed piece only when its watch row says `isAbsent == true`. Only `processInboundManifest` sets that, from the trustee's `custodyManifest`, and a sender drops both its shard operations and its manifest when it holds none of the recipient's one-time keys (`encryptGroupBundle`: `onFallback = hasShardContent && contactPrekey == nil`; a last-resort key counts as none). A revoked trustee's new phone holds none of ours until a few messages have passed between the two phones, every one sent by a person. So the gap has no upper bound and is silent: the piece reads confirmed throughout.
 
-With the event the records turn pending and a piece is queued at once, so the owner sees the truth and the piece goes out on the first forward-secret message to the trustee, without waiting for their manifest.
+With the event the records turn pending and a piece is queued at once, so the owner sees the truth.
+
+**On a build without Bug 194's fix (every 2.0.x), the piece still can't reach the trustee.** After the re-exchange our sends are sealed to the old phone's prekeys, which the new phone doesn't hold, so it can't open them. Per Bug 194's trace, if their old phone ran 2.0.0 or later it never recovers on its own. Our batch doesn't reach them either, so their new phone never sends the forward-secret message with a manifest that would confirm the piece. Until the contact is deleted and exchanged again (Bug 194's workaround), the piece stays pending. With Bug 194's fix (`release/v2.1.0`), the next send goes long-term, the new phone replies with a batch, and the piece is delivered on the first forward-secret message after that, without waiting for their manifest. Taken from Bug 194's trace; not re-traced on the 2.0.1 base.
 
 ### Fix
 
