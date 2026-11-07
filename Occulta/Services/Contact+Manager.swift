@@ -711,7 +711,7 @@ extension ContactManager {
             contact.introductionCardEncrypted = before.card
             contact.prekeyRecordEncrypted = before.record
             contact.maxBundleVersion = before.tier
-            contact.challengeStateEncrypted = before.challenges
+            self.restore(sealedChallengeState: before.challenges, for: contact)
             for held in before.rows {
                 held.row.expiredOn = held.expiredOn
                 held.row.pairingEncrypted = held.pairing

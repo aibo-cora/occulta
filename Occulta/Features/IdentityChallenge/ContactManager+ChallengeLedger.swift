@@ -54,6 +54,12 @@ extension ContactManager {
         }
         contact.challengeStateEncrypted = sealed
     }
+
+    /// Puts back the sealed bytes the column held, for a save that failed after `store` had changed it. The bytes as they
+    /// were, so nothing is decoded or sealed again; the column is written only here and in `store`.
+    func restore(sealedChallengeState sealed: Data?, for contact: Contact.Profile) {
+        contact.challengeStateEncrypted = sealed
+    }
 }
 
 extension ContactManager: IdentityChallenge.ChallengeLedger {
