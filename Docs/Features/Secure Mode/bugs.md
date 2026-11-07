@@ -15371,3 +15371,65 @@ and not in the database). A very large attachment holds the main actor for as lo
 at unlock before the run reaches it may not open until the run has (drafts are listed first). A phone with nothing to move pays for a
 directory listing, not for a key derivation per contact. Tests:
 `AttachmentKeyResealTests`.
+
+---
+
+## Bug 197 — `ModelContext.rollback()` leaves the unsaved values on objects already in memory, and eight places rely on it to undo them
+
+**Status:** Open, for exploration in 2.1.0 (asked for by the owner, 2026-11-07). Found while testing `update(key:)` for Bug 196. One of the
+eight call sites is fixed (the first below); none of the others has been checked beyond reading. **Severity:** not rated: it depends on
+what each site leaves in memory and for how long, which is not determined. **Target:** `v2.1.0`. Filed as 197 because 196 is taken
+on `v2.0.1`; renumber if `release/v2.1.0` holds a 197.
+
+**What was observed.** A probe test (temporary, deleted; fresh in-memory container, three rounds, same result each): save a contact with
+`introductionCardEncrypted = [1,2,3]`; set it to `[9,9,9]`; call `modelContext.rollback()`.
+
+- The object still reads `[9,9,9]`, and `hasChanges` is `false`.
+- A fresh `ModelContext` on the same container reads `[1,2,3]`: nothing reached disk.
+- A plain `save()` afterwards writes nothing.
+- Editing a different property of the same object (`givenName`) and saving writes `[9,9,9]` too.
+
+So `rollback()` clears the context's record of what is pending, which stops the next unrelated save from committing the change, but it
+does not put the value back on a live object, and anything that later changes that object commits the stale value with it. Only attribute
+changes were probed. What `rollback()` does to inserted objects, deleted objects and relationship changes was **not** probed. The
+platform was the iPhone 17 Pro Simulator on iOS 26; other OS versions down to the 18.6 deployment target were not tried.
+
+**Not understood.** The `update(key:)` test, which checks a live object after the rollback, failed in the `PairingSaveTests` suite
+(two runs) and passed once when run alone, where the probe failed every time. Something besides the call itself decides whether a live
+object reads the old or the new value.
+
+**Already known in one place.** The Bug 85–88 resilience entry (`MigrateToV2ResilienceTests`, near the v1→v2 migration) says an
+already-materialised reference can still hold the mutated value and asserts through a fresh `ModelContext` for that reason. The other
+sites' comments still say the rollback restores.
+
+**Where `rollback()` is called.** What each site changes before it, and what the comment or doc claims:
+
+| # | Site | Context | Changed before the rollback | Claim in the code or docs |
+|---|---|---|---|---|
+| 1 | `Contact+Manager.swift`, `update(key:)` | the manager's shared context | card state, prekey record, tier byte, challenge state on the contact; `expiredOn` and the pairing column on each held key row; an appended key row | **Fixed 2026-11-07 (`71be70b9`):** the values are put back first, the new row is removed, then `rollback()` runs. Test `failureAfterChangesIsRolledBack` (reaches the card-state restore only) |
+| 2 | `PQmigration.swift:86`, per contact in the v1→v2 pass | the manager's shared context | `migrateContact` assigns field by field, so a throw leaves earlier fields converted on the live object | "Discard this contact's partial mutation … without this the next contact's `save()` would commit them." The next save is safe (probe); the failed contact stays half-converted **in memory** and a later edit of it commits that |
+| 3 | `KeyReseal+Run.swift:161,164`, `KeyReseal.run` | passed in | the batch in flight | "the batch in flight is rolled back" |
+| 4 | `KeyReseal+Vault.swift:119,122`, `rewrapVault` | passed in | rows assigned after the file was renamed, then the epoch | "a failure after the file was renamed puts the old file back"; the rows are not mentioned |
+| 5 | `KeyReseal+Verifiers.swift:96,99`, `wrapVerifiers` | passed in | verifier rows | "the row is then rolled back, so … every verifier [is] as it was" |
+| 6 | `KeyReseal+Upgrade.swift:211,214`, `upgradeTierU` | passed in | the batch in flight | "the batch in flight is rolled back" |
+| 7 | `Vault+Manager+Backup.swift:440`, `restoreBackup` | the manager's shared context | staged key row and inserted entries | "Staged rows would otherwise be committed by the next save anywhere." (inserts: not probed) |
+| 8 | `Vault+Manager+Backup.swift:721`, `migrateLegacyBackupRowIfNeeded` | the manager's shared context | `foldLegacyRowIntoFiller` changes the legacy row, plus the staged row | "On any error `rollback()` restores the legacy row." |
+| 9 | not a call: the remedy text of the earlier restore-backup entry in this file ("restoreBackup checks everything, then writes once") | | | "On any failure, `modelContext.rollback()` discards the staged changes." |
+
+Sites 3–6 take the context as a parameter, so whether the objects they touched are used again after the throw depends on the
+caller (`LaunchSequence`); not read. Row 9 is a doc claim, not a call.
+
+**What to explore.**
+
+1. Find out exactly what `rollback()` does to an attribute change, an insert, a delete and a relationship change, on the Simulator and
+   on a device, on iOS 18.6 and on 26, and why the live object read the old value once. A probe test that checks the live object and a
+   fresh context, in a suite and alone, is the way.
+2. For each site, decide whether the live objects outlive the failure. Where they do not (a context that is dropped, a launch step that
+   ends), the claim is true by another route and only the comment is wrong. Where they do, pick one of: put the values back before the
+   rollback (as site 1 now does), do the work in a throwaway `ModelContext` that is dropped on failure, or re-fetch after the rollback.
+3. Tests for every site that look at the live object, not only at a fresh context (`MigrateToV2ResilienceTests` uses a fresh one).
+4. Check whether the 2.1.0 store (plain SQLite with no SwiftData, decided 2026-11-01, not built) makes this moot for the code that
+   moves to it; the sites that stay on SwiftData still need the answer.
+
+**Not done.** Nothing outside site 1 was changed or tested. No site was checked for a user-visible effect, and none was checked for a
+difference between depths.
