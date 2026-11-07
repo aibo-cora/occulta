@@ -16,6 +16,7 @@ import OccultaCore
 @testable import OccultaFormats
 
 @Suite("Bug 196 — the exchange's pairing field")
+@MainActor
 struct PairingOfferTests {
 
     private func wirePrekey(_ n: UInt8) -> OccultaBundle.WirePrekey {
