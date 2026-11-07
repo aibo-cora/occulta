@@ -651,6 +651,16 @@ extension ContactManager {
             throw ContactManager.Errors.pairingWouldBeWeaker
         }
 
+        // What the block below can change, as it was. `rollback()` forgets the unsaved changes but does not put the values back
+        // on objects already in memory, and the next save of the same object would commit them, so a failure restores them
+        // itself first.
+        let before = (
+            card: contact.introductionCardEncrypted, record: contact.prekeyRecordEncrypted, tier: contact.maxBundleVersion,
+            challenges: contact.challengeStateEncrypted,
+            rows: (contact.contactPublicKeys ?? []).map { (row: $0, expiredOn: $0.expiredOn, pairing: $0.pairingEncrypted) }
+        )
+        var newRow: Contact.Profile.Key?
+
         var clearedCard = false
         do {
             // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
@@ -682,10 +692,12 @@ extension ContactManager {
 
             // The pairing goes in as the row is inserted, not in a second save, which would mark the row updated in place.
             // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.
-            contact.contactPublicKeys?.append(Contact.Profile.Key(
+            let row = Contact.Profile.Key(
                 material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,
                 quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial, pairingEncrypted: sealedPairing
-            ))
+            )
+            newRow = row
+            contact.contactPublicKeys?.append(row)
 
             #if DEBUG
             debugPrint("Updated key, owner hash = \(key.owner)")
@@ -694,7 +706,20 @@ extension ContactManager {
             try self.modelContext.save()
         } catch {
             // The prekey record, the card state and the retired rows were changed in memory; none of it is saved, and none of it
-            // should be by the next unrelated save (PQmigration does the same).
+            // should be by the next unrelated save. The values go back first, then `rollback()` clears what the context
+            // thinks is pending.
+            contact.introductionCardEncrypted = before.card
+            contact.prekeyRecordEncrypted = before.record
+            contact.maxBundleVersion = before.tier
+            contact.challengeStateEncrypted = before.challenges
+            for held in before.rows {
+                held.row.expiredOn = held.expiredOn
+                held.row.pairingEncrypted = held.pairing
+            }
+            if let newRow {
+                contact.contactPublicKeys?.removeAll { $0 === newRow }
+                self.modelContext.delete(newRow)
+            }
             self.modelContext.rollback()
             throw error
         }

@@ -26,7 +26,7 @@ private func ownBatch(id: UInt8, keys: Int = 15) -> PrekeyRecord.OwnBatch {
     PrekeyRecord.OwnBatch(
         id: Data(repeating: id, count: 16), createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000), retiredAt: nil,
         isPending: true,
-        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: UInt8($0 + 1), count: 65)) },
+        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
         lastResort: PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: 0xEE, count: 65))
     )
 }
@@ -34,7 +34,7 @@ private func ownBatch(id: UInt8, keys: Int = 15) -> PrekeyRecord.OwnBatch {
 private func peerBatch(keys: Int = 15) -> PairingOffer.Batch {
     PairingOffer.Batch(OccultaBundle.SealedPayload.PrekeySyncBatch(
         generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_100),
-        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: UInt8($0 + 1), count: 65)) },
+        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
         id: Data(repeating: 0xBB, count: 16),
         lastResort: OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: 0xDD, count: 65))
     ))
@@ -345,6 +345,36 @@ struct PairingSaveTests {
 
         #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x77, count: 32), keys: pairing.pairKeys))
         #expect(cm.pairingSlotKeys(for: paired)?.routingKey == Data(repeating: 0x77, count: 32))
+    }
+
+    @Test("A save that fails after it has begun changing the contact leaves nothing for the next save to commit", .ambientTestKeyManager)
+    func failureAfterChangesIsRolledBack() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x01, count: 32)), for: paired.identifier, pairing: offer())
+        let current = try #require(paired.currentKey)
+        let card = paired.introductionCardEncrypted
+        let record = paired.prekeyRecordEncrypted
+        let tier = paired.maxBundleVersion
+        let sealedPairing = current.pairingEncrypted
+        try cm.modelContext.save()
+        #expect(!cm.modelContext.hasChanges)
+
+        // 400 keys do not fit the 16 KiB prekey record, so `installPairingPrekeys` throws, after the card state has been
+        // rewritten and before the retired rows and the new row are touched.
+        let tooMany = offer(own: ownBatch(id: 0xCC, keys: 400))
+        #expect(throws: PrekeyRecordCodec.CodecError.overCapacity) {
+            try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier, pairing: tooMany)
+        }
+
+        // Nothing the failed save changed is waiting in the context, so an unrelated save elsewhere commits nothing of it.
+        #expect(!cm.modelContext.hasChanges)
+        #expect(paired.introductionCardEncrypted == card, "the card state")
+        #expect(paired.prekeyRecordEncrypted == record, "the prekey record")
+        #expect(paired.maxBundleVersion == tier, "the tier")
+        #expect(paired.contactPublicKeys?.count == 1 && paired.currentKey === current && current.expiredOn == nil)
+        #expect(current.pairingEncrypted == sealedPairing)
+        #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x01, count: 32), keys: samplePairKeys()))
     }
 
     @Test("A re-pair replaces what the old phone gave us and retires our old batches", .ambientTestKeyManager)
