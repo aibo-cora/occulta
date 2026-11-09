@@ -15371,7 +15371,7 @@ A file it cannot move is counted, left as it was, and does not hold back the fil
 
 **Cost.** It rewrites draft files, so their modification times change at the first launch after the update (the same at every depth,
 and not in the database). A very large attachment holds the main actor for as long as its one streamed pass takes, and a draft opened
-at unlock before the run reaches it may not open until the run has (drafts are listed first). A phone with nothing to move pays for a
+at unlock before the run reaches it may not open until the run has (drafts are listed first; decided 2026-11-07: documented, not fixed, `Docs/General/decisions.md`, "An attachment can be unreadable until the one-time reseal reaches it, after the update"). A phone with nothing to move pays for a
 directory listing, not for a key derivation per contact. Tests:
 `AttachmentKeyResealTests`.
 

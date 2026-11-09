@@ -1382,3 +1382,26 @@ in their own short-lived context and cannot leave pending changes behind.
 the pending marker on whatever the restore misses; a throwaway context for `update(key:)`, a larger change to code others read.
 
 **Full reasoning:** `bugs.md` Bug 196 ("Not changed, on purpose or open") and Bug 197; the follow-up security review (N7).
+
+## An attachment can be unreadable until the one-time reseal reaches it, after the update
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, temporary.
+
+**Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) changed the base key a contact's attachments are sealed under.
+From the first run of the new build `fileEncryptionKey(for:)` returns the new key, so new files are sealed under it at once. Files
+already on the phone, drafts and received attachments not yet opened, are still under the old key until
+`ContactManager.resealAttachmentKeys`, a background task started at unlock, reaches them (code review, round 1, #4).
+
+**Decision:** Leave it.
+
+**What it costs:** at the first unlock after the update, a file opened before the task reaches it does not open. `adopt(draftMessages:)`
+keeps such a file in the draft and does not delete it (`sealInPlace` leaves a file that is already sealed alone), so nothing is lost;
+the file opens once the task has moved it. For a small file that is a moment; for a large video it is as long as that file's streamed
+move takes. Drafts are listed first. Not traced: how attachment preview and send behave on a file in that state.
+
+**Why:** it happens once, only to a file opened in that window, and loses nothing. Making the open path wait for the task, or fall
+back to the old key, touches every attachment open and keeps the old key in use for a release.
+
+**Not chosen:** (1) opening waits for the reseal task; (2) a fall-back open under the old key for one release.
+
+**Full reasoning:** `bugs.md` Bug 196 addendum ("Cost") and the code review, round 1 (#4).
