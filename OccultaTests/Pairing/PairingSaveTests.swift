@@ -314,9 +314,9 @@ struct PairingSaveTests {
         let cm = try makeContactManager()
         let paired = try contact(in: cm)
 
-        #expect(cm.nextSendSecrecy(for: paired) == .longTerm, "before the pairing: the bootstrap")
+        #expect(cm.nextSendSecrecy(for: paired.identifier) == .longTerm, "before the pairing: the bootstrap")
         try cm.update(key: draftKey(routingKey: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer())
-        #expect(cm.nextSendSecrecy(for: paired) == .forwardSecret)
+        #expect(cm.nextSendSecrecy(for: paired.identifier) == .forwardSecret)
     }
 
     @Test("A peer batch outside the limits is dropped; our batch and the secret still go in", .ambientTestKeyManager)
