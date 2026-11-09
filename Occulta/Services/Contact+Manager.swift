@@ -581,12 +581,15 @@ class ContactManager {
 
     /// Deletes every `Message.Draft` row and the whole `Drafts/` directory, including folders whose
     /// row is already gone. Part of Erase All Data (bugs.md Bug 179). Needs no key: it never opens a draft.
-    func deleteAllDrafts() throws {
+    ///
+    /// `root` is the directory removed, the real `Drafts/` unless a test gives its own: the tests run in one process, and
+    /// removing the real one takes the files of every other test that is writing there.
+    func deleteAllDrafts(root: URL = Message.Draft.attachmentsRoot) throws {
         for draft in try self.modelContext.fetch(FetchDescriptor<Message.Draft>()) {
             Message.Draft.delete(draft, in: self.modelContext)
         }
         try self.modelContext.save()
-        try? FileManager.default.removeItem(at: Message.Draft.attachmentsRoot)
+        try? FileManager.default.removeItem(at: root)
     }
 
     private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
