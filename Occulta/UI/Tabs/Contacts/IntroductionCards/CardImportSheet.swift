@@ -227,7 +227,7 @@ struct CardImportSheet: View {
     }
 
     private func runImport(thenWrite: Bool) {
-        let target = self.attachesToExisting ? self.selectedEntry?.profile : nil
+        let target = self.attachesToExisting ? self.selectedEntry?.id : nil
         do {
             switch try self.contactManager.importCard(
                 self.data, into: target, newContactName: self.attachesToExisting ? nil : self.newName
