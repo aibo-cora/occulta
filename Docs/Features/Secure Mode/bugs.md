@@ -15195,6 +15195,17 @@ The first batch is made when our first message after the exchange opens on the n
 
 Proposed fix, not decided: store the date we accepted the batch in `PrekeyRecord` (`latestInboundAcceptedAt`, our clock), set by `PrekeyBookkeeper.accept`, cleared by `dropInbound`, and compare it with the key's date in `inboundIsStale`, falling back to today's comparison for a record without one. The record is padded to a fixed 16 KB inside the encryption, so an optional date changes no length and needs no format bump or migration (`PrekeyRecordCodecTests` keeps its 256-byte headroom check). `InteropVectors.json` is unaffected: nothing on the wire changes. The pass would still keep no state of its own. A one-shot pass with a "done" flag was weighed and not recommended: it adds a persistent marker outside the sealed record, needs the pass to tell "examined" from "skipped", and still misjudges once. Still open within the proposal: our own clock stepping back after an exchange, and whether a record with no accepted date is trusted or dropped.
 
+**Open, needs a decision — two more clock cases, recorded 2026-11-09 from reading the code, not reproduced.** Neither is fixed by the proposal above.
+
+- **Our clock was ahead at the exchange and was then corrected.** The key's date, our clock at the exchange, is in the future, so every real batch is dated before it and the pass drops the inbound side at every launch and unlock until real time passes that date. The proposed `latestInboundAcceptedAt` doesn't help: it is our corrected clock, also before the key's date. This is the same shape as our own clock stepping back after an exchange, listed above. Cost: forward secrecy for our sends to that contact, as in the case above; messages still open.
+- **Our clock jumps forward.** `PrekeyBookkeeper.sweep(_:now:)` deletes a retired batch of ours, and retired legacy keychain keys, once `now` is 30 days past `retiredAt` (Bug 156). A forward jump after a batch retires brings the deletion forward, and a late message sealed to one of that batch's keys can't be opened. A clock set back does the opposite and keeps retired keys longer than 30 days; nothing is lost. Not checked whether Bug 156 meant the grace period to survive a clock change; Bug 156's entry doesn't mention one.
+
+Tests to confirm both, not written (Simulator, no Enclave, `.ambientTestKeyManager`, in the style of `StaleInboundPrekeysLaunchPassTests`):
+
+- A contact whose key is dated in the future (`appendKeyRecord`) with a record whose batch is dated now: `sweepStaleInboundPrekeys()` drops the inbound side, at every run, and keeps it once the key's date is in the past. It would also pin what the proposal leaves open.
+- The same with the accepted date earlier than the key's date, as after our clock stepping back (needs `latestInboundAcceptedAt`, so it waits for the decision above).
+- `PrekeyBookkeeper().sweep(_:now:)` on a batch retired a day ago, with `now` 31 days on: the batch is deleted. A batch whose `retiredAt` was stamped on a clock that was set back, and is later than `now`, stays past 30 days of real time.
+
 ### Disclosure
 
 Releases from 2.0.0 (prekey continuity) up to this fix are affected: between a contact's key change and the first long-term send after it, what we sent could be opened on their old phone when their new key has no ML-KEM key. Recorded in `Docs/Audit/SECURITY_CHECKLIST.md` (post-sign-off, 2026-11-03).
