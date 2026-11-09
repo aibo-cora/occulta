@@ -32,9 +32,11 @@ struct PassphraseGeneratorTests {
         }
         
         let capitalized = true
-        let passphrase = Manager.PassphraseGenerator().generate(words: 5, separator: "-", capitalize: capitalized)
-        
-        let generatedWords = passphrase.components(separatedBy: "-")
+        // A space, not "-": four words in the list (drop-down, felt-tip, t-shirt, yo-yo) hold a hyphen, so splitting on it
+        // counted six words about once in 400 runs.
+        let passphrase = Manager.PassphraseGenerator().generate(words: 5, separator: " ", capitalize: capitalized)
+
+        let generatedWords = passphrase.components(separatedBy: " ")
         
         generatedWords.forEach { word in
             #expect(list.contains(capitalized ? word.lowercased() : word))
