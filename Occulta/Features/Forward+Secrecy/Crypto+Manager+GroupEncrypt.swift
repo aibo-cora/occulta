@@ -53,10 +53,11 @@ struct GroupRecipient {
     /// and the slot is built by `wrapCardRecipient`. Nil for every other recipient.
     let card: CardSlot?
 
-    /// The routing key to seal this slot with (`bugs.md` Bug 196): non-nil only when we hold it, the recipient is known
-    /// to hold it too, and they are at the pairing tier. The slot then carries its routing tag, the secret is
-    /// mixed into its key, and its sender proof is keyed by it. Resolved by the caller, like every other field here.
-    let routingKey: Data?
+    /// The pair keys and routing key to seal this slot with, for a pair-key pairing (`bugs.md` Bug 196): the long-term
+    /// slot key comes from the pair-key ECDH and a forward-secret slot is signed by the pair signing key, in place of the
+    /// identity key. The slot then carries its routing tag, the routing key is mixed into its key, and its sender proof is
+    /// keyed by it. Resolved by the caller, like every other field here. Nil for a pairing without them.
+    let pairing: PairingSlotKeys?
 
     init(
         publicKey: Data,
@@ -67,7 +68,7 @@ struct GroupRecipient {
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false,
         card: CardSlot? = nil,
-        routingKey: Data? = nil
+        pairing: PairingSlotKeys? = nil
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
@@ -77,7 +78,7 @@ struct GroupRecipient {
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
         self.card                    = card
-        self.routingKey           = routingKey
+        self.pairing              = pairing
     }
 }
 
@@ -256,11 +257,11 @@ extension Manager.Crypto {
         let senderPub = try senderIdentity ?? self.keyManager.retrieveIdentity()
 
         // When every recipient is on the pairing form, the file names its sender to nobody who lacks that
-        // recipient's secret: the header's fingerprint and the shared proof are random bytes of the same size, since an
+        // recipient's routing key: the header's fingerprint and the shared proof are random bytes of the same size, since an
         // identity fingerprint would let anyone holding the sender's public key test the file, and a shared proof is one
         // any recipient could make for another sender (Bug 196). One recipient on the old form needs both as before.
-        let allOnSecret = recipients.allSatisfy { $0.routingKey != nil }
-        let senderProof = allOnSecret
+        let allPaired = recipients.allSatisfy { $0.pairing != nil }
+        let senderProof = allPaired
             ? try RoutingKey.fillerTag()
             : Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
 
@@ -293,7 +294,7 @@ extension Manager.Crypto {
         return GroupSealContext(
             sessionKey: sessionKey, senderPublicKey: senderPub, blindNonce: blindNonce, blind: blind,
             payload: authenticatedPayload, outerSecrecy: outerSecrecy, outerNonce: outerNonce,
-            senderFingerprint: allOnSecret
+            senderFingerprint: allPaired
                 ? try RoutingKey.fillerTag()
                 : OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
         )
@@ -329,20 +330,21 @@ extension Manager.Crypto {
             contactPrekey: r.contactPrekey,
             isLastResort: r.contactPrekeyIsLastResort,
             recipientPublicKey: r.publicKey,
-            quantumMaterial: r.quantumMaterial
+            quantumMaterial: r.quantumMaterial,
+            pairing: r.pairing
         )
 
         // The routing key, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
-        // pairing that sealed it; its routing tag routes it; its proof, keyed by the secret, covers the routing tag and our key.
+        // pairing that sealed it; its routing tag routes it; its proof, keyed by the routing key, covers the routing tag and our key.
         // A slot with none carries random bytes of the same sizes, so the fields' presence says nothing, in a group
         // that mixes both.
         let wrappingKey: SymmetricKey
         let routingTag: Data
         let slotProof: Data
-        if let secret = r.routingKey {
-            wrappingKey = RoutingKey.bind(derivedKey, secret: secret)
-            routingTag = RoutingKey.routingTag(secret: secret, nonce: tagNonce)
-            slotProof = RoutingKey.slotProof(secret: secret, routingTag: routingTag, senderPublicKey: senderPublicKey)
+        if let routingKey = r.pairing?.routingKey {
+            wrappingKey = RoutingKey.bind(derivedKey, routingKey: routingKey)
+            routingTag = RoutingKey.routingTag(routingKey: routingKey, nonce: tagNonce)
+            slotProof = RoutingKey.slotProof(routingKey: routingKey, routingTag: routingTag, senderPublicKey: senderPublicKey)
         } else {
             wrappingKey = derivedKey
             routingTag = try RoutingKey.fillerTag()
@@ -366,11 +368,16 @@ extension Manager.Crypto {
             // unconditionally would make every message unopenable by 1.10.0/1.10.1, which
             // verify against the bare key — a break in the one direction we cannot patch,
             // since those installs are already deployed. See `.prefixedSenderSignatureCapable`.
-            senderEphemeralSignature = try self.keyManager.signData(
-                r.prefixesEphemeralSignature
-                    ? Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey)
-                    : secrecyContext.ephemeralPublicKey
-            )
+            if let pairing = r.pairing {
+                // The pair signing key, in the prefixed form only: no build before 1.10.2 has a pair key.
+                senderEphemeralSignature = try pairing.sign(Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey))
+            } else {
+                senderEphemeralSignature = try self.keyManager.signData(
+                    r.prefixesEphemeralSignature
+                        ? Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey)
+                        : secrecyContext.ephemeralPublicKey
+                )
+            }
         case .longTermFallback, .longTermNoPQ, .group, .unsupported:
             senderEphemeralSignature = Self.randomEphemeralSignatureFiller()
         }

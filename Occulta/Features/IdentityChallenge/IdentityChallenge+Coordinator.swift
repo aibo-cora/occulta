@@ -98,9 +98,14 @@ extension IdentityChallenge {
         ) throws {
             let crypto = Occulta.Manager.Crypto()
             let url: URL
+            // A pairing that can't be read may hold pair keys: nothing is made with the identity key for it.
+            guard self.sealer.pairingIsReadable(for: contact.identifier) else { throw IdentityChallenge.ManagerError.noIdentity }
+            let pair = self.sealer.pairKeys(for: contact.identifier)
             if let seal = self.sealer.groupSealer(for: contact.identifier) {
-                url = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote, seal: seal)
+                url = try self.manager.createChallenge(contactID: contact.identifier, contextNote: contextNote, pairing: pair, seal: seal)
             } else {
+                // The long-term format is made with the identity key, which holds nothing of a pair-key pairing.
+                guard pair == nil else { throw IdentityChallenge.ManagerError.noIdentity }
                 guard
                     let keyRecord    = contact.currentKey,
                     let recipientKey = try? crypto.decrypt(data: keyRecord.material)
@@ -155,13 +160,16 @@ extension IdentityChallenge {
         ) -> Bool {
             self.route(
                 envelope.kind, from: sender,
-                challenge: { key, quantum, id, name in
-                    try self.manager.decryptChallenge(
+                challenge: { key, quantum, id, name, pair in
+                    // A pair-key pairing never sends the long-term format: it is made with the identity key.
+                    guard pair == nil else { throw IdentityChallenge.ManagerError.malformedBundle }
+                    return try self.manager.decryptChallenge(
                         bundle: bundle, senderKey: key, senderQuantum: quantum, senderID: id, senderName: name
                     )
                 },
-                response: { key, quantum, id in
-                    try self.manager.verifyResponse(bundle: bundle, senderKey: key, senderQuantum: quantum, senderID: id)
+                response: { key, quantum, id, pair in
+                    guard pair == nil else { throw IdentityChallenge.ManagerError.malformedBundle }
+                    return try self.manager.verifyResponse(bundle: bundle, senderKey: key, senderQuantum: quantum, senderID: id)
                 }
             )
         }
@@ -176,13 +184,14 @@ extension IdentityChallenge {
         ) -> Bool {
             self.route(
                 challenge.envelope.kind, from: sender,
-                challenge: { key, quantum, id, name in
+                challenge: { key, quantum, id, name, pair in
                     try self.manager.decryptChallenge(
-                        envelope: challenge.envelope, senderKey: key, senderQuantum: quantum, senderID: id, senderName: name
+                        envelope: challenge.envelope, senderKey: key, senderQuantum: quantum, senderID: id, senderName: name,
+                        pairing: pair
                     )
                 },
-                response: { key, _, id in
-                    try self.manager.verifyResponse(envelope: challenge.envelope, senderKey: key, senderID: id)
+                response: { key, _, id, pair in
+                    try self.manager.verifyResponse(envelope: challenge.envelope, senderKey: key, senderID: id, pairing: pair)
                 }
             )
         }
@@ -190,8 +199,8 @@ extension IdentityChallenge {
         private func route(
             _ kind:    IdentityChallengeEnvelope.Kind,
             from sender: Contact.Profile,
-            challenge: (Data, QuantumKeyMaterial?, String, String) throws -> PendingApproval,
-            response:  (Data, QuantumKeyMaterial?, String) throws -> VerificationResult
+            challenge: (Data, QuantumKeyMaterial?, String, String, PairingSlotKeys?) throws -> PendingApproval,
+            response:  (Data, QuantumKeyMaterial?, String, PairingSlotKeys?) throws -> VerificationResult
         ) -> Bool {
             let crypto = Occulta.Manager.Crypto()
             guard
@@ -210,11 +219,17 @@ extension IdentityChallenge {
             }()
             let senderID   = sender.identifier
             let senderName = { let n = sender.givenName.decrypt(); return n.isEmpty ? "Unknown" : n }()
+            // Nothing is checked against the identity key for a pairing that can't be read: it fails like an unauthenticated one.
+            guard self.sealer.pairingIsReadable(for: senderID) else {
+                self.errorMessage = "Could not open identity verification request."
+                return true
+            }
+            let pair       = self.sealer.pairKeys(for: senderID)
 
             switch kind {
             case .challenge:
                 do {
-                    let pending = try challenge(senderKey, senderQuantum, senderID, senderName)
+                    let pending = try challenge(senderKey, senderQuantum, senderID, senderName, pair)
                     self.incomingChallenge = IncomingChallenge(pending: pending)
                 } catch {
                     self.errorMessage = "Could not open identity verification request."
@@ -228,7 +243,7 @@ extension IdentityChallenge {
                 // Only the contact can produce a response that opens and names our nonce.
                 let passed: Bool
                 let note: String?
-                switch try? response(senderKey, senderQuantum, senderID) {
+                switch try? response(senderKey, senderQuantum, senderID, pair) {
                 case .passed(let contextNote)?:
                     (passed, note) = (true, contextNote)
                 case .failed(let contextNote)?:
@@ -275,9 +290,13 @@ extension IdentityChallenge {
                     guard authenticated else { return }
                     do {
                         let url: URL
+                        guard self.sealer.pairingIsReadable(for: pending.challengerID) else { throw IdentityChallenge.ManagerError.noIdentity }
+                        let pair = self.sealer.pairKeys(for: pending.challengerID)
                         if let seal = self.sealer.groupSealer(for: pending.challengerID) {
-                            url = try self.manager.respond(to: pending, seal: seal)
+                            url = try self.manager.respond(to: pending, pairing: pair, seal: seal)
                         } else {
+                            // The long-term format is made with the identity key, which holds nothing of a pair-key pairing.
+                            guard pair == nil else { throw IdentityChallenge.ManagerError.noIdentity }
                             url = try Self.writeOCC(try self.manager.respond(to: pending).encoded(), kind: "response")
                         }
                         self.outboundShare = OutboundShare(

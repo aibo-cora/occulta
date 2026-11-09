@@ -30,6 +30,16 @@ protocol CardKeyProviding {
     func agreementPublicKey(blob: Data) throws -> Data
     /// The X9.63 public key of a signing blob.
     func signingPublicKey(blob: Data) throws -> Data
+
+    // MARK: ML-DSA-87 (a pairing's post-quantum signing key, `bugs.md` Bug 196)
+
+    /// A new ML-DSA-87 key: its raw public key (2,592 bytes) and the blob to store. Throws on a phone that can't make
+    /// one (below iOS 26, or no Enclave), which the exchange reads as "this phone sends none".
+    func makeMLDSAKey() throws -> (publicKey: Data, blob: Data)
+    /// An ML-DSA-87 signature over `payload`. Nothing signs with it in 2.0.1: a test does, to prove a stored blob imports.
+    func mldsaSign(_ payload: Data, blob: Data) throws -> Data
+    /// The raw public key of an ML-DSA-87 blob.
+    func mldsaPublicKey(blob: Data) throws -> Data
 }
 
 /// Production: Secure Enclave keys, `WhenUnlockedThisDeviceOnly` with `.privateKeyUsage` (the policy of the
@@ -40,6 +50,7 @@ struct EnclaveCardKeys: CardKeyProviding {
     enum KeyError: Error {
         case enclaveUnavailable
         case accessControlUnavailable
+        case mldsaUnavailable
     }
 
     func makeAgreementKey() throws -> (publicKey: Data, blob: Data) {
@@ -72,6 +83,22 @@ struct EnclaveCardKeys: CardKeyProviding {
 
     func signingPublicKey(blob: Data) throws -> Data {
         try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob).publicKey.x963Representation
+    }
+
+    func makeMLDSAKey() throws -> (publicKey: Data, blob: Data) {
+        guard #available(iOS 26, *) else { throw KeyError.mldsaUnavailable }
+        let key = try SecureEnclave.MLDSA87.PrivateKey(accessControl: try Self.accessControl())
+        return (key.publicKey.rawRepresentation, key.dataRepresentation)
+    }
+
+    func mldsaSign(_ payload: Data, blob: Data) throws -> Data {
+        guard #available(iOS 26, *) else { throw KeyError.mldsaUnavailable }
+        return try SecureEnclave.MLDSA87.PrivateKey(dataRepresentation: blob).signature(for: payload)
+    }
+
+    func mldsaPublicKey(blob: Data) throws -> Data {
+        guard #available(iOS 26, *) else { throw KeyError.mldsaUnavailable }
+        return try SecureEnclave.MLDSA87.PrivateKey(dataRepresentation: blob).publicKey.rawRepresentation
     }
 
     private static func accessControl() throws -> SecAccessControl {

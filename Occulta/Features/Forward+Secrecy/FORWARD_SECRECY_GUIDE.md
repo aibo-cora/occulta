@@ -94,6 +94,18 @@ key  = HKDF-SHA256(ikm, salt, info), 32 bytes
 The `SecKey` path gets the ECDH output from `SecKeyCopyKeyExchangeResult`, the CryptoKit path from
 `sharedSecretFromKeyAgreement`. `ForwardSecretDerivationEquivalenceTests` proves the two give the same key.
 
+A **long-term** slot to a pair-key pairing (`bugs.md` Bug 196, stage 2) is wrapped under `RoutingKey.longTermKey` instead:
+
+```
+ikm  = pk  [ || the two ML-KEM shared secrets, sorted ]       pk = ECDH(our pair agreement key, theirs), X9.63 KDF applied
+salt = ourAgreementKey XOR peerAgreementKey                  (both 65-byte X9.63)
+info = "Occulta-v1-pairwise-transport-2026", or "Occulta-v2-pairwise-hybrid-transport-2026" with ML-KEM
+key  = HKDF-SHA256(ikm, salt, info), 32 bytes
+```
+
+The identity key is not in it. The pair-key ECDH runs in the Secure Enclave through `PairingSlotKeys`. A forward-secret slot's
+key is the ephemeral ECDH above for every pairing.
+
 The mode name is authoritative: `forwardSecretNoPQ` and `longTermNoPQ` derive without ML-KEM whatever quantum
 material is on file.
 
@@ -107,20 +119,23 @@ material is on file.
 2. A key → forward-secret slot (`forwardSecret`, or `forwardSecretNoPQ` without ML-KEM): an ephemeral key pair in
    memory, ECDH against the prekey. No one-time key, but the contact's last-resort key (stage 2), in group format →
    the same forward-secret slot sealed to it, its `prekeyID` the derived value (`lastResortPrekeyID`), and the key
-   not removed. Neither → long-term slot (`longTermFallback` / `longTermNoPQ`): ECDH between the identity keys.
+   not removed. Neither → long-term slot (`longTermFallback` / `longTermNoPQ`): ECDH between the identity keys, or between
+   the pair agreement keys for a pair-key pairing (see Key derivation).
 3. Attach our pending batch, if any, with its ID (`pendingBatchForWire`). It rides every message until the contact
    uses a key from it.
 4. Store the record; the caller saves.
-5. **A pairing secret, where there is one (`bugs.md` Bug 196).** If the contact's `PairingSecretState` is held and
-   confirmed, and they are recorded at `.pairingSecretCapable` (2.0.1+), each slot is sealed in the pairing-secret
-   form: its wrapping key is `PairingSecret.bind(key, secret)`, it carries `routingTag` =
-   HMAC(secret, nonce), and its `RecipientPayload.slotProof` is keyed by the secret and covers the tag and our key.
-   When every recipient of the file is in this form the header's `senderFingerprint` and the sealed
-   `senderProof` are random bytes; one recipient without a secret keeps both as before. A slot with no secret
-   still carries a random tag, a filler swap and a random proof, so no field says which slots have one.
-6. **The swap, for a pairing from before the fix.** A one-time-key slot (never a last-resort or long-term one: those
-   open again) to a contact at the tier carries our half in `RecipientPayload.pairingSwap`, and the confirmation once
-   we hold both halves (`PairingSecretState+Swap`).
+5. **A routing key, where there is one (`bugs.md` Bug 196).** If the contact's `PairingState` holds a routing key and they
+   are recorded at `.pairingCapable` (2.0.1+; a pair-key pairing is in this form whatever tier is stored), each slot is
+   sealed in the routing-key form: its wrapping key is `RoutingKey.bind(key, routingKey)`, it carries `routingTag` =
+   HMAC(routingKey, nonce), and its `RecipientPayload.slotProof` is keyed by the routing key and covers the tag and our
+   key. When every recipient of the file is in this form the header's `senderFingerprint` and the sealed
+   `senderProof` are random bytes; one recipient without a routing key keeps both as before (a group that mixes the two
+   carries the identity fingerprint, decided for 2.0.1). A slot with none still carries a random tag and a random proof, so
+   no field says which slots have one.
+6. **A pair-key pairing** (stage 2) also seals the long-term slot key from the pair agreement keys and, in a forward-secret
+   slot, signs `senderEphemeralSignature` with the pair signing key (prefixed form only) in place of the identity key.
+   It never falls back to the identity key: a pair key that will not import makes the send fail. There is no swap; an
+   existing pairing gets a routing key only by a re-exchange in person.
 
 Contacts on 1.9.0+ get the group bundle format with a one-entry recipient list; older ones get the single-recipient
 format. Shard content needs a one-time key: without one it is dropped and the message goes on the last-resort key or
@@ -134,14 +149,15 @@ slots too, whatever the sender did.
 
 `decryptSealed` (single-recipient) and `openGroup` (group), in this order:
 
-1. Identify the sender: by routing tag if some slot carries HMAC(secret, nonce) for a pairing secret we hold (checked for
-   every contact first), else by identity fingerprint, which a pairing that began with a secret refuses (`bugs.md`
-   Bug 196). `senderPrekeys(for:)` sweeps their record in memory, so nothing past its
+1. Identify the sender: by routing tag if some slot carries HMAC(routingKey, nonce) for a routing key we hold (checked for
+   every contact first), else by identity fingerprint, which a pairing that holds a routing key refuses (`bugs.md`
+   Bug 196). The oldest raw trial decrypt skips such a pairing too. `senderPrekeys(for:)` sweeps their record in memory, so nothing past its
    grace period opens the bundle, and returns a `SenderPrekeys` holding it. It writes nothing: the sweep is saved
    with the record once a slot has opened (step 3 for a one-time key, else step 7).
-2. Derive the key and open: `deriveInboundKey`, or `findAndOpenRecipientSlot` trying each slot. With a pairing secret
-   `openSlot` opens only the slot carrying our routing tag, with the secret mixed into its key, and tries no other;
-   without one it trial-decrypts as before. A `prekeyID` that
+2. Derive the key and open: `deriveInboundKey`, or `findAndOpenRecipientSlot` trying each slot. With a routing key
+   `openSlot` opens only the slot carrying our routing tag, with the routing key mixed into its key (and, for a pair-key
+   pairing, the pair-key long-term key), and tries no other; without one it trial-decrypts as before. A forward-secret
+   slot's signature is checked against the peer's pair signing key for a pair-key pairing. A `prekeyID` that
    names no one-time key is tried against each last-resort key still in the sender's record, by recomputing its
    derived ID (one HMAC each). Both report which key opened it (`InboundPrekeyUse`). A single-recipient bundle
    naming a last-resort key is rejected: only the group format's sender signature authenticates one.
@@ -149,10 +165,8 @@ slots too, whatever the sender did.
    `SenderPrekeys.consume` deletes a legacy key from the keychain, applies the bookkeeping below, stores, saves and
    checkpoints the write-ahead log, all before any later check can reject the bundle.
 4. The remaining checks: shared ciphertext, sender proof (in the slot, over its routing tag, for a file of the
-   pairing-secret form), the sender-signature gates, payload decoding.
-5. Apply the swap field (`applyPairingSwap`): a half is read only from a one-time-key slot of a forward-secret file
-   whose sender is authenticated; a verified file of the new form confirms the pairing and drops our half. Accept the
-   batch the sender attached (`acceptInboundBatch`).
+   routing-key form), the sender-signature gates, payload decoding.
+5. Accept the batch the sender attached (`acceptInboundBatch`).
 6. If the bundle was long-term and no batch of ours is pending, generate one (`installFreshBatch`).
 7. Store the record, save and flush (`ContactManager.save(_:for:)`). This writes the receipt sweep, and retries a
    save at step 3 that failed, throwing if it fails again.
@@ -323,15 +337,13 @@ OccultaBundle {
 Recipient {                  — group format, one per member
   secrecyContext
   wrappedPayload
-  routingTag?                — Bug 196, 2.0.1+: HMAC(pairing secret, "occulta-pairing-routing-tag-v1" || fingerprintNonce),
-                               or random bytes of the same size in a slot with no secret. nil from older builds
+  routingTag?                — Bug 196, 2.0.1+: HMAC(routing key, "occulta-pairing-routing-tag-v1" || fingerprintNonce),
+                               or random bytes of the same size in a slot with no routing key. nil from older builds
 }
 
 RecipientPayload {           — sealed in the slot
   …
-  pairingSwap?               — PairingSecretSwap { kind: half | none, key: 32 bytes, confirmation: 32 bytes }: our
-                               half and its confirmation, or `none` and random bytes. Present in every slot of a 2.0.1+ send
-  slotProof?                 — HMAC(secret, "occulta-pairing-proof-v1" || routingTag || senderPublicKey), or random
+  slotProof?                 — HMAC(routing key, "occulta-pairing-proof-v1" || routingTag || senderPublicKey), or random
 }
 
 PrekeySyncBatch {            — inside SealedPayload (single-recipient) or RecipientPayload (group)
@@ -352,8 +364,8 @@ PrekeySyncBatch {            — inside SealedPayload (single-recipient) or Reci
 
 `WirePrekey` carries no `contactID`: our identifier for the contact must not travel, or it would leak the
 relationship graph. The receiver supplies its own. `OccultaTests/Interop/InteropVectors.json` pins these bytes,
-`prekeyBatchWithID` included, and the pairing-secret ones (`pairing.*`, `groupEnvelope.v4.routingTag`,
-`recipientPayload.pairingSecret`).
+`prekeyBatchWithID` included, and the routing-key ones (`pairing.*`, which include `pairing.slotProof`, and
+`groupEnvelope.v4.routingTag`).
 
 ---
 

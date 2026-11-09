@@ -26,7 +26,7 @@ private func ownBatch(id: UInt8, keys: Int = 15) -> PrekeyRecord.OwnBatch {
     PrekeyRecord.OwnBatch(
         id: Data(repeating: id, count: 16), createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000), retiredAt: nil,
         isPending: true,
-        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: UInt8($0 + 1), count: 65)) },
+        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
         lastResort: PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: 0xEE, count: 65))
     )
 }
@@ -34,16 +34,36 @@ private func ownBatch(id: UInt8, keys: Int = 15) -> PrekeyRecord.OwnBatch {
 private func peerBatch(keys: Int = 15) -> PairingOffer.Batch {
     PairingOffer.Batch(OccultaBundle.SealedPayload.PrekeySyncBatch(
         generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_100),
-        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: UInt8($0 + 1), count: 65)) },
+        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
         id: Data(repeating: 0xBB, count: 16),
         lastResort: OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: 0xDD, count: 65))
     ))
 }
 
+/// The digest of the batch `record` would send, as the exchange takes it once when it makes the field.
+private func sentDigest(of record: PrekeyRecord) -> Data {
+    PairingOffer.Batch(PairingOffer.wireBatch(of: record)!).digest
+}
+
 private func offer(own: PrekeyRecord.OwnBatch? = nil, peer: PairingOffer.Batch? = nil) -> PairingOffer {
     var record = PrekeyRecord.empty
     record.ownBatches = [own ?? ownBatch(id: 0xAA)]
-    return PairingOffer(ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, peerBatch: peer ?? peerBatch())
+    return PairingOffer(
+        ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peer ?? peerBatch(),
+        ours: ownPairKeys(), theirs: peerPairKeys(), pairwiseECDH: Data(repeating: 0x33, count: 32)
+    )
+}
+
+private func ownPairKeys() -> PairingOffer.OwnPairKeys {
+    PairingOffer.OwnPairKeys(
+        agreementBlob: Data(repeating: 0xA1, count: 143), agreementKey: Data(repeating: 0xA2, count: 65),
+        signingBlob: Data(repeating: 0xA3, count: 143), signingKey: Data(repeating: 0xA4, count: 65),
+        mldsaBlob: nil, mldsaKey: nil
+    )
+}
+
+private func peerPairKeys() -> PairingOffer.PeerPairKeys {
+    PairingOffer.PeerPairKeys(agreementKey: Data(repeating: 0xB1, count: 65), signingKey: Data(repeating: 0xB2, count: 65), mldsaKey: nil)
 }
 
 @MainActor
@@ -63,20 +83,22 @@ private func contact(in cm: ContactManager) throws -> Contact.Profile {
     return try #require(try cm.fetchAllContacts().first)
 }
 
-private func draftKey(secret: Data?, date: String = "1") throws -> Contact.Draft.Key {
+private func draftKey(routingKey: Data?, date: String = "1") throws -> Contact.Draft.Key {
     try #require(Contact.Draft.Key(
-        material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: date, routingKey: secret
+        material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: date,
+        pairing: routingKey.map { .paired(routingKey: $0, keys: samplePairKeys()) } ?? .empty
     ))
 }
 
-// MARK: - The secret both phones derive
+// MARK: - What the offer derives
 
 @MainActor
-@Suite("Bug 196 — the routing key both phones derive")
-struct RoutingKeyDerivationTests {
+@Suite("Bug 196 — what an offer derives through the key manager")
+struct PairingOfferDerivationTests {
 
     private let alice = TestKeyManager()
     private let bob   = TestKeyManager()
+    private let provider = SoftwareCardKeys()
 
     private func quantum() -> (alice: QuantumKeyMaterial, bob: QuantumKeyMaterial) {
         let s1 = Data(repeating: 0x31, count: 32), s2 = Data(repeating: 0x32, count: 32)
@@ -87,66 +109,96 @@ struct RoutingKeyDerivationTests {
         )
     }
 
-    @Test("Both phones derive the same classical secret, whichever nonce each calls its own")
-    func classicalAgrees() throws {
-        let a = try #require(self.alice.createRoutingKey(
-            peerP256Material: try self.bob.retrieveIdentity(), quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2)))
-        let b = try #require(self.bob.createRoutingKey(
-            peerP256Material: try self.alice.retrieveIdentity(), quantumMaterial: nil, ourNonce: nonce(2), peerNonce: nonce(1)))
-        #expect(a == b)
-        #expect(a.count == 32)
+    /// The two phones' offers for one exchange: each holds its own keys and the other's public ones.
+    private func offers(mldsa: Bool = false) throws -> (alice: PairingOffer, bob: PairingOffer) {
+        func make(mldsaAvailable: Bool) throws -> PairingOffer.OwnPairKeys {
+            let keys = SoftwareCardKeys()
+            keys.mldsaAvailable = mldsaAvailable
+            return try PairingOffer.makeOwnPairKeys(using: keys)
+        }
+        let a = try make(mldsaAvailable: mldsa), b = try make(mldsaAvailable: false)
+        // Each phone's own batch is the other's peer batch, as it is on the wire.
+        var recordA = PrekeyRecord.empty, recordB = PrekeyRecord.empty
+        recordA.ownBatches = [ownBatch(id: 0xAA)]
+        recordB.ownBatches = [ownBatch(id: 0xBB)]
+        let batchA = PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: recordA)))
+        let batchB = PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: recordB)))
+        func offer(
+            record: PrekeyRecord, peerBatch: PairingOffer.Batch, ours: PairingOffer.OwnPairKeys, theirs: PairingOffer.OwnPairKeys,
+            ourNonce: Data, peerNonce: Data
+        ) throws -> PairingOffer {
+            PairingOffer(
+                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peerBatch,
+                ours: ours,
+                theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
+                pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: self.provider)
+            )
+        }
+        return (
+            try offer(record: recordA, peerBatch: batchB, ours: a, theirs: b, ourNonce: nonce(1), peerNonce: nonce(2)),
+            try offer(record: recordB, peerBatch: batchA, ours: b, theirs: a, ourNonce: nonce(2), peerNonce: nonce(1))
+        )
     }
 
-    @Test("Both phones derive the same hybrid secret")
-    func hybridAgrees() throws {
+    @Test("Both phones' offers derive the same pair-key ECDH, routing key and words key")
+    func bothAgree() throws {
+        let (a, b) = try self.offers()
+        #expect(a.pairwiseECDH == b.pairwiseECDH)
+
+        let aliceKey = try self.alice.retrieveIdentity(), bobKey = try self.bob.retrieveIdentity()
+        let routingA = try #require(a.routingKey(withPeer: bobKey, quantum: nil, using: self.alice))
+        let routingB = try #require(b.routingKey(withPeer: aliceKey, quantum: nil, using: self.bob))
+        #expect(routingA == routingB && routingA.count == 32)
+        #expect(a.wordsKey(withPeer: bobKey, quantum: nil, using: self.alice) == b.wordsKey(withPeer: aliceKey, quantum: nil, using: self.bob))
+        #expect(a.transcript == b.transcript)
+    }
+
+    @Test("They agree with ML-KEM secrets and with an ML-DSA key on one side, and differ from the exchange without")
+    @available(iOS 26, *)
+    func hybridAndMLDSA() throws {
+        let aliceKey = try self.alice.retrieveIdentity(), bobKey = try self.bob.retrieveIdentity()
         let q = self.quantum()
-        let a = try #require(self.alice.createRoutingKey(
-            peerP256Material: try self.bob.retrieveIdentity(), quantumMaterial: q.alice, ourNonce: nonce(1), peerNonce: nonce(2)))
-        let b = try #require(self.bob.createRoutingKey(
-            peerP256Material: try self.alice.retrieveIdentity(), quantumMaterial: q.bob, ourNonce: nonce(2), peerNonce: nonce(1)))
+        let plain = try self.offers()
+        let withKey = try self.offers(mldsa: true)
+
+        let a = try #require(withKey.alice.routingKey(withPeer: bobKey, quantum: q.alice, using: self.alice))
+        let b = try #require(withKey.bob.routingKey(withPeer: aliceKey, quantum: q.bob, using: self.bob))
         #expect(a == b)
+        #expect(withKey.alice.ours.mldsaKey != nil && withKey.bob.theirs.mldsaKey == withKey.alice.ours.mldsaKey)
+        #expect(a != plain.alice.routingKey(withPeer: bobKey, quantum: q.alice, using: self.alice), "other keys, other pairing")
     }
 
-    @Test("Two pairings of the same two identities differ, which is the point")
-    func differsPerPairing() throws {
-        let bobKey = try self.bob.retrieveIdentity()
-        let first = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
-        let second = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(3))
-        #expect(first != nil && second != nil && first != second)
+    @Test("A prekey batch swapped on the way makes the two phones' words and routing keys differ")
+    func swappedBatchIsSeen() throws {
+        let (a, b) = try self.offers()
+        let aliceKey = try self.alice.retrieveIdentity(), bobKey = try self.bob.retrieveIdentity()
+        // Bob is shown Alice's keys with another batch beside them; everything else is honest.
+        let other = PairingOffer.Batch(OccultaBundle.SealedPayload.PrekeySyncBatch(
+            generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_999), prekeys: [OccultaBundle.WirePrekey(id: "x", publicKey: Data(repeating: 9, count: 65))],
+            id: Data(repeating: 0x99, count: 16), lastResort: nil
+        ))
+        let tampered = PairingOffer(
+            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, ownBatchDigest: b.ownBatchDigest, peerBatch: other, ours: b.ours, theirs: b.theirs,
+            pairwiseECDH: b.pairwiseECDH
+        )
+
+        #expect(a.wordsKey(withPeer: bobKey, quantum: nil, using: self.alice) != tampered.wordsKey(withPeer: aliceKey, quantum: nil, using: self.bob))
+        #expect(a.routingKey(withPeer: bobKey, quantum: nil, using: self.alice) != tampered.routingKey(withPeer: aliceKey, quantum: nil, using: self.bob))
     }
 
-    @Test("ML-KEM secrets change the secret")
-    func quantumChangesIt() throws {
-        let bobKey = try self.bob.retrieveIdentity()
-        let classical = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
-        let hybrid = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: self.quantum().alice, ourNonce: nonce(1), peerNonce: nonce(2))
-        #expect(classical != hybrid)
+    @Test("A routing key we can't derive is nil, never a weaker one")
+    func derivationFailureIsNil() throws {
+        let (a, _) = try self.offers()
+        #expect(a.routingKey(withPeer: Data(count: 64), quantum: nil, using: self.alice) == nil)
+        #expect(a.wordsKey(withPeer: Data(count: 64), quantum: nil, using: self.alice) == nil)
     }
 
-    @Test("It is not the verification words' key: the screen shows those, and they reveal nothing of the secret")
-    func notTheDicewareKey() throws {
-        let bobKey = try self.bob.retrieveIdentity()
-        let q = self.quantum().alice
-        let secret = try #require(self.alice.createRoutingKey(
-            peerP256Material: bobKey, quantumMaterial: q, ourNonce: nonce(1), peerNonce: nonce(2)))
-        let words = try #require(self.alice.createDicewareKey(
-            peerP256Material: bobKey, quantumMaterial: q, ourNonce: nonce(1), peerNonce: nonce(2)))
-        #expect(words.withUnsafeBytes { Data($0) } != secret)
-    }
-
-    @Test("A bad nonce, an equal pair of nonces, or a bad peer key derives nothing")
-    func refusesBadInput() throws {
-        let bobKey = try self.bob.retrieveIdentity()
-        #expect(self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(1)) == nil)
-        #expect(self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: Data(count: 15), peerNonce: nonce(2)) == nil)
-        #expect(self.alice.createRoutingKey(peerP256Material: Data(count: 64), quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2)) == nil)
-    }
-
-    @Test("The offer derives through the key manager with its own nonces")
-    func offerDerives() throws {
-        let bobKey = try self.bob.retrieveIdentity()
-        let direct = self.alice.createRoutingKey(peerP256Material: bobKey, quantumMaterial: nil, ourNonce: nonce(1), peerNonce: nonce(2))
-        #expect(offer().secret(withPeer: bobKey, quantum: nil, using: self.alice) == direct)
+    @Test("What save seals is what the offer holds")
+    func pairKeysAreTheOffers() throws {
+        let (a, _) = try self.offers()
+        let keys = a.pairKeys
+        #expect(keys.ourAgreementBlob == a.ours.agreementBlob && keys.ourAgreementKey == a.ours.agreementKey)
+        #expect(keys.peerSigningKey == a.theirs.signingKey && keys.ourMLDSABlob == a.ours.mldsaBlob)
     }
 }
 
@@ -240,7 +292,7 @@ struct PairingSaveTests {
         let paired = try contact(in: cm)
         let theirs = peerBatch()
 
-        try cm.update(key: draftKey(secret: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: theirs))
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: theirs))
 
         let record = try cm.prekeyRecord(for: paired)
         #expect(record.ownBatches.count == 1)
@@ -252,7 +304,7 @@ struct PairingSaveTests {
         #expect(record.inboundLastResort?.publicKey == theirs.lastResort?.publicKey)
 
         let state = cm.pairingState(for: paired)
-        #expect(state == .derived(secret: Data(repeating: 0x77, count: 32)))
+        #expect(state == .paired(routingKey: Data(repeating: 0x77, count: 32), keys: samplePairKeys()))
 
         #expect(ContactManager.resolveTargetVersion(for: paired, using: Manager.Crypto()) == .pairingCapable)
     }
@@ -263,7 +315,7 @@ struct PairingSaveTests {
         let paired = try contact(in: cm)
 
         #expect(cm.nextSendSecrecy(for: paired) == .longTerm, "before the pairing: the bootstrap")
-        try cm.update(key: draftKey(secret: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer())
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer())
         #expect(cm.nextSendSecrecy(for: paired) == .forwardSecret)
     }
 
@@ -272,24 +324,69 @@ struct PairingSaveTests {
         let cm = try makeContactManager()
         let paired = try contact(in: cm)
 
-        try cm.update(key: draftKey(secret: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: peerBatch(keys: 16)))
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x77, count: 32)), for: paired.identifier, pairing: offer(peer: peerBatch(keys: 16)))
 
         let record = try cm.prekeyRecord(for: paired)
         #expect(record.ownBatches.count == 1 && record.ownBatches[0].isPending)
         #expect(record.inboundBatches.isEmpty && record.inboundLastResort == nil)
-        #expect(cm.pairingState(for: paired).secret != nil)
+        #expect(cm.pairingState(for: paired).routingKey != nil)
+    }
+
+    @Test("A save with pair keys seals them with the routing key on the new row, and the pairing reads back as paired", .ambientTestKeyManager)
+    func saveSealsThePairKeys() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+        let pairing = offer()
+        let key = try #require(Contact.Draft.Key(
+            material: Data(repeating: 0x04, count: 65), owner: Data(repeating: 0x01, count: 65), date: "1",
+            pairing: .paired(routingKey: Data(repeating: 0x77, count: 32), keys: pairing.pairKeys)
+        ))
+        try cm.update(key: key, for: paired.identifier, pairing: pairing)
+
+        #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x77, count: 32), keys: pairing.pairKeys))
+        #expect(cm.pairingSlotKeys(for: paired)?.routingKey == Data(repeating: 0x77, count: 32))
+    }
+
+    @Test("A save that fails after it has begun changing the contact leaves nothing for the next save to commit", .ambientTestKeyManager)
+    func failureAfterChangesIsRolledBack() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x01, count: 32)), for: paired.identifier, pairing: offer())
+        let current = try #require(paired.currentKey)
+        let card = paired.introductionCardEncrypted
+        let record = paired.prekeyRecordEncrypted
+        let tier = paired.maxBundleVersion
+        let sealedPairing = current.pairingEncrypted
+        try cm.modelContext.save()
+        #expect(!cm.modelContext.hasChanges)
+
+        // 400 keys do not fit the 16 KiB prekey record, so `installPairingPrekeys` throws, after the card state has been
+        // rewritten and before the retired rows and the new row are touched.
+        let tooMany = offer(own: ownBatch(id: 0xCC, keys: 400))
+        #expect(throws: PrekeyRecordCodec.CodecError.overCapacity) {
+            try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier, pairing: tooMany)
+        }
+
+        // Nothing the failed save changed is waiting in the context, so an unrelated save elsewhere commits nothing of it.
+        #expect(!cm.modelContext.hasChanges)
+        #expect(paired.introductionCardEncrypted == card, "the card state")
+        #expect(paired.prekeyRecordEncrypted == record, "the prekey record")
+        #expect(paired.maxBundleVersion == tier, "the tier")
+        #expect(paired.contactPublicKeys?.count == 1 && paired.currentKey === current && current.expiredOn == nil)
+        #expect(current.pairingEncrypted == sealedPairing)
+        #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x01, count: 32), keys: samplePairKeys()))
     }
 
     @Test("A re-pair replaces what the old phone gave us and retires our old batches", .ambientTestKeyManager)
     func rePairResets() throws {
         let cm = try makeContactManager()
         let paired = try contact(in: cm)
-        try cm.update(key: draftKey(secret: Data(repeating: 0x01, count: 32)), for: paired.identifier,
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x01, count: 32)), for: paired.identifier,
                       pairing: offer(own: ownBatch(id: 0x11), peer: peerBatch()))
         let oldInbound = try cm.prekeyRecord(for: paired).inboundBatches
 
         let newPeer = peerBatch(keys: 5)
-        try cm.update(key: draftKey(secret: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier,
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier,
                       pairing: offer(own: ownBatch(id: 0x22), peer: newPeer))
 
         let record = try cm.prekeyRecord(for: paired)
@@ -298,10 +395,11 @@ struct PairingSaveTests {
         #expect(record.ownBatches.count == 2)
         #expect(record.ownBatches[0].retiredAt != nil && !record.ownBatches[0].isPending)
         #expect(record.ownBatches[1].isPending && record.ownBatches[1].retiredAt == nil)
-        // Each pairing's secret is on its own key row. Not read through `.last`: a to-many relationship has no order of
-        // its own, and which row is the current key is not what this test is about.
-        let secrets = Set((paired.contactPublicKeys ?? []).compactMap { cm.pairingState(of: $0).secret })
-        #expect(secrets == [Data(repeating: 0x01, count: 32), Data(repeating: 0x02, count: 32)])
+        // The new pairing's routing key is on the current key row; the retired row's was overwritten with the sealed
+        // empty state, because a retired pairing's keys go with it.
+        let routingKeys = (paired.contactPublicKeys ?? []).compactMap { cm.pairingState(of: $0).routingKey }
+        #expect(routingKeys == [Data(repeating: 0x02, count: 32)])
+        #expect(cm.pairingState(for: paired).routingKey == Data(repeating: 0x02, count: 32))
     }
 
     @Test("A peer that sent no batch leaves the record and the tier as they were", .ambientTestKeyManager)
@@ -311,7 +409,7 @@ struct PairingSaveTests {
         let before = try cm.prekeyRecord(for: paired)
         let tier = paired.maxBundleVersion
 
-        try cm.update(key: draftKey(secret: nil), for: paired.identifier)
+        try cm.update(key: draftKey(routingKey: nil), for: paired.identifier)
 
         #expect(try cm.prekeyRecord(for: paired) == before)
         #expect(paired.maxBundleVersion == tier)

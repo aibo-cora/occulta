@@ -823,48 +823,6 @@
       "expected": "fcec1c43db6a5e48b62628944289082a4aa2ae5a278f95b23ac961db3c04bc7f"
     },
     {
-      "name": "pairing.derive.classical",
-      "kind": "pairingDerive",
-      "note": "Bug 196. The secret two phones derive at an exchange without ML-KEM: HKDF-SHA256(ikm: ECDH output, salt: the two public keys XORed, info: \"Occulta-v1-pairing-secret-2026\" || the two 16-byte nonces sorted bytewise).",
-      "pairing": {
-        "rawECDH": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
-        "salt": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-        "ourNonce": "0102030405060708090a0b0c0d0e0f10",
-        "peerNonce": "1112131415161718191a1b1c1d1e1f20"
-      },
-      "expected": "4a1e74f3ac4460e49a2d36a0ec390cf744695a7f3a1ed5da5abc83cf8586a6e2"
-    },
-    {
-      "name": "pairing.derive.hybrid",
-      "kind": "pairingDerive",
-      "note": "Bug 196. As the classical one, with both ML-KEM secrets sorted bytewise and appended to the ECDH output as the keying material.",
-      "pairing": {
-        "rawECDH": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
-        "salt": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
-        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232",
-        "ourNonce": "0102030405060708090a0b0c0d0e0f10",
-        "peerNonce": "1112131415161718191a1b1c1d1e1f20"
-      },
-      "expected": "1ec2d3e4e7b3572863a5794f7770dff132570efe28dc5d9e143ee4a92c9fc641"
-    },
-    {
-      "name": "pairing.field.none",
-      "kind": "pairingField",
-      "note": "Bug 196. The sealed state of a pairing with no secret: 128 bytes, version 1, present 0, all else zero.",
-      "pairing": {},
-      "expected": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-    },
-    {
-      "name": "pairing.field.derived",
-      "kind": "pairingField",
-      "note": "Bug 196. A secret derived at the pairing: version 1, present 1, the secret at offset 2.",
-      "pairing": {
-        "secret": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-      },
-      "expected": "0101a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-    },
-    {
       "name": "groupEnvelope.v4.routingTag",
       "kind": "groupEnvelope",
       "note": "Bug 196. A slot carrying its routing tag in the clear, next to its secrecy context and wrapped payload. The slot of a build before the fix has none, and encodes as it always did.",
@@ -898,6 +856,175 @@
         "slotProof": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
       },
       "expected": "7b22637573746f64794d616e6966657374223a5b5d2c22637573746f64794d616e6966657374436f756e74223a302c2273657373696f6e4b6579223a22586c3565586c3565586c3565586c3565586c3565586c3565586c3565586c3565586c3565586c3565586c343d222c2273686172644d65746164617461417474656d70746564223a66616c73652c2273686172644f7065726174696f6e73223a5b5d2c22736c6f7450726f6f66223a2273724b7973724b7973724b7973724b7973724b7973724b7973724b7973724b7973724b7973724b797372493d227d"
+    },
+    {
+      "name": "pairing.routingKey.classical",
+      "kind": "routingKeyDerive",
+      "note": "Bug 196, stage 2. HKDF-SHA256(ikm: pairwise ECDH || identity ECDH, salt: the two agreement keys XORed, info: \"Occulta-v2-routing-key-2026\" || both nonces sorted || the transcript).",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "ourAgreementKey": "04a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "peerAgreementKey": "04b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "02de56ac2600188f83093077feb8a1e53ea4b3fc41eb4ecd0985354ea67cf907"
+      },
+      "expected": "bf7de185595fc44908c85be22e2476977e4748feff1eca61e9b257e58c441e16"
+    },
+    {
+      "name": "pairing.routingKey.hybrid",
+      "kind": "routingKeyDerive",
+      "note": "Bug 196, stage 2. As the classical vector with both ML-KEM secrets, sorted, appended to the input key material.",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "ourAgreementKey": "04a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "peerAgreementKey": "04b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "02de56ac2600188f83093077feb8a1e53ea4b3fc41eb4ecd0985354ea67cf907",
+        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
+        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232"
+      },
+      "expected": "a50910c2e18bbf53e0683f8c11371b5669ae05bfae6d7a53a2d6676b568d627f"
+    },
+    {
+      "name": "pairing.words.classical",
+      "kind": "pairingWordsKey",
+      "note": "Bug 196, stage 2. The key the verification words come from for an exchange that made pair keys: the routing key's input, salted with the two identity keys XORed, info \"Occulta-v2-pairwise-diceware-2026\" || both nonces sorted || the transcript.",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "identitySalt": "005c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "02de56ac2600188f83093077feb8a1e53ea4b3fc41eb4ecd0985354ea67cf907"
+      },
+      "expected": "30fcf857017b94ae84f33320eba637d1ca6ea029611f502e75367376898ebeb7"
+    },
+    {
+      "name": "pairing.words.hybrid",
+      "kind": "pairingWordsKey",
+      "note": "Bug 196, stage 2. As the classical words vector with both ML-KEM secrets, sorted, appended.",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "identitySalt": "005c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "02de56ac2600188f83093077feb8a1e53ea4b3fc41eb4ecd0985354ea67cf907",
+        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
+        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232"
+      },
+      "expected": "601805512cce39884a3c14fb444f82ec60b46863ffba7e3686e34d69eb1a4517"
+    },
+    {
+      "name": "pairing.longTerm.classical",
+      "kind": "pairwiseLongTermKey",
+      "note": "Bug 196, stage 2. The long-term slot key of a pair-key pairing: HKDF-SHA256(ikm: pairwise ECDH, salt: the two agreement keys XORed, info: \"Occulta-v1-pairwise-transport-2026\"). The identity key is not in it.",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ourAgreementKey": "04a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "peerAgreementKey": "04b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      },
+      "expected": "76c3a85e5b5133ff4737f73678dac11cb460fd965a711d25967a58bbe6274d54"
+    },
+    {
+      "name": "pairing.longTerm.hybrid",
+      "kind": "pairwiseLongTermKey",
+      "note": "Bug 196, stage 2. As the classical vector with both ML-KEM secrets, sorted, appended, info \"Occulta-v2-pairwise-hybrid-transport-2026\".",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ourAgreementKey": "04a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "peerAgreementKey": "04b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
+        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232"
+      },
+      "expected": "7c965853745ed3b4e473c927edfe2083e8cc8a92d42c87e89a0d35a0c472bf68"
+    },
+    {
+      "name": "pairing.field.none",
+      "kind": "pairingField",
+      "digest": true,
+      "note": "Bug 196. The sealed state of a pairing with no routing key: 16,384 bytes, version 2, present 0, all else zero. `expected` is the SHA-256 of those bytes (`digest`).",
+      "pairing": {},
+      "expected": "716ad7538f92bb3cb749146290fa25419ab65b4dfe2cffc980566194d825e0a3"
+    },
+    {
+      "name": "pairing.field.paired",
+      "kind": "pairingField",
+      "digest": true,
+      "note": "Bug 196, stage 2. A routing key with pair keys and no ML-DSA key: present 1; two 2-byte-length 256-byte blob rooms from offset 34; four 65-byte keys; an empty ML-DSA blob room (length 0) and a peer ML-DSA flag of 0. `expected` is the SHA-256 of the 16,384 bytes.",
+      "pairing": {
+        "routingKey": "4545454545454545454545454545454545454545454545454545454545454545",
+        "ourAgreementBlob": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "ourSigningBlob": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+        "ourAgreementKey": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+        "ourSigningKey": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+        "peerAgreementKey": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "peerSigningKey": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      },
+      "expected": "5202963b6a13594949280d1d5a78efae5fc817809e9e488410f7b5dcfb1000c8"
+    },
+    {
+      "name": "pairing.field.pairedWithMLDSA",
+      "kind": "pairingField",
+      "digest": true,
+      "note": "Bug 196, stage 2. The same with our 7,540-byte ML-DSA-87 blob (every byte c1) at offset 812 and the peer's 2,592-byte ML-DSA-87 public key (every byte d1) after a flag of 1 at offset 13,100. `expected` is the SHA-256 of the 16,384 bytes.",
+      "pairing": {
+        "routingKey": "4545454545454545454545454545454545454545454545454545454545454545",
+        "ourAgreementBlob": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "ourSigningBlob": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+        "ourAgreementKey": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+        "ourSigningKey": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+        "peerAgreementKey": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "peerSigningKey": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "ourMLDSABlobFill": "c1",
+        "ourMLDSABlobLength": 7540,
+        "peerMLDSAKeyFill": "d1"
+      },
+      "expected": "bb4029d8780d0489b6dfbe18de7ac00dd10e78c0b4bd85c3fafc3735bc916c94"
+    },
+    {
+      "name": "pairing.transcript",
+      "kind": "pairingTranscript",
+      "note": "Bug 196, stage 2. SHA-256(\"occulta-pairing-transcript-v1\" || the two blocks' encodings sorted bytewise). A block is 0x02 || agreement key || signing key || a big-endian UInt16 length of the ML-DSA-87 key || the key (length 0 when the phone sent none) || the SHA-256 digest of the prekey batch beside it. Here one block carries an ML-DSA key and the other none.",
+      "pairing": {
+        "blockOneAgreement": "04a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "blockOneSigning": "04a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+        "blockOneBatch": "53945b90d804e43b8b0c14cea96b89ce92a07dd12c3c17f691edbbbbdab771cd",
+        "blockTwoAgreement": "04b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "blockTwoSigning": "04b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4",
+        "blockTwoMLDSA": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc",
+        "blockTwoBatch": "9db4fbc7588b158657020b249ef54ff40e13f88514391b68cbc6e473c486111d"
+      },
+      "expected": "58ea0cedbbf4c7a0fdc6bb718931f3e75dc81b0e923def3dcf8c78c6eb374903"
+    },
+    {
+      "name": "pairing.batchDigest",
+      "kind": "pairingBatchDigest",
+      "note": "Bug 196, stage 2. SHA-256(\"occulta-pairing-batch-v1\" || 0x01 || a UInt16 length and the id || the big-endian bits of generatedAt as a Double (seconds since 2001-01-01) || a UInt16 count || each prekey as UInt16 length + id bytes + UInt16 length + public key || 0x01 and the last-resort key in the same layout). A man in the middle who swaps the batch changes it, and so the transcript.",
+      "pairing": {
+        "batchId": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "batchGeneratedAt": 800000000.5,
+        "batchPrekeyIds": ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"],
+        "batchPrekeyKeys": ["4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141", "4242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242"],
+        "batchLastResortId": "33333333-3333-3333-3333-333333333333",
+        "batchLastResortKey": "4343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343"
+      },
+      "expected": "12f77ad7d462503114d266b8a8810cbd0b0399d8037583d198e194d8d55b12f5"
+    },
+    {
+      "name": "pairing.batchDigest.bare",
+      "kind": "pairingBatchDigest",
+      "note": "Bug 196, stage 2. The same with no batch id, one prekey and no last-resort key: a 0x00 byte stands for each absent part.",
+      "pairing": {
+        "batchGeneratedAt": 800000000.5,
+        "batchPrekeyIds": ["11111111-1111-1111-1111-111111111111"],
+        "batchPrekeyKeys": ["4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141"]
+      },
+      "expected": "d801f430aa58cfbdb3978e1ca4c7577b3de512a6da40306e079aa0affc581e2e"
     }
   ]
 }

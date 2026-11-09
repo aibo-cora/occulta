@@ -132,12 +132,13 @@ BootstrapLayer (binary) {
 
 **Bob's slots** go to a key in Carol's batch, as usual, or long-term between the card agreement keys if he has used her batch up.
 
-**A secret per pairing (`Secure Mode/bugs.md` Bug 196, 2.0.1).** Not built for cards, and deliberately: a card conversation
+**A routing key per pairing (`Secure Mode/bugs.md` Bug 196, 2.0.1).** Not built for cards, and deliberately: a card conversation
 uses the two card agreement keys, new for every card, in place of the identity keys, so the identity-key link between two
 pairings of one person (the bug) doesn't arise here, and a conversation has no routing tag. The header's fingerprint stays
 SHA-256(card key ‖ nonce), which a holder of the card file can compute. The entry's step 6, tagging bootstrap slots with
-HMAC(card key, nonce) and deriving a secret from `ss1` and `ss2` once both sides hold them, is **deferred by the owner to a later release (2026-11-04)**.
-A later in-person meeting is a new pairing and derives its own secret at the exchange (`Exchange.prekeyBatch`).
+HMAC(card key, nonce) and deriving a routing key from `ss1` and `ss2` once both sides hold them, is **deferred by the owner to a later release (2026-11-04)**.
+A later in-person meeting is a new pairing: it derives its own routing key at the exchange and, between two 2.0.1 phones, also makes a
+key pair for the pairing (`Exchange.pairing`: the prekey batch, two P-256 pair keys and an optional ML-DSA-87 key; 2026-11-05).
 
 **Keys.** `ecdh` is the slot's ECDH output. `own` and `peer` are the two 65-byte public keys, as in `forwardSecretSessionKey`.
 
@@ -157,6 +158,7 @@ A later in-person meeting is a new pairing and derives its own secret at the exc
 **Opening.**
 - A side still in bootstrap tries the ordinary hybrid slot key first, then the bootstrap layer. Both derive from the same ECDH output, so the second try is two HKDFs and a GCM check.
 - **Bob** derives Carol's bootstrap slots from his card agreement key. He takes that path when the slot's `prekeyID` names none of his prekeys.
+- **Carol** never takes that path: nothing is sealed to her card agreement key, so a forward-secret slot naming a prekey she doesn't hold is refused as a missing prekey without trying the key. `openCardSlot` reports how far each slot got (`CardSlotFailure`) in DEBUG logs only; the user-facing text is the same for every stage, so it can't be used to tell which keys a phone holds.
 - A side out of bootstrap tries only the ordinary key, except that Carol also accepts a late bootstrap from Bob.
 
 Nothing on the wire says which one it is.

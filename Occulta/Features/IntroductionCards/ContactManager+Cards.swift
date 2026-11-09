@@ -41,7 +41,7 @@ extension Contact.Profile {
     /// Whether the contact holds keys from an in-person exchange on this device: today's `.verified` test
     /// (`verificationStatus`), an unexpired key whose owner hash is ours.
     var hasInPersonKeys: Bool {
-        guard let keys = self.contactPublicKeys, let latest = keys.last, latest.expiredOn == nil else { return false }
+        guard let latest = self.currentKey else { return false }
 
         let ownerHash = try? Manager.Crypto().decrypt(data: latest.owner)
         let ourHash   = (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256

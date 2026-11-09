@@ -90,7 +90,7 @@ extension Contact.Profile {
 
         // No usable key: only a card can make the contact Not verified (Q-14). It's read here and not before,
         // so a contact with keys never pays for the card field's decryption.
-        guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else {
+        guard keys?.isEmpty == false, self.currentKey != nil else {
             let card = self.cardState
             return (CardRules.tier(card, hasInPersonKeys: false) == .notVerified ? .unverified : .pending, card)
         }

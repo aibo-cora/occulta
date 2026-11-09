@@ -27,10 +27,11 @@ struct Exchange: Codable {
     /// filler, with an empty `token` and nothing else. An older build's decoder ignores the key and reads this as a
     /// discovery message, whose empty token fails to unarchive, so the message is dropped harmlessly.
     let cardProof: Data?
-    /// Our first prekeys, in the identity message: 15 one-time keys and a last-resort key (`bugs.md` Bug 196). Its
-    /// presence is the signal that this phone can hold a routing key, so a phone that sends none is treated as one
-    /// that can't. An older build's decoder ignores the key. `nil` in every other message.
-    let prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
+    /// What a pair-key pairing needs from this phone, in the identity message (`bugs.md` Bug 196): our first prekeys and
+    /// our pair keys. Its presence is the signal that this phone can hold a routing key and pair keys, so a phone that
+    /// sends none is treated as one that can't. It is one field so there is one capability bit: a phone sends all of it
+    /// or none. An older build's decoder ignores the key. `nil` in every other message.
+    let pairing: PairingField?
 
     init(
         id: String,
@@ -41,7 +42,7 @@ struct Exchange: Codable {
         encapsulationKey: Data? = nil,
         ciphertext: Data? = nil,
         cardProof: Data? = nil,
-        prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
+        pairing: PairingField? = nil
     ) {
         self.id = id
         self.token = token
@@ -51,7 +52,18 @@ struct Exchange: Codable {
         self.encapsulationKey = encapsulationKey
         self.ciphertext = ciphertext
         self.cardProof = cardProof
-        self.prekeyBatch = prekeyBatch
+        self.pairing = pairing
+    }
+
+    /// The `pairing` field of an identity message.
+    struct PairingField: Codable {
+        /// 15 one-time keys and a last-resort key.
+        let prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch
+        /// X9.63, 65 bytes: the pair's agreement key and its signing key.
+        let agreementKey: Data
+        let signingKey: Data
+        /// An ML-DSA-87 public key (2,592 bytes), from a phone that could make one. Nothing signs with it in 2.0.1.
+        let mldsaKey: Data?
     }
 
     enum Version: Int8, Codable {
