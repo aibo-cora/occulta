@@ -25,7 +25,15 @@ class ContactManager {
     var modelContext: ModelContext { self.modelExecutor.modelContext }
     
     private let cryptoManager: CryptoProtocol = Manager.Crypto()
-    
+
+    #if DEBUG
+    /// A test sets this to make the next `update(key:for:pairing:)` fail at its `save()`, after the card state, the tier, the
+    /// challenge, the retired rows and the new row have all changed: no other failure comes that late. Reset by that use.
+    @ObservationIgnored var failNextKeySave = false
+
+    struct InjectedKeySaveFault: Error, Equatable {}
+    #endif
+
     /// Prepare the Contacts system to return the names of matching people
     let keys = [
         CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
@@ -581,12 +589,15 @@ class ContactManager {
 
     /// Deletes every `Message.Draft` row and the whole `Drafts/` directory, including folders whose
     /// row is already gone. Part of Erase All Data (bugs.md Bug 179). Needs no key: it never opens a draft.
-    func deleteAllDrafts() throws {
+    ///
+    /// `root` is the directory removed, the real `Drafts/` unless a test gives its own: the tests run in one process, and
+    /// removing the real one takes the files of every other test that is writing there.
+    func deleteAllDrafts(root: URL = Message.Draft.attachmentsRoot) throws {
         for draft in try self.modelContext.fetch(FetchDescriptor<Message.Draft>()) {
             Message.Draft.delete(draft, in: self.modelContext)
         }
         try self.modelContext.save()
-        try? FileManager.default.removeItem(at: Message.Draft.attachmentsRoot)
+        try? FileManager.default.removeItem(at: root)
     }
 
     private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
@@ -703,6 +714,7 @@ extension ContactManager {
 
             #if DEBUG
             debugPrint("Updated key, owner hash = \(key.owner)")
+            if self.failNextKeySave { self.failNextKeySave = false; throw InjectedKeySaveFault() }
             #endif
 
             try self.modelContext.save()

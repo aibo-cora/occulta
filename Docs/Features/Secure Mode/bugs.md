@@ -15375,9 +15375,13 @@ Not changed, on purpose or open:
   it can change (the contact's card state, prekey record, tier and challenge state; each held row's `expiredOn` and pairing
   column) and puts it back before `rollback()`, and removes the new row. `failureAfterChangesIsRolledBack` makes the prekey
   record overflow, which throws after the card state has been rewritten, and fails without the restore (mutation run). It does
-  not reach the restore of the retired rows, the tier, the challenge state or the new row, or a failing final `save()`: nothing
-  makes those throw without a seam. The other `rollback()` calls (`PQmigration`, `KeyReseal+*`, `Vault+Manager+Backup`) were not
-  checked for the same thing. `rollback()` also discards any other pending change in the manager's context (a used one-time
+  not reach the restore of the retired rows, the tier, the challenge state or the new row, or a failing final `save()`. A DEBUG-only
+  flag, `ContactManager.failNextKeySave` (the `KeyReseal` fault-injection pattern, no code in Release), makes the final `save()`
+  throw, and `failureAtSaveIsRolledBack` covers the rest: with any one of the restores of the card state, prekey record, tier,
+  challenge column, retired row's `expiredOn` or retired row's pairing column removed, it fails (mutation run, 2026-11-09). Removing
+  the `removeAll` of the new row from the relationship does not fail it: `modelContext.delete(newRow)` on the next line takes it out
+  of the relationship, so that line is redundant on the Simulator's iOS 26 and is left as a guard. The other `rollback()` calls
+  (`PQmigration`, `KeyReseal+*`, `Vault+Manager+Backup`) were checked only by reading their callers (Bug 197). `rollback()` also discards any other pending change in the manager's context (a used one-time
   prekey whose save failed, before another save), as `PQmigration` does. **Decided 2026-11-07: documented, not fixed**
   (`Docs/General/decisions.md`, "A failed key save can drop a used one-time prekey's pending 'used' mark").
 - **Fixed 2026-11-09:** the attachment pass picked the new key from the first contact seen for an old key, so two records of one
@@ -15388,8 +15392,12 @@ Not changed, on purpose or open:
   60 ms at 10 contacts, 300 ms at 50 and 1.2 s at 200 on the Simulator, on the main actor. It now derives one contact's keys for each
   draft that holds a sealed file (about 7 to 14 ms each on the Simulator) and nothing for the others. Not timed on a device.
 - `PairingState` is a struct whose private initializer keeps the routing key and pair keys together, not an enum with one case.
-- Tests for `KeyExchange.save()`, `pairingNotDerived`, the confirmation note and the new "refused" screen do not exist; they need the
-  UI.
+- **Fixed 2026-11-09 (in part):** what Save does now lives in `KeyExchange.saveExchange`, which returns saved, refused or failed, and the
+  view only shows the result (`KeyExchangeSaveTests`: a pairing saved, a plain one, a routing key that can't be derived, a weaker
+  re-exchange refused, an unknown contact, no contact manager). The confirmation note and the refused screen as drawn still have no
+  test; they need the UI. `save()` used to report "saved" when the contact manager was nil, with nothing saved and the exchange's keys
+  discarded after it; it is now a failure with Retry. The manager comes from the environment and is not nil in the app's views, so this
+  is a safeguard.
 
 **Release notes line:** "Contacts you paired before this version can be upgraded by exchanging keys again in person; they show a
 small arrow until you do."
@@ -15475,7 +15483,14 @@ sites' comments still say the rollback restores.
 | 9 | not a call: the remedy text of the earlier restore-backup entry in this file ("restoreBackup checks everything, then writes once") | | | "On any failure, `modelContext.rollback()` discards the staged changes." |
 
 Sites 3–6 take the context as a parameter, so whether the objects they touched are used again after the throw depends on the
-caller (`LaunchSequence`); not read. Row 9 is a doc claim, not a call.
+caller. Read 2026-11-09, by reading only, no test run: sites 3, 5 and 6 are called from `LaunchSequence` with a `ModelContext`
+made for that one step and dropped after it (`resealContext`, `wrapContext`, `upgradeContext`), so no object outlives the failure
+and only the comments are wrong. Site 4, `rewrapVault`, is called from `VaultManager.rewrapVault` with `self.modelContext`, the
+manager's context for the whole session: after a failed save the rows hold the new-key bytes in memory, and a later edit of the same
+vault entry in that session would save them under the old key. That is the site with a real exposure; it needs a failed save at
+unlock and an edit before the next launch. A throwaway context is not a fix there on its own, because after a success the manager's
+context would hold stale old-key rows. Site 2 runs on the launch context, so a half-converted contact stays that way in memory until
+the next launch. Sites 7 and 8 are on the manager's context; 8 changes a live row. Row 9 is a doc claim, not a call.
 
 **What to explore.**
 

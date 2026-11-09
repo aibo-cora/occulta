@@ -280,6 +280,110 @@ struct StartPairingTests {
     }
 }
 
+// MARK: - What the Save button does
+
+@MainActor
+@Suite("Bug 196 — the confirmation screen's Save, and the outcome it shows", .serialized)
+struct KeyExchangeSaveTests {
+
+    private let alice = TestKeyManager()
+    private let bob   = TestKeyManager()
+
+    /// Alice's offer for an exchange with Bob, with pair keys and batches that validate, so the routing key derives.
+    private func aliceOffer() throws -> PairingOffer {
+        let ours = try PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
+        let theirs = try PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
+        var record = PrekeyRecord.empty
+        record.ownBatches = [ownBatch(id: 0xAA)]
+        var bobsRecord = PrekeyRecord.empty
+        bobsRecord.ownBatches = [ownBatch(id: 0xBB)]
+        return PairingOffer(
+            ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, ownBatchDigest: sentDigest(of: record),
+            peerBatch: PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: bobsRecord))), ours: ours,
+            theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
+            pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: SoftwareCardKeys())
+        )
+    }
+
+    private func payload(_ pairing: PairingOffer?, peerKey: Data? = nil) throws -> ExchangeManager.ExchangePhase.Payload {
+        .init(
+            fingerprint: Data(count: 32), classicalKey: try peerKey ?? self.bob.retrieveIdentity(), hybridResult: nil,
+            pairing: pairing, offeredPairing: true
+        )
+    }
+
+    @Test("Both phones sent pair keys: saved, with the routing key and pair keys the offer derives", .ambientTestKeyManager)
+    func savesAPairing() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+        let offer = try self.aliceOffer()
+        let expected = try #require(offer.routingKey(withPeer: self.bob.retrieveIdentity(), quantum: nil, using: self.alice))
+
+        let outcome = KeyExchange.saveExchange(try self.payload(offer), for: paired.identifier, in: cm, using: self.alice)
+
+        #expect(outcome == .saved)
+        #expect(cm.pairingState(for: paired) == .paired(routingKey: expected, keys: offer.pairKeys))
+        #expect(cm.nextSendSecrecy(for: paired.identifier) == .forwardSecret)
+    }
+
+    @Test("The peer sent no pair keys and none are held: saved as a plain pairing", .ambientTestKeyManager)
+    func savesAPlainPairing() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+
+        let outcome = KeyExchange.saveExchange(try self.payload(nil), for: paired.identifier, in: cm, using: self.alice)
+
+        #expect(outcome == .saved)
+        #expect(paired.contactPublicKeys?.count == 1)
+        #expect(cm.pairingState(for: paired) == .empty)
+    }
+
+    @Test("A routing key that can't be derived saves nothing", .ambientTestKeyManager)
+    func derivationFailureSavesNothing() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+
+        // A peer identity that is not a P-256 point: the identity ECDH has no answer.
+        let outcome = KeyExchange.saveExchange(try self.payload(try self.aliceOffer(), peerKey: Data(count: 64)), for: paired.identifier, in: cm, using: self.alice)
+
+        #expect(outcome == .failed)
+        #expect((paired.contactPublicKeys ?? []).isEmpty, "no key row, and so no pairing without a routing key")
+        #expect(try cm.prekeyRecord(for: paired).ownBatches.isEmpty)
+    }
+
+    @Test("A re-exchange that gives no pair keys to a pairing that has them is refused, and the old pairing stays", .ambientTestKeyManager)
+    func refusesAWeakerPairing() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+        let offer = try self.aliceOffer()
+        let expected = try #require(offer.routingKey(withPeer: self.bob.retrieveIdentity(), quantum: nil, using: self.alice))
+        #expect(KeyExchange.saveExchange(try self.payload(offer), for: paired.identifier, in: cm, using: self.alice) == .saved)
+        let current = try #require(paired.currentKey)
+
+        let outcome = KeyExchange.saveExchange(try self.payload(nil), for: paired.identifier, in: cm, using: self.alice)
+
+        #expect(outcome == .refusedWeaker)
+        #expect(paired.contactPublicKeys?.count == 1 && paired.currentKey === current && current.expiredOn == nil)
+        #expect(cm.pairingState(for: paired) == .paired(routingKey: expected, keys: offer.pairKeys))
+    }
+
+    @Test("A contact that is not in the book is a failure, not a save", .ambientTestKeyManager)
+    func unknownContactFails() throws {
+        let cm = try makeContactManager()
+
+        let outcome = KeyExchange.saveExchange(try self.payload(nil), for: UUID().uuidString, in: cm, using: self.alice)
+
+        #expect(outcome == .failed)
+    }
+
+    @Test("No contact manager is a failure, not a save, since the exchange's keys are discarded after a save", .ambientTestKeyManager)
+    func noContactManagerFails() throws {
+        let outcome = KeyExchange.saveExchange(try self.payload(try self.aliceOffer()), for: UUID().uuidString, in: nil, using: self.alice)
+
+        #expect(outcome == .failed)
+    }
+}
+
 // MARK: - The save
 
 @MainActor
@@ -375,6 +479,44 @@ struct PairingSaveTests {
         #expect(paired.contactPublicKeys?.count == 1 && paired.currentKey === current && current.expiredOn == nil)
         #expect(current.pairingEncrypted == sealedPairing)
         #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x01, count: 32), keys: samplePairKeys()))
+    }
+
+    @Test("A save that fails at the end puts back the card state, the tier, the challenge and the retired row, and drops the new row", .ambientTestKeyManager)
+    func failureAtSaveIsRolledBack() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x01, count: 32)), for: paired.identifier, pairing: offer())
+        let challenge = IdentityChallenge.OutstandingChallenge(nonce: Data(repeating: 1, count: 32), issuedAt: UInt64(Date().timeIntervalSince1970))
+        try cm.record(challenge, for: paired.identifier, now: Date())
+        let current = try #require(paired.currentKey)
+        let card = paired.introductionCardEncrypted
+        let record = paired.prekeyRecordEncrypted
+        let tier = paired.maxBundleVersion
+        let challenges = paired.challengeStateEncrypted
+        let sealedPairing = current.pairingEncrypted
+        try cm.modelContext.save()
+        #expect(cm.challenge(for: paired.identifier) != nil)
+
+        // Fails at the `save()`, after the retired row, the challenge, the card state, the tier and the new row have all changed.
+        cm.failNextKeySave = true
+        #expect(throws: ContactManager.InjectedKeySaveFault()) {
+            try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier, pairing: offer(own: ownBatch(id: 0x22)))
+        }
+
+        #expect(!cm.modelContext.hasChanges)
+        #expect(paired.introductionCardEncrypted == card, "the card state")
+        #expect(paired.prekeyRecordEncrypted == record, "the prekey record")
+        #expect(paired.maxBundleVersion == tier, "the tier")
+        #expect(paired.challengeStateEncrypted == challenges, "the challenge column")
+        #expect(cm.challenge(for: paired.identifier) != nil, "the outstanding challenge")
+        #expect(paired.contactPublicKeys?.count == 1, "the new row is gone")
+        #expect(paired.currentKey === current && current.expiredOn == nil, "the old row is current again")
+        #expect(current.pairingEncrypted == sealedPairing, "the old row's sealed pairing")
+        #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x01, count: 32), keys: samplePairKeys()))
+
+        // And the flag was used up: the same update now goes through.
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier, pairing: offer(own: ownBatch(id: 0x22)))
+        #expect(cm.pairingState(for: paired).routingKey == Data(repeating: 0x02, count: 32))
     }
 
     @Test("A re-pair replaces what the old phone gave us and retires our old batches", .ambientTestKeyManager)
