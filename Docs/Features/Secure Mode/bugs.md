@@ -14819,3 +14819,54 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 ### Guard
 
 `VaultRewrapUnlockTests.rowsOnNewKeyWithEpochOneAreRepaired`: a vault rewrapped, its epoch reset to `1 classical`, then unlocked: the epoch becomes 2, the process derives the Enclave-bound key, and every label and every real backup key reads back. It failed before the change.
+
+---
+
+## Bug 195 — After a revoke (`reset(identity:)`), a re-exchange with a changed key never fires `contactKeyRotated`, so the backup-piece re-send for that trustee waits on a conversation
+
+**Status:** Fixed on `v2.0.1/bug-195-revoke-rekey-event`, not yet merged. Filed 2026-11-03 while triaging Bug 194 (on the `v2.1.0` line). Reproduced by a test 2026-11-07.
+
+**Target:** `v2.0.1`, then forward-merged into `release/v2.1.0`, where the Bug 195 filing (written before this fix) will conflict with this entry. Resolve in favour of this one.
+
+### Severity: Medium
+
+A trustee who lost a phone, was revoked and then re-exchanged keys holds backup-key pieces sealed to a key they no longer have, and the owner's app shows them as confirmed. The re-send that repairs that is keyed off an event that didn't fire on this path. Not High: one trustee's piece of a k-of-n split, no confidentiality effect, and it repairs itself once a conversation with the trustee resumes. Not lower: nothing prompts that conversation, and the state shown meanwhile is wrong, in the lost-phone case revoke exists for.
+
+### What happens
+
+1. `reset(identity:)` writes `expiredOn` on the contact's last key and nothing else. No unexpired key is left.
+2. The re-exchange calls `update(key:for:)`. It computed `keyRotated` by comparing the new material with `contactPublicKeys?.last(where: { $0.expiredOn == nil })`. That is nil after step 1, so `keyRotated` stayed `false` whatever the new material was.
+3. `contactKeyRotated` wasn't sent. Its one listener (`OccultaApp.swift`, `.onReceive(self.contactManager.contactKeyRotated)`) calls `reconcileBackupPieces(keyChangedFor:)`, which re-splits the same backup key and queues a piece for the trustee's new key (Bug 141). `contactKeyUpdated` has no listener, so nothing else was lost.
+
+### Without the event, the unlock-time reconcile doesn't repair it
+
+`reconcileBackupPieces()` with no `keyChangedFor` re-sends a confirmed piece only when its watch row says `isAbsent == true`. Only `processInboundManifest` sets that, from the trustee's `custodyManifest`, and a sender drops both its shard operations and its manifest when it holds none of the recipient's one-time keys (`encryptGroupBundle`: `onFallback = hasShardContent && contactPrekey == nil`; a last-resort key counts as none). A revoked trustee's new phone holds none of ours until a few messages have passed between the two phones, every one sent by a person. So the gap has no upper bound and is silent: the piece reads confirmed throughout.
+
+With the event the records turn pending and a piece is queued at once, so the owner sees the truth.
+
+**On a build without Bug 194's fix (every 2.0.x), the piece still can't reach the trustee.** After the re-exchange our sends are sealed to the old phone's prekeys, which the new phone doesn't hold, so it can't open them. Per Bug 194's trace, if their old phone ran 2.0.0 or later it never recovers on its own. Our batch doesn't reach them either, so their new phone never sends the forward-secret message with a manifest that would confirm the piece. Until the contact is deleted and exchanged again (Bug 194's workaround), the piece stays pending. With Bug 194's fix (`release/v2.1.0`), the next send goes long-term, the new phone replies with a batch, and the piece is delivered on the first forward-secret message after that, without waiting for their manifest. Taken from Bug 194's trace; not re-traced on the 2.0.1 base.
+
+### Fix
+
+`update(key:for:)` compares the incoming material with the contact's most recent key record, `contactPublicKeys?.last`, expired or not. A first key still has nothing to compare with, the same material after a revoke is still not a change, and the first exchange after a revoke fires once: the next exchange of that material compares equal.
+
+The only records the old filter skipped are ones `reset` expired (and keys the v1 migration marked expired), so the event fires in no case where it didn't before except a re-exchange after a revoke.
+
+### Duress
+
+Nothing differs by depth. The event is sent at any depth; the listener reconciles the current depth's backup row only and does nothing at a depth with none, so a decoy depth re-sends at most its own pieces, as it does for a plain key rotation. Queued rows are depth-blind and padded to tiers (Bug 162).
+
+### Open, needs a decision
+
+- **Other depths.** The event reaches only the depth the exchange happened at. The others learn at their own unlock from the trustee's next manifest, which takes the conversation above. Closing that needs a per-trustee key marker in the backup record: new state, with a forensic and a duress cost.
+- **A revoked trustee still counts as confirmed** in the Vault's backup-ready state until the re-exchange. Whether a revoke should show their piece differently is undecided.
+- **WAL.** The re-split's row deletions leave delete records until the next unlock's checkpoint, as the rotate path does today.
+
+### Guard
+
+`RevokeRekeyEventTests` (runs anywhere, no Enclave): new material after a revoke sends `contactKeyRotated` once; the same material after a revoke doesn't; a second exchange of the new material doesn't send it again; two revokes before the re-exchange still send it once; new material with no revoke still sends it; a contact's first key sends nothing. The first, third and fourth fail without the fix.
+
+### Related
+
+- Bug 194 (`v2.1.0`): the same blind spot on the prekey record. It makes `reset` drop that state itself, and its `update(key:for:)` drop is gated on `keyRotated`, so this fix reaches it too; firing after `reset` finds nothing left to drop.
+- Bug 141: the re-send this event triggers.
