@@ -1328,7 +1328,8 @@ the share staging key.
 
 ## A draft attachment may be lost when two contact records share an identity key and only one has re-paired
 
-**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, narrow.
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. **Superseded 2026-11-09: fixed.** The pass now works draft by
+draft, so a draft's files move to its own recipient's current key (`bugs.md` Bug 196 addendum). Kept for the reasoning.
 
 **Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) moved the key a contact's attachments are sealed under, so
 `ContactManager.resealAttachmentKeys` moves the files that are still sealed under the old key: a draft to one contact and a
@@ -1385,7 +1386,9 @@ the pending marker on whatever the restore misses; a throwaway context for `upda
 
 ## An attachment can be unreadable until the one-time reseal reaches it, after the update
 
-**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, temporary.
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, temporary. *Revisited 2026-11-09:* the pass now
+works draft by draft and does not walk `tmp/`, which the app empties at every launch, so "a received attachment" below does not apply;
+the window for a draft file is unchanged.
 
 **Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) changed the base key a contact's attachments are sealed under.
 From the first run of the new build `fileEncryptionKey(for:)` returns the new key, so new files are sealed under it at once. Files

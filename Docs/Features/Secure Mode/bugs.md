@@ -15329,12 +15329,13 @@ Not changed, on purpose or open:
   checked for the same thing. `rollback()` also discards any other pending change in the manager's context (a used one-time
   prekey whose save failed, before another save), as `PQmigration` does. **Decided 2026-11-07: documented, not fixed**
   (`Docs/General/decisions.md`, "A failed key save can drop a used one-time prekey's pending 'used' mark").
-- The attachment pass picks the new key from the first contact seen for an old key. Two records of the same identity key where
-  one has rotated would move a draft file to the other's new key; one draft attachment, and it needs a twin record. **Decided
-  2026-11-07: documented, not fixed** (`Docs/General/decisions.md`, "A draft attachment may be lost when two contact records share an
-  identity key and only one has re-paired").
-- "Costs nothing" for a phone with nothing to move is true only with no sealed file; a phone with any draft attachment derives the
-  keys at each unlock (the doc comment says so now).
+- **Fixed 2026-11-09:** the attachment pass picked the new key from the first contact seen for an old key, so two records of one
+  identity key, one of them re-keyed, could move a draft file to the other's key. It now works draft by draft: the draft row names its
+  recipient, and the draft's files move to that contact's current key (`twinRecordsEachGetTheirOwnKey`). This replaces the 2026-11-07
+  decision to leave it (`Docs/General/decisions.md`).
+- **Fixed 2026-11-09:** the pass derived keys for every contact at every unlock whenever any sealed file existed, which measured about
+  60 ms at 10 contacts, 300 ms at 50 and 1.2 s at 200 on the Simulator, on the main actor. It now derives one contact's keys for each
+  draft that holds a sealed file (about 7 to 14 ms each on the Simulator) and nothing for the others. Not timed on a device.
 - `PairingState` is a struct whose private initializer keeps the routing key and pair keys together, not an enum with one case.
 - Tests for `KeyExchange.save()`, `pairingNotDerived`, the confirmation note and the new "refused" screen do not exist; they need the
   UI.
@@ -15361,18 +15362,21 @@ identity keys can compute it. The key is local to the phone and nothing of it is
 identity keys only, so a re-pair (new pair keys, same identity key) leaves every file readable. `fileEncryptionKey` reads the current
 key row, else the latest, instead of "the last".
 
-**The files.** Two places keep files sealed under the old key: a draft to one contact (`Application Support/Drafts/<id>/`) and a
-received attachment not yet opened (`tmp/`). `ContactManager.resealAttachmentKeys` moves them, modelled on `resealDraftFiles`: a file
-is found by trial, streamed to a temporary, read back and renamed. It covers every non-deleted contact at every depth, tries every
-key row a contact has held and moves a file to the current row's key, leaves plaintext, other-key and already-moved files alone,
-removes a killed run's temporary, and leaves a file that will not move as it was while it goes on to the next. No marker: a file already moved no
-longer opens under an old key, so a second run changes nothing. It runs on unlock beside the other sweeps and yields after every file.
-A file it cannot move is counted, left as it was, and does not hold back the files after it.
+**The files.** One place keeps files sealed under the old key: a draft to one contact (`Application Support/Drafts/<id>/`). A received
+attachment is written under `tmp/`, which `OccultaApp.init` empties at every launch before the first unlock, so none sealed under the
+old key can be there and `tmp/` is not walked. `ContactManager.resealAttachmentKeys` works draft by draft, modelled on
+`resealDraftFiles`: the draft row (every depth, whatever is visible) names its recipient, the pass derives that one contact's keys, and
+the draft's files are found by trial, streamed to a temporary, read back and renamed to that contact's current key. It tries every key
+row the contact has held, leaves plaintext, other-key and already-moved files alone, skips a group draft (compose staging key, which
+this fix did not change), a contact with no key, a recipient that will not open and a folder with no draft row, removes a killed run's
+temporary, and leaves a file that will not move as it was while it goes on to the next. No marker: a file already moved no longer opens
+under an old key, so a second run changes nothing. It runs on unlock beside the other sweeps and yields after every file. A file it
+cannot move is counted, left as it was, and does not hold back the files after it.
 
 **Cost.** It rewrites draft files, so their modification times change at the first launch after the update (the same at every depth,
 and not in the database). A very large attachment holds the main actor for as long as its one streamed pass takes, and a draft opened
-at unlock before the run reaches it may not open until the run has (drafts are listed first; decided 2026-11-07: documented, not fixed, `Docs/General/decisions.md`, "An attachment can be unreadable until the one-time reseal reaches it, after the update"). A phone with nothing to move pays for a
-directory listing, not for a key derivation per contact. Tests:
+at unlock before the run reaches it may not open until the run has (drafts are listed first; decided 2026-11-07: documented, not fixed, `Docs/General/decisions.md`, "An attachment can be unreadable until the one-time reseal reaches it, after the update"). A phone with no sealed draft file pays for the
+draft rows and directory listings; one with sealed draft files derives one contact's keys per such draft at each unlock. Tests:
 `AttachmentKeyResealTests`.
 
 ---
