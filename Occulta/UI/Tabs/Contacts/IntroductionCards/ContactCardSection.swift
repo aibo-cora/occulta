@@ -167,7 +167,7 @@ struct ContactCardSection: View {
 
     private func cancelCard() {
         do {
-            try self.contactManager.cancelCard(for: self.profile)
+            try self.contactManager.cancelCard(for: self.profile.identifier)
             self.failure = nil
         } catch {
             self.failure = IntroCardCopy.cancelFailed
@@ -176,7 +176,7 @@ struct ContactCardSection: View {
 
     private func discardConversation() {
         do {
-            try self.contactManager.discardCardConversation(for: self.profile)
+            try self.contactManager.discardCardConversation(for: self.profile.identifier)
             self.failure = nil
         } catch {
             self.failure = IntroCardCopy.discardFailed
@@ -244,7 +244,7 @@ struct CardCreateSheet: View {
 
     private func create() {
         do {
-            self.expiresAt = try self.contactManager.createCard(for: self.profile).expiresAt
+            self.expiresAt = try self.contactManager.createCard(for: self.profile.identifier).expiresAt
             self.failure = nil
         } catch ContactManager.CardError.unsupported {
             self.failure = IntroCardCopy.unavailable
@@ -308,7 +308,7 @@ struct CardShareSheet: View {
 
     private func share() {
         do {
-            self.shareFile = ShareFile(url: try self.contactManager.cardShareFile(for: self.profile))
+            self.shareFile = ShareFile(url: try self.contactManager.cardShareFile(for: self.profile.identifier))
             self.failure = nil
         } catch {
             self.failure = IntroCardCopy.shareFailed

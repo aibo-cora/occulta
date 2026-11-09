@@ -172,7 +172,7 @@ struct CardCreateTests {
         let bob = try Phone()
         let contact = try bob.contact()
 
-        let card = try bob.cm.createCard(for: contact, now: t0)
+        let card = try bob.cm.createCard(for: contact.identifier, now: t0)
 
         guard case .issued(let stored, let agreementBlob, let signingBlob, let mlkemBlob, let expiresAt) = contact.cardState else {
             Issue.record("the field should hold an issued card")
@@ -193,7 +193,7 @@ struct CardCreateTests {
     func savedToStore() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        let card = try bob.cm.createCard(for: contact, now: t0)
+        let card = try bob.cm.createCard(for: contact.identifier, now: t0)
 
         let reread = try ModelContext(bob.container).fetch(FetchDescriptor<Contact.Profile>())
         #expect(reread.compactMap { issuedCard($0.cardState) } == [card.encoded])
@@ -204,7 +204,7 @@ struct CardCreateTests {
         let bob = try Phone()
         let contact = try bob.contact()
 
-        let card = try bob.cm.createCard(for: contact, now: Date(timeIntervalSince1970: 1_800_000_000.75))
+        let card = try bob.cm.createCard(for: contact.identifier, now: Date(timeIntervalSince1970: 1_800_000_000.75))
 
         #expect(card.expiresAt == Date(timeIntervalSince1970: 1_800_086_400))
         #expect(card.expiresAt.timeIntervalSince1970.truncatingRemainder(dividingBy: 1) == 0)
@@ -218,7 +218,7 @@ struct CardCreateTests {
         try bob.cm.store(kind == "imported" ? importedState(expiresAt: t0 + day, sent: false) : conversationState(), for: contact)
         let before = contact.introductionCardEncrypted
 
-        #expect(throws: ContactManager.CardError.contactNotPending) { try bob.cm.createCard(for: contact, now: t0) }
+        #expect(throws: ContactManager.CardError.contactNotPending) { try bob.cm.createCard(for: contact.identifier, now: t0) }
         #expect(contact.introductionCardEncrypted == before)
     }
 
@@ -230,7 +230,7 @@ struct CardCreateTests {
         try bob.cm.modelContext.save()
         #expect(contact.hasInPersonKeys, "precondition")
 
-        #expect(throws: ContactManager.CardError.contactNotPending) { try bob.cm.createCard(for: contact, now: t0) }
+        #expect(throws: ContactManager.CardError.contactNotPending) { try bob.cm.createCard(for: contact.identifier, now: t0) }
         #expect(contact.cardState == .empty)
     }
 
@@ -239,7 +239,7 @@ struct CardCreateTests {
         let bob = try Phone(withPostQuantum: false)
         let contact = try bob.contact()
 
-        #expect(throws: ContactManager.CardError.unsupported) { try bob.cm.createCard(for: contact, now: t0) }
+        #expect(throws: ContactManager.CardError.unsupported) { try bob.cm.createCard(for: contact.identifier, now: t0) }
         #expect(contact.cardState == .empty)
     }
 
@@ -247,13 +247,13 @@ struct CardCreateTests {
     func createReplaces() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        let first = try bob.cm.createCard(for: contact, now: t0)
+        let first = try bob.cm.createCard(for: contact.identifier, now: t0)
         guard case .issued(_, let firstAgreement, let firstSigning, let firstMLKEM, _) = contact.cardState else {
             Issue.record("precondition: issued")
             return
         }
 
-        let second = try bob.cm.createCard(for: contact, now: t0 + hour)
+        let second = try bob.cm.createCard(for: contact.identifier, now: t0 + hour)
 
         #expect(second.encoded != first.encoded)
         guard case .issued(let card, let agreement, let signing, let mlkem, _) = contact.cardState else {
@@ -269,11 +269,11 @@ struct CardCreateTests {
     func failureKeepsPrevious() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        let first = try bob.cm.createCard(for: contact, now: t0)
+        let first = try bob.cm.createCard(for: contact.identifier, now: t0)
         let before = try #require(contact.introductionCardEncrypted)
 
         bob.keys.failing = true
-        #expect(throws: SoftwareCardKeys.Failure.injected) { try bob.cm.createCard(for: contact, now: t0 + hour) }
+        #expect(throws: SoftwareCardKeys.Failure.injected) { try bob.cm.createCard(for: contact.identifier, now: t0 + hour) }
         bob.keys.failing = false
 
         #expect(contact.introductionCardEncrypted == before, "byte for byte")
@@ -287,7 +287,7 @@ struct CardCreateTests {
         let before = try #require(contact.introductionCardEncrypted)
 
         bob.keys.failing = true
-        #expect(throws: SoftwareCardKeys.Failure.injected) { try bob.cm.createCard(for: contact, now: t0) }
+        #expect(throws: SoftwareCardKeys.Failure.injected) { try bob.cm.createCard(for: contact.identifier, now: t0) }
 
         #expect(contact.introductionCardEncrypted == before)
         #expect(contact.cardState == .empty)
@@ -299,10 +299,10 @@ struct CardCreateTests {
         let contact = try bob.contact()
         let empty = try #require(contact.introductionCardEncrypted).count
 
-        try bob.cm.createCard(for: contact, now: t0)
+        try bob.cm.createCard(for: contact.identifier, now: t0)
         #expect(contact.introductionCardEncrypted?.count == empty)
 
-        try bob.cm.cancelCard(for: contact)
+        try bob.cm.cancelCard(for: contact.identifier)
         #expect(contact.introductionCardEncrypted?.count == empty)
     }
 
@@ -310,9 +310,9 @@ struct CardCreateTests {
     func cancel() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        try bob.cm.createCard(for: contact, now: t0)
+        try bob.cm.createCard(for: contact.identifier, now: t0)
 
-        try bob.cm.cancelCard(for: contact)
+        try bob.cm.cancelCard(for: contact.identifier)
 
         #expect(contact.cardState == .empty)
         #expect(try bob.cm.ownIssuedAgreementKeys().isEmpty)
@@ -322,9 +322,9 @@ struct CardCreateTests {
     func shareFile() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        let card = try bob.cm.createCard(for: contact, now: t0)
+        let card = try bob.cm.createCard(for: contact.identifier, now: t0)
 
-        let url = try bob.cm.cardShareFile(for: contact)
+        let url = try bob.cm.cardShareFile(for: contact.identifier)
         defer { try? FileManager.default.removeItem(at: url) }
 
         #expect(url.lastPathComponent.range(of: "^[0-9a-f]{12}$", options: .regularExpression) != nil, "\(url.lastPathComponent)")
@@ -337,10 +337,10 @@ struct CardCreateTests {
     func shareFileNamesDiffer() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        try bob.cm.createCard(for: contact, now: t0)
+        try bob.cm.createCard(for: contact.identifier, now: t0)
 
-        let first  = try bob.cm.cardShareFile(for: contact)
-        let second = try bob.cm.cardShareFile(for: contact)
+        let first  = try bob.cm.cardShareFile(for: contact.identifier)
+        let second = try bob.cm.cardShareFile(for: contact.identifier)
         defer { try? FileManager.default.removeItem(at: first); try? FileManager.default.removeItem(at: second) }
 
         #expect(first != second)
@@ -356,19 +356,19 @@ struct CardCreateTests {
         default:             break
         }
 
-        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact) }
+        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact.identifier) }
     }
 
     @Test("An expired card can't be shared, before the sweep has cleared it", .ambientTestKeyManager)
     func shareRefusesExpired() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        let card = try bob.cm.createCard(for: contact, now: t0)
+        let card = try bob.cm.createCard(for: contact.identifier, now: t0)
 
-        let lastSecond = try bob.cm.cardShareFile(for: contact, now: card.expiresAt - 1)
+        let lastSecond = try bob.cm.cardShareFile(for: contact.identifier, now: card.expiresAt - 1)
         try? FileManager.default.removeItem(at: lastSecond)
-        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact, now: card.expiresAt) }
-        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact, now: card.expiresAt + day) }
+        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact.identifier, now: card.expiresAt) }
+        #expect(throws: ContactManager.CardError.noIssuedCard) { try bob.cm.cardShareFile(for: contact.identifier, now: card.expiresAt + day) }
         #expect(issuedCard(contact.cardState) == card.encoded, "refusing changes nothing: the sweep clears it")
     }
 
@@ -377,8 +377,8 @@ struct CardCreateTests {
         let bob = try Phone()
         let visible = try bob.contact("Visible")
         let hidden  = try bob.contact("Hidden")
-        let first  = try bob.cm.createCard(for: visible, now: t0)
-        let second = try bob.cm.createCard(for: hidden, now: t0)
+        let first  = try bob.cm.createCard(for: visible.identifier, now: t0)
+        let second = try bob.cm.createCard(for: hidden.identifier, now: t0)
         hidden.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
         try bob.cm.modelContext.save()
         bob.cm.security.applyVerifyState(for: .duress)
@@ -402,16 +402,16 @@ struct CardUnreadableFieldTests {
     @Test("Display reads it as empty; a write that would replace it throws, and the field stays", .ambientTestKeyManager)
     func createAndImportRefuse() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let contact = try carol.contact("Bob")
         self.corrupt(contact)
         let field = contact.introductionCardEncrypted
 
         #expect(contact.cardState == .empty, "display still reads it as empty")
         #expect(throws: ContactManager.CardError.fieldUnreadable) { try carol.cm.cardStateForWrite(of: contact) }
-        #expect(throws: ContactManager.CardError.fieldUnreadable) { try carol.cm.createCard(for: contact, now: t0) }
+        #expect(throws: ContactManager.CardError.fieldUnreadable) { try carol.cm.createCard(for: contact.identifier, now: t0) }
         #expect(throws: ContactManager.CardError.fieldUnreadable) {
-            try carol.cm.importCard(card.encoded, into: contact, newContactName: nil, now: t0)
+            try carol.cm.importCard(card.encoded, into: contact.identifier, newContactName: nil, now: t0)
         }
         #expect(contact.introductionCardEncrypted == field, "nothing replaced it")
     }
@@ -459,14 +459,14 @@ struct CardReimportTests {
           .ambientTestKeyManager, arguments: [(false, 0.0), (true, 0.0), (true, 2 * day)])
     func sameContact(sent: Bool, after: TimeInterval) throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let contact = try carol.contact("Bob")
         try carol.cm.store(carolHolding(card, sent: sent), for: contact)
         try carol.cm.modelContext.save()
         let field  = contact.introductionCardEncrypted
         let record = contact.prekeyRecordEncrypted
 
-        let outcome = try carol.cm.importCard(card.encoded, into: contact, newContactName: nil, now: t0 + hour + after)
+        let outcome = try carol.cm.importCard(card.encoded, into: contact.identifier, newContactName: nil, now: t0 + hour + after)
 
         #expect(outcome == .imported(contactIdentifier: contact.identifier))
         #expect(contact.introductionCardEncrypted == field, "the field is byte-identical: no new keys")
@@ -477,7 +477,7 @@ struct CardReimportTests {
           .ambientTestKeyManager, arguments: [true, false])
     func otherTarget(intoExisting: Bool) throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let holder = try carol.contact("Bob")
         let other  = try carol.contact("Pat")
         try carol.cm.store(carolHolding(card, sent: true), for: holder)
@@ -485,7 +485,7 @@ struct CardReimportTests {
         let otherField = other.introductionCardEncrypted
 
         let outcome = try carol.cm.importCard(
-            card.encoded, into: intoExisting ? other : nil, newContactName: intoExisting ? nil : "Bob again", now: t0 + hour
+            card.encoded, into: intoExisting ? other.identifier : nil, newContactName: intoExisting ? nil : "Bob again", now: t0 + hour
         )
 
         #expect(outcome == .imported(contactIdentifier: holder.identifier))
@@ -496,7 +496,7 @@ struct CardReimportTests {
     @Test("Once Bob has replied: Carol's conversation holds the card, so it opens the contact", .ambientTestKeyManager)
     func conversation() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let contact = try carol.contact("Bob")
         try carol.cm.store(.conversation(
             agreementKey: randomBytes(32), signingKey: randomBytes(32), peerAgreementKey: card.agreementKey,
@@ -504,7 +504,7 @@ struct CardReimportTests {
         ), for: contact)
         let field = contact.introductionCardEncrypted
 
-        #expect(try carol.cm.importCard(card.encoded, into: contact, newContactName: nil, now: t0) == .imported(contactIdentifier: contact.identifier))
+        #expect(try carol.cm.importCard(card.encoded, into: contact.identifier, newContactName: nil, now: t0) == .imported(contactIdentifier: contact.identifier))
         #expect(contact.introductionCardEncrypted == field)
     }
 
@@ -512,7 +512,7 @@ struct CardReimportTests {
           .ambientTestKeyManager)
     func hiddenHolder() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let hidden = try carol.contact("Bob")
         try carol.cm.store(carolHolding(card, sent: true), for: hidden)
         hidden.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
@@ -533,7 +533,7 @@ struct CardReimportTests {
         let carol = try Phone()
         let issuer = try CardTestIssuer(expiresAt: t0 + 365 * day)
         let contact = try carol.contact("Bob")
-        try carol.cm.importCard(issuer.card.encoded, into: contact, newContactName: nil, now: t0)
+        try carol.cm.importCard(issuer.card.encoded, into: contact.identifier, newContactName: nil, now: t0)
         guard case .imported(_, _, _, _, _, _, let expiresAt, _) = contact.cardState else { Issue.record("should import"); return }
         #expect(expiresAt == t0 + 2 * day)
 
@@ -544,8 +544,8 @@ struct CardReimportTests {
     @Test("CardRules.holds: these bytes while waiting, the card's key in Carol's conversation, nothing else", .ambientTestKeyManager)
     func rule() throws {
         let bob = try Phone()
-        let card  = try bob.cm.createCard(for: try bob.contact(), now: t0)
-        let other = try bob.cm.createCard(for: try bob.contact("Other"), now: t0)
+        let card  = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
+        let other = try bob.cm.createCard(for: try bob.contact("Other").identifier, now: t0)
 
         #expect(CardRules.holds(carolHolding(card, sent: false), card: card))
         #expect(!CardRules.holds(carolHolding(other, sent: false), card: card))
@@ -576,11 +576,11 @@ struct CardImportTests {
     func importIntoPending() throws {
         let bob = try Phone(), carol = try Phone()
         let bobContact = try bob.contact("Carol")
-        let card = try bob.cm.createCard(for: bobContact, now: t0)
+        let card = try bob.cm.createCard(for: bobContact.identifier, now: t0)
         guard case .issued(_, _, _, let bobMLKEM, _) = bobContact.cardState else { Issue.record("precondition"); return }
         let carolContact = try carol.contact("Bob")
 
-        let outcome = try carol.cm.importCard(card.encoded, into: carolContact, newContactName: nil, now: t0 + hour)
+        let outcome = try carol.cm.importCard(card.encoded, into: carolContact.identifier, newContactName: nil, now: t0 + hour)
 
         #expect(outcome == .imported(contactIdentifier: carolContact.identifier))
         guard case .imported(let peerCard, let agreement, let signing, let mlkem, let ss1, let ct1, let expiresAt, let sent) = carolContact.cardState else {
@@ -601,10 +601,10 @@ struct CardImportTests {
     @Test("Carol's contact holds a pending own prekey batch afterwards", .ambientTestKeyManager, .enabled(if: enclave))
     func importMakesPendingBatch() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let carolContact = try carol.contact()
 
-        try carol.cm.importCard(card.encoded, into: carolContact, newContactName: nil, now: t0)
+        try carol.cm.importCard(card.encoded, into: carolContact.identifier, newContactName: nil, now: t0)
 
         let record = try carol.cm.prekeyRecord(for: carolContact)
         #expect(record.ownBatches.count == 1)
@@ -616,7 +616,7 @@ struct CardImportTests {
           .ambientTestKeyManager, .enabled(if: enclave))
     func importIntoNewContact() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let emptyLength = try #require(try carol.contact("Existing").introductionCardEncrypted).count
 
         let outcome = try carol.cm.importCard(card.encoded, into: nil, newContactName: "  Bob  ", now: t0)
@@ -634,16 +634,16 @@ struct CardImportTests {
     func replace() throws {
         let bob = try Phone(), carol = try Phone()
         let bobContact = try bob.contact()
-        let first = try bob.cm.createCard(for: bobContact, now: t0)
+        let first = try bob.cm.createCard(for: bobContact.identifier, now: t0)
         let carolContact = try carol.contact()
-        try carol.cm.importCard(first.encoded, into: carolContact, newContactName: nil, now: t0)
+        try carol.cm.importCard(first.encoded, into: carolContact.identifier, newContactName: nil, now: t0)
         guard case .imported(_, let oldAgreement, let oldSigning, let oldMLKEM, let oldSS1, _, _, _) = carolContact.cardState else {
             Issue.record("precondition"); return
         }
         let oldBatchID = try #require(try carol.cm.prekeyRecord(for: carolContact).ownBatches.first?.id)
 
-        let second = try bob.cm.createCard(for: bobContact, now: t0 + hour)
-        let outcome = try carol.cm.importCard(second.encoded, into: carolContact, newContactName: nil, now: t0 + hour)
+        let second = try bob.cm.createCard(for: bobContact.identifier, now: t0 + hour)
+        let outcome = try carol.cm.importCard(second.encoded, into: carolContact.identifier, newContactName: nil, now: t0 + hour)
 
         #expect(outcome == .imported(contactIdentifier: carolContact.identifier))
         guard case .imported(let peerCard, let agreement, let signing, let mlkem, let ss1, _, _, _) = carolContact.cardState else {
@@ -661,12 +661,12 @@ struct CardImportTests {
     @Test("A contact already talking is refused", .ambientTestKeyManager)
     func alreadyTalking() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let carolContact = try carol.contact()
         try carol.cm.store(conversationState(), for: carolContact)
         let before = carolContact.introductionCardEncrypted
 
-        #expect(try carol.cm.importCard(card.encoded, into: carolContact, newContactName: nil, now: t0) == .refused(.alreadyTalking))
+        #expect(try carol.cm.importCard(card.encoded, into: carolContact.identifier, newContactName: nil, now: t0) == .refused(.alreadyTalking))
         #expect(carolContact.introductionCardEncrypted == before)
     }
 
@@ -675,10 +675,10 @@ struct CardImportTests {
         let bob = try Phone()
         let issuedOn = try bob.contact("Issued")
         let other = try bob.contact("Other")
-        let card = try bob.cm.createCard(for: issuedOn, now: t0)
+        let card = try bob.cm.createCard(for: issuedOn.identifier, now: t0)
 
-        #expect(try bob.cm.importCard(card.encoded, into: other, newContactName: nil, now: t0) == .refused(.ownCard))
-        #expect(try bob.cm.importCard(card.encoded, into: issuedOn, newContactName: nil, now: t0) == .refused(.ownCard))
+        #expect(try bob.cm.importCard(card.encoded, into: other.identifier, newContactName: nil, now: t0) == .refused(.ownCard))
+        #expect(try bob.cm.importCard(card.encoded, into: issuedOn.identifier, newContactName: nil, now: t0) == .refused(.ownCard))
         #expect(try bob.cm.importCard(card.encoded, into: nil, newContactName: "Me", now: t0) == .refused(.ownCard))
         #expect(try bob.cm.fetchAllContacts().count == 2, "a refusal creates no contact")
         #expect(other.cardState == .empty)
@@ -689,37 +689,37 @@ struct CardImportTests {
         let bob = try Phone()
         let hidden = try bob.contact("Hidden")
         let other = try bob.contact("Other")
-        let card = try bob.cm.createCard(for: hidden, now: t0)
+        let card = try bob.cm.createCard(for: hidden.identifier, now: t0)
         hidden.visibleThroughDepth = try DepthCodec.encode(0).encrypt()
         try bob.cm.modelContext.save()
         bob.cm.security.applyVerifyState(for: .duress)
         #expect(!hidden.isVisible(atDepth: bob.cm.security.currentDepth), "precondition: hidden at this depth")
 
-        #expect(try bob.cm.importCard(card.encoded, into: other, newContactName: nil, now: t0) == .refused(.ownCard))
+        #expect(try bob.cm.importCard(card.encoded, into: other.identifier, newContactName: nil, now: t0) == .refused(.ownCard))
     }
 
     @Test("An expired card is refused", .ambientTestKeyManager)
     func expired() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let carolContact = try carol.contact()
 
-        #expect(try carol.cm.importCard(card.encoded, into: carolContact, newContactName: nil, now: card.expiresAt) == .refused(.expired))
-        #expect(try carol.cm.importCard(card.encoded, into: carolContact, newContactName: nil, now: t0 + 2 * day) == .refused(.expired))
+        #expect(try carol.cm.importCard(card.encoded, into: carolContact.identifier, newContactName: nil, now: card.expiresAt) == .refused(.expired))
+        #expect(try carol.cm.importCard(card.encoded, into: carolContact.identifier, newContactName: nil, now: t0 + 2 * day) == .refused(.expired))
         #expect(carolContact.cardState == .empty)
     }
 
     @Test("A contact with in-person keys is refused", .ambientTestKeyManager)
     func inPersonKeysRefused() throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let carolContact = try carol.contact()
         carolContact.contactPublicKeys = [try inPersonKey()]
         try carol.cm.modelContext.save()
         #expect(carolContact.hasInPersonKeys, "precondition")
 
         #expect(throws: ContactManager.CardError.contactNotPending) {
-            try carol.cm.importCard(card.encoded, into: carolContact, newContactName: nil, now: t0)
+            try carol.cm.importCard(card.encoded, into: carolContact.identifier, newContactName: nil, now: t0)
         }
         #expect(carolContact.cardState == .empty)
     }
@@ -728,23 +728,23 @@ struct CardImportTests {
     func notACard() throws {
         let carol = try Phone()
         let carolContact = try carol.contact()
-        #expect(try carol.cm.importCard(randomBytes(1_768), into: carolContact, newContactName: nil, now: t0) == .notACard)
-        #expect(try carol.cm.importCard(randomBytes(64), into: carolContact, newContactName: nil, now: t0) == .notACard)
+        #expect(try carol.cm.importCard(randomBytes(1_768), into: carolContact.identifier, newContactName: nil, now: t0) == .notACard)
+        #expect(try carol.cm.importCard(randomBytes(64), into: carolContact.identifier, newContactName: nil, now: t0) == .notACard)
         #expect(try carol.cm.importCard(Data(), into: nil, newContactName: "X", now: t0) == .notACard)
         #expect(carolContact.cardState == .empty)
 
         let old = try Phone(withPostQuantum: false)
-        #expect(try old.cm.importCard(randomBytes(1_768), into: try old.contact(), newContactName: nil, now: t0) == .notACard)
+        #expect(try old.cm.importCard(randomBytes(1_768), into: try old.contact().identifier, newContactName: nil, now: t0) == .notACard)
     }
 
     @Test("Without a post-quantum provider, a real card is unsupported and nothing changes", .ambientTestKeyManager)
     func unsupported() throws {
         let bob = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
         let old = try Phone(withPostQuantum: false)
         let oldContact = try old.contact()
 
-        #expect(try old.cm.importCard(card.encoded, into: oldContact, newContactName: nil, now: t0) == .unsupported)
+        #expect(try old.cm.importCard(card.encoded, into: oldContact.identifier, newContactName: nil, now: t0) == .unsupported)
         #expect(try old.cm.importCard(card.encoded, into: nil, newContactName: "Bob", now: t0) == .unsupported)
         #expect(oldContact.cardState == .empty)
         #expect(try old.cm.fetchAllContacts().count == 1)
@@ -754,7 +754,7 @@ struct CardImportTests {
           arguments: [nil, "", "   \n"] as [String?])
     func nameRequired(_ name: String?) throws {
         let bob = try Phone(), carol = try Phone()
-        let card = try bob.cm.createCard(for: try bob.contact(), now: t0)
+        let card = try bob.cm.createCard(for: try bob.contact().identifier, now: t0)
 
         #expect(throws: ContactManager.CardError.newContactNameMissing) {
             try carol.cm.importCard(card.encoded, into: nil, newContactName: name, now: t0)
@@ -772,11 +772,11 @@ struct CardImportTests {
         let alice = try Phone(), bob = try Phone()
         let aliceContact = try alice.contact("Bob")
         let bobContact   = try bob.contact("Alice")
-        let aliceCard = try alice.cm.createCard(for: aliceContact, now: t0)
-        let bobCard   = try bob.cm.createCard(for: bobContact, now: t0)
+        let aliceCard = try alice.cm.createCard(for: aliceContact.identifier, now: t0)
+        let bobCard   = try bob.cm.createCard(for: bobContact.identifier, now: t0)
 
-        let aliceOutcome = try alice.cm.importCard(bobCard.encoded, into: aliceContact, newContactName: nil, now: t0 + hour)
-        let bobOutcome   = try bob.cm.importCard(aliceCard.encoded, into: bobContact, newContactName: nil, now: t0 + hour)
+        let aliceOutcome = try alice.cm.importCard(bobCard.encoded, into: aliceContact.identifier, newContactName: nil, now: t0 + hour)
+        let bobOutcome   = try bob.cm.importCard(aliceCard.encoded, into: bobContact.identifier, newContactName: nil, now: t0 + hour)
 
         let aliceWins = bytewiseLess(aliceCard.agreementKey, bobCard.agreementKey)
         let winner = aliceWins ? aliceCard : bobCard
@@ -811,8 +811,8 @@ struct CardImportTests {
         for _ in 0..<64 where low == nil {
             let a = try Phone(), b = try Phone()
             let aContact = try a.contact(), bContact = try b.contact()
-            let aCard = try a.cm.createCard(for: aContact, now: t0)
-            let bCard = try b.cm.createCard(for: bContact, now: t0)
+            let aCard = try a.cm.createCard(for: aContact.identifier, now: t0)
+            let bCard = try b.cm.createCard(for: bContact.identifier, now: t0)
             if bytewiseLess(aCard.agreementKey, bCard.agreementKey) {
                 low = (a, aContact, aCard); high = (b, bContact, bCard)
             } else {
@@ -822,8 +822,8 @@ struct CardImportTests {
         let (lowPhone, lowContact, lowCard) = try #require(low)
         let (highPhone, highContact, highCard) = try #require(high)
 
-        #expect(try lowPhone.cm.importCard(highCard.encoded, into: lowContact, newContactName: nil, now: t0) == .refused(.ownCardWins))
-        #expect(try highPhone.cm.importCard(lowCard.encoded, into: highContact, newContactName: nil, now: t0)
+        #expect(try lowPhone.cm.importCard(highCard.encoded, into: lowContact.identifier, newContactName: nil, now: t0) == .refused(.ownCardWins))
+        #expect(try highPhone.cm.importCard(lowCard.encoded, into: highContact.identifier, newContactName: nil, now: t0)
                 == .imported(contactIdentifier: highContact.identifier))
 
         #expect(issuedCard(lowContact.cardState) == lowCard.encoded, "the lower card stays issued")
@@ -849,7 +849,7 @@ struct CardSweepTests {
     func expiredIssued() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        let card = try bob.cm.createCard(for: contact, now: t0)
+        let card = try bob.cm.createCard(for: contact.identifier, now: t0)
 
         try bob.cm.sweepCards(now: card.expiresAt)
 
@@ -861,7 +861,7 @@ struct CardSweepTests {
     func unexpiredIssued() throws {
         let bob = try Phone()
         let contact = try bob.contact()
-        let card = try bob.cm.createCard(for: contact, now: t0)
+        let card = try bob.cm.createCard(for: contact.identifier, now: t0)
 
         try bob.cm.sweepCards(now: card.expiresAt - 1)
 
@@ -1029,11 +1029,11 @@ struct CardScreenBehaviourTests {
     func statusesAcrossPhones() throws {
         let bob = try Phone(), carol = try Phone()
         let bobContact = try bob.contact()
-        let card = try bob.cm.createCard(for: bobContact, now: t0)
+        let card = try bob.cm.createCard(for: bobContact.identifier, now: t0)
         let carolContact = try carol.contact()
         #expect(bobContact.verificationStatus == .pending)
 
-        try carol.cm.importCard(card.encoded, into: carolContact, newContactName: nil, now: t0)
+        try carol.cm.importCard(card.encoded, into: carolContact.identifier, newContactName: nil, now: t0)
 
         #expect(carolContact.verificationStatus == .unverified)
         #expect(bobContact.verificationStatus == .pending, "Bob's contact stays pending until Carol's first message")
