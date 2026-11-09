@@ -294,8 +294,11 @@ struct CardShareSheet: View {
             ToolbarItem(placement: .cancellationAction) { Button("Close") { self.dismiss() } }
         }
         .sheet(item: self.$shareFile) { file in
-            ActivityView(activityItems: [file.url], onComplete: { _ in
+            ActivityView(activityItems: [file.url], onComplete: { completed in
                 try? FileManager.default.removeItem(at: file.url)
+                self.shareFile = nil
+                // Shared: this screen has done its job. Cancelled: it stays, with its share button, for another try.
+                if completed { self.dismiss() }
             })
             .onDisappear { try? FileManager.default.removeItem(at: file.url) }
         }

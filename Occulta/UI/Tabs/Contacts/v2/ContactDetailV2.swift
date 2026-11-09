@@ -49,8 +49,7 @@ extension Contact {
         private var subtitle:   String { [self.jobTitle, self.org].filter { !$0.isEmpty }.joined(separator: " · ") }
 
         private var needsExchange: Bool {
-            let keys = self.profile?.contactPublicKeys
-            return (keys?.isEmpty ?? true) || keys?.last?.expiredOn != nil
+            self.profile?.currentKey == nil
         }
 
         private var status: VerificationStatus { self.cachedStatus ?? self.profile?.verificationStatus ?? .pending }
@@ -72,7 +71,7 @@ extension Contact {
         }
 
         private var statusInputs: StatusInputs {
-            let last = self.profile?.contactPublicKeys?.last
+            let last = self.profile?.displayedKey
             return StatusInputs(
                 card:           self.profile?.introductionCardEncrypted,
                 keyCount:       self.profile?.contactPublicKeys?.count ?? 0,
@@ -235,6 +234,17 @@ extension Contact {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .foregroundColor(.occultaAccent)
+            }
+
+            // The glyph in the list leads here: said once, where it can be acted on, without opening the key details (Bug 196).
+            if let p = self.profile, !self.needsExchange, !self.cardState.isCardContact, p.pairingCapabilities.upgradeAvailable {
+                NavigationLink {
+                    KeyExchange(identifier: self.identifier)
+                } label: {
+                    Label("Re-exchange in person to upgrade", systemImage: "arrow.up.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                }
             }
 
             if let p = self.profile, !self.needsExchange {
@@ -820,6 +830,8 @@ private struct KeyDetailsDisclosureV2: View {
                     KeyDetailRow(label: "SCHEME", value: self.profile.encryptionSchemeLabel)
                     Divider().padding(.leading, 64)
                     KeyDetailRow(label: "SINCE",  value: self.profile.exchangedDateLabel)
+                    Divider().padding(.leading, 14)
+                    PairingCapabilityRows(identifier: self.profile.identifier, capabilities: self.profile.pairingCapabilities)
                 }
                 .padding(.bottom, 4)
             } else if let fp = self.profile.fingerprintPreview {

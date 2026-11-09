@@ -253,6 +253,34 @@ struct CardConversationTests {
         return blob
     }
 
+    @Test("A reply opened a second time is refused as a spent prekey, not as a slot that isn't there")
+    func replyOpenedTwiceNamesTheSpentKey() throws {
+        let pair = try CardPhonePair()
+        let (first, _) = try pair.redeem()
+        try pair.bob.receive(first)
+        let reply = try pair.bob.send(to: pair.bobSide, "reply")
+        #expect(try pair.carol.receive(reply).text == "reply")
+
+        #expect { try pair.carol.receive(reply) } throws: { error in
+            (error as? GroupDecryptError) == .cardSlotNotOpened(.prekeyNotHeld)
+        }
+    }
+
+    @Test("A reply with its slot altered names the outer layer, spends no key, and the genuine reply still opens")
+    func tamperedReplyNamesTheOuterLayer() throws {
+        let pair = try CardPhonePair()
+        let (first, _) = try pair.redeem()
+        try pair.bob.receive(first)
+        let reply = try pair.bob.send(to: pair.bobSide, "reply")
+        let record = try pair.carol.record(pair.carolSide)
+
+        #expect { try pair.carol.receive(try tampered(reply, "slot")) } throws: { error in
+            (error as? GroupDecryptError) == .cardSlotNotOpened(.outerLayerDidNotOpen)
+        }
+        #expect(try pair.carol.record(pair.carolSide) == record, "no key is spent on a slot that didn't open")
+        #expect(try pair.carol.receive(reply).text == "reply")
+    }
+
     @Test("Bob's first reply is a bootstrap slot; the bootstrap slots carry no marker the ordinary ones lack")
     func bootstrapSlotsLookOrdinary() throws {
         let pair = try CardPhonePair()

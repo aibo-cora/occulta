@@ -45,8 +45,7 @@ struct ContactDetailV3: View {
     }
 
     private var needsExchange: Bool {
-        let keys = self.profile?.contactPublicKeys
-        return (keys?.isEmpty ?? true) || keys?.last?.expiredOn != nil
+        self.profile?.currentKey == nil
     }
 
     @MainActor

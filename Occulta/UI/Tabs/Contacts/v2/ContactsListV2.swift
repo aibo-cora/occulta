@@ -408,6 +408,8 @@ struct ContactRowV2: View {
             }
 
             Spacer()
+
+            PairingUpgradeGlyph(capabilities: self.contact.pairingCapabilities)
         }
         .padding(.vertical, 3)
     }

@@ -319,6 +319,24 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       - **Device-only, not done:** the card field size on a device, a hostile ML-KEM blob passed to the
         Enclave reload, and the end-to-end flow on two phones holding no real data.
 
+- [ ] A key pair per pairing (`Secure Mode/bugs.md` Bug 196, stage 2, 2.0.1). Covered by tests in
+      `OccultaTests/Pairing/`; none verified on a device yet.
+      - **A second signing key now exists.** A pair-key pairing signs forward-secret slots and identity-challenge
+        responses with its own P-256 Enclave key; the identity key still signs backup pieces, signed attributes, the Sign
+        tab and the in-slot proof's key. A signature carries no record of its context, so the same rule holds for the pair
+        key as for `signData`: a new site signs only bytes with a domain-separation prefix.
+      - The identity key is in neither a pair-key pairing's long-term slot key nor its slot and challenge signatures, so
+        holding its private half opens and verifies nothing of such a pairing. It is in the routing key and the words,
+        so that a public identity key proves nothing.
+      - The pairing column (routing key, Enclave blobs, the peer's public keys, an ML-DSA-87 key) is one sealed length in
+        every row. A blob that does not fit its room is refused, never cut. No keychain item.
+      - A pair key that will not import makes a send or a challenge fail; nothing falls back to the identity key. A
+        refusal of a slot looks like any slot that is not ours (`recipientSlotNotFound`).
+      - The peer's `Exchange.pairing` is accepted only with two valid distinct P-256 points that are neither phone's
+        identity key nor one of ours; it is never checked against another contact's keys.
+      - **Not done:** the Multipeer exchange on two phones, the blob sizes and key-creation time on a device, and the
+        roughly 10 KB identity message arriving intact on real phones.
+
 ## 4. Data at Rest
 
 - [x] All contact fields are encrypted before SwiftData storage — no plaintext PII written to disk

@@ -67,18 +67,24 @@ class ContactManager {
     let cardKeys: any CardKeyProviding
     @ObservationIgnored
     let cardPostQuantum: (any PostQuantumProvider)?
+    /// Opens the Enclave blobs of a pair-key pairing's keys (`bugs.md` Bug 196, stage 2). Injected so tests can run with
+    /// software keys.
+    @ObservationIgnored
+    let pairKeys: any CardKeyProviding
 
     init(
         modelContainer: ModelContainer,
         security: Manager.Security,
         cardKeys: any CardKeyProviding = EnclaveCardKeys(),
-        cardPostQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.create()
+        cardPostQuantum: (any PostQuantumProvider)? = PostQuantumProviderFactory.create(),
+        pairKeys: any CardKeyProviding = EnclaveCardKeys()
     ) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
         self.security = security
         self.cardKeys = cardKeys
         self.cardPostQuantum = cardPostQuantum
+        self.pairKeys = pairKeys
     }
     
     var dateFormatter: DateFormatter {
@@ -471,7 +477,7 @@ class ContactManager {
     func currentPublicKey(forIdentifier identifier: String) throws -> Data? {
         guard
             let contact   = try self.fetchContact(by: identifier),
-            let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let keyRecord = contact.currentKey,
             let pubKey    = try? self.cryptoManager.decrypt(data: keyRecord.material)
         else { return nil }
         return pubKey
@@ -535,6 +541,8 @@ class ContactManager {
         try self.store(CardState.empty, for: contact)
         // And the challenge state, every depth's slot: a pending challenge to a deleted contact goes with them.
         try self.store(ChallengeState.empty, for: contact)
+        // The routing key of every key the contact held: the sealed empty state, the same size (Bug 196).
+        for key in contact.contactPublicKeys ?? [] { try self.store(PairingState.empty, in: key) }
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
@@ -600,7 +608,10 @@ extension ContactManager {
     ///   - key: Keying material.
     ///   - identifier: Identifier of the owner.
     ///   - method: Acquisition method. Nearby Interaction - secure, or something else.
-    func update(key: Contact.Draft.Key, for identifier: String) throws {
+    ///   - pairing: What the exchange handed over when both phones sent a prekey batch (`bugs.md` Bug 196): our first batch
+    ///     and the peer's, installed with the key in this save, and the peer recorded at the pairing tier, which a
+    ///     phone that sent a batch is. `nil` for a peer that can't hold a routing key, and the record is left as it was.
+    func update(key: Contact.Draft.Key, for identifier: String, pairing: PairingOffer? = nil) throws {
         guard
             let contact = try self.fetchContact(by: identifier),
             let encryptedMaterial = try self.cryptoManager.encrypt(data: key.material),
@@ -624,21 +635,96 @@ extension ContactManager {
         var keyRotated = false
 
         if let newMaterial = key.material,
-           let currentRecord = contact.contactPublicKeys?.last,
+           let currentRecord = contact.displayedKey,
            let storedMaterial = try? self.cryptoManager.decrypt(data: currentRecord.material) {
             keyRotated = SHA256.hash(data: storedMaterial) != SHA256.hash(data: newMaterial)
         }
 
-        // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
-        let clearedCard = try self.clearCard(afterMeetingOf: contact)
+        // Everything that can fail on its own, before anything changes: a pairing state that does not fit its column, the
+        // retired rows' empty state and the stamp (the challenge state is sealed inside the guarded block below). Nothing below can then leave the context half-changed for the next save to commit.
+        let sealedPairing = try self.sealedPairing(key.pairing)
+        let sealedEmpty = try self.sealedPairing(PairingState.empty)
+        let retiredOn = try self.cryptoManager.encrypt(data: String(Date.now.timeIntervalSince1970).data(using: .utf8))
 
-        contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
-        
-        #if DEBUG
-        debugPrint("Updated key, owner hash = \(key.owner)")
-        #endif
+        // A re-exchange that gives no pair keys to a contact whose pairing has them would overwrite their Enclave blobs with a
+        // plainer pairing: a peer on an older build can't be that contact, so it is a message that went missing, a phone
+        // whose Enclave failed, or someone interfering. Nothing is saved; the exchange can be run again.
+        if let current = contact.currentKey, key.pairing.keys == nil, self.readablePairingState(of: current)?.keys != nil {
+            throw ContactManager.Errors.pairingWouldBeWeaker
+        }
 
-        try self.modelContext.save()
+        // What the block below can change, as it was. `rollback()` forgets the unsaved changes but does not put the values back
+        // on objects already in memory, and the next save of the same object would commit them, so a failure restores them
+        // itself first.
+        let before = (
+            card: contact.introductionCardEncrypted, record: contact.prekeyRecordEncrypted, tier: contact.maxBundleVersion,
+            challenges: contact.challengeStateEncrypted,
+            rows: (contact.contactPublicKeys ?? []).map { (row: $0, expiredOn: $0.expiredOn, pairing: $0.pairingEncrypted) }
+        )
+        var newRow: Contact.Profile.Key?
+
+        var clearedCard = false
+        do {
+            // The contact now holds in-person keys, so any card conversation ends in this same save (SPEC §7).
+            clearedCard = try self.clearCard(afterMeetingOf: contact)
+
+            // The first prekeys of this pairing, and the peer's tier, in the same save as the key (Bug 196).
+            if let pairing { try self.installPairingPrekeys(pairing, in: contact) }
+
+            // A re-pair retires every key the contact held, in the save that adds this one: a to-many relationship has no order
+            // of its own, so two current rows would leave "the latest" to chance, and the file key and routing key with it.
+            // What a retired pairing held goes with it: its pair keys are Enclave blobs this phone could still use, so the
+            // column is overwritten with the sealed empty state, the same size as any other (Bug 196).
+            var formChanges = key.pairing.keys != nil
+            for held in contact.contactPublicKeys ?? [] where held.expiredOn == nil {
+                // An unreadable column may have held pair keys: its challenge goes too.
+                let heldState = self.readablePairingState(of: held)
+                formChanges = formChanges || heldState == nil || heldState?.keys != nil
+                held.expiredOn = retiredOn
+                held.pairingEncrypted = sealedEmpty
+            }
+            // A challenge outstanding when the form of the pairing changes, plain to pair-key or pair-key to anything, was made
+            // with a key the new pairing doesn't answer with, so no response can verify. It is dropped, at every depth's slot,
+            // and what was verified before stays true; a stale answer then reads as "not ours" and shows nothing (the Bug 166
+            // rule), in place of "verification failed" (Bug 196).
+            if formChanges {
+                var challenges = contact.challengeState
+                if challenges.removeOutstandingChallenges() { try self.store(challenges, for: contact) }
+            }
+
+            // The pairing goes in as the row is inserted, not in a second save, which would mark the row updated in place.
+            // A key with none, from a peer that can't hold one, gets the sealed empty state like every other row.
+            let row = Contact.Profile.Key(
+                material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate,
+                quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial, pairingEncrypted: sealedPairing
+            )
+            newRow = row
+            contact.contactPublicKeys?.append(row)
+
+            #if DEBUG
+            debugPrint("Updated key, owner hash = \(key.owner)")
+            #endif
+
+            try self.modelContext.save()
+        } catch {
+            // The prekey record, the card state and the retired rows were changed in memory; none of it is saved, and none of it
+            // should be by the next unrelated save. The values go back first, then `rollback()` clears what the context
+            // thinks is pending.
+            contact.introductionCardEncrypted = before.card
+            contact.prekeyRecordEncrypted = before.record
+            contact.maxBundleVersion = before.tier
+            self.restore(sealedChallengeState: before.challenges, for: contact)
+            for held in before.rows {
+                held.row.expiredOn = held.expiredOn
+                held.row.pairingEncrypted = held.pairing
+            }
+            if let newRow {
+                contact.contactPublicKeys?.removeAll { $0 === newRow }
+                self.modelContext.delete(newRow)
+            }
+            self.modelContext.rollback()
+            throw error
+        }
         if clearedCard { self.security.checkpointStore() }
 
         self.contactKeyUpdated.send(identifier)
@@ -657,7 +743,9 @@ extension ContactManager {
         let expiration = String(Date.now.timeIntervalSince1970).data(using: .utf8)
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
         
-        contact.contactPublicKeys?.last?.expiredOn = encrypted
+        // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
+        // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
+        contact.currentKey?.expiredOn = encrypted
         
         try self.modelContext.save()
     }
@@ -693,7 +781,7 @@ extension ContactManager {
         }
         
         guard
-            let encrypted = contact.contactPublicKeys?.last?.material,
+            let encrypted = contact.displayedKey?.material,
             let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
@@ -712,14 +800,19 @@ extension ContactManager {
     
     /// Derives the stable per-contact base key used to encrypt file attachments at rest.
     /// Callers pass this into `AttachmentManager(contactKey:)`.
+    ///
+    /// The identity ECDH under a label of its own (`SaltInfo.kAttachmentBaseKeyInfo`), not the transport key's: before
+    /// Bug 196 this was the same key as a classical long-term slot's. Files sealed under that one are moved to this one by
+    /// `resealAttachmentKeys` (`Contact+Manager+AttachmentKey.swift`). It stays a function of the identity keys, so a re-pair,
+    /// which changes the pair keys and not the identity key, leaves every file readable.
     func fileEncryptionKey(for identifier: String) throws -> SymmetricKey {
         guard let contact = try self.fetchContact(by: identifier) else {
             throw ContactManager.Errors.contactNotFound
         }
-        guard let encrypted = contact.contactPublicKeys?.last?.material,
+        guard let encrypted = contact.displayedKey?.material,
               let material   = try? self.cryptoManager.decrypt(data: encrypted)
         else { throw ContactManager.Errors.contactHasNoKeys }
-        guard let key = Manager.Key().createSharedSecret(using: material) else {
+        guard let key = Manager.Key().createAttachmentBaseKey(using: material) else {
             throw ContactManager.Errors.contactHasNoKeys
         }
         return key
@@ -743,7 +836,7 @@ extension ContactManager {
         }
         
         guard
-            let encrypted = contact.contactPublicKeys?.last?.material,
+            let encrypted = contact.currentKey?.material,
             let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
@@ -781,6 +874,12 @@ extension ContactManager {
         /// An identity challenge or response in group format, to a contact below `.bodyDigestCapable`, whose build
         /// would refuse it. Those get the long-term format (prekey continuity §3.4).
         case identityChallengeBelowTier
+        /// A pairing's sealed state can't be read, so it can't be told from a pair-key pairing, which is never sent to the old
+        /// way (Bug 196).
+        case pairingUnreadable
+        /// A re-exchange gave no pair keys to a contact whose current pairing has them. Saving it would overwrite the Enclave
+        /// blobs of the better pairing with a plainer one.
+        case pairingWouldBeWeaker
     }
 }
 
@@ -1024,7 +1123,9 @@ extension ContactManager {
         
         let contacts = try self.fetchAllContacts()
         
-        for contact in contacts {
+        // A pairing that began with a routing key refuses an old-form file (Bug 196): this raw trial decrypt is the oldest form
+        // of all, and matches any record that holds the sender's identity key, the twin record this fix tells apart included.
+        for contact in contacts where self.acceptsOldForm(from: contact) {
             do {
                 if let decrypted = try self.decrypt(message: data, for: contact.identifier) {
                     return (decrypted, contact.identifier)
@@ -1169,6 +1270,10 @@ extension ContactManager {
             throw Errors.identityChallengeBelowTier
         }
 
+        // A pairing whose sealed state can't be read may be a pair-key pairing; sending it the old way would be the fallback to the
+        // identity key that pair keys exist to end. Nothing is taken or sent (Bug 196).
+        guard self.pairingIsReadable(for: contact) else { throw Errors.pairingUnreadable }
+
         // The layout, chosen before anything is taken (§10.2): streamed when the recipient can read it, which
         // implies the group format. Otherwise inline, and then a staged file is read into memory here, if it fits.
         let streams = output.destination != nil && targetVersion.isAtLeast(.streamedBodyCapable)
@@ -1257,7 +1362,8 @@ extension ContactManager {
                 contactPrekey:   contactPrekey ?? lastResortPrekey,
                 contactPrekeyIsLastResort: contactPrekey == nil && lastResortPrekey != nil,
                 pendingBatch:    outboundBatch,
-                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
+                prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable),
+                pairing:      self.pairingSlotKeys(for: contact)
             )]
             let sent: SentBundle
             if let streamedFiles {
@@ -1272,6 +1378,11 @@ extension ContactManager {
             if contactPrekey != nil { try self.modelContext.save() }
             return sent
         }
+
+        // The pre-1.9.0 form seals with the identity key, which holds nothing of a pair-key pairing: such a pairing has
+        // no key of its own to seal it with here, and falling back to the identity key would be the downgrade it exists
+        // to prevent (Bug 196, stage 2).
+        guard self.pairingState(for: contact).keys == nil else { throw Errors.noPublicKeyToEncryptWith }
 
         let sealedPayload = OccultaBundle.SealedPayload(
             message:         messageData,
@@ -1318,6 +1429,8 @@ private struct PendingGroupRecipient {
     /// Whether this member's build verifies the domain-separated ephemeral signature.
     /// Resolved per member, since a group's members can be on different builds.
     let prefixesEphemeralSignature: Bool
+    /// The pair keys and routing key to seal this member's slot with, for a pair-key pairing (`bugs.md` Bug 196).
+    let pairing: PairingSlotKeys?
 }
 
 extension ContactManager {
@@ -1418,6 +1531,7 @@ extension ContactManager {
         let pending: [PendingGroupRecipient] = try members.map { contact in
             // Groups refuse a card contact (SPEC §8), whatever the form let through.
             guard !contact.cardState.isCardContact else { throw CardError.hardBlocked }
+            guard self.pairingIsReadable(for: contact) else { throw Errors.pairingUnreadable }
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
 
             var record = try self.prekeyRecord(for: contact)
@@ -1459,7 +1573,8 @@ extension ContactManager {
                 contactPrekeyIsLastResort: lastResortPrekey != nil,
                 pendingBatch:           pendingBatch,
                 realShardOperations:    realOps,
-                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
+                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable),
+                pairing:             self.pairingSlotKeys(for: contact)
             )
         }
 
@@ -1475,7 +1590,8 @@ extension ContactManager {
                 contactPrekeyIsLastResort: p.contactPrekeyIsLastResort,
                 pendingBatch:           p.pendingBatch,
                 shardOperations:        Self.paddedShardOperations(p.realShardOperations, to: opsTier),
-                prefixesEphemeralSignature: p.prefixesEphemeralSignature
+                prefixesEphemeralSignature: p.prefixesEphemeralSignature,
+                pairing:             p.pairing
             )
         }
 
@@ -1578,7 +1694,7 @@ extension ContactManager {
     /// are excluded; shard bundles require the hybrid session key for HNDL protection.
     func fetchTrusteeEligibleContacts() throws -> [Contact.Profile] {
         try self.fetchAllContacts().filter { contact in
-            guard let key = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }) else {
+            guard let key = contact.currentKey else {
                 return false
             }
             return key.quantumKeyMaterialEncrypted != nil
@@ -1594,7 +1710,7 @@ extension ContactManager {
         let cryptoOps = Manager.Crypto()
         
         guard
-            let keyRecord         = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let keyRecord         = contact.currentKey,
             let recipientMaterial = try? cryptoOps.decrypt(data: keyRecord.material),
             recipientMaterial.count == 65
         else { throw Errors.contactHasNoKeys }
@@ -1630,7 +1746,7 @@ extension ContactManager {
         for sender: Contact.Profile,
         using cryptoOps: Manager.Crypto
     ) throws -> QuantumKeyMaterial? {
-        let validKey = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+        let validKey = sender.currentKey
         guard
             let enc       = validKey?.quantumKeyMaterialEncrypted,
             let decrypted = try? cryptoOps.decrypt(data: enc)
@@ -1735,9 +1851,17 @@ extension ContactManager {
  
         let localKey = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 
+        // A pairing's routing tag names its contact outright (Bug 196): a file of the new form is not matched by identity, and an
+        // old-form file is not matched to a pairing that holds a routing key. Routing tags are checked for every contact first,
+        // so a twin that holds the same identity key can't take a file whose routing tag belongs to another.
+        if let tagged = contacts.first(where: { self.bundleCarriesRoutingTag(of: $0, in: bundle) }) {
+            return tagged
+        }
+
         for contact in contacts {
             if
-                let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+                self.acceptsOldForm(from: contact),
+                let keyRecord = contact.currentKey,
                 let pubKey    = try? cryptoOps.decrypt(data: keyRecord.material),
                 contact.isLikelySender(of: bundle, contactPublicKey: pubKey)
             {
@@ -1913,7 +2037,7 @@ extension ContactManager {
 
     private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
         guard
-            let keyRecord = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let keyRecord = sender.currentKey,
             let decrypted = try cryptoOps.decrypt(data: keyRecord.material)
         else { throw Errors.decryptionFailed }
         return decrypted
@@ -2088,6 +2212,9 @@ extension ContactManager {
         } else {
             sender = try self.identifyOwner(for: bundle, body: body)
         }
+        // A pairing that can't be read may be a pair-key pairing: a caller that names the owner does not get a slot tried with
+        // the identity key, as identification does not give one (Bug 196). The same error as any slot that is not ours.
+        guard self.pairingIsReadable(for: sender) else { throw GroupDecryptError.recipientSlotNotFound }
         let prekeys = try self.senderPrekeys(for: sender)
 
         // ── 2. Resolve sender key material ─────────────────────────────
@@ -2099,8 +2226,10 @@ extension ContactManager {
         let recipientMode: OccultaBundle.Mode
         let slotEphemeralKey: Data
         var cardOpening: CardSlotOpening?
+        /// The routing tag that routed us to the slot, for a file of the pairing form (Bug 196).
+        var slotRoutingTag: Data?
 
-        // ── 3. Trial-decrypt: find our slot and open it ─────────────────
+        // ── 3. Find our slot (by the pairing routing tag, or trial decryption) and open it ─────
         if let cardContext {
             senderPublicKey = cardContext.peerAgreementKey
             let opening = try cryptoOps.openCardSlot(
@@ -2113,15 +2242,18 @@ extension ContactManager {
         } else {
             senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
             let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
-            (recipientPayload, used, recipientMode, slotEphemeralKey) = try cryptoOps.openRecipientSlot(
+            let opened = try cryptoOps.openSlot(
                 in: bundle,
                 blind: envelope.blind,
                 senderContactID: sender.identifier,
                 senderPublicKey: senderPublicKey,
                 quantumMaterial: quantumMaterial,
                 prekeys: prekeys,
-                body: body
+                body: body,
+                pairing: self.pairingSlotKeys(for: sender)
             )
+            (recipientPayload, used, recipientMode, slotEphemeralKey) = (opened.payload, opened.used, opened.mode, opened.ephemeralPublicKey)
+            slotRoutingTag = opened.matchedRoutingTag
         }
 
         // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
@@ -2193,11 +2325,14 @@ extension ContactManager {
             if isFSMode {
                 // The signature verified in `openRecipientSlot` against our slot's ephemeral key, in either form.
                 // Once more against that key, in the prefixed form only.
+                // A pair-key pairing's slot was signed by the pair signing key, so that is what it is checked against.
+                let pair = slotRoutingTag == nil ? nil : self.pairingSlotKeys(for: sender)
                 guard let signature = recipientPayload.senderEphemeralSignature,
-                      cryptoOps.verifySenderEphemeralSignature(
-                          signature, ephemeralPublicKey: slotEphemeralKey,
-                          senderPublicKey: senderPublicKey, acceptsBareForm: false
-                      )
+                      pair.map({ $0.verifies(signature, ephemeralPublicKey: slotEphemeralKey, using: cryptoOps) })
+                        ?? cryptoOps.verifySenderEphemeralSignature(
+                            signature, ephemeralPublicKey: slotEphemeralKey,
+                            senderPublicKey: senderPublicKey, acceptsBareForm: false
+                        )
                 else { throw GroupDecryptError.missingSenderEphemeralSignature }
             }
             challenge = IdentityChallenge.Authenticated(identityChallenge)
@@ -2217,9 +2352,17 @@ extension ContactManager {
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
-        guard let proof = decoded.senderProof,
-              HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
-            throw GroupDecryptError.senderProofMismatch
+        if let slotRoutingTag, let routingKey = self.pairingState(for: sender).routingKey {
+            // The pairing form: the proof is in the slot, keyed by the routing key, and covers the slot's routing tag.
+            // `SealedPayload.senderProof` is random filler here and is not read.
+            guard let slotProof = recipientPayload.slotProof,
+                  RoutingKey.isValidSlotProof(slotProof, routingKey: routingKey, routingTag: slotRoutingTag, senderPublicKey: senderPublicKey)
+            else { throw GroupDecryptError.senderProofMismatch }
+        } else {
+            guard let proof = decoded.senderProof,
+                  HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
+                throw GroupDecryptError.senderProofMismatch
+            }
         }
 
         // ── 6. Post-processing ────────────────────────────────────────────
