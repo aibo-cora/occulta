@@ -1352,3 +1352,33 @@ Either can be taken up if a real case turns up.
 **Consequences:** `bugs.md` Bug 196 keeps the finding in its "Not changed, on purpose or open" list, pointing here.
 
 **Full reasoning:** `bugs.md` Bug 196 addendum and the follow-up review (N1).
+
+## A failed key save can drop a used one-time prekey's pending "used" mark
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, narrow.
+
+**Context:** Opening a bundle that names one of our one-time prekeys removes that key from the sender's prekey record, with its
+Enclave blob, and saves at once (`SenderPrekeys.consume`, `ContactManager.senderPrekeys(for:)`). If that save throws, the closure
+swallows the error and the change stays pending in `ContactManager`'s context, to be written by the next save; the open's own save at
+the end retries and throws if it fails again, so the message is rejected (`Contact+Manager+Prekeys.swift`). The record is the only
+place the key's blob lives. `update(key:)` (an in-person exchange's save, or a contact created with a key) calls
+`modelContext.rollback()` when it fails. `rollback()` clears the context's record of what is pending without putting values back
+on live objects (`bugs.md` Bug 197), so the pending "used" mark is no longer marked for saving (security review, round 2, N7).
+
+**Decision:** Leave it.
+
+**What it takes:** a received bundle whose prekey save fails (a store error, a full disk), then a failed `update(key:)`, before any
+other save of that contact's row. The two failures are probably linked, since the same store problem would fail both.
+
+**What it costs:** the in-memory record still says the key is used, so the next message from that sender, in the same run, is opened
+against it and saves the record, which repairs it. If the app is relaunched first, the disk still holds the record from before the
+consume, with the key and its blob. A copy of the bundle that opened with it could then be opened again, and a later compromise of
+the phone's Enclave would expose that one message. One message per occurrence.
+
+**Why:** the trigger is narrow, the cost is one message, and the real fix is the one Bug 197 explores for 2.1.0: operations that work
+in their own short-lived context and cannot leave pending changes behind.
+
+**Not chosen:** removing `rollback()` from `update(key:)`, which would stop the collateral but remove the only thing that clears
+the pending marker on whatever the restore misses; a throwaway context for `update(key:)`, a larger change to code others read.
+
+**Full reasoning:** `bugs.md` Bug 196 ("Not changed, on purpose or open") and Bug 197; the follow-up security review (N7).

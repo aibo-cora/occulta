@@ -15327,7 +15327,8 @@ Not changed, on purpose or open:
   not reach the restore of the retired rows, the tier, the challenge state or the new row, or a failing final `save()`: nothing
   makes those throw without a seam. The other `rollback()` calls (`PQmigration`, `KeyReseal+*`, `Vault+Manager+Backup`) were not
   checked for the same thing. `rollback()` also discards any other pending change in the manager's context (a used one-time
-  prekey whose save failed, before another save), as `PQmigration` does.
+  prekey whose save failed, before another save), as `PQmigration` does. **Decided 2026-11-07: documented, not fixed**
+  (`Docs/General/decisions.md`, "A failed key save can drop a used one-time prekey's pending 'used' mark").
 - The attachment pass picks the new key from the first contact seen for an old key. Two records of the same identity key where
   one has rotated would move a draft file to the other's new key; one draft attachment, and it needs a twin record. **Decided
   2026-11-07: documented, not fixed** (`Docs/General/decisions.md`, "A draft attachment may be lost when two contact records share an
