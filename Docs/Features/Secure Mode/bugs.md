@@ -15478,7 +15478,14 @@ sites' comments still say the rollback restores.
 | 9 | not a call: the remedy text of the earlier restore-backup entry in this file ("restoreBackup checks everything, then writes once") | | | "On any failure, `modelContext.rollback()` discards the staged changes." |
 
 Sites 3–6 take the context as a parameter, so whether the objects they touched are used again after the throw depends on the
-caller (`LaunchSequence`); not read. Row 9 is a doc claim, not a call.
+caller. Read 2026-11-09, by reading only, no test run: sites 3, 5 and 6 are called from `LaunchSequence` with a `ModelContext`
+made for that one step and dropped after it (`resealContext`, `wrapContext`, `upgradeContext`), so no object outlives the failure
+and only the comments are wrong. Site 4, `rewrapVault`, is called from `VaultManager.rewrapVault` with `self.modelContext`, the
+manager's context for the whole session: after a failed save the rows hold the new-key bytes in memory, and a later edit of the same
+vault entry in that session would save them under the old key. That is the site with a real exposure; it needs a failed save at
+unlock and an edit before the next launch. A throwaway context is not a fix there on its own, because after a success the manager's
+context would hold stale old-key rows. Site 2 runs on the launch context, so a half-converted contact stays that way in memory until
+the next launch. Sites 7 and 8 are on the manager's context; 8 changes a live row. Row 9 is a doc claim, not a call.
 
 **What to explore.**
 
