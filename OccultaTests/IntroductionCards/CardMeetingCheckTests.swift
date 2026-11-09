@@ -121,7 +121,7 @@ struct CardMeetingTableTests {
             try pair.bob.store(CardState.empty, for: pair.bobSide)
         case "Carol sent, Bob empty":
             _ = try pair.carol.send(to: pair.carolSide)
-            try pair.bob.run { try pair.bob.cm.cancelCard(for: try pair.bob.contact(pair.bobSide)) }
+            try pair.bob.run { try pair.bob.cm.cancelCard(for: pair.bobSide) }
         case "Bob conversation, Carol empty":
             _ = try pair.redeem()
             try pair.carol.store(CardState.empty, for: pair.carolSide)
@@ -458,7 +458,7 @@ struct CardMeetingSaveTests {
     func issuedCleared() throws {
         let phone = try CardPhone()
         let id = try phone.newContact("Pat")
-        _ = try phone.run { try phone.cm.createCard(for: try phone.contact(id)) }
+        _ = try phone.run { try phone.cm.createCard(for: id) }
         try phone.store(busyRecord(), for: id)
         let before = try #require(try phone.rawField(id))
         let others = try phone.run { Untouched(try phone.contact(id)) }
@@ -477,7 +477,7 @@ struct CardMeetingSaveTests {
     func takesKeysAndIsVerified() throws {
         let phone = try CardPhone()
         let id = try phone.newContact("Pat")
-        _ = try phone.run { try phone.cm.createCard(for: try phone.contact(id)) }
+        _ = try phone.run { try phone.cm.createCard(for: id) }
         let ours = try phone.keyManager.retrieveIdentity()
         let keysBefore = try phone.run { try phone.contact(id).contactPublicKeys?.count }
 
@@ -492,7 +492,7 @@ struct CardMeetingSaveTests {
     func secondMeetingKeepsRecord() throws {
         let phone = try CardPhone()
         let id = try phone.newContact("Pat")
-        _ = try phone.run { try phone.cm.createCard(for: try phone.contact(id)) }
+        _ = try phone.run { try phone.cm.createCard(for: id) }
         try phone.run { try phone.cm.update(key: try inPersonKey(for: Data([1])), for: id) }
         let record = busyRecord()
         try phone.store(record, for: id)
@@ -506,7 +506,7 @@ struct CardMeetingSaveTests {
     func hiddenContactCleared() throws {
         let phone = try CardPhone()
         let id = try phone.newContact("Pat")
-        _ = try phone.run { try phone.cm.createCard(for: try phone.contact(id)) }
+        _ = try phone.run { try phone.cm.createCard(for: id) }
         try phone.store(busyRecord(), for: id)
         try phone.run {
             let contact = try phone.contact(id)

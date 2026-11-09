@@ -138,7 +138,7 @@ struct ContactDetailV3: View {
         .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
         // Decrypts the 16 KB prekey record, so only when what it reads changes, not on every keystroke.
         .onChange(of: [self.profile?.prekeyRecordEncrypted, self.profile?.maxBundleVersion], initial: true) {
-            self.secrecy = self.profile.map(self.contactManager.nextSendSecrecy)
+            self.secrecy = self.profile.map { self.contactManager.nextSendSecrecy(for: $0.identifier) }
         }
         .onDisappear {
             Task {

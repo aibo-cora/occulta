@@ -621,7 +621,7 @@ private struct ComposeHeroV2: View {
     /// reads Standard Encryption: its long-term state would claim keys it doesn't have.
     private func refreshSecrecy() {
         guard let contact = self.contacts.first else { return }
-        let secrecy = self.contactManager.nextSendSecrecy(for: contact)
+        let secrecy = self.contactManager.nextSendSecrecy(for: contact.identifier)
         self.secrecy = secrecy
 
         guard self.card.isCardContact else {
@@ -629,8 +629,8 @@ private struct ComposeHeroV2: View {
             self.cardCanSend    = true
             return
         }
-        self.cardIsStandard = self.contactManager.cardSecrecyIsStandard(for: contact) || secrecy == .longTerm
-        self.cardCanSend    = self.contactManager.canSendToCardContact(contact)
+        self.cardIsStandard = self.contactManager.cardSecrecyIsStandard(for: contact.identifier) || secrecy == .longTerm
+        self.cardCanSend    = self.contactManager.canSendToCardContact(contact.identifier)
     }
 
     private func encryptAction() {

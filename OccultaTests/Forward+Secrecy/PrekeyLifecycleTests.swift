@@ -210,7 +210,7 @@ struct NextSendSecrecyTests {
         let (cm, _) = try makeContactManager()
         let contact = try self.contact(groupCapable: true, in: cm)
         try cm.store(self.record(oneTimeKeys: 1, lastResort: true), for: contact)
-        #expect(cm.nextSendSecrecy(for: contact) == .forwardSecret)
+        #expect(cm.nextSendSecrecy(for: contact.identifier) == .forwardSecret)
     }
 
     @Test("Only the last-resort key, on the group format: temporary key", .ambientTestKeyManager)
@@ -218,7 +218,7 @@ struct NextSendSecrecyTests {
         let (cm, _) = try makeContactManager()
         let contact = try self.contact(groupCapable: true, in: cm)
         try cm.store(self.record(oneTimeKeys: 0, lastResort: true), for: contact)
-        #expect(cm.nextSendSecrecy(for: contact) == .temporaryKey)
+        #expect(cm.nextSendSecrecy(for: contact.identifier) == .temporaryKey)
     }
 
     /// `encryptBundle` seals to a last-resort key only in the group format, so a contact it doesn't send that format
@@ -228,7 +228,7 @@ struct NextSendSecrecyTests {
         let (cm, _) = try makeContactManager()
         let contact = try self.contact(groupCapable: false, in: cm)
         try cm.store(self.record(oneTimeKeys: 0, lastResort: true), for: contact)
-        #expect(cm.nextSendSecrecy(for: contact) == .longTerm)
+        #expect(cm.nextSendSecrecy(for: contact.identifier) == .longTerm)
     }
 
     @Test("Neither: long-term key", .ambientTestKeyManager)
@@ -236,7 +236,7 @@ struct NextSendSecrecyTests {
         let (cm, _) = try makeContactManager()
         let contact = try self.contact(groupCapable: true, in: cm)
         try cm.store(PrekeyRecord.empty, for: contact)
-        #expect(cm.nextSendSecrecy(for: contact) == .longTerm)
+        #expect(cm.nextSendSecrecy(for: contact.identifier) == .longTerm)
     }
 
     /// The indicator must not depend on depth: a coerced duress session sees what any depth would.
@@ -249,11 +249,11 @@ struct NextSendSecrecyTests {
             try cm.store(self.record(oneTimeKeys: keys, lastResort: lastResort), for: contact)
             return contact
         }
-        let atRealDepth = contacts.map(cm.nextSendSecrecy)
+        let atRealDepth = contacts.map { cm.nextSendSecrecy(for: $0.identifier) }
 
         cm.security.applyVerifyState(for: .duress)
         #expect(cm.security.currentDepth != 0, "precondition: a duress depth")
-        #expect(contacts.map(cm.nextSendSecrecy) == atRealDepth)
+        #expect(contacts.map { cm.nextSendSecrecy(for: $0.identifier) } == atRealDepth)
     }
 }
 
