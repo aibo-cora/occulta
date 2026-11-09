@@ -147,7 +147,6 @@ struct KeyExchange: View {
         @Environment(\.dismiss) private var dismiss
 
         private enum SaveState { case confirming, saving, saved, failed, refusedWeaker }
-        private enum SaveError: Error { case invalidKeyMaterial, pairingNotDerived }
         @State private var saveState: SaveState = .confirming
         /// What the in-person check found about an earlier card conversation. Held only while its screen is up;
         /// nothing about it is stored.
@@ -332,37 +331,12 @@ struct KeyExchange: View {
         private func save() {
             self.saveState = .saving
 
-            do {
-                let myIdentity = try self.keyManager.retrieveIdentity()
-                let date = String(Date.now.timeIntervalSince1970)
-                let quantum = self.payload.hybridResult.map {
-                    QuantumKeyMaterial(
-                        encapsulatedSecret: $0.mlkemSecret1,
-                        decapsulatedSecret: $0.mlkemSecret2,
-                        ourCiphertext: $0.ourCiphertext,
-                        peerCiphertext: $0.peerCiphertext
-                    )
-                }
-
-                // Both phones sent a `pairing` field, so both hold a routing key and a pair of keys and derive the same one
-                // (Bug 196). One we can't derive is not a weaker pairing to save: nothing is saved, and the screen says so.
-                var pairing = PairingState.empty
-                if let offer = self.payload.pairing {
-                    guard let derived = offer.routingKey(withPeer: self.payload.classicalKey, quantum: quantum, using: self.keyManager) else {
-                        throw SaveError.pairingNotDerived
-                    }
-                    pairing = .paired(routingKey: derived, keys: offer.pairKeys)
-                }
-
-                guard let key = Contact.Draft.Key(
-                    material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum,
-                    pairing: pairing
-                ) else {
-                    throw SaveError.invalidKeyMaterial
-                }
-
-                try self.contactManager?.update(key: key, for: self.identifier, pairing: self.payload.pairing)
-
+            switch KeyExchange.saveExchange(self.payload, for: self.identifier, in: self.contactManager, using: self.keyManager) {
+            case .refusedWeaker:
+                self.saveState = .refusedWeaker
+            case .failed:
+                self.saveState = .failed
+            case .saved:
                 // After the key is saved and before `finish()`, which discards the peer's proof (SPEC §7).
                 let verdict = self.manager.cardMeetingVerdict(for: self.payload)
 
@@ -378,11 +352,63 @@ struct KeyExchange: View {
                     // The exchange closes from the verdict screen: after "I understand", or when W-12 is closed.
                     self.cardVerdict = verdict
                 }
-            } catch ContactManager.Errors.pairingWouldBeWeaker {
-                self.saveState = .refusedWeaker
-            } catch {
-                self.saveState = .failed
             }
+        }
+    }
+}
+
+extension KeyExchange {
+
+    /// What Save did, for the confirmation screen to show.
+    enum SaveOutcome: Equatable {
+        case saved
+        /// The contact's pairing has pair keys and this exchange gave none: nothing is saved, and the exchange can be run again.
+        case refusedWeaker
+        case failed
+    }
+
+    /// Saves a confirmed exchange: derives the routing key, builds the key row and hands both to `update(key:for:pairing:)`.
+    /// Anything it can't do leaves nothing saved.
+    @MainActor
+    static func saveExchange(
+        _ payload: ExchangeManager.ExchangePhase.Payload, for identifier: String,
+        in contactManager: ContactManager?, using keyManager: any KeyManagerProtocol
+    ) -> SaveOutcome {
+        do {
+            let myIdentity = try keyManager.retrieveIdentity()
+            let date = String(Date.now.timeIntervalSince1970)
+            let quantum = payload.hybridResult.map {
+                QuantumKeyMaterial(
+                    encapsulatedSecret: $0.mlkemSecret1,
+                    decapsulatedSecret: $0.mlkemSecret2,
+                    ourCiphertext: $0.ourCiphertext,
+                    peerCiphertext: $0.peerCiphertext
+                )
+            }
+
+            // Both phones sent a `pairing` field, so both hold a routing key and a pair of keys and derive the same one
+            // (Bug 196). One we can't derive is not a weaker pairing to save: nothing is saved, and the screen says so.
+            var pairing = PairingState.empty
+            if let offer = payload.pairing {
+                guard let derived = offer.routingKey(withPeer: payload.classicalKey, quantum: quantum, using: keyManager) else {
+                    return .failed
+                }
+                pairing = .paired(routingKey: derived, keys: offer.pairKeys)
+            }
+
+            guard let key = Contact.Draft.Key(
+                material: payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum,
+                pairing: pairing
+            ) else {
+                return .failed
+            }
+
+            try contactManager?.update(key: key, for: identifier, pairing: payload.pairing)
+            return .saved
+        } catch ContactManager.Errors.pairingWouldBeWeaker {
+            return .refusedWeaker
+        } catch {
+            return .failed
         }
     }
 }

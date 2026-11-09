@@ -15388,8 +15388,11 @@ Not changed, on purpose or open:
   60 ms at 10 contacts, 300 ms at 50 and 1.2 s at 200 on the Simulator, on the main actor. It now derives one contact's keys for each
   draft that holds a sealed file (about 7 to 14 ms each on the Simulator) and nothing for the others. Not timed on a device.
 - `PairingState` is a struct whose private initializer keeps the routing key and pair keys together, not an enum with one case.
-- Tests for `KeyExchange.save()`, `pairingNotDerived`, the confirmation note and the new "refused" screen do not exist; they need the
-  UI.
+- **Fixed 2026-11-09 (in part):** what Save does now lives in `KeyExchange.saveExchange`, which returns saved, refused or failed, and the
+  view only shows the result (`KeyExchangeSaveTests`: a pairing saved, a plain one, a routing key that can't be derived, a weaker
+  re-exchange refused, an unknown contact). The confirmation note and the refused screen as drawn still have no test; they need the UI.
+  `saveExchange` still reports "saved" when the contact manager is nil, as `save()` did; a failure would be better, and is a behaviour
+  change, so it is not made here.
 
 **Release notes line:** "Contacts you paired before this version can be upgraded by exchanging keys again in person; they show a
 small arrow until you do."
