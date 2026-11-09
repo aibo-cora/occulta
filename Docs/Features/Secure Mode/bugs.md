@@ -3981,6 +3981,34 @@ Any message sealed **before** the re-exchange was built against the old key. Aft
 re-exchange we resolve the new one, and every check that depends on the sender's identity
 compares against a key that did not exist when the message was made.
 
+### Correction 2026-11-07 — sender identification fails first
+
+Read from the code at `8bf6e6a6`, not reproduced by a test. The three consumers below are not the first
+failure. Before any of them runs, `identifyOwner` (`Contact+Manager.swift`, the `last(where: { $0.expiredOn == nil })`
+loop) matches the bundle's cleartext sender tag against each contact's newest unexpired key. A bundle from the old
+phone carries the old key's tag, so it matches no contact and throws `noPublicKeyToEncryptWith`, in every mode. The user
+sees the "Could not find this file's owner's public key…" alert (`OccultaApp.swift`, the `noPublicKeyToEncryptWith`
+catch), not a signature error, and the file is never shown as from the contact. Revoke gets the same result before the
+re-exchange: a revoked contact has no unexpired key at all.
+
+Two consequences:
+
+- **82a's remedy as written would not be reached.** A walk-back in `deriveInboundKey` runs after sender identification.
+  Any fix has to widen identification, which decides which contact a file belongs to and is where an old-key lookup would
+  become an oracle: a distinct message for "matches a contact's old key" tells whoever delivers a file that such a contact
+  exists at this depth. **Open, needs a decision:** whether identification may ever search superseded keys, and if so how
+  it stays one outcome for the caller. The "Remedy — 82a" section below is not to be implemented until then.
+- **The user-facing text had a false reason.** The alert said the file was corrupted or not addressed to the user. For a
+  file from a contact's previous phone neither is true. The Trust Check copy (design doc "Occulta Trust Check —
+  Top-Level Flow", approved 2026-11-07) adds a fourth reason to the one shared constant and tells users to open a contact's
+  files before revoking, since they stop opening at that point. A separate "old phone" message was rejected for the oracle
+  reason above.
+
+The copy does not depend on how 82a is decided: it promises nothing for a plain re-exchange (today the old phone's files
+fail there too; after an 82a that accepts superseded keys they might open), and says to revoke if the old phone could be in
+someone else's hands. Files that are gone stay gone: the app keeps no history, so "send again" only works if the sender
+still has the content.
+
 ### Why it costs more than a signature failure
 
 That single value feeds three separate consumers on the inbound path, and all three break:
@@ -4155,6 +4183,12 @@ Today `resolveSenderPublicKey` treats the two identically by looking at neither.
 revocation lever exists in the UI. What is not established is whether a user who rotates *because
 of* a compromise knows to reach for it rather than simply re-exchanging. That is a copy question,
 and it is what makes accepting superseded keys safe or unsafe in practice.
+
+**Copy written 2026-11-07.** The lost-phone and new-phone remedies of the Trust Check top-level flow (design doc
+"Occulta Trust Check — Top-Level Flow") say to open a contact's files before revoking, to revoke when the old phone could
+be in someone else's hands, and to send again what was sent before the exchange. The Revoke confirmation says what stops
+working. The wording is in that doc's remedy table. It does not settle whether 82a accepts superseded keys; see the
+2026-11-07 correction above.
 
 ---
 
