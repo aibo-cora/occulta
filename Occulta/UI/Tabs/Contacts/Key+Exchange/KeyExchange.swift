@@ -403,7 +403,9 @@ extension KeyExchange {
                 return .failed
             }
 
-            try contactManager?.update(key: key, for: identifier, pairing: payload.pairing)
+            // No manager is not a save: the caller discards the exchange's keys right after "saved".
+            guard let contactManager else { return .failed }
+            try contactManager.update(key: key, for: identifier, pairing: payload.pairing)
             return .saved
         } catch ContactManager.Errors.pairingWouldBeWeaker {
             return .refusedWeaker

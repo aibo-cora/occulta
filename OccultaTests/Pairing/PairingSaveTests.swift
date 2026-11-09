@@ -375,6 +375,13 @@ struct KeyExchangeSaveTests {
 
         #expect(outcome == .failed)
     }
+
+    @Test("No contact manager is a failure, not a save, since the exchange's keys are discarded after a save", .ambientTestKeyManager)
+    func noContactManagerFails() throws {
+        let outcome = KeyExchange.saveExchange(try self.payload(try self.aliceOffer()), for: UUID().uuidString, in: nil, using: self.alice)
+
+        #expect(outcome == .failed)
+    }
 }
 
 // MARK: - The save

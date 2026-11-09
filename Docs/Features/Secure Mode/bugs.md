@@ -15390,9 +15390,10 @@ Not changed, on purpose or open:
 - `PairingState` is a struct whose private initializer keeps the routing key and pair keys together, not an enum with one case.
 - **Fixed 2026-11-09 (in part):** what Save does now lives in `KeyExchange.saveExchange`, which returns saved, refused or failed, and the
   view only shows the result (`KeyExchangeSaveTests`: a pairing saved, a plain one, a routing key that can't be derived, a weaker
-  re-exchange refused, an unknown contact). The confirmation note and the refused screen as drawn still have no test; they need the UI.
-  `saveExchange` still reports "saved" when the contact manager is nil, as `save()` did; a failure would be better, and is a behaviour
-  change, so it is not made here.
+  re-exchange refused, an unknown contact, no contact manager). The confirmation note and the refused screen as drawn still have no
+  test; they need the UI. `save()` used to report "saved" when the contact manager was nil, with nothing saved and the exchange's keys
+  discarded after it; it is now a failure with Retry. The manager comes from the environment and is not nil in the app's views, so this
+  is a safeguard.
 
 **Release notes line:** "Contacts you paired before this version can be upgraded by exchanging keys again in person; they show a
 small arrow until you do."
