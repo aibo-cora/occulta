@@ -25,7 +25,15 @@ class ContactManager {
     var modelContext: ModelContext { self.modelExecutor.modelContext }
     
     private let cryptoManager: CryptoProtocol = Manager.Crypto()
-    
+
+    #if DEBUG
+    /// A test sets this to make the next `update(key:for:pairing:)` fail at its `save()`, after the card state, the tier, the
+    /// challenge, the retired rows and the new row have all changed: no other failure comes that late. Reset by that use.
+    @ObservationIgnored var failNextKeySave = false
+
+    struct InjectedKeySaveFault: Error, Equatable {}
+    #endif
+
     /// Prepare the Contacts system to return the names of matching people
     let keys = [
         CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
@@ -706,6 +714,7 @@ extension ContactManager {
 
             #if DEBUG
             debugPrint("Updated key, owner hash = \(key.owner)")
+            if self.failNextKeySave { self.failNextKeySave = false; throw InjectedKeySaveFault() }
             #endif
 
             try self.modelContext.save()

@@ -15375,9 +15375,13 @@ Not changed, on purpose or open:
   it can change (the contact's card state, prekey record, tier and challenge state; each held row's `expiredOn` and pairing
   column) and puts it back before `rollback()`, and removes the new row. `failureAfterChangesIsRolledBack` makes the prekey
   record overflow, which throws after the card state has been rewritten, and fails without the restore (mutation run). It does
-  not reach the restore of the retired rows, the tier, the challenge state or the new row, or a failing final `save()`: nothing
-  makes those throw without a seam. The other `rollback()` calls (`PQmigration`, `KeyReseal+*`, `Vault+Manager+Backup`) were not
-  checked for the same thing. `rollback()` also discards any other pending change in the manager's context (a used one-time
+  not reach the restore of the retired rows, the tier, the challenge state or the new row, or a failing final `save()`. A DEBUG-only
+  flag, `ContactManager.failNextKeySave` (the `KeyReseal` fault-injection pattern, no code in Release), makes the final `save()`
+  throw, and `failureAtSaveIsRolledBack` covers the rest: with any one of the restores of the card state, prekey record, tier,
+  challenge column, retired row's `expiredOn` or retired row's pairing column removed, it fails (mutation run, 2026-11-09). Removing
+  the `removeAll` of the new row from the relationship does not fail it: `modelContext.delete(newRow)` on the next line takes it out
+  of the relationship, so that line is redundant on the Simulator's iOS 26 and is left as a guard. The other `rollback()` calls
+  (`PQmigration`, `KeyReseal+*`, `Vault+Manager+Backup`) were checked only by reading their callers (Bug 197). `rollback()` also discards any other pending change in the manager's context (a used one-time
   prekey whose save failed, before another save), as `PQmigration` does. **Decided 2026-11-07: documented, not fixed**
   (`Docs/General/decisions.md`, "A failed key save can drop a used one-time prekey's pending 'used' mark").
 - **Fixed 2026-11-09:** the attachment pass picked the new key from the first contact seen for an old key, so two records of one

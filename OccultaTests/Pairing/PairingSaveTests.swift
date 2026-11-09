@@ -481,6 +481,44 @@ struct PairingSaveTests {
         #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x01, count: 32), keys: samplePairKeys()))
     }
 
+    @Test("A save that fails at the end puts back the card state, the tier, the challenge and the retired row, and drops the new row", .ambientTestKeyManager)
+    func failureAtSaveIsRolledBack() throws {
+        let cm = try makeContactManager()
+        let paired = try contact(in: cm)
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x01, count: 32)), for: paired.identifier, pairing: offer())
+        let challenge = IdentityChallenge.OutstandingChallenge(nonce: Data(repeating: 1, count: 32), issuedAt: UInt64(Date().timeIntervalSince1970))
+        try cm.record(challenge, for: paired.identifier, now: Date())
+        let current = try #require(paired.currentKey)
+        let card = paired.introductionCardEncrypted
+        let record = paired.prekeyRecordEncrypted
+        let tier = paired.maxBundleVersion
+        let challenges = paired.challengeStateEncrypted
+        let sealedPairing = current.pairingEncrypted
+        try cm.modelContext.save()
+        #expect(cm.challenge(for: paired.identifier) != nil)
+
+        // Fails at the `save()`, after the retired row, the challenge, the card state, the tier and the new row have all changed.
+        cm.failNextKeySave = true
+        #expect(throws: ContactManager.InjectedKeySaveFault()) {
+            try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier, pairing: offer(own: ownBatch(id: 0x22)))
+        }
+
+        #expect(!cm.modelContext.hasChanges)
+        #expect(paired.introductionCardEncrypted == card, "the card state")
+        #expect(paired.prekeyRecordEncrypted == record, "the prekey record")
+        #expect(paired.maxBundleVersion == tier, "the tier")
+        #expect(paired.challengeStateEncrypted == challenges, "the challenge column")
+        #expect(cm.challenge(for: paired.identifier) != nil, "the outstanding challenge")
+        #expect(paired.contactPublicKeys?.count == 1, "the new row is gone")
+        #expect(paired.currentKey === current && current.expiredOn == nil, "the old row is current again")
+        #expect(current.pairingEncrypted == sealedPairing, "the old row's sealed pairing")
+        #expect(cm.pairingState(for: paired) == .paired(routingKey: Data(repeating: 0x01, count: 32), keys: samplePairKeys()))
+
+        // And the flag was used up: the same update now goes through.
+        try cm.update(key: draftKey(routingKey: Data(repeating: 0x02, count: 32), date: "2"), for: paired.identifier, pairing: offer(own: ownBatch(id: 0x22)))
+        #expect(cm.pairingState(for: paired).routingKey == Data(repeating: 0x02, count: 32))
+    }
+
     @Test("A re-pair replaces what the old phone gave us and retires our old batches", .ambientTestKeyManager)
     func rePairResets() throws {
         let cm = try makeContactManager()
