@@ -218,6 +218,8 @@ nonisolated extension KeyReseal {
         Field("Key", "owner", .data),
         Field("Key", "expiredOn", .data, "No current code sets it; only the v1 to v2 migration rewrote it."),
         Field("Key", "quantumKeyMaterialEncrypted", .data),
+        Field("Key", "pairingEncrypted", .data, filler: .sealed,
+              "`PairingCodec.capacity` bytes of plaintext; the empty state for a pairing with no secret (Bug 196)."),
 
         // MARK: Contact.Message — retired
 

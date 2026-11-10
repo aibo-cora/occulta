@@ -82,7 +82,7 @@ private final class Phone {
     /// A message to the other phone, recording which key it goes on.
     func send() throws -> Data {
         try self.run {
-            self.log.append(self.contactManager.nextSendSecrecy(for: try self.contact))
+            self.log.append(self.contactManager.nextSendSecrecy(for: try self.contact.identifier))
             return try self.contactManager.encryptBundle(basket: Basket(files: []), for: self.contactID)
         }
     }

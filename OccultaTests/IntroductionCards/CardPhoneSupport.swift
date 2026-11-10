@@ -165,8 +165,8 @@ struct CardPhonePair {
     init(hiddenAtDuressDepth: Bool = false) throws {
         let bob = try CardPhone(), carol = try CardPhone()
         let bobSide = try bob.newContact("Carol"), carolSide = try carol.newContact("Bob")
-        let card = try bob.run { try bob.cm.createCard(for: try bob.contact(bobSide)) }
-        let outcome = try carol.run { try carol.cm.importCard(card.encoded, into: try carol.contact(carolSide), newContactName: nil) }
+        let card = try bob.run { try bob.cm.createCard(for: bobSide) }
+        let outcome = try carol.run { try carol.cm.importCard(card.encoded, into: carolSide, newContactName: nil) }
         #expect(outcome == .imported(contactIdentifier: carolSide), "precondition")
         (self.bob, self.carol, self.bobSide, self.carolSide, self.card) = (bob, carol, bobSide, carolSide, card)
         if hiddenAtDuressDepth { try self.hideBobsContact() }

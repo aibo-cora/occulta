@@ -40,6 +40,35 @@ struct KeyExchangeTeardownTests {
         #expect(manager.phase == .resting)
     }
 
+    @Test("The pair keys are made once for the peer we're pinned to, both with the prekeys or neither, and dropped at teardown",
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func pairKeysDoNotOutliveTheExchange() throws {
+        let manager = ExchangeManager()
+        manager.pairKeyProvider = SoftwareCardKeys()
+        #expect(manager.ownPairKeys == nil, "an exchange that never finds anyone makes none")
+
+        manager.makeOwnPairing()
+        let first = try #require(manager.ownPairKeys)
+        manager.makeOwnPairing()
+        #expect(manager.ownPairKeys == first, "made once, not again for the same peer")
+
+        manager.finish()
+        #expect(manager.ownPairKeys == nil, "the blobs do not outlive the exchange")
+    }
+
+    @Test("A failure making the pair keys leaves the prekeys and the pair keys both unmade",
+          .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func pairKeyFailureSendsNothing() {
+        let manager = ExchangeManager()
+        let keys = SoftwareCardKeys()
+        keys.failing = true
+        manager.pairKeyProvider = keys
+
+        manager.makeOwnPairing()
+        #expect(manager.ownPairKeys == nil)
+        #expect(manager.ownPrekeys == nil, "the prekeys made first are dropped too: a phone sends all of the pairing field or none")
+    }
+
     /// Control: the screen staying up must not reset the exchange, or the test above proves nothing.
     /// It takes the same steps minus the removal, including the layout pass the removal runs in.
     @Test("The exchange keeps running while the screen stays up")
@@ -105,5 +134,60 @@ struct KeyExchangeTeardownTests {
         window.makeKeyAndVisible()
         window.layoutIfNeeded()
         return HostedScreen(window: window, controller: controller, presence: presence)
+    }
+}
+
+// MARK: - What the exchange manager accepts of the peer's pairing field (Bug 196)
+
+@Suite("Bug 196 — the exchange manager and the peer's pairing field", .serialized)
+@MainActor
+struct ExchangeManagerPairingTests {
+
+    /// A peer's `pairing` field made with software keys, and the keys behind it.
+    private func peerField() throws -> (field: Exchange.PairingField, keys: PairingOffer.OwnPairKeys) {
+        let keys = try PairingOffer.makeOwnPairKeys(using: SoftwareCardKeys())
+        let record = try PairingOffer.makeOwnPrekeys()
+        let batch = try #require(PairingOffer.wireBatch(of: record))
+        return (Exchange.PairingField(prekeyBatch: batch, agreementKey: keys.agreementKey, signingKey: keys.signingKey, mldsaKey: keys.mldsaKey), keys)
+    }
+
+    @Test("A good field is accepted with the pair-key ECDH both phones compute", .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func acceptsAGoodField() throws {
+        let manager = ExchangeManager()
+        manager.pairKeyProvider = SoftwareCardKeys()
+        manager.makeOwnPairing()
+        let ours = try #require(manager.ownPairKeys)
+        let (field, peer) = try self.peerField()
+
+        let accepted = try #require(manager.acceptedPairing(field, peerIdentity: Data(repeating: 0x22, count: 65)))
+
+        #expect(accepted.keys.agreementKey == peer.agreementKey && accepted.keys.signingKey == peer.signingKey)
+        let theirSide = Manager.Crypto.cardECDHOutput(try SoftwareCardKeys().sharedSecret(agreementBlob: peer.agreementBlob, peerPublicKey: ours.agreementKey))
+        #expect(accepted.ecdh == theirSide, "the other phone computes the same bytes")
+    }
+
+    @Test("Nothing is accepted when we sent no pairing field ourselves", .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func refusesWhenWeOfferedNone() throws {
+        let manager = ExchangeManager()
+        manager.pairKeyProvider = SoftwareCardKeys()
+        let (field, _) = try self.peerField()
+
+        #expect(manager.ownPairKeys == nil)
+        #expect(manager.acceptedPairing(field, peerIdentity: Data(repeating: 0x22, count: 65)) == nil)
+        #expect(manager.acceptedPairing(nil, peerIdentity: Data(repeating: 0x22, count: 65)) == nil)
+    }
+
+    @Test("A field that reflects one of our own keys is refused", .enabled(if: TestSupport.secureEnclaveAvailable()))
+    func refusesAReflection() throws {
+        let manager = ExchangeManager()
+        manager.pairKeyProvider = SoftwareCardKeys()
+        manager.makeOwnPairing()
+        let ours = try #require(manager.ownPairKeys)
+        let (genuine, _) = try self.peerField()
+        let reflected = Exchange.PairingField(
+            prekeyBatch: genuine.prekeyBatch, agreementKey: ours.agreementKey, signingKey: genuine.signingKey, mldsaKey: nil
+        )
+
+        #expect(manager.acceptedPairing(reflected, peerIdentity: Data(repeating: 0x22, count: 65)) == nil)
     }
 }

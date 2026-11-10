@@ -53,6 +53,12 @@ struct GroupRecipient {
     /// and the slot is built by `wrapCardRecipient`. Nil for every other recipient.
     let card: CardSlot?
 
+    /// The pair keys and routing key to seal this slot with, for a pair-key pairing (`bugs.md` Bug 196): the long-term
+    /// slot key comes from the pair-key ECDH and a forward-secret slot is signed by the pair signing key, in place of the
+    /// identity key. The slot then carries its routing tag, the routing key is mixed into its key, and its sender proof is
+    /// keyed by it. Resolved by the caller, like every other field here. Nil for a pairing without them.
+    let pairing: PairingSlotKeys?
+
     init(
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
@@ -61,7 +67,8 @@ struct GroupRecipient {
         pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?,
         shardOperations: [OccultaBundle.ShardOperation] = [],
         prefixesEphemeralSignature: Bool = false,
-        card: CardSlot? = nil
+        card: CardSlot? = nil,
+        pairing: PairingSlotKeys? = nil
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
@@ -71,6 +78,7 @@ struct GroupRecipient {
         self.shardOperations         = shardOperations
         self.prefixesEphemeralSignature = prefixesEphemeralSignature
         self.card                    = card
+        self.pairing              = pairing
     }
 }
 
@@ -247,7 +255,15 @@ extension Manager.Crypto {
         let sessionKey = SymmetricKey(size: .bits256)
 
         let senderPub = try senderIdentity ?? self.keyManager.retrieveIdentity()
-        let senderProof = Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
+
+        // When every recipient is on the pairing form, the file names its sender to nobody who lacks that
+        // recipient's routing key: the header's fingerprint and the shared proof are random bytes of the same size, since an
+        // identity fingerprint would let anyone holding the sender's public key test the file, and a shared proof is one
+        // any recipient could make for another sender (Bug 196). One recipient on the old form needs both as before.
+        let allPaired = recipients.allSatisfy { $0.pairing != nil }
+        let senderProof = allPaired
+            ? try RoutingKey.fillerTag()
+            : Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
 
         // Per-bundle group blind: HMAC(key: groupID.rawBytes, msg: blindNonce).
         // A fresh nonce per bundle produces a different blind each time, so a passive
@@ -278,7 +294,9 @@ extension Manager.Crypto {
         return GroupSealContext(
             sessionKey: sessionKey, senderPublicKey: senderPub, blindNonce: blindNonce, blind: blind,
             payload: authenticatedPayload, outerSecrecy: outerSecrecy, outerNonce: outerNonce,
-            senderFingerprint: OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
+            senderFingerprint: allPaired
+                ? try RoutingKey.fillerTag()
+                : OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
         )
     }
 
@@ -287,7 +305,10 @@ extension Manager.Crypto {
     ) throws -> OccultaBundle.GroupEnvelope {
         let sessionKeyData = context.sessionKey.withUnsafeBytes { Data($0) }
         let entries = try recipients.map { r in
-            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: context.blind, bodyDigest: bodyDigest)
+            try self.wrapRecipient(
+                r, sessionKeyData: sessionKeyData, blind: context.blind, bodyDigest: bodyDigest,
+                tagNonce: context.outerNonce, senderPublicKey: context.senderPublicKey
+            )
         }
         return OccultaBundle.GroupEnvelope(blind: context.blind, blindNonce: context.blindNonce, recipients: entries)
     }
@@ -296,19 +317,39 @@ extension Manager.Crypto {
         _ r: GroupRecipient,
         sessionKeyData: Data,
         blind: Data,
-        bodyDigest: Data
+        bodyDigest: Data,
+        tagNonce: Data,
+        senderPublicKey: Data
     ) throws -> OccultaBundle.Recipient {
         guard r.publicKey.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
         if let card = r.card {
             return try self.wrapCardRecipient(r, card: card, sessionKeyData: sessionKeyData, blind: blind, bodyDigest: bodyDigest)
         }
 
-        let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(
+        let (derivedKey, secrecyContext) = try self.deriveOutboundKey(
             contactPrekey: r.contactPrekey,
             isLastResort: r.contactPrekeyIsLastResort,
             recipientPublicKey: r.publicKey,
-            quantumMaterial: r.quantumMaterial
+            quantumMaterial: r.quantumMaterial,
+            pairing: r.pairing
         )
+
+        // The routing key, where this slot has one (Bug 196): mixed into the key so the slot opens only for the
+        // pairing that sealed it; its routing tag routes it; its proof, keyed by the routing key, covers the routing tag and our key.
+        // A slot with none carries random bytes of the same sizes, so the fields' presence says nothing, in a group
+        // that mixes both.
+        let wrappingKey: SymmetricKey
+        let routingTag: Data
+        let slotProof: Data
+        if let routingKey = r.pairing?.routingKey {
+            wrappingKey = RoutingKey.bind(derivedKey, routingKey: routingKey)
+            routingTag = RoutingKey.routingTag(routingKey: routingKey, nonce: tagNonce)
+            slotProof = RoutingKey.slotProof(routingKey: routingKey, routingTag: routingTag, senderPublicKey: senderPublicKey)
+        } else {
+            wrappingKey = derivedKey
+            routingTag = try RoutingKey.fillerTag()
+            slotProof = try RoutingKey.fillerTag()
+        }
 
         // FS mode's session key is ECDH(senderEphemeral, recipientPrekey) — it never
         // involves our long-term identity, so senderProof alone doesn't prove we sent
@@ -327,11 +368,16 @@ extension Manager.Crypto {
             // unconditionally would make every message unopenable by 1.10.0/1.10.1, which
             // verify against the bare key — a break in the one direction we cannot patch,
             // since those installs are already deployed. See `.prefixedSenderSignatureCapable`.
-            senderEphemeralSignature = try self.keyManager.signData(
-                r.prefixesEphemeralSignature
-                    ? Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey)
-                    : secrecyContext.ephemeralPublicKey
-            )
+            if let pairing = r.pairing {
+                // The pair signing key, in the prefixed form only: no build before 1.10.2 has a pair key.
+                senderEphemeralSignature = try pairing.sign(Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey))
+            } else {
+                senderEphemeralSignature = try self.keyManager.signData(
+                    r.prefixesEphemeralSignature
+                        ? Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey)
+                        : secrecyContext.ephemeralPublicKey
+                )
+            }
         case .longTermFallback, .longTermNoPQ, .group, .unsupported:
             senderEphemeralSignature = Self.randomEphemeralSignatureFiller()
         }
@@ -344,7 +390,8 @@ extension Manager.Crypto {
             // as "delete every piece you hold from me" (bugs.md Bug 141).
             shardMetadataAttempted:   false,
             senderEphemeralSignature: senderEphemeralSignature,
-            bodyDigest:               bodyDigest
+            bodyDigest:               bodyDigest,
+            slotProof:                slotProof
         )
         // Sorted keys, so the same payload always encodes to the same bytes. It is sealed, so
         // the order was never observable, but a default JSONEncoder's order changes with every
@@ -357,7 +404,7 @@ extension Manager.Crypto {
             encodedPayload, using: wrappingKey, nonce: AES.GCM.Nonce(), authenticating: blind
         ).combined else { throw EncryptionError.sealFailed }
 
-        return OccultaBundle.Recipient(secrecyContext: secrecyContext, wrappedPayload: wrappedPayload)
+        return OccultaBundle.Recipient(secrecyContext: secrecyContext, wrappedPayload: wrappedPayload, routingTag: routingTag)
     }
 
     /// Domain-separation prefix for `senderEphemeralSignature`.

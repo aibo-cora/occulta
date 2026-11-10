@@ -25,7 +25,8 @@ extension Manager.Crypto {
         contactPrekey: Prekey?,
         isLastResort: Bool = false,
         recipientPublicKey: Data,
-        quantumMaterial: QuantumKeyMaterial?
+        quantumMaterial: QuantumKeyMaterial?,
+        pairing: PairingSlotKeys? = nil
     ) throws -> (key: SymmetricKey, context: OccultaBundle.SecrecyContext) {
         if let prekey = contactPrekey {
             guard prekey.publicKey.count == 65 else { throw EncryptionError.invalidPrekeyMaterial }
@@ -53,7 +54,13 @@ extension Manager.Crypto {
             )
             return (key, context)
         } else {
-            guard let key = self.deriveSessionKey(using: recipientPublicKey, quantumMaterial: quantumMaterial) else {
+            // A pair-key pairing's long-term slot key comes from the pair-key ECDH: the identity key is not in it (Bug 196).
+            let key: SymmetricKey
+            if let pairing {
+                key = try pairing.longTermKey(quantumMaterial: quantumMaterial)
+            } else if let derived = self.deriveSessionKey(using: recipientPublicKey, quantumMaterial: quantumMaterial) {
+                key = derived
+            } else {
                 throw EncryptionError.keyDerivationFailed
             }
             let mode: OccultaBundle.Mode = quantumMaterial != nil ? .longTermFallback : .longTermNoPQ
@@ -109,7 +116,8 @@ extension Manager.Crypto {
         senderContactID: String,
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
-        prekeys: PrekeyPrivateKeys
+        prekeys: PrekeyPrivateKeys,
+        pairing: PairingSlotKeys? = nil
     ) throws -> (key: SymmetricKey, used: InboundPrekeyUse) {
         switch secrecy.mode {
         case .forwardSecret, .forwardSecretNoPQ:
@@ -151,6 +159,9 @@ extension Manager.Crypto {
         case .longTermFallback, .longTermNoPQ:
             // NoPQ: sender did not use ML-KEM — ignore any quantum material on file.
             let effectiveQM: QuantumKeyMaterial? = secrecy.mode == .longTermNoPQ ? nil : quantumMaterial
+            if let pairing {
+                return (try pairing.longTermKey(quantumMaterial: effectiveQM), .longTerm)
+            }
             guard let key = self.deriveSessionKey(using: senderPublicKey, quantumMaterial: effectiveQM) else {
                 throw EncryptionError.keyDerivationFailed
             }

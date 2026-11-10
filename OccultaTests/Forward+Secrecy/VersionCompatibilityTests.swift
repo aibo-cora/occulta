@@ -97,7 +97,7 @@ struct VersionCapabilityTests {
         // Anything far enough ahead lands on whatever the newest tier happens to be. Asserting
         // the specific case here is what made this test need editing when a tier was added;
         // asserting the property does not.
-        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .mostCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "99.0.0") == .mostCapable)
         #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0").isAtLeast(.senderSignatureCapable))
     }
 
