@@ -59,11 +59,13 @@ extension ContactManager {
 
     // MARK: - Sending
 
-    /// How the next message to `contact` will be sealed, as `encryptBundle` chooses: one of their one-time keys if
-    /// we hold one; else their last-resort key, used only in the group format; else the long-term keys. Read by the
-    /// compose indicator (D2). Per contact and never per depth, so a coerced duress session sees what any depth would.
-    func nextSendSecrecy(for contact: Contact.Profile) -> NextSendSecrecy {
-        guard let record = try? self.prekeyRecord(for: contact) else { return .longTerm }
+    /// How the next message to the contact `identifier` names will be sealed, as `encryptBundle` chooses: one of their
+    /// one-time keys if we hold one; else their last-resort key, used only in the group format; else the long-term
+    /// keys. Read by the compose indicator (D2). Per contact and never per depth, so a coerced duress session sees what
+    /// any depth would.
+    func nextSendSecrecy(for identifier: String) -> NextSendSecrecy {
+        guard let contact = try? self.fetchContact(by: identifier),
+              let record = try? self.prekeyRecord(for: contact) else { return .longTerm }
         if !record.inboundBatches.isEmpty { return .forwardSecret }
         if record.inboundLastResort != nil,
            Self.resolveTargetVersion(for: contact, using: Manager.Crypto()).supportsGroups {

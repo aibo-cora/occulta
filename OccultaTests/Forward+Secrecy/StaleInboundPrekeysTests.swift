@@ -66,7 +66,7 @@ extension CardPhone {
     }
 
     func nextSend(to id: String) throws -> NextSendSecrecy {
-        try self.run { self.cm.nextSendSecrecy(for: try self.contact(id)) }
+        try self.run { self.cm.nextSendSecrecy(for: id) }
     }
 }
 

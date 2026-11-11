@@ -268,6 +268,15 @@ enum LaunchSequence {
             #endif
         }
 
+        // The routing key (Bug 196): the field on every key row is never nil either.
+        do {
+            try DatabaseMigration.migratePairingFields(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("pairing field migration error: \(error)")
+            #endif
+        }
+
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
         do {

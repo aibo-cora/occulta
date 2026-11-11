@@ -51,7 +51,7 @@ extension IdentityChallenge {
         }
 
         private var hasValidIdentity: Bool {
-            self.contact.contactPublicKeys?.last?.expiredOn != nil
+            self.contact.displayedKey?.expiredOn != nil
         }
 
         private var verifiedCaption: String? {

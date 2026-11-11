@@ -159,6 +159,18 @@ public struct OccultaBundle: Codable {
         /// without the receive path and the send path, TestFlight included. Such a build would be recorded at
         /// this tier and sent bundles it can't open (`ROLLOUT_PLAN.md`, release mechanics).
         case streamedBodyCapable
+        /// Capability watermark: contact's build gives a new pairing a routing key and a key pair of its own (`bugs.md` Bug 196): a
+        /// routing tag in every slot, the routing key mixed into each slot's key, the sender proof in the slot, and, for a pair-key
+        /// pairing, a long-term slot key from the pair-key ECDH and a forward-secret signature by the pair signing key. Never
+        /// written to the wire `version` field; stored only in `Contact.Profile.maxBundleVersion` as byte 0x0B.
+        ///
+        /// A send uses the routing-key form only for a recipient recorded at this tier, with a routing key both sides hold. A
+        /// pair-key pairing is sent in it whatever tier is stored: it has no other form to fall back to.
+        ///
+        /// ⚠️ Keyed on the app version, like `.bodyDigestCapable`: no build numbered 2.0.1 or later may ship without
+        /// the receive path and the send path, TestFlight included. Such a build would be recorded at this tier and
+        /// sent files it can't open (`ROLLOUT_PLAN.md`, release mechanics).
+        case pairingCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -178,6 +190,7 @@ public struct OccultaBundle: Codable {
             case .prefixedSenderSignatureCapable: return "1.10.2"
             case .bodyDigestCapable: return "2.0.0"
             case .streamedBodyCapable: return "2.0.0"
+            case .pairingCapable: return "2.0.1"
             default:                return nil
             }
         }
@@ -193,6 +206,7 @@ public struct OccultaBundle: Codable {
             case .prefixedSenderSignatureCapable: return 0x08
             case .bodyDigestCapable: return 0x09
             case .streamedBodyCapable: return 0x0A
+            case .pairingCapable: return 0x0B
             default:                 return nil
             }
         }
@@ -219,6 +233,7 @@ public struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
+            .pairingCapable, // 2.0.1+ — a routing key per pairing: slot routing tags, key binding, in-slot sender proof
             .streamedBodyCapable, // 2.0.0+ — the body of a group bundle is a chunk stream (wire version 0x0A)
             .bodyDigestCapable, // 2.0.0+  — every group slot carries the body's digest
             .prefixedSenderSignatureCapable, // 1.10.2+ — domain-separated ephemeral signature
@@ -634,10 +649,25 @@ public struct OccultaBundle: Codable {
         /// The receiver finds their slot by trial-decryption — no cleartext
         /// identity hint is included, so an observer cannot confirm membership.
         public let wrappedPayload: Data
+        /// `RoutingKey.routingTag(routingKey:nonce:)` for the pairing this slot is sealed to, readable before decryption:
+        /// the receiver matches it against one routing tag per contact, in place of the sender's fingerprint and of
+        /// trial decryption (`bugs.md` Bug 196). A random filler of the same size in a slot that has no routing
+        /// key to tag, so the field's presence says nothing. `nil` from builds before the pairing tier.
+        public let routingTag: Data?
 
-        public init(secrecyContext: SecrecyContext, wrappedPayload: Data) {
+        public init(secrecyContext: SecrecyContext, wrappedPayload: Data, routingTag: Data? = nil) {
             self.secrecyContext = secrecyContext
             self.wrappedPayload = wrappedPayload
+            self.routingTag     = routingTag
+        }
+
+        enum CodingKeys: String, CodingKey { case secrecyContext, wrappedPayload, routingTag }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.secrecyContext = try c.decode(SecrecyContext.self, forKey: .secrecyContext)
+            self.wrappedPayload = try c.decode(Data.self, forKey: .wrappedPayload)
+            self.routingTag     = try c.decodeIfPresent(Data.self, forKey: .routingTag)
         }
     }
 
@@ -720,6 +750,11 @@ public struct OccultaBundle: Codable {
         /// `nil` in every other message. Added with introduction cards.
         public let introduction: CardIntroduction?
 
+        /// `RoutingKey.slotProof(routingKey:routingTag:senderPublicKey:)`: the sender proof for this slot, covering the
+        /// slot's `routingTag`. Random filler of the same size when the slot has no routing key. `nil` from builds
+        /// before `.pairingCapable`; `SealedPayload.senderProof` is the proof for those.
+        public let slotProof: Data?
+
         public init(
             sessionKey: Data,
             prekeyBatch: SealedPayload.PrekeySyncBatch? = nil,
@@ -729,7 +764,8 @@ public struct OccultaBundle: Codable {
             shardMetadataAttempted: Bool = false,
             senderEphemeralSignature: Data? = nil,
             bodyDigest: Data? = nil,
-            introduction: CardIntroduction? = nil
+            introduction: CardIntroduction? = nil,
+            slotProof: Data? = nil
         ) {
             self.sessionKey               = sessionKey
             self.prekeyBatch              = prekeyBatch
@@ -740,6 +776,7 @@ public struct OccultaBundle: Codable {
             self.senderEphemeralSignature = senderEphemeralSignature
             self.bodyDigest               = bodyDigest
             self.introduction             = introduction
+            self.slotProof                = slotProof
         }
 
         // Custom decoding: a payload from a pre-groupShardCapable sender simply
@@ -749,7 +786,7 @@ public struct OccultaBundle: Codable {
         // shardMetadataAttempted defaults to false for the same reason — a sender
         // old enough not to know about it never attempted anything.
         enum CodingKeys: String, CodingKey {
-            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature, bodyDigest, introduction
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, shardMetadataAttempted, senderEphemeralSignature, bodyDigest, introduction, slotProof
         }
 
         public init(from decoder: Decoder) throws {
@@ -763,6 +800,7 @@ public struct OccultaBundle: Codable {
             self.senderEphemeralSignature = try c.decodeIfPresent(Data.self, forKey: .senderEphemeralSignature)
             self.bodyDigest               = try c.decodeIfPresent(Data.self, forKey: .bodyDigest)
             self.introduction             = try c.decodeIfPresent(CardIntroduction.self, forKey: .introduction)
+            self.slotProof                = try c.decodeIfPresent(Data.self, forKey: .slotProof)
         }
     }
 

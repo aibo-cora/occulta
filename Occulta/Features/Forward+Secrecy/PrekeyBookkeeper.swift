@@ -312,6 +312,41 @@ struct PrekeyBookkeeper {
             lastResort: lastResort.map(ownKey)
         ))
 
+        Self.holdToMaxOwnKeys(&record)
+    }
+
+    /// A pairing's first batch, made in the exchange before the contact's record could hold it (`bugs.md` Bug 196).
+    /// The peer has been sent this batch's public keys with its ID, so it is installed as it stands, pending, and keeps
+    /// travelling until a key from it is used.
+    ///
+    /// A new pairing is a new peer key, so what the record held of the old one is over: the peer's keys, which the old
+    /// phone gave us, are dropped, and no message may be sealed to them. Our own earlier batches are kept and retired,
+    /// to open anything the old phone sealed before the re-pair and we haven't opened, and the sweep deletes them after
+    /// the grace period like any retired batch. The legacy keychain keys stay as they were.
+    ///
+    /// - Precondition: `batch` is pending and holds the keys of one batch.
+    func startPairing(with batch: PrekeyRecord.OwnBatch, in record: inout PrekeyRecord, now: Date) {
+        for index in record.ownBatches.indices {
+            if record.ownBatches[index].retiredAt == nil { record.ownBatches[index].retiredAt = now }
+            if record.ownBatches[index].isPending {
+                // Undeliverable now: the peer it was for is gone. Its keys open nothing sent to a key the peer never saw,
+                // so only the grace period needs them.
+                record.ownBatches[index].isPending = false
+                record.ownBatches[index].id = nil
+                for key in record.ownBatches[index].keys.indices { record.ownBatches[index].keys[key].publicKey = nil }
+            }
+        }
+        record.inboundBatches = []
+        record.inboundLastResort = nil
+        record.acceptedBatchIDs = []
+        record.latestInboundGeneratedAt = nil
+
+        record.ownBatches.append(batch)
+        Self.holdToMaxOwnKeys(&record)
+    }
+
+    /// Holds the record to `maxOwnKeys` by deleting the oldest retired keys first (`install`).
+    private static func holdToMaxOwnKeys(_ record: inout PrekeyRecord) {
         var excess = record.ownBatches.reduce(0) { $0 + Self.keyCount($1) } - Self.maxOwnKeys
         let retired = record.ownBatches.indices.filter { record.ownBatches[$0].retiredAt != nil }
         for index in retired where excess > 0 {

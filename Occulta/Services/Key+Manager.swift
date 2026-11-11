@@ -9,11 +9,15 @@ import Foundation
 import CryptoKit
 import LocalAuthentication
 import OccultaCore
+import OccultaFormats
 
 // MARK: - HKDF info strings
 
 struct SaltInfo {
     static let kTransportKeyInfo = "Occulta-v1-transport-2025".data(using: .utf8)!
+    /// The base key a contact's attachments are sealed under at rest (`bugs.md` Bug 196): the same ECDH as the transport
+    /// key, under a label of its own, so one key is not both an AEAD key for a slot and the input to the attachments' HKDF.
+    static let kAttachmentBaseKeyInfo = "Occulta-v2-attachment-base-2026".data(using: .utf8)!
     static let kLocalDBKeyInfo   = "Occulta-v1-encryption-key-2025".data(using: .utf8)!
     /// Domain separator for the hybrid local DB key, **legacy form** (ECDH against G, a function of the key's public point;
     /// the current form is `kLocalDBEnclaveBoundKeyInfo`). Distinct from kLocalDBKeyInfo
@@ -349,6 +353,16 @@ extension Manager {
         ///
         /// Returns nil — never crashes — on: nil/wrong-length material, SE unavailable, ECDH failure.
         func createSharedSecret(using material: Data?) -> SymmetricKey? {
+            self.identityDerivedKey(using: material, info: SaltInfo.kTransportKeyInfo)
+        }
+
+        /// The base key a contact's attachments are sealed under at rest: `createSharedSecret(using:)` under its own label.
+        /// Local to this phone: nothing of it is sent, so changing it breaks no interop.
+        func createAttachmentBaseKey(using material: Data?) -> SymmetricKey? {
+            self.identityDerivedKey(using: material, info: SaltInfo.kAttachmentBaseKeyInfo)
+        }
+
+        private func identityDerivedKey(using material: Data?, info: Data) -> SymmetricKey? {
             guard let peerKey = self.convert(material: material) else { return nil }
             guard let ourPriv = try? self.retrievePrivateKey()   else { return nil }
 
@@ -368,7 +382,7 @@ extension Manager {
 
             return try? TransportKeyDerivation.sessionKey(
                 ecdhOutput: rawSecret, ownPublicKey: ourData, peerPublicKey: peerData,
-                postQuantumSecrets: nil, info: SaltInfo.kTransportKeyInfo
+                postQuantumSecrets: nil, info: info
             )
         }
 
@@ -1791,6 +1805,45 @@ extension Manager.Key {
         )
     }
  
+    /// The routing key of a pair-key pairing (`bugs.md` Bug 196, stage 2): `RoutingKey.derive` over the pair-key ECDH the
+    /// caller made and the identity ECDH made here. No raw identity ECDH output leaves this type.
+    ///
+    /// SE operations: one ECDH via SE identity key.
+    func createRoutingKey(
+        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data, transcript: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    ) -> Data? {
+        guard let ecdh = self.identityECDH(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        return RoutingKey.derive(
+            pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, ourAgreementKey: ourAgreementKey,
+            peerAgreementKey: peerAgreementKey,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
+        )
+    }
+
+    /// The key the verification words come from for an exchange that made pair keys: `RoutingKey.wordsKey`.
+    ///
+    /// SE operations: one ECDH via SE identity key.
+    func createPairwiseDicewareKey(
+        peerP256Material: Data, pairwiseECDH: Data, transcript: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    ) -> SymmetricKey? {
+        guard let ecdh = self.identityECDH(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        // The same salt `TransportKeyDerivation` makes of the two public keys.
+        let identitySalt = Data(zip(peerP256Material, ecdh.ownPublicKey).map { $0 ^ $1 })
+
+        return RoutingKey.wordsKey(
+            pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, identitySalt: identitySalt,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
+        ).map { SymmetricKey(data: $0) }
+    }
+
     // MARK: - 16-byte exchange nonce
  
     /// Generate a 16-byte cryptographic nonce for an exchange session.

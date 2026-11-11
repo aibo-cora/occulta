@@ -104,6 +104,29 @@ enum WhatsNew {
                     "Erase All Data now also clears temporary sharing data.",
                     "The key exchange now stops searching when you leave its screen."
                 ]
+            ),
+            Release(
+                version: "2.0.1",
+                features: [
+                    Feature(
+                        symbol: "key.fill",
+                        title: "A key made for each contact",
+                        detail: "A new key exchange now creates a key used only between you and that contact, instead of tying your files to a key every contact holds. Contacts you've already exchanged with keep working. Open one and tap Re-exchange in person to upgrade once their phone is on 2.0.1."
+                    ),
+                    Feature(
+                        symbol: "checkmark.shield",
+                        title: "Safer key exchanges",
+                        detail: "The words you compare after an exchange now cover every key that was sent, so a key swapped on the way gives words that don't match. An exchange that would replace a stronger pairing with a weaker one is refused, and Occulta tells you why."
+                    )
+                ],
+                fixes: [
+                    "Each contact's attachments are now sealed under a key of their own, and your existing files are moved over automatically.",
+                    "The first message you encrypt after importing an introduction card into an existing contact now works.",
+                    "The introduction card share screen closes after you share the card, and stays open if you cancel.",
+                    "Exchanging keys again with a contact after revoking their key now works reliably.",
+                    "A contact's details show the right key after you exchange keys again.",
+                    "If saving a contact's key fails, nothing is left half changed."
+                ]
             )
         ]
 
