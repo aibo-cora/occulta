@@ -930,7 +930,11 @@ struct RootView: View {
             self.showError = true
         // A bundle whose structure or chunks don't hold together. One string for every way that can happen:
         // none of them depends on the depth, and none is worth telling apart to whoever holds the phone.
-        } catch OccultaBundle.BundleError.malformedBundle, is BodyStream.StreamError {
+        //
+        // A card conversation's slot that didn't open is among them, whichever stage it stopped at (`CardSlotFailure`): a
+        // string per stage would tell whoever holds the phone which of the keys this device holds, and the stage is in the
+        // DEBUG log for whoever is diagnosing it.
+        } catch OccultaBundle.BundleError.malformedBundle, is BodyStream.StreamError, GroupDecryptError.cardSlotNotOpened {
             self.errorMessage = "This message couldn't be opened."
             self.showError = true
         } catch {
@@ -975,11 +979,15 @@ struct RootView: View {
         try? DatabaseMigration.migratePrekeyRecords(modelContext: self.contactManager.modelContext)
         try? DatabaseMigration.migrateCardFields(modelContext: self.contactManager.modelContext)
         try? DatabaseMigration.migrateChallengeFields(modelContext: self.contactManager.modelContext)
+        try? DatabaseMigration.migratePairingFields(modelContext: self.contactManager.modelContext)
         try? self.contactManager.sweepPrekeys(visibleAtDepth: self.security.currentDepth)
         // Bug 194: contacts whose key changed before the fix, every contact at every depth.
         try? self.contactManager.sweepStaleInboundPrekeys()
         // Introduction cards (SPEC §6.4): every contact at every depth, unlike the prekey sweep above.
         try? self.contactManager.sweepCards()
+        // The attachments sealed under a contact's old base key move to the new one (Bug 196): every contact at every
+        // depth, and a pass that finds nothing to move changes nothing.
+        Task { await self.contactManager.resealAttachmentKeys() }
     }
 
     /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,

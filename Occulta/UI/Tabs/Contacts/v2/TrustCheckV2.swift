@@ -24,8 +24,7 @@ extension Contact.Profile {
     /// Deliberately not tied to verified/unverified — revoking doesn't
     /// require the key to have matched an owner hash.
     var trustCheckCanRevokeKey: Bool {
-        guard let key = self.contactPublicKeys?.last else { return false }
-        return key.expiredOn == nil
+        self.currentKey != nil
     }
 
     /// Mirrors the exact gate `ContactDetailV2` already uses to decide whether

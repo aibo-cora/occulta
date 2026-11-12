@@ -1,0 +1,322 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2B21177D4FCE92D80E49019C /* Measurement.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00A3F26942927DF5F0D41B9 /* Measurement.swift */; };
+		338DE6EF6432BA8CF89FC0FF /* Measure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34DD277E3328A7BDD24BA1D6 /* Measure.swift */; };
+		418CCA35D8E065F8692970F4 /* OccultaMeasureApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEE5A84F13FFA43718CAA349 /* OccultaMeasureApp.swift */; };
+		6137CE188A67057B9FE33667 /* SpaceKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB703E9B856F7D4FB47391BB /* SpaceKey.swift */; };
+		C0F79E55E99FD7A4A42B8CE1 /* PBKDF2.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0CDCA8128CA3F4CC67AD187 /* PBKDF2.swift */; };
+		C899B14279055D1DC7F4CEED /* MockRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8587E11B0D3A4B375EF577E8 /* MockRecords.swift */; };
+		D0F5C030570F1F9BF8BB6D22 /* SQLiteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD90914C33AB70085F3922AB /* SQLiteStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		34DD277E3328A7BDD24BA1D6 /* Measure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Measure.swift; sourceTree = "<group>"; };
+		8587E11B0D3A4B375EF577E8 /* MockRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockRecords.swift; sourceTree = "<group>"; };
+		AB703E9B856F7D4FB47391BB /* SpaceKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceKey.swift; sourceTree = "<group>"; };
+		AD90914C33AB70085F3922AB /* SQLiteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteStore.swift; sourceTree = "<group>"; };
+		B0CDCA8128CA3F4CC67AD187 /* PBKDF2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PBKDF2.swift; sourceTree = "<group>"; };
+		C7FFE2309B8279ABC9C8DE8B /* OccultaMeasure.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OccultaMeasure.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E00A3F26942927DF5F0D41B9 /* Measurement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Measurement.swift; sourceTree = "<group>"; };
+		FEE5A84F13FFA43718CAA349 /* OccultaMeasureApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OccultaMeasureApp.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		042463C1A4691530D9B8B5E7 = {
+			isa = PBXGroup;
+			children = (
+				476A5D178BFBFE5A02CEB8F2 /* OccultaMeasure */,
+				EE8F98807CBB5DE18DF29D8B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		476A5D178BFBFE5A02CEB8F2 /* OccultaMeasure */ = {
+			isa = PBXGroup;
+			children = (
+				34DD277E3328A7BDD24BA1D6 /* Measure.swift */,
+				E00A3F26942927DF5F0D41B9 /* Measurement.swift */,
+				8587E11B0D3A4B375EF577E8 /* MockRecords.swift */,
+				FEE5A84F13FFA43718CAA349 /* OccultaMeasureApp.swift */,
+				B0CDCA8128CA3F4CC67AD187 /* PBKDF2.swift */,
+				AB703E9B856F7D4FB47391BB /* SpaceKey.swift */,
+				AD90914C33AB70085F3922AB /* SQLiteStore.swift */,
+			);
+			path = OccultaMeasure;
+			sourceTree = "<group>";
+		};
+		EE8F98807CBB5DE18DF29D8B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C7FFE2309B8279ABC9C8DE8B /* OccultaMeasure.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		557B33D4C31655274B352027 /* OccultaMeasure */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1143C395342CA0A2CE364740 /* Build configuration list for PBXNativeTarget "OccultaMeasure" */;
+			buildPhases = (
+				6941D5FC625E9D3E8898C7B0 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OccultaMeasure;
+			packageProductDependencies = (
+			);
+			productName = OccultaMeasure;
+			productReference = C7FFE2309B8279ABC9C8DE8B /* OccultaMeasure.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		3227FC4A6FE2274EE1980A93 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					557B33D4C31655274B352027 = {
+						DevelopmentTeam = R6F5KHKKNX;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = AFF5BA066CDD8C19AC606FFD /* Build configuration list for PBXProject "OccultaMeasure" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 042463C1A4691530D9B8B5E7;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = EE8F98807CBB5DE18DF29D8B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				557B33D4C31655274B352027 /* OccultaMeasure */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6941D5FC625E9D3E8898C7B0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				338DE6EF6432BA8CF89FC0FF /* Measure.swift in Sources */,
+				2B21177D4FCE92D80E49019C /* Measurement.swift in Sources */,
+				C899B14279055D1DC7F4CEED /* MockRecords.swift in Sources */,
+				418CCA35D8E065F8692970F4 /* OccultaMeasureApp.swift in Sources */,
+				C0F79E55E99FD7A4A42B8CE1 /* PBKDF2.swift in Sources */,
+				D0F5C030570F1F9BF8BB6D22 /* SQLiteStore.swift in Sources */,
+				6137CE188A67057B9FE33667 /* SpaceKey.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5D269E38CF10837E775B20F7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = R6F5KHKKNX;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		734BE22C50BF0BB35D049961 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = R6F5KHKKNX;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		DC836078C36CC871A7FEE116 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Occulta Measure";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.measure";
+				PRODUCT_NAME = OccultaMeasure;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		ED7E67F476AEA1B8657580B6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Occulta Measure";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.measure";
+				PRODUCT_NAME = OccultaMeasure;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1143C395342CA0A2CE364740 /* Build configuration list for PBXNativeTarget "OccultaMeasure" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ED7E67F476AEA1B8657580B6 /* Debug */,
+				DC836078C36CC871A7FEE116 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AFF5BA066CDD8C19AC606FFD /* Build configuration list for PBXProject "OccultaMeasure" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5D269E38CF10837E775B20F7 /* Debug */,
+				734BE22C50BF0BB35D049961 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 3227FC4A6FE2274EE1980A93 /* Project object */;
+}

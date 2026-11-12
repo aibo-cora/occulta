@@ -41,7 +41,7 @@ extension Contact.Profile {
     /// Whether the contact holds keys from an in-person exchange on this device: today's `.verified` test
     /// (`verificationStatus`), an unexpired key whose owner hash is ours.
     var hasInPersonKeys: Bool {
-        guard let keys = self.contactPublicKeys, let latest = keys.last, latest.expiredOn == nil else { return false }
+        guard let latest = self.currentKey else { return false }
 
         let ownerHash = try? Manager.Crypto().decrypt(data: latest.owner)
         let ourHash   = (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256
@@ -108,13 +108,14 @@ extension ContactManager {
 
     // MARK: - Create and cancel (§6.1, §6.2)
 
-    /// Bob: a card for `contact`, valid for 24 hours from `now`, whole seconds.
+    /// Bob: a card for the contact `identifier` names, valid for 24 hours from `now`, whole seconds.
     ///
     /// Everything is generated before anything is stored, so a failure leaves the field as it was and no blob
     /// behind. An `issued` card already there is replaced, which cancels it: the field is the only copy of its keys.
     /// Throws `contactNotPending` for a field that is `imported` or `conversation`, or a contact with in-person keys.
     @discardableResult
-    func createCard(for contact: Contact.Profile, now: Date = .now) throws -> IntroductionCard {
+    func createCard(for identifier: String, now: Date = .now) throws -> IntroductionCard {
+        guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
         guard let postQuantum = self.cardPostQuantum else { throw CardError.unsupported }
         switch try self.cardStateForWrite(of: contact) {
         case .empty, .issued: break
@@ -158,7 +159,8 @@ extension ContactManager {
 
     /// Writes `.empty`. The blobs exist only in the field, so this deletes the keys; the checkpoint scrubs the
     /// write-ahead log's copy of them.
-    func cancelCard(for contact: Contact.Profile) throws {
+    func cancelCard(for identifier: String) throws {
+        guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
         try self.store(CardState.empty, for: contact)
         try self.saveAndFlush()
     }
@@ -167,7 +169,8 @@ extension ContactManager {
     /// card keys, and the contact's record loses its inbound batches, own batches and accepted batch IDs, so
     /// the contact is Pending again. The bundle version its messages recorded goes too: whoever sent them is cut
     /// off. Only valid for Bob's side of a `conversation`.
-    func discardCardConversation(for contact: Contact.Profile) throws {
+    func discardCardConversation(for identifier: String) throws {
+        guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
         guard case .conversation(_, _, _, _, _, _, true) = contact.cardState else { throw CardError.noCardConversation }
 
         let previousField   = contact.introductionCardEncrypted
@@ -243,7 +246,8 @@ extension ContactManager {
     /// extension, protected and out of backups. The caller deletes it after sharing; the app's launch and
     /// background clean-up of the temporary directory catches one it doesn't. An expired card, not yet swept, is
     /// refused: nothing past its deadline leaves the phone.
-    func cardShareFile(for contact: Contact.Profile, now: Date = .now) throws -> URL {
+    func cardShareFile(for identifier: String, now: Date = .now) throws -> URL {
+        guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
         guard case .issued(let card, _, _, _, let expiresAt) = contact.cardState, now < expiresAt else { throw CardError.noIssuedCard }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(Data.randomBytes(6).hexEncodedString())
         try card.writeProtected(to: url)
@@ -264,7 +268,8 @@ extension ContactManager {
         return keys
     }
 
-    /// Carol: imports `data` into `contact`, or into a new contact named `newContactName` at the current depth.
+    /// Carol: imports `data` into the contact `identifier` names, or into a new contact named `newContactName` at the
+    /// current depth.
     ///
     /// Not a card gives `.notACard`. The same card again, already on a contact visible at the current depth, gives
     /// that contact and changes nothing (`CardRules.holds`), whichever contact was picked and even past the card's
@@ -274,8 +279,12 @@ extension ContactManager {
     /// deletes its keys, and drops the pending batch the old import made. Throws `contactNotPending` for a contact
     /// with in-person keys.
     @discardableResult
-    func importCard(_ data: Data, into contact: Contact.Profile?, newContactName: String?, now: Date = .now) throws -> CardImportOutcome {
+    func importCard(_ data: Data, into identifier: String?, newContactName: String?, now: Date = .now) throws -> CardImportOutcome {
         guard let card = IntroductionCard.recognize(data) else { return .notACard }
+        let contact = try identifier.map { identifier in
+            guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
+            return contact
+        }
         let depth = self.security.currentDepth
         if let holder = try self.fetchAllContacts().first(where: { $0.isVisible(atDepth: depth) && CardRules.holds($0.cardState, card: card) }) {
             return .imported(contactIdentifier: holder.identifier)
@@ -375,14 +384,16 @@ extension ContactManager {
 
     /// Whether the compose indicator says Standard Encryption: Carol's slots, sealed to Bob's card key while she
     /// holds none of his prekeys (SPEC §4.3). True while the field is `imported`.
-    func cardSecrecyIsStandard(for contact: Contact.Profile) -> Bool {
+    func cardSecrecyIsStandard(for identifier: String) -> Bool {
+        guard let contact = try? self.fetchContact(by: identifier) else { return false }
         if case .imported = contact.cardState { return true }
         return false
     }
 
     /// `CardRules.canSend` for the contact's field.
-    func canSendToCardContact(_ contact: Contact.Profile) -> Bool {
-        CardRules.canSend(contact.cardState, now: .now)
+    func canSendToCardContact(_ identifier: String) -> Bool {
+        guard let contact = try? self.fetchContact(by: identifier) else { return false }
+        return CardRules.canSend(contact.cardState, now: .now)
     }
 
     // MARK: - Send (§6.5)
@@ -643,7 +654,7 @@ extension ContactManager {
             guard case .issued(let cardBytes, let agreementBlob, let signingBlob, let mlkemBlob, let expiresAt) = contact.cardState else { continue }
 
             guard expiresAt > now else {
-                try self.cancelCard(for: contact)
+                try self.cancelCard(for: contact.identifier)
                 continue
             }
             guard let card = IntroductionCard.recognize(cardBytes) else { continue }
