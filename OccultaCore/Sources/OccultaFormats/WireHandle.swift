@@ -285,7 +285,7 @@ public struct WireHandle {
         let msgLen   = try r.uint64BE()
         let message  = try r.read(length: msgLen)
 
-        let meta = try JSONDecoder().decode(PayloadMeta.self, from: metaJSON)
+        let meta = try BoundedJSON.decode(PayloadMeta.self, from: metaJSON)
 
         return OccultaBundle.SealedPayload(
             message:           message,
@@ -373,7 +373,7 @@ public struct WireHandle {
         let metaJSON  = try r.read(metaLen)
         let fileCount = Int(try r.uint32BE())
 
-        let meta = try JSONDecoder().decode(BasketMeta.self, from: metaJSON)
+        let meta = try BoundedJSON.decode(BasketMeta.self, from: metaJSON)
 
         var files: [File] = []
         var streamedLengths: [UInt64?] = []
@@ -384,7 +384,7 @@ public struct WireHandle {
             let ctLen     = try r.uint64BE()
             let content   = ctLen > 0 ? try r.read(length: ctLen) : nil
 
-            let fMeta = try JSONDecoder().decode(FileMeta.self, from: fMetaJSON)
+            let fMeta = try BoundedJSON.decode(FileMeta.self, from: fMetaJSON)
             files.append(File(id: fMeta.id, content: content, format: fMeta.format, date: fMeta.date))
             streamedLengths.append(fMeta.streamedLength)
             inlineContentLengths.append(ctLen)
@@ -400,8 +400,8 @@ public struct WireHandle {
     public static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
     public static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
 
-    // groupCapable/groupShardCapable/senderSignatureCapable/prefixedSenderSignatureCapable/bodyDigestCapable
-    // all encode to 0x04 on the wire (same binary layout as v4); 0x05–0x09 are only written
+    // groupCapable/groupShardCapable/senderSignatureCapable/prefixedSenderSignatureCapable/bodyDigestCapable/
+    // pairingCapable all encode to 0x04 on the wire (same binary layout as v4); 0x05–0x09 and 0x0B are only written
     // into Contact.Profile.maxBundleVersion as capability markers. `streamedBodyCapable` is the
     // exception: 0x0A is a marker and also the wire version of the streamed layout. `parseHeader`
     // accepts exactly 0x04 and 0x0A, whatever these tables map.
@@ -421,6 +421,7 @@ public struct WireHandle {
         .senderSignatureCapable: 0x04,
         .prefixedSenderSignatureCapable: 0x04,
         .bodyDigestCapable:      0x04,
+        .pairingCapable:   0x04,
         .streamedBodyCapable:    0x0A,
     ]
     private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [
@@ -431,6 +432,7 @@ public struct WireHandle {
         0x08: .prefixedSenderSignatureCapable,
         0x09: .bodyDigestCapable,
         0x0A: .streamedBodyCapable,
+        0x0B: .pairingCapable,
     ]
 
     private static let _modeToByte: [OccultaBundle.Mode: UInt8] = [

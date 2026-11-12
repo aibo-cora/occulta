@@ -408,13 +408,27 @@ extension Contact.Draft {
         /// Whether this contact was exchanged with hybrid PQ protection.
         var isHybridPQ: Bool { self.quantumKeyMaterial != nil }
 
-        init?(material: Data?, owner: Data, date: String, quantumKeyMaterial: QuantumKeyMaterial? = nil) {
+        /// What the pairing holds (`bugs.md` Bug 196): the routing key both phones derived at the exchange and the pair keys
+        /// (Enclave blobs and the peer's public keys), or neither when the peer couldn't. Left out of `CodingKeys` so a draft
+        /// written to disk never holds it: it is sealed into the key row as the row is inserted, and exists in the clear
+        /// only in memory until then.
+        var pairing: PairingState = .empty
+
+        private enum CodingKeys: String, CodingKey {
+            case id, material, acquiredAt, owner, expiredOn, quantumKeyMaterial
+        }
+
+        init?(
+            material: Data?, owner: Data, date: String, quantumKeyMaterial: QuantumKeyMaterial? = nil,
+            pairing: PairingState = .empty
+        ) {
             guard owner.isEmpty == false else { return nil }
 
             self.material = material
             self.owner = owner.sha256
             self.acquiredAt = date
             self.quantumKeyMaterial = quantumKeyMaterial
+            self.pairing = pairing
         }
     }
 }

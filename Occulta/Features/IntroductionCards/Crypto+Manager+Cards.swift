@@ -181,15 +181,9 @@ extension Manager.Crypto {
     /// The long-term slot key between the two card agreement keys: the derivation of `createHybridSharedSecret`
     /// (SPEC §3), with the card keys in place of the identity keys.
     static func cardLongTermKey(ecdhOutput: Data, ownPublicKey: Data, peerPublicKey: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey? {
-        guard ownPublicKey.count == 65, peerPublicKey.count == 65, quantumMaterial.isValid else { return nil }
-        let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
-            .sorted { $0.lexicographicallyPrecedes($1) }
-        var ikm = ecdhOutput
-        ikm.append(contentsOf: sorted[0])
-        ikm.append(contentsOf: sorted[1])
-        let salt = Data(zip(peerPublicKey, ownPublicKey).map { $0 ^ $1 })
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm), salt: salt, info: SaltInfo.kHybridTransportKeyInfo, outputByteCount: 32
+        try? TransportKeyDerivation.sessionKey(
+            ecdhOutput: ecdhOutput, ownPublicKey: ownPublicKey, peerPublicKey: peerPublicKey,
+            postQuantumSecrets: quantumMaterial.sharedSecrets, info: SaltInfo.kHybridTransportKeyInfo
         )
     }
 }
@@ -238,6 +232,27 @@ struct CardSlotOpening {
     let derivedQuantum: QuantumKeyMaterial?
 }
 
+/// Where a card slot stopped opening, ordered by how far it got. `openCardSlot` keeps the furthest of its slots'.
+///
+/// Diagnostic only: it reaches nothing but a DEBUG log. `processInboundFile` shows the same words for every case, so
+/// which stage failed is not something whoever holds the phone can read off the screen.
+nonisolated enum CardSlotFailure: Int, Error, Equatable, Comparable {
+    /// Not a slot this side can try: an unexpected mode, or a forward-secret one without a prekey ID or a 65-byte key.
+    case unusableSlot
+    /// A forward-secret slot naming a prekey we don't hold, which Carol never receives anything sealed to otherwise.
+    case prekeyNotHeld
+    /// The key agreement failed: an Enclave key blob that wouldn't load, or the ECDH itself.
+    case keyAgreementFailed
+    /// Neither the ordinary hybrid key nor the bootstrap layer's classical outer key opened the slot.
+    case outerLayerDidNotOpen
+    /// The outer layer opened, but the ML-KEM secrets for the inner key aren't available.
+    case postQuantumSecretUnavailable
+    /// The inner layer's AES-GCM or the payload's JSON didn't hold.
+    case innerLayerDidNotOpen
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
 extension Manager.Crypto {
 
     /// The slot's key source: the ECDH output and the two public keys it was made with.
@@ -275,11 +290,18 @@ extension Manager.Crypto {
             if let usedPrekey { prekeys.consume(prekeyID: usedPrekey.id, contactID: usedPrekey.contactID) }
         }
 
+        var furthest: CardSlotFailure?
+
         for entry in recipients {
-            guard
-                let source = self.cardSlotSource(entry.secrecyContext, senderContactID: senderContactID, card: card, prekeys: prekeys),
-                let opened = self.openCardEntry(entry, source: source, blind: blind, card: card)
-            else { continue }
+            let source: CardSlotSource
+            let opened: (payload: OccultaBundle.RecipientPayload, wasBootstrap: Bool, derivedQuantum: QuantumKeyMaterial?)
+            do {
+                source = try self.cardSlotSource(entry.secrecyContext, senderContactID: senderContactID, card: card, prekeys: prekeys)
+                opened = try self.openCardEntry(entry, source: source, blind: blind, card: card)
+            } catch let failure as CardSlotFailure {
+                furthest = max(furthest ?? failure, failure)
+                continue
+            }
 
             guard let bodyDigest = opened.payload.bodyDigest else { throw GroupDecryptError.missingBodyDigest }
             guard bodyDigest == (try body.digest()) else { throw GroupDecryptError.bodyDigestMismatch }
@@ -304,7 +326,11 @@ extension Manager.Crypto {
                 wasBootstrap: opened.wasBootstrap, derivedQuantum: opened.derivedQuantum
             )
         }
-        throw GroupDecryptError.recipientSlotNotFound
+        let stage = furthest ?? .unusableSlot
+        #if DEBUG
+        debugPrint("[Card] no slot opened, furthest failure: \(stage)")
+        #endif
+        throw GroupDecryptError.cardSlotNotOpened(stage)
     }
 
     private func cardSlotSource(
@@ -312,42 +338,44 @@ extension Manager.Crypto {
         senderContactID: String,
         card: CardReceiveContext,
         prekeys: PrekeyPrivateKeys
-    ) -> CardSlotSource? {
+    ) throws -> CardSlotSource {
         switch secrecy.mode {
         case .forwardSecret:
-            guard let prekeyID = secrecy.prekeyID, secrecy.ephemeralPublicKey.count == 65 else { return nil }
+            guard let prekeyID = secrecy.prekeyID, secrecy.ephemeralPublicKey.count == 65 else { throw CardSlotFailure.unusableSlot }
             let temp = Prekey(id: prekeyID, contactID: senderContactID, publicKey: Data())
 
             if let key = prekeys.privateKey(forPrekeyID: prekeyID, contactID: senderContactID) {
-                return Self.enclaveSource(key, ephemeralPublicKey: secrecy.ephemeralPublicKey, used: .oneTime(temp))
+                return try Self.enclaveSource(key, ephemeralPublicKey: secrecy.ephemeralPublicKey, used: .oneTime(temp))
             }
             if let (keyID, key) = prekeys.lastResortKey(forPrekeyID: prekeyID, ephemeralPublicKey: secrecy.ephemeralPublicKey) {
-                return Self.enclaveSource(key, ephemeralPublicKey: secrecy.ephemeralPublicKey, used: .lastResort(keyID: keyID))
+                return try Self.enclaveSource(key, ephemeralPublicKey: secrecy.ephemeralPublicKey, used: .lastResort(keyID: keyID))
             }
-            // Names none of our prekeys: Carol's slot to the card agreement key.
+            // Names none of our prekeys. Only Carol's slots to Bob are sealed to Bob's card agreement key (SPEC §4.3), so
+            // for Carol this is a prekey she no longer holds — spent, or never hers — and not a slot to try that key on.
+            guard card.role == .bob else { throw CardSlotFailure.prekeyNotHeld }
             guard let raw = try? card.keys.sharedSecret(agreementBlob: card.agreementBlob, peerPublicKey: secrecy.ephemeralPublicKey) else {
-                return nil
+                throw CardSlotFailure.keyAgreementFailed
             }
             return CardSlotSource(ecdhOutput: Self.cardECDHOutput(raw), own: card.ownAgreementKey, peer: secrecy.ephemeralPublicKey, used: .longTerm)
 
         case .longTermFallback:
             guard let raw = try? card.keys.sharedSecret(agreementBlob: card.agreementBlob, peerPublicKey: card.peerAgreementKey) else {
-                return nil
+                throw CardSlotFailure.keyAgreementFailed
             }
             return CardSlotSource(ecdhOutput: Self.cardECDHOutput(raw), own: card.ownAgreementKey, peer: card.peerAgreementKey, used: .longTerm)
 
         default:
-            return nil
+            throw CardSlotFailure.unusableSlot
         }
     }
 
     /// The prekey side of a forward-secret slot. Card conversations only ever have record-held (Enclave) prekeys.
-    private static func enclaveSource(_ key: PrekeyPrivateKey, ephemeralPublicKey: Data, used: InboundPrekeyUse) -> CardSlotSource? {
+    private static func enclaveSource(_ key: PrekeyPrivateKey, ephemeralPublicKey: Data, used: InboundPrekeyUse) throws -> CardSlotSource {
         guard
             case .enclave(let enclaveKey) = key,
             let peer = try? P256.KeyAgreement.PublicKey(x963Representation: ephemeralPublicKey),
             let secret = try? enclaveKey.sharedSecretFromKeyAgreement(with: peer)
-        else { return nil }
+        else { throw CardSlotFailure.keyAgreementFailed }
         let ecdhOutput = secret.x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32)
             .withUnsafeBytes { Data($0) }
         return CardSlotSource(ecdhOutput: ecdhOutput, own: enclaveKey.publicKey.x963Representation, peer: ephemeralPublicKey, used: used)
@@ -358,7 +386,7 @@ extension Manager.Crypto {
         source: CardSlotSource,
         blind: Data,
         card: CardReceiveContext
-    ) -> (payload: OccultaBundle.RecipientPayload, wasBootstrap: Bool, derivedQuantum: QuantumKeyMaterial?)? {
+    ) throws -> (payload: OccultaBundle.RecipientPayload, wasBootstrap: Bool, derivedQuantum: QuantumKeyMaterial?) {
         let isLongTerm = entry.secrecyContext.mode == .longTermFallback
 
         // The ordinary hybrid key, if we hold the material.
@@ -377,7 +405,7 @@ extension Manager.Crypto {
                 ecdhOutput: source.ecdhOutput, ownPublicKey: source.own, peerMaterial: source.peer, quantumMaterial: nil
             ),
             let layer = try? CardBootstrap.openOuter(entry.wrappedPayload, outerKey: outerKey, blind: blind)
-        else { return nil }
+        else { throw CardSlotFailure.outerLayerDidNotOpen }
 
         let innerKey: SymmetricKey?
         var derived: QuantumKeyMaterial?
@@ -408,11 +436,11 @@ extension Manager.Crypto {
             }
         }
 
+        guard let innerKey else { throw CardSlotFailure.postQuantumSecretUnavailable }
         guard
-            let innerKey,
             let plain = try? CardBootstrap.openInner(layer.inner, mlkemCiphertext: layer.mlkemCiphertext, innerKey: innerKey, blind: blind),
-            let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
-        else { return nil }
+            let payload = try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
+        else { throw CardSlotFailure.innerLayerDidNotOpen }
         return (payload, true, derived)
     }
 
@@ -421,6 +449,6 @@ extension Manager.Crypto {
             let box = try? AES.GCM.SealedBox(combined: wrapped),
             let plain = try? AES.GCM.open(box, using: key, authenticating: blind)
         else { return nil }
-        return try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+        return try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
     }
 }

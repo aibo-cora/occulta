@@ -1224,6 +1224,8 @@ behaviour for password fields doesn't apply on its own.
 
 ## Duress phrases are rehearsed through a monthly in-app prompt and a Settings entry
 
+**Superseded 2026-10-29 by the owner:** no rehearsal feature. Users type the real phrase at every device-lock return, and a forgotten duress phrase loses only decoy content. No prompt, no Settings entry, no stored date. The entry below is kept as the record.
+
 **Status:** Decided 2026-10-19 by the owner.
 
 **Context:**
@@ -1261,6 +1263,13 @@ the share staging key.
 **Decision:**
 - **15a.** The passphrase work's new per-install Enclave key is a keychain item.
 - **15b.** The identity key stays in the keychain.
+  - *Revisited 2026-11-05 (`bugs.md` Bug 196, stage 2):* there is still one identity key per install, in the keychain. For a
+    pairing made with pair keys it is no longer the long-term agreement key or the key that signs that pairing's slots and
+    challenges: each such pairing has its own Enclave key pair. It stays the pseudonym, the in-person hash check, `Key.owner`,
+    the continuity check, and the key for backup pieces, signed attributes and the Sign tab. Under spaces, one person paired in
+    two spaces still shares an identity key across records, so linking by it is unchanged; their long-term slots and signatures
+    no longer work across spaces. Pair keys are Enclave blobs in the app container, so they go with the app, while the keychain
+    identity key survives a reinstall.
 - **15c.** The keys graduation retires (the local DB key and its random component, which is shared with other
   tier U keys since Bug 171's fix, 2026-10-24; the Secure Mode PIN key; the
   vault key) aren't moved first.
@@ -1318,3 +1327,203 @@ the share staging key.
 - The tier secrets are never created by a read. A missing one is nil, a loud failure, once data is sealed under it.
 
 **Full reasoning:** `bugs.md` Bug 171 (Fix, with the stages; Guard).
+
+## Passphrase storage: independent spaces, not the 2026-10-15 design
+
+**Status:** Decided 2026-10-29 by the owner, from the brainstorm of 2026-10-27 to 29. Closes `PASSPHRASE_ROLLOUT.md` decision 1. Reopens 7b, 7c, 7d, 8a, 9a, 9b, 14 and Rules 2 and 4 of `ROLLOUT_PLAN.md`, which assumed a depth hierarchy; each is decided again one by one.
+
+**Context:** The 2026-10-15 storage gave each depth a header slot with a canary, a chain to the depth below, a shared key and origin lists. The brainstorm argued that a per-space record is countable once its format is known, and that a pool readable by every space lets a coercer subtract it from the duress view.
+
+**Decision:** A space is a key plus whatever rows decrypt under it. No canary, no chain, no shared key, no common pool, no depth numbers. A fresh phrase opens nothing, on every install. An empty duress space is acceptable. KDF input is word indices. Deletion crypto-shreds rows into noise. Phrases stay app-generated, 7 words, optional (empty phrase for no-lock installs). No typo checksum and no retype before the first write (decided 2026-10-29): a mistyped phrase opens an empty space, and what is written there is reachable only by typing the same typo. The identity key stays in the keychain.
+
+**Consequences:** A decoy goes stale unless it is used. The app keeps no list of spaces, so anything that enumerated depths (the lock-off refusal, dropping coercer-created depths, removing depths below, rehearsal of phrases below, "every phrase proven") is decided again.
+
+**Full reasoning:** `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5.
+
+## No probation week: the old store goes once the reseal is verified
+
+**Status:** Decided 2026-10-29 by the owner. Supersedes Rule 4 of `ROLLOUT_PLAN.md` and the way-back design of `PASSPHRASE_ROLLOUT.md` §1.2 and §3.2 (decision 4 of 2026-10-19), which kept the old store, its keys and the PIN for about a week.
+
+**Context:** Under independent spaces the app keeps no list of spaces, so a per-space progress record would be a record only spaces have (decision D), and an empty duress space has nothing to prove a phrase against. The week also leaves the old store as exposed as today's data. Keeping old data until the new is verified is normal practice, but holding it for days pending proof of recall is not.
+
+**Decision:** The setup ladder is the only check. The reseal still writes a new store file. Once it has been verified the old store and its keys are deleted, as for an install with no lock. No "use my old PIN", no progress ring.
+
+**Consequences:** A phrase forgotten after setup loses that space's data for good, and the setup copy has to say so. The rehearsal prompt (decision 14) becomes the only reminder, and is decided again. What a newer build does with a store an older build wrote to (decision 18) is still open.
+
+## Setup in a duress layer: the old store waits for the real layer
+
+**Status:** Decided 2026-10-29 by the owner. Keeps decision 8a of 2026-10-19 with one change forced by the end of the probation week.
+
+**Decision:** Setup started in a duress layer at migration time is real for that layer. The old store and its keys are deleted only after every layer in its PIN list has migrated, and the real user finishes the real layer later. Until then the real layer is as exposed as today. This is a state of the migration only, not stored in the new store. 8b (a layer with its lock off) follows the same rule. Rule 2 stands for the migration.
+
+**Why:** With no probation week, deleting the old store when one reseal verifies would destroy the real layer's data after a decoy-side setup.
+
+## The coercion gate under independent spaces: lock-off for everyone, with one warning
+
+**Status:** Decided 2026-10-29 by the owner (7b). 7c and 7d follow from it and from the independent-spaces decision. Supersedes 7b, 7c and 7d of 2026-10-19.
+
+**Decision:** Lock-off is allowed in every space and on every install, with one warning that is the same everywhere: anyone who unlocks the phone will open this data. The space's key is stored under the device-only key (7a). While the lock is off no phrase is asked, so the user's other spaces can't be opened until the lock is turned on again. Lock-on reseals the current space under a new phrase, as an ordinary install does. Coercer-created layers are dropped at migration only, with the contacts they created.
+
+**Why:** The app keeps no list of spaces, so the refusal "while duress depths exist" can't be evaluated, and refusing on a guess would make spaces behave differently.
+
+## Removing a space: no action; Erase All Data erases the current space only
+
+**Status:** Decided 2026-10-29 by the owner. Supersedes 9a and 9b of 2026-10-19. The install-wide keys stay (decided the same day, below).
+
+**Decision:** Independent spaces share no keys, so no space removes another, and there is no "remove space" action. Deleting content crypto-shreds it, so emptying a space removes it. Erase All Data erases only the space it is run in, because one forced from a duress space must not delete the real space's data.
+
+**Install-wide keys, decided 2026-10-29:** Erase All Data used to delete the identity key, the tier secrets, the Secure Enclave keys and the share staging key (`Manager.App.eraseAllData`). Deleting the first three from one space would break every other space, so they stay. Erase clears the space's rows and the share-staging container and key, which are transient. There is no in-app full wipe, because the app can't tell a coerced wipe from a real one without a record only the real space has; a full wipe is the iPhone's own reset, and the copy says so. The old identity key in the keychain after an erase stays as Bug 170 has it.
+
+## The vault: its own key from the space key, with an on-screen Face ID gate
+
+**Status:** Decided 2026-10-29 by the owner. Closes 11a and 11b of `PASSPHRASE_ROLLOUT.md`.
+
+**Decision:** Each space's vault key is derived from the space key with a vault-only label (11a). Opening the vault asks for Face ID on screen with no key behind it (the cheaper form of 11b). No Face ID Enclave key is mixed in.
+
+**Why:** It isolates each space's vault and lets one be erased on its own, with no new keychain item (Bug 170). The gate stops weaker attackers only, since this adversary can compel Face ID.
+
+## The Enclave does not take part in every phrase guess (D2 of Bug 171)
+
+**Status:** Decided 2026-10-29 by the owner. Closes decision 16 of `PASSPHRASE_ROLLOUT.md` and D2 of the Bug 171 plan. `PASSPHRASE_LAYER_KEYS.md` §1 and `HARDENING_STEPS.md` step 2 still need updating.
+
+**Decision:** Drop the requirement that the Secure Enclave take part in every guess, which the spec's construction doesn't meet: the Enclave term is a constant, so after one call on the phone guessing can continue offline. Keep the `ECDH(d, P)` device-binding term. Strength rests on 7 words through PBKDF2.
+
+**Why:** 7 words with PBKDF2 are already sized to hold without the Enclave (spec §4). The alternative needs hash-to-curve, which CryptoKit lacks, so bespoke crypto with no independent review.
+
+## Downgrade after the passphrase migration is not supported
+
+**Status:** Decided 2026-10-29 by the owner. Closes decision 18 of `PASSPHRASE_ROLLOUT.md`.
+
+**Decision:** Once migration has finished the old store is gone, so an older build finds no data and starts empty; the new store stays for the next update. The release notes say so. The one window is the migration state of 8a, where the old store lasts until every layer has migrated.
+
+**Why:** Keeping the old store as a way back contradicts dropping the probation week. Same stance as D6 of Bug 171 and Bug 168.
+
+## The passphrase release is 2.1.0; Bug 170's leftovers stay in Bug 170
+
+**Status:** Decided 2026-10-29 by the owner. Closes decisions 17 and 19 of `PASSPHRASE_ROLLOUT.md`.
+
+**Decision:** The release after 2.0.0 is 2.1.0: `release/v2.1.0`, with `v2.1.0/` feature branches. The legacy keychain prekeys and the shard custody key stay tracked in Bug 170, with no passphrase-plan decision.
+
+## Slices ship together; a file for a contact in another space is treated as corrupt
+
+**Status:** Decided 2026-10-29 by the owner.
+
+**Decision:** (1) The data slices (vault, contacts, remaining records) move to the new store together, in one reseal at phrase setup (release order A). (2) The app ignores a bundle whose blinded sender tag matches no contact in the open space, with the same screen, wording and timing as for a corrupt or misaddressed file. No notice is shown.
+
+**Why:** (1) With no probation week the reseal is the one-way step, so it runs once. (2) A notice for a contact the open space can't see would reveal that the contact exists.
+
+## Bug 120 under independent spaces: a stated limit, not fixed
+
+**Status:** Recorded 2026-10-29 by the owner. Still open in the register, needs a decision.
+
+**Decision:** A duress space protects against one image, not a series, and the setup guidance (step 16) says so. In one image and with no phrase the design fixes per-type row counts (one sealed blob per contact), row sizes (a few fixed sizes, noise rows included) and space tags (none), and writes every change as "append a new row, shred the old". Rows a surrendered space can't open changing between images are not fixed. The append-only log stays a possible later release, not planned.
+
+**Why:** Noise rows don't close it. A key that recognises noise lets its holder count the real unopenable rows, and without one a duress session can't tell noise from real rows, so rewriting them could destroy real data. Independent spaces drop the chain, so no space can reseal another's rows.
+
+**Full reasoning:** `bugs.md` Bug 120, "Re-examined 2026-10-29".
+
+## No per-row key header; photos in their own table, found by ID
+
+**Status:** Decided 2026-10-29 by the owner. Replaces the brainstorm's per-row key header. The photo table's noise rows and size buckets are open, needs a decision, and the unlock cost is an estimate to be measured on a device.
+
+**Decision:** Unlock trial-decrypts the contact and group records whole, since they are text-only sealed records of a few KB. Photos live in their own table, one sealed row each, linked only by row IDs listed inside the sealed contact record. A photo row names no contact. Unlock never reads them, and a retired photo is shredded like any deleted row. Vault entries keep their wrapped entry key as the cheap check. A 16-byte locator tag per row stays as the fallback if a device measurement shows unlock is too slow.
+
+**Why:** A clear photo-to-contact column would make an unopenable contact with photos attached visibly real. Text-only records are cheap to decrypt whole, so a header adds format for no measured gain. The photo table shows how many photo rows exist but not whose or which are active, and noise rows in the same size buckets keep the total from tracking real photos.
+
+---
+
+## OccultaCore: AGPL-3.0, primitives only, two modules
+
+**Status:** Decided, 2026-10-05; step 3 deferred and step 6 verified, 2026-10-31. Built.
+
+**Context:** Modularization Phase 3 extracted the code that is not Occulta-specific into `OccultaCore/` so a second app can use it.
+
+**Decision:** The license stays AGPL-3.0, so closed-source and App Store adopters are ruled out. The public product `OccultaCore` holds primitives only (`ShamirSecretSharing`, `PostQuantumProvider`, `MLKEMKeyCheck`, `TransportKeyDerivation`); Occulta's wire and at-rest formats stay app-only in `OccultaFormats`, a second module and not `@_spi`. A host app chooses its own HKDF labels and key tags, and Occulta's `SaltInfo` labels are wire format that never changes. There is no public signer, and hybrid seal/open is deferred until a host app needs it.
+
+**Why:** The formats carry Occulta-identifying constants (the `OCCB` magic, the `occulta-signed-attribute-v2` prefix), and a host app manages its own keys and does not interoperate with Occulta.
+
+**Consequences:** `TransportKeyDerivation` did not check `ecdhOutput`'s length (`OC-1`); it now throws a typed error for it, fixed 2026-11-01 (Bug 191; `Docs/Features/OccultaCore/decisions.md`).
+
+**Full reasoning:** `Docs/Features/OccultaCore/decisions.md`; what exists: `SPEC.md`; open items: `bugs.md`.
+## A draft attachment may be lost when two contact records share an identity key and only one has re-paired
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. **Superseded 2026-11-09: fixed.** The pass now works draft by
+draft, so a draft's files move to its own recipient's current key (`bugs.md` Bug 196 addendum). Kept for the reasoning.
+
+**Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) moved the key a contact's attachments are sealed under, so
+`ContactManager.resealAttachmentKeys` moves the files that are still sealed under the old key: a draft to one contact and a
+received attachment not yet opened. It works from pairs of an old key and a new key, one pair per old key. Two records that hold
+one identity key share an old key but not always the new one: if one has re-paired and the other has not, they need different
+new keys. The pass keeps the first pair it meets, so a file belonging to the other record can be moved to the wrong key and then
+not open (security review, round 2, N1).
+
+**Decision:** Leave it. A file affected is lost for the draft or the unopened received attachment; no message, key or history is.
+The user attaches the file again, or asks for it again.
+
+**Why:**
+- It needs all of these at once: two records for one identity key, only one of them re-paired, a draft or unopened attachment for the
+  other record, and the one-time pass at the first unlock after the update (files sealed afterwards use the new key directly).
+- Resolving the target from a draft's recipient does not help received files in `tmp/`, which have no recipient. A fall-back to the
+  old key on the open path would touch every attachment and keep the old key in use for a release.
+
+**Not chosen:** (1) picking the target from the draft's recipient; (2) a fall-back open under the old key for one release.
+Either can be taken up if a real case turns up.
+
+**Consequences:** `bugs.md` Bug 196 keeps the finding in its "Not changed, on purpose or open" list, pointing here.
+
+**Full reasoning:** `bugs.md` Bug 196 addendum and the follow-up review (N1).
+
+## A failed key save can drop a used one-time prekey's pending "used" mark
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, narrow.
+
+**Context:** Opening a bundle that names one of our one-time prekeys removes that key from the sender's prekey record, with its
+Enclave blob, and saves at once (`SenderPrekeys.consume`, `ContactManager.senderPrekeys(for:)`). If that save throws, the closure
+swallows the error and the change stays pending in `ContactManager`'s context, to be written by the next save; the open's own save at
+the end retries and throws if it fails again, so the message is rejected (`Contact+Manager+Prekeys.swift`). The record is the only
+place the key's blob lives. `update(key:)` (an in-person exchange's save, or a contact created with a key) calls
+`modelContext.rollback()` when it fails. `rollback()` clears the context's record of what is pending without putting values back
+on live objects (`bugs.md` Bug 197), so the pending "used" mark is no longer marked for saving (security review, round 2, N7).
+
+**Decision:** Leave it.
+
+**What it takes:** a received bundle whose prekey save fails (a store error, a full disk), then a failed `update(key:)`, before any
+other save of that contact's row. The two failures are probably linked, since the same store problem would fail both.
+
+**What it costs:** the in-memory record still says the key is used, so the next message from that sender, in the same run, is opened
+against it and saves the record, which repairs it. If the app is relaunched first, the disk still holds the record from before the
+consume, with the key and its blob. A copy of the bundle that opened with it could then be opened again, and a later compromise of
+the phone's Enclave would expose that one message. One message per occurrence.
+
+**Why:** the trigger is narrow, the cost is one message, and the real fix is the one Bug 197 explores for 2.1.0: operations that work
+in their own short-lived context and cannot leave pending changes behind.
+
+**Not chosen:** removing `rollback()` from `update(key:)`, which would stop the collateral but remove the only thing that clears
+the pending marker on whatever the restore misses; a throwaway context for `update(key:)`, a larger change to code others read.
+
+**Full reasoning:** `bugs.md` Bug 196 ("Not changed, on purpose or open") and Bug 197; the follow-up security review (N7).
+
+## An attachment can be unreadable until the one-time reseal reaches it, after the update
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, temporary. *Revisited 2026-11-09:* the pass now
+works draft by draft and does not walk `tmp/`, which the app empties at every launch, so "a received attachment" below does not apply;
+the window for a draft file is unchanged.
+
+**Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) changed the base key a contact's attachments are sealed under.
+From the first run of the new build `fileEncryptionKey(for:)` returns the new key, so new files are sealed under it at once. Files
+already on the phone, drafts and received attachments not yet opened, are still under the old key until
+`ContactManager.resealAttachmentKeys`, a background task started at unlock, reaches them (code review, round 1, #4).
+
+**Decision:** Leave it.
+
+**What it costs:** at the first unlock after the update, a file opened before the task reaches it does not open. `adopt(draftMessages:)`
+keeps such a file in the draft and does not delete it (`sealInPlace` leaves a file that is already sealed alone), so nothing is lost;
+the file opens once the task has moved it. For a small file that is a moment; for a large video it is as long as that file's streamed
+move takes. Drafts are listed first. Not traced: how attachment preview and send behave on a file in that state.
+
+**Why:** it happens once, only to a file opened in that window, and loses nothing. Making the open path wait for the task, or fall
+back to the old key, touches every attachment open and keeps the old key in use for a release.
+
+**Not chosen:** (1) opening waits for the reseal task; (2) a fall-back open under the old key for one release.
+
+**Full reasoning:** `bugs.md` Bug 196 addendum ("Cost") and the code review, round 1 (#4).

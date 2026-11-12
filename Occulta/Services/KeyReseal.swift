@@ -45,7 +45,7 @@ extension KeyReseal {
         }
 
         static func production(store: URL?) -> Locations {
-            Locations(applicationSupport: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0], store: store)
+            Locations(applicationSupport: Manager.Paths.applicationSupport, store: store)
         }
     }
 
