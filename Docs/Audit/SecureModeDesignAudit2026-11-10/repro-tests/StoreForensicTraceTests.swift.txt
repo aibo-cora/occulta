@@ -1,0 +1,87 @@
+//
+//  StoreForensicTraceTests.swift
+//  OccultaTests
+//
+//  Audit leads from Docs/Audit/SecureModeDesignAudit2026-11-10 (Bugs 228 and 229): what the
+//  SQLite file holds besides the sealed model columns. Written to FAIL while the leads hold.
+//
+
+import Testing
+import Foundation
+import SwiftData
+import SQLite3
+
+@testable import Occulta
+
+@MainActor
+@Suite("Store — nothing outside the sealed columns records what was written and when", .serialized)
+struct StoreForensicTraceTests {
+
+    /// One integer from a query on a fresh read-only connection, or nil if the query fails
+    /// (for example, the table does not exist).
+    private func integer(_ sql: String, at url: URL) -> Int? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func makeStoreURL() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StoreForensicTraceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("default.store")
+    }
+
+    /// Bug 228. SwiftData's default store keeps persistent history: `ATRANSACTION` holds a
+    /// wall-clock timestamp per save, `ACHANGE` the entity, row and changed columns of every
+    /// insert, update and delete. Both are plaintext and nothing in the app clears them.
+    @Test(.ambientTestKeyManager) func secureModeWrites_leaveNoHistoryRows() throws {
+        let url = try self.makeStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let schema = Schema([AppLayerConfig.self])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)]
+        )
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        try s.configurePIN("111111")
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        _ = try s.verify("123123")   // a wrong PIN: writes the lockout fields
+
+        let transactions = self.integer("SELECT count(*) FROM ATRANSACTION", at: url) ?? 0
+        let changes      = self.integer("SELECT count(*) FROM ACHANGE", at: url) ?? 0
+        let updatesWithColumns = self.integer(
+            "SELECT count(*) FROM ACHANGE WHERE ZCHANGETYPE = 1 AND ZCOLUMNS IS NOT NULL", at: url
+        ) ?? 0
+
+        #expect(transactions == 0, "\(transactions) timestamped transaction rows in the store file")
+        #expect(changes == 0, "\(changes) change rows naming the entity and row that was written")
+        #expect(updatesWithColumns == 0, "\(updatesWithColumns) update rows that record which columns changed")
+    }
+
+    /// Bug 229. `OccultaApp.applySecureDeletePragma` sets `secure_delete = ON` on a short-lived
+    /// connection, on the claim that the setting is stored in the database header and applies
+    /// to every later connection, SwiftData's included.
+    @Test func secureDelete_setOnOneConnection_isOnForTheNext() throws {
+        let url = try self.makeStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK)
+        sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
+        sqlite3_exec(db, "CREATE TABLE t(x); INSERT INTO t VALUES (1);", nil, nil, nil)
+        sqlite3_close(db)
+
+        // 1 is ON (every freed page is overwritten), 2 is FAST (only where it costs no extra
+        // I/O; content can stay on freelist pages), 0 is OFF.
+        let later = self.integer("PRAGMA secure_delete", at: url)
+        #expect(later == 1, "a later connection reports secure_delete = \(String(describing: later)), not 1 (ON)")
+    }
+}

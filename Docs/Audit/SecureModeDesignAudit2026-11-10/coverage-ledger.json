@@ -1,0 +1,2045 @@
+[
+  {
+    "coverage_id": "Occulta%2FApp%2FOccultaApp.swift%23endSession::Occulta%2FData%20Models%2FContact%2BModel.swift%23Contact.Profile.isVisible::profile%2Fquick%2Fall-in-scope-subsystems::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Account%20switch%2C%20logout%2C%20and%20device%20restore%20leakage",
+    "canonical_refs": {
+      "surface": "Occulta/App/OccultaApp.swift#endSession",
+      "boundary": "Occulta/Data Models/Contact+Model.swift#Contact.Profile.isVisible",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Account switch, logout, and device restore leakage"
+    },
+    "surface": "Lock, unlock, grace period and session reset",
+    "boundary": "Nothing of one depth's session reaches another; nothing renders before the PIN",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Session state across lock and depth change",
+    "starting_paths": [
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/App/AppScreen.swift",
+      "Occulta/App/LaunchSequence.swift",
+      "Occulta/App/AppDelegate.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+      "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift",
+      "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Account switch, logout, and device restore leakage",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Pending-action and user-presence confusion",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-s2",
+    "reviewed_paths": [
+      "Occulta/App/AppDelegate.swift",
+      "Occulta/App/AppScreen.swift",
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/Features/SecureMode/forensic-trace-avoidance.md",
+      "Occulta/Info.plist",
+      "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+      "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift",
+      "OccultaTests/SecureMode/AppScreenLockTests.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/App/AppScreen.swift",
+          "Occulta/App/AppDelegate.swift",
+          "Occulta/Info.plist"
+        ],
+        "invariant": "The lock gate re-engages after the grace period and cannot be shortened by anything outside the app",
+        "method": "source",
+        "result": "Grace period is measured with Date() (wall clock) at AppScreen.swift:95 (set), :162 and :174 (compared). The lockout, by contrast, is anchored on monotonic uptime (Manager+Security.swift:35-36, 650-666) precisely because Date & Time changes must not matter. A backward clock change makes elapsed negative or small, so the gate stays open. Single scene only (UIApplicationSupportsMultipleScenes false), one AppScreen. Candidate secure-mode:appscreen-grace-period-uses-wall-clock.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/App/AppScreen.swift",
+          "Occulta/App/OccultaApp.swift"
+        ],
+        "invariant": "Nothing renders before the PIN on cold launch, warm return, or a lowered gate",
+        "method": "source",
+        "result": "Cold launch: phase .covered renders Color.clear (OccultaApp.swift:384-386); wire() runs after first render (:277-278); with a PIN, evaluate(coldLaunch:true) goes to .pinRequired. Lowered gate: Manager.Security.init restores currentDepth from persistedDepth only when pinEnabled is false (Manager+Security.swift:255-258), so no stale depth is shown. Warm return: lockIfGracePeriodExpired runs in sceneWillEnterForeground before URL delivery (AppScreen.swift:158-165). Every sheet/alert/cover is attached inside the .unlocked branch (OccultaApp.swift:410-535), so none renders over PINEntry. currentDepth is not reset on lock, but nothing outside the .unlocked branch reads it for display; the gated sweeps check phase == .unlocked (:957, :968). Holds apart from the wall-clock grace candidate and the hardening notes.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift"
+        ],
+        "invariant": "State held above the unlocked tree is ended when the session ends or the depth changes in place",
+        "method": "source",
+        "result": "endSession (OccultaApp.swift:563-579) runs on leaving .unlocked (:315) and on sessionID change (:337); the unlocked tree is keyed by sessionID (:536). It clears opened file, share result, restore prompt state, error flag, identity challenge presentations, card import, open request, and locks the vault. pendingFileData, pendingShareSession and selectedTab survive by design (:220-251). Vault lock also fires on background/resign-active (Vault+Manager.swift:196-208). The one in-place depth change that needs no PIN is deactivateSecureMode (Manager+Security.swift:446-505), which is candidate secure-mode:deactivate-at-coercer-base-depth-pops-to-depth0.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift"
+        ],
+        "invariant": "A depth transition toward depth 0 requires depth 0's PIN",
+        "method": "source",
+        "result": "Traced coercer at depth 1 holding only P1: Settings shows Learn more at state .duress (Settings.swift:237); activateSecureMode(confirming P1) is valid from depth>0 and writes coercerBaseDepth = depth (Manager+Security.swift:400-428); then isAtSecureModeHomeDepth is true at depth 1 (Settings.swift:202-207); Deactivate confirms against normal[1] = P1 and does newDepth = max(0, depth-1) = 0 with setState (:487-495), clearing the owner's depth 0-to-1 verifiers. Candidate secure-mode:deactivate-at-coercer-base-depth-pops-to-depth0.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift"
+        ],
+        "invariant": "Async work cannot deliver a result into the session after it ended",
+        "method": "source",
+        "result": "processInboundFile checks phase and sessionEpoch after the await (OccultaApp.swift:838). approvePending's Task (Coordinator.swift:~262-312) sets outboundShare after a Face ID await with no epoch check, so a result could outlive endSession; reachability is narrow because backgrounding cancels the LAContext prompt. Hardening only.",
+        "artifact": null
+      },
+      {
+        "agent_id": "parent",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "Occulta/App/AppScreen.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift"
+        ],
+        "invariant": "Parent-originated candidate securemode/app-switcher-cover-only-when-active",
+        "method": "source",
+        "result": "candidate: read by the parent before hunters were assigned; packaged for independent verification",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v1",
+        "reviewed_paths": [
+          "Occulta/App/AppScreen.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/forensic-trace-avoidance.md"
+        ],
+        "invariant": "Independent verification of candidate securemode/app-switcher-cover-only-when-active",
+        "method": "source",
+        "result": "needs_validation: Source confirms the guard at AppScreen.swift:76 and :84 and that isSecureModeActive is the duress scalar; the difference between a PIN-only install and a Secure Mode install is real, and it is documented as design but not as an observable. Runtime comparison is the open fact.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v1",
+        "reviewed_paths": [
+          "Occulta/App/AppScreen.swift",
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "OccultaTests/SecureMode/AppScreenLockTests.swift"
+        ],
+        "invariant": "Independent verification of candidate secure-mode:appscreen-grace-period-uses-wall-clock",
+        "method": "source",
+        "result": "needs_validation: Re-read AppScreen.swift:96,158-193: both lock paths use Date(); the only assignments to phase are at :143,165,173,179,187,191, and no clock-change observer exists, so a backward clock defeats the test in source. Device behaviour (process survival, callbacks) is the open fact.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v3",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift"
+        ],
+        "invariant": "Independent verification of candidate secure-mode:deactivate-at-coercer-base-depth-pops-to-depth0",
+        "method": "source",
+        "result": "rejected: Trace is accurate but it is the same root cause and path as securemode/deactivate-pop-lands-shallower-without-auth; rejected as a duplicate, not as wrong.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "secure-mode:appscreen-grace-period-uses-wall-clock",
+      "secure-mode:deactivate-at-coercer-base-depth-pops-to-depth0",
+      "securemode/app-switcher-cover-only-when-active"
+    ],
+    "unresolved": [],
+    "priority": 1,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "AppScreen.sceneDidBecomeActive (AppScreen.swift:104-111) removes the UIKit cover whenever phase == .pinRequired, assuming PINEntry is already on screen; lockIfGracePeriodExpired sets .pinRequired in the earlier sceneWillEnterForeground, so if SwiftUI has not yet committed PINEntry the unlocked frame can show once. Validate on device; pinViewAppeared is the right sole remover.",
+      "The snapshot cover installs only if a duress verifier exists (isSecureModeActive, AppScreen.swift:84-90); with a PIN but no Secure Mode the app-switcher snapshot and the warm-return frame show live content. Related to known FTA U5d.",
+      "Manager.Security.requiresPIN and the gate in evaluate()/lockIfGracePeriodExpired read config with try?; a failed fetch evaluates as no PIN and unlocks. Fail closed on a fetch error (Manager+Security.swift:78-81).",
+      "IdentityChallenge.Coordinator.approvePending (Coordinator.swift:262-312) sets outboundShare after a biometric await with no sessionEpoch check; endSession cannot cancel it. Narrow because backgrounding cancels the prompt; add an epoch or phase check like processInboundFile.",
+      "UIPasteboard.copySensitive content (120 s) is not cleared by endSession, so text copied at one depth is readable after a lock or depth change within the window; extends known FTA O2.",
+      "pendingFileData is a single slot (OccultaApp.swift:220, 743-746): a second file delivered while locked replaces the first, whose source copy has already been deleted. Availability only.",
+      "Pre-PIN work at launch (LaunchSequence, sweepExpired, checkpointStore, cleanupPendingSessions) takes no depth input; its failures lead only to the StorageErrorView for every depth, which shows no depth-dependent text.",
+      "purgeOrphanedGroupsIfAtRealDepth does extra reads only at depth 0 (OccultaApp.swift:955-962); the checkpoint is unconditional, so no write-pattern difference was found."
+    ],
+    "verifier_decisions": {
+      "securemode/app-switcher-cover-only-when-active": "needs_validation",
+      "secure-mode:appscreen-grace-period-uses-wall-clock": "needs_validation",
+      "secure-mode:deactivate-at-coercer-base-depth-pops-to-depth0": "rejected"
+    }
+  },
+  {
+    "coverage_id": "Occulta%2FApp%2FOccultaApp.swift%23handleOpenURL::Occulta%2FFeatures%2FShareExtension%2FShareRecipientPicker.swift%23ShareRecipientPicker::profile%2Fquick%2Fall-in-scope-subsystems::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23File-open%20and%20intent%20authority%20confusion",
+    "canonical_refs": {
+      "surface": "Occulta/App/OccultaApp.swift#handleOpenURL",
+      "boundary": "Occulta/Features/ShareExtension/ShareRecipientPicker.swift#ShareRecipientPicker",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#File-open and intent authority confusion"
+    },
+    "surface": "Share extension handoff and occulta:// at a duress depth or locked",
+    "boundary": "Recipient visibility and lock state on handoff",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Handoff authority across lock and depth",
+    "starting_paths": [
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Features/ShareExtension/ShareSession.swift",
+      "Occulta/Features/ShareExtension/ShareRecipientPicker.swift",
+      "Occulta/Features/ShareExtension/ContactManager+ShareSession.swift",
+      "ShareExtension/ShareViewController.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Custom-scheme and deep-link ambiguity",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#File-open and intent authority confusion",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#App and account handoff confusion",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-s2",
+    "reviewed_paths": [
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Features/ShareExtension/ContactManager+ShareSession.swift",
+      "Occulta/Features/ShareExtension/ShareRecipientPicker.swift",
+      "Occulta/Features/ShareExtension/ShareSession.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift",
+      "ShareExtension/ShareViewController.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift"
+        ],
+        "invariant": "occulta:// and file open do not process or present anything before the PIN",
+        "method": "source",
+        "result": "handleOpenURL (OccultaApp.swift:627-754): occulta://share only sets pendingShareSession (:662-669); inbound .occ is opened and, if phase != .unlocked, queued raw in pendingFileData (:743-746) and drained on any unlock (:329-332); card recognition and bundle decryption are in processInboundFile, which guards phase (:821, :838). The .occbak path stages state that is shown only inside the .unlocked branch. session ids are validated as UUIDs before use as path components. No unknown-host or malformed-URL behaviour differs by depth.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/Features/ShareExtension/ShareRecipientPicker.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift",
+          "Occulta/App/OccultaApp.swift"
+        ],
+        "invariant": "The recipient picker offers only what the contacts tab offers at the same depth, and no hidden contact can be targeted",
+        "method": "source",
+        "result": "Picker uses ContactListFilter.visibleContacts and groupsWithMembers at security.currentDepth (ShareRecipientPicker.swift:32-48); the choice is an identifier taken from that list; encryptShareSession (OccultaApp.swift:1202-1262) is reached only from the picker callback in the .unlocked branch; group sends re-filter members (encryptGroupBundle). The sheet sits under .id(sessionID), so an in-place depth change rebuilds it with the new depth. The staged session is not bound to a depth and the extension holds no contact list (ContactManager+ShareSession.swift header), so unlocking at another depth than expected changes only which recipients show.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s2",
+        "reviewed_paths": [
+          "Occulta/Features/ShareExtension/ShareSession.swift",
+          "Occulta/Features/ShareExtension/ContactManager+ShareSession.swift",
+          "ShareExtension/ShareViewController.swift"
+        ],
+        "invariant": "Staging, sweep and cleanup behave the same at every depth and lock state",
+        "method": "source",
+        "result": "cleanupPendingSessions runs on every .active at any phase (OccultaApp.swift:340-343) with depth-independent sweeps; stale sessions are refused by age, not depth. Extension never links Manager.Key or ContactManager (ShareViewController.swift header).",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "priority": 3,
+    "priority_rationale": "lower-traffic surface",
+    "hardening": [
+      "AppScreen.sceneDidBecomeActive (AppScreen.swift:104-111) removes the UIKit cover whenever phase == .pinRequired, assuming PINEntry is already on screen; lockIfGracePeriodExpired sets .pinRequired in the earlier sceneWillEnterForeground, so if SwiftUI has not yet committed PINEntry the unlocked frame can show once. Validate on device; pinViewAppeared is the right sole remover.",
+      "The snapshot cover installs only if a duress verifier exists (isSecureModeActive, AppScreen.swift:84-90); with a PIN but no Secure Mode the app-switcher snapshot and the warm-return frame show live content. Related to known FTA U5d.",
+      "Manager.Security.requiresPIN and the gate in evaluate()/lockIfGracePeriodExpired read config with try?; a failed fetch evaluates as no PIN and unlocks. Fail closed on a fetch error (Manager+Security.swift:78-81).",
+      "IdentityChallenge.Coordinator.approvePending (Coordinator.swift:262-312) sets outboundShare after a biometric await with no sessionEpoch check; endSession cannot cancel it. Narrow because backgrounding cancels the prompt; add an epoch or phase check like processInboundFile.",
+      "UIPasteboard.copySensitive content (120 s) is not cleared by endSession, so text copied at one depth is readable after a lock or depth change within the window; extends known FTA O2.",
+      "pendingFileData is a single slot (OccultaApp.swift:220, 743-746): a second file delivered while locked replaces the first, whose source copy has already been deleted. Availability only.",
+      "Pre-PIN work at launch (LaunchSequence, sweepExpired, checkpointStore, cleanupPendingSessions) takes no depth input; its failures lead only to the StorageErrorView for every depth, which shows no depth-dependent text.",
+      "purgeOrphanedGroupsIfAtRealDepth does extra reads only at depth 0 (OccultaApp.swift:955-962); the checkpoint is unconditional, so no write-pattern difference was found."
+    ]
+  },
+  {
+    "coverage_id": "Occulta%2FApp%2FOccultaApp.swift%23pendingRestoreFile::Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security.currentDepth::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Import%20and%20restore%20authority%20expansion",
+    "canonical_refs": {
+      "surface": "Occulta/App/OccultaApp.swift#pendingRestoreFile",
+      "boundary": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security.currentDepth",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Import and restore authority expansion"
+    },
+    "surface": "Inbound .occbak restore staging while locked, and the share/restore hand-off to a lower depth after PIN",
+    "boundary": "A staged restore file opened at the PIN gate must not change state or show UI before the PIN, and lands at the depth that authenticated",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Pre-authentication actions; handoff authority across lock and depth",
+    "starting_paths": [
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+      "Occulta/Features/Vault/Vault+Manager+PendingRestore.swift",
+      "Occulta/UI/Tabs/Vault/Vault+Restore.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Import and restore authority expansion",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "deferred",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "quick_profile_final_critic"
+    ],
+    "priority": 2,
+    "priority_rationale": "named by the final coverage critic: Surface map A2 notes .occbak is staged into pendingRestoreFile/showRestoreConfirmation immediately (OccultaApp.swift:725-737) while pendingFileData for other files is held raw, and not cleared by endSession by design (:224-231). hunter-s2's handoff unit lists only the share extension and occulta://s"
+  },
+  {
+    "coverage_id": "Occulta%2FApp%2FOccultaApp.swift%23processInboundFile::Occulta%2FData%20Models%2FContact%2BModel.swift%23Contact.Profile.isVisible::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "Occulta/App/OccultaApp.swift#processInboundFile",
+      "boundary": "Occulta/Data Models/Contact+Model.swift#Contact.Profile.isVisible",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Missing tenant or owner enforcement"
+    },
+    "surface": "Inbound file pipeline at a duress depth",
+    "boundary": "Depth filter on senders, groups, challenges, cards and shard operations",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Hidden-depth data shown or acted on from an inbound file",
+    "starting_paths": [
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Services/Contact+Manager.swift",
+      "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+      "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+      "Occulta/Features/Vault/ShardCustody+Manager.swift",
+      "Occulta/UI/Tabs/Contacts/IntroductionCards/CardImportSheet.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Missing tenant or owner enforcement",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Enumeration and aggregate oracles",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-s3",
+    "reviewed_paths": [
+      "Occulta/App/AppScreen.swift",
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Data Models/Contact+Model.swift",
+      "Occulta/Features/IdentityChallenge/ContactManager+ChallengeLedger.swift",
+      "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+      "Occulta/Features/IdentityChallenge/IdentityChallenge+Store.swift",
+      "Occulta/Features/IntroductionCards/CardRules.swift",
+      "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+      "Occulta/Features/Vault/RECOVERY_BUFFER_LAYERING.md",
+      "Occulta/Features/Vault/ShardCustody+Manager.swift",
+      "Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift",
+      "Occulta/Services/Contact+Manager.swift",
+      "Occulta/UI/Tabs/Contacts/IntroductionCards/CardFirstMessageFrame.swift",
+      "Occulta/UI/Tabs/Contacts/IntroductionCards/CardImportSheet.swift",
+      "Occulta/UI/Tabs/Contacts/v1/ComposableMessage.swift",
+      "Occulta/UI/Tabs/Contacts/v1/Contact+Detail.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+      "OccultaCore/Sources/OccultaFormats/IntroductionCard.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s3",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Services/Contact+Manager.swift"
+        ],
+        "invariant": "An inbound .occ (1:1, group, streamed, legacy) opened at depth N reads the depth only where a documented decision says so; the sender-resolve, slot-open, prekey-consume, replenish and persist steps are identical at every depth and for hidden and visible senders.",
+        "method": "source",
+        "result": "identifyOwner, decryptSealed, openGroup, openStreamedBundle and decrypt(data:) iterate fetchAllContacts and never read security.currentDepth. The only depth reads in the inbound pipeline are filterShardOperations (OccultaApp.swift:1000-1010), the per-depth challenge slot (ContactManager+ChallengeLedger.swift:74,88,99), importCard's holder test (ContactManager+Cards.swift:288) and the unlock sweeps. A hidden sender's message therefore opens, consumes its prekey and replenishes exactly as at depth 0 (accepted, Bugs 103/104). openGroup returns groupID but nothing stores or displays it, so a group message with partly hidden members shows no member list and no group row is written or read. No error string, viewer element or write differs by sender visibility beyond the accepted rendering.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s3",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/UI/Tabs/Contacts/v1/ComposableMessage.swift",
+          "Occulta/UI/Tabs/Contacts/v1/Contact+Detail.swift",
+          "Occulta/UI/Tabs/Contacts/IntroductionCards/CardFirstMessageFrame.swift"
+        ],
+        "invariant": "The message viewer opened from an inbound file offers no reply, compose, contact-detail navigation or other action on the sender.",
+        "method": "source",
+        "result": "The sheet at OccultaApp.swift:450-472 hosts ComposableMessage.Conversation(mode: .read) inside CardFirstMessageFrame. Contact.Info is a plain VStack of name/email/phone with no NavigationLink; the only read-mode actions are Share on a decrypted attachment (ComposableMessage.swift:395-405,449-455,499-503). CardFirstMessageFrame has no button into the contact (comment :10-13, SPEC §ref decided 2026-10-19). Replies and compose are reachable only through the depth-filtered contact list.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s3",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/App/AppScreen.swift"
+        ],
+        "invariant": "A file received while the app is locked is held raw and processed once, at the authenticated depth, whichever unlock path or lowered-lock launch gives access; nothing is written before the PIN.",
+        "method": "source",
+        "result": "handleOpenURL queues any non-.occbak file in pendingFileData when phase != .unlocked (OccultaApp.swift:743-746); AppScreen.phase starts .covered so a cold-launch URL is queued; the .onChange(of: phase) handler drains it after applyVerifyState has set currentDepth (:306-333). With the lock lowered at depth N, Manager.Security.init sets currentDepth = persistedDepth before any view exists, evaluate() goes straight to .unlocked, so a file is processed at depth N by the same code. Source-copy deletion (Bug 101 defer) is depth-independent. A file queued by the real session and drained by a duress PIN is processed at depth N by design (comment :296-305); the consequence is the accepted Bug 103/104 rendering plus a prekey consumed for a message depth 0 then never sees.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s3",
+        "reviewed_paths": [
+          "Occulta/Features/IdentityChallenge/IdentityChallenge+Coordinator.swift",
+          "Occulta/Features/IdentityChallenge/ContactManager+ChallengeLedger.swift",
+          "Occulta/Features/IdentityChallenge/IdentityChallenge+Store.swift"
+        ],
+        "invariant": "Challenge and response handling changes state only in the current depth's slot, writes nothing for a nonce the depth does not hold, and a response to a challenge made at another depth is dropped without a trace.",
+        "method": "source",
+        "result": "route() resolves the sender with fetchContact (no visibility check; renders name, Bug 103/104 accepted) and approvePending can sign for a hidden contact (Bug 173, known). Ledger methods read security.currentDepth themselves; settle() returns before any write when this depth's slot holds a different nonce (:101-103); verifiedBadge reads the current slot only. sweepExpired iterates every contact at every depth and writes only for expired slots, identically at every unlock. A challenge from an unknown sender never reaches the coordinator (error path), so the only new observable is the accepted one. Slot persistence at depth>=1 is the documented Open-ND item (Bug 180 R-items).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s3",
+        "reviewed_paths": [
+          "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+          "Occulta/Features/IntroductionCards/CardRules.swift",
+          "Occulta/UI/Tabs/Contacts/IntroductionCards/CardImportSheet.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+          "OccultaCore/Sources/OccultaFormats/IntroductionCard.swift"
+        ],
+        "invariant": "Card import at depth N stamps and scopes the contact it creates or changes to depth N, attaches only to contacts visible at N, and shows nothing derived from hidden state beyond decided items.",
+        "method": "source",
+        "result": "importCard creates a new contact through save(contact:currentDepth: security.currentDepth) giving visibleThroughDepth = N and originDepth = N (Contact+Manager.swift:421-429), so it is hidden at every shallower depth including 0. The picker is built from ContactListFilter.visibleContacts (CardImportSheet.swift:204-216) and the same-card holder test is visible-only (ContactManager+Cards.swift:288, CardImportSheet.swift:206), so a hidden holder produces a second contact, by SPEC §6.3. ownIssuedAgreementKeys and redeemCard read every contact at every depth: the own-card refusal (W-18) at a duress depth shows a hidden issued card exists to whoever holds the card file; this is recorded and kept (Docs/Features/Introduction Cards/FINDINGS.md:311, SPEC.md:266). Redemption of a hidden contact's issued card at depth N changes that contact's field and the message renders it, as decided (SPEC §6.6, CardFirstMessageFrame header). recognize() never traps (fixed length, on-curve checks, expiry bounded by 2^53).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s3",
+        "reviewed_paths": [
+          "Occulta/Features/Vault/ShardCustody+Manager.swift",
+          "Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift",
+          "Occulta/Features/Vault/RECOVERY_BUFFER_LAYERING.md"
+        ],
+        "invariant": "Shard operations and custody manifests from a sender hidden at depth N are not applied, and no custody row is written for a hidden owner during a duress session.",
+        "method": "source",
+        "result": "filterShardOperations nils the ops of a hidden or unresolvable sender at both call sites (OccultaApp.swift:1000-1010, :1033-1046, :1152-1165), so distribute, replace and handback are dropped. The custody manifest is passed through unfiltered: processInboundManifest deletes the sender's PendingShardDistribute rows, inserts PotentiallyLostShard watch rows and flips isAbsent (ShardCustody+Manager.swift:291-338), then reconcileBackupPieces runs at depth N. The processing is identical at every depth, rows carry no depth, and statuses are only changed per depth in reconcileBackupPieces, so no depth observable results; recorded as a hardening note because the design text ('every shard op ... a coerced session cannot cause new custody data to be written for a hidden owner') is narrower than the code. Handback banking is depth-blind by design (Vault+Manager+ReturnBuffer.swift header; Bug 99/94).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s3",
+        "reviewed_paths": [
+          "Occulta/Data Models/Contact+Model.swift"
+        ],
+        "invariant": "Contact.Profile.isVisible fails closed for an undecryptable origin or visibility field and applies floor semantics for duress-born contacts.",
+        "method": "source",
+        "result": "isVisible(atDepth:) and the usingKey sibling (Contact+Model.swift:235-262) return false for a present field that will not decrypt or decode, floor semantics for originDepth > 0, ceiling otherwise; both variants agree. nil visibleThroughDepth returns true, documented as an invalid steady state. Callers in the inbound pipeline (filterShardOperations, importCard, CardImportSheet) use it correctly.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "priority": 1,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "Custody manifests are not run through filterShardOperations (OccultaApp.swift:1033-1046, :1152-1165), so a manifest from a trustee hidden at depth N still deletes PendingShardDistribute rows, inserts PotentiallyLostShard rows and triggers reconcileBackupPieces at depth N (ShardCustody+Manager.swift:291-338). No depth-dependent observable, but filterShardOperations' doc and RECOVERY_BUFFER_LAYERING.md section 2.1 describe the gate as stopping hidden senders from writing custody state; either gate the manifest too (nil it for a hidden sender; it self-corrects on the trustee's next message, RECOVERY_BUFFER_LAYERING.md:372-380) or state in the doc that manifests are deliberately depth-blind.",
+      "ContactManager.save(contacts:) and save(contact:) default currentDepth to 0 (Contact+Manager.swift:248-258). The only production callers that rely on the default are the unreachable v1 screens Import+View.swift:187 (struct Import is instantiated only in previews) and Contact+Form.swift:206 (Contacts v1 is not in the tab tree). If either is ever wired in, a contact created at a duress depth is stamped visibleThroughDepth = Int.max, originDepth = 0, i.e. visible at every depth including 0. Make currentDepth a required parameter, or delete the dead screens.",
+      "Known and decided, not re-reported: own-card refusal W-18 reveals a hidden issued card to a holder of the card file (FINDINGS.md:311, kept 2026-10-19). Hidden-sender message/challenge rendering (Bugs 103/104), approving a hidden contact's challenge (Bug 173) and per-depth challenge slot residuals (Bug 180) were seen on the same paths and left as is.",
+      "A bundle queued while locked and drained by a duress PIN is opened at depth N and consumes its prekey, so the real owner never sees that message. This is the decided consequence of draining identically at both unlock paths (OccultaApp.swift:296-305, Bug 103/104 doc); worth stating in the user guide as a loss mode."
+    ]
+  },
+  {
+    "coverage_id": "Occulta%2FFeatures%2FSecureMode%2FAppLayerConfig%2BModel.swift%23AppLayerConfig::Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security.currentDepth::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Analytics%2C%20logs%2C%20traces%2C%20and%20diagnostics%20as%20alternate%20readers",
+    "canonical_refs": {
+      "surface": "Occulta/Features/SecureMode/AppLayerConfig+Model.swift#AppLayerConfig",
+      "boundary": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security.currentDepth",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Analytics, logs, traces, and diagnostics as alternate readers"
+    },
+    "surface": "Persistent artefacts: store columns, files, UserDefaults, keychain, logs",
+    "boundary": "Same artefacts at every depth and whether or not Secure Mode is used",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Forensic traces of depths and of hiding",
+    "starting_paths": [
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/App/LaunchSequence.swift",
+      "Occulta/Data Models/Contact+Model.swift",
+      "Occulta/Data Models/Group+Model.swift",
+      "Occulta/Features/Vault/Vault+Model.swift",
+      "Occulta/Services/Manager+App.swift",
+      "Occulta/Services/Key+Manager.swift",
+      "OccultaCore/Sources/OccultaFormats/DepthCodec.swift",
+      "Occulta/Features/PostQuantum/PQmigration.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Analytics, logs, traces, and diagnostics as alternate readers",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Retention and queued-work overrun",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Soft-delete and tombstone bypass",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-s6",
+    "reviewed_paths": [
+      "Docs/Features/Prekey Continuity/DESIGN.md",
+      "Docs/Features/Secure Mode/bugs.md",
+      "Occulta/App/LaunchSequence.swift",
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Data Models/Group+Model.swift",
+      "Occulta/Data Models/Message+Draft.swift",
+      "Occulta/Features/IdentityChallenge/ContactManager+ChallengeLedger.swift",
+      "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/Features/SecureMode/forensic-trace-avoidance.md",
+      "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+      "Occulta/Features/Vault/Vault+Manager.swift",
+      "Occulta/Features/Vault/Vault+Model.swift",
+      "Occulta/Services/Contact+Manager+AttachmentKey.swift",
+      "Occulta/Services/Contact+Manager+Groups.swift",
+      "Occulta/Services/Contact+Manager+Prekeys.swift",
+      "Occulta/Services/Contact+Manager.swift",
+      "Occulta/Services/Key+Manager.swift",
+      "Occulta/Services/KeyReseal+Inventory.swift",
+      "Occulta/Services/KeyReseal+Run.swift",
+      "Occulta/Services/Manager+App.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift",
+      "OccultaCore/Sources/OccultaFormats/DepthCodec.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s6",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+          "Occulta/Services/KeyReseal+Inventory.swift",
+          "OccultaCore/Sources/OccultaFormats/DepthCodec.swift",
+          "Occulta/Features/Vault/Vault+Model.swift",
+          "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+          "Occulta/Data Models/Group+Model.swift"
+        ],
+        "invariant": "Sealed columns of every Secure Mode model have a constant size whatever the depth or state (claims: pinEnabledPerDepth 29 bytes, DepthCodec 30, VaultEntry/BEK live vs orphaned token one byte, Group slots 156, verifier arrays padded to 32).",
+        "method": "source",
+        "result": "Claims hold against the code: UInt8 encoding of the gate, fixed-width DepthCodec, one-byte sentinels, always-populated deletionToken on VaultEntry/BEK (so no Bug 112 variant there), arrays padded to 32 and Group slots written for all depths together. Remaining keyless variation is lockoutCount (JSON Int, 1 vs 2 digits from 10 attempts) and lockoutAnchor (JSON Double, variable length): both only non-nil after a wrong PIN and not depth-specific (hardening). Known items not re-reported: scalar verifier nil-ness, filler-size mix (Bug 171).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s6",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Services/Contact+Manager+Prekeys.swift",
+          "Occulta/Services/Contact+Manager+Groups.swift",
+          "Occulta/Services/Contact+Manager+AttachmentKey.swift",
+          "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+          "Occulta/Features/IdentityChallenge/ContactManager+ChallengeLedger.swift",
+          "Occulta/Data Models/Message+Draft.swift"
+        ],
+        "invariant": "A real unlock and a duress unlock, and an install with and without Secure Mode, write the same rows and do the same checkpoint work.",
+        "method": "source",
+        "result": "Depth-dependent work: draft purge plus one extra checkpoint only when going deeper (applyVerifyState :759-764), purgeUnreadableGroups only at depth 0, sweepPrekeys only for contacts visible at the depth; all other sweeps are all-depth and write only on change; the per-unlock checkpoint is unconditional. Differences are limited to deleted draft rows, a second checkpoint and which contacts' prekeys are swept, which fall under Bug 120 / FTA S10-S11 / Bug 156 (known). AppLayerConfig columns touched by activation (arrays and scalar), configurePIN/disablePIN (persistedDepth, pinEnabledPerDepth[d]) and deactivation (also coercerBaseDepth, scalar to NULL) differ per operation, which is visible only across images (Bug 120 / PR section). Checkpoint result code is ignored and no busy timeout is set (hardening).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s6",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Services/Manager+App.swift",
+          "Occulta/Features/Vault/Vault+Manager.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Services/Key+Manager.swift",
+          "Occulta/App/LaunchSequence.swift",
+          "Occulta/Services/KeyReseal+Run.swift"
+        ],
+        "invariant": "Persistent store and keychain artefacts are written at first launch so their existence and dates do not mark Secure Mode use, and the store has no trace outside sealed columns; Erase All Data returns the store to a fresh-install shape.",
+        "method": "source",
+        "result": "Three issues recorded as needs_validation candidates: the secure_delete persistence claim (OccultaApp.swift:160-161), framework bookkeeping outside sealed columns that no code or doc addresses, and Erase All Data deleting the AppLayerConfig row without re-seeding it while re-seeding the BEK and Vault rows. Controls that hold: the Secure Mode Enclave key, the config row and the tier U items are created at launch. The vault Enclave key and r_B are created lazily at the first vault unlock (Key+Manager.swift:899-918), which contradicts the stated goal of LaunchSequence/KeyReseal bootstrapVaultRecord (hardening, not Secure Mode specific).",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v5",
+        "reviewed_paths": [
+          "Docs/Features/Prekey Continuity/DESIGN.md",
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/forensic-trace-avoidance.md"
+        ],
+        "invariant": "Independent verification of candidate sqlite-secure-delete-header-persistence-claim",
+        "method": "source",
+        "result": "needs_validation: Source confirms the pragma is set only on a throwaway connection, no pragma option reaches SwiftData, and the docs assert header persistence; the iOS runtime fact remains decisive.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v5",
+        "reviewed_paths": [
+          "Docs/Features/Secure Mode/bugs.md",
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Features/Vault/Vault+Manager.swift"
+        ],
+        "invariant": "Independent verification of candidate swiftdata-store-bookkeeping-outside-sealed-columns",
+        "method": "source",
+        "result": "rejected: No code disables or scrubs history, but bugs.md:14996-15004 already documents the history tables and the decided 2.1.0 removal, so it is a known item.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v5",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/Vault/Vault+Manager.swift",
+          "Occulta/Services/Contact+Manager.swift",
+          "Occulta/Services/Manager+App.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift"
+        ],
+        "invariant": "Independent verification of candidate erase-all-data-config-row-not-reseeded",
+        "method": "source",
+        "result": "needs_validation: Source confirms the config row is deleted and not re-seeded and Group rows are not deleted, contradicting the stated invariant; impact is low because the wipe already shows itself via deleted keys.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "sqlite-secure-delete-header-persistence-claim",
+      "swiftdata-store-bookkeeping-outside-sealed-columns",
+      "erase-all-data-config-row-not-reseeded"
+    ],
+    "unresolved": [],
+    "priority": 2,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "lockoutCountEncrypted (JSON Int) and lockoutAnchorUptimeEncrypted (JSON Double) have variable sealed length, so a count of 10 or more and the rough magnitude of the uptime anchor are readable without a key; encode both fixed-width like DepthCodec.",
+      "Manager.Security.walCheckpoint and OccultaApp.walCheckpoint discard the sqlite3_exec result and set no busy timeout; a BUSY result silently skips the flush that purge, wipe and sweep comments depend on. Check the result and retry.",
+      "The vault Enclave key and r_B are created at the first vault unlock (Key+Manager.swift:899-918), so their keychain creation dates mark first vault use, although bootstrapVaultRecord creates the tier B record at launch for exactly that reason.",
+      "The depth-deeper path runs checkpointStore twice per unlock (applyVerifyState purge, then the OccultaApp unlock handler) against once for a real unlock; harmless alone but a keyless timing signal in WAL mtimes.",
+      "debugPrint/print calls (OccultaApp.swift:1087 and :1147, Contact+Manager.swift:388, PrekeySecretsManager.swift:158 and :278, Features.swift:16) are not stripped in Release; stdout only, no persistent log found.",
+      "ComposeViewModel.handleFile copies the user's file into tmp under its original filename (plaintext) until sealed; a kill in that window leaves it until the next launch's tmp sweep.",
+      "Orphaned VaultEntry/BEK rows and the 32-row BEK baseline: a BEK row count above 32 needs 32 orphaning cycles, so the keyless count signal is theoretical."
+    ],
+    "verifier_decisions": {
+      "sqlite-secure-delete-header-persistence-claim": "needs_validation",
+      "swiftdata-store-bookkeeping-outside-sealed-columns": "rejected",
+      "erase-all-data-config-row-not-reseeded": "needs_validation"
+    }
+  },
+  {
+    "coverage_id": "Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security::Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security.currentDepth::profile%2Fquick%2Fall-in-scope-subsystems::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Pending-action%20and%20user-presence%20confusion",
+    "canonical_refs": {
+      "surface": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security",
+      "boundary": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security.currentDepth",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Pending-action and user-presence confusion"
+    },
+    "surface": "Secure Mode state machine and its Settings flows",
+    "boundary": "Depth transitions authenticated by the PIN of the depth being entered",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Depth transitions and operator confusion",
+    "starting_paths": [
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Features/SecureMode/PIN+Manager.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift",
+      "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+      "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+      "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+      "Occulta/UI/Tabs/SecureMode/ContactClassification.swift",
+      "Occulta/Services/ContactManager+Classification.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Pending-action and user-presence confusion",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Account switch, logout, and device restore leakage",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-s1",
+    "reviewed_paths": [
+      "Docs/Features/Secure Mode/bugs.md",
+      "Occulta/App/AppScreen.swift",
+      "Occulta/Data Models/Contact+Model.swift",
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/Features/SecureMode/scenarios.md",
+      "Occulta/Services/ContactManager+Classification.swift",
+      "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+      "Occulta/UI/Tabs/SecureMode/ContactClassification.swift",
+      "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+      "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+      "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift",
+      "OccultaTests/SecureMode/DuressDeactivationEscalationTests.swift",
+      "OccultaTests/SecureMode/PINManagerTests.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift"
+        ],
+        "invariant": "A depth-N operator cannot move currentDepth toward 0 without the PIN of the depth entered",
+        "method": "source",
+        "result": "deactivateSecureMode pops one level (to depth 0 from depth 1) authenticated only by the depth-N PIN; coercerBaseDepth is settable by the operator via activateSecureMode (:429) and rewritten on every pop (:499); Settings exposes the button at depth == coercerBaseDepth. Candidate securemode/deactivate-pop-lands-shallower-without-auth",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift"
+        ],
+        "invariant": "Layer creation never overwrites or exceeds the 32-slot ceiling unnoticed",
+        "method": "source",
+        "result": "writeNormalVerifier/writeDuressVerifier silently drop an index >= 32 (AL:166-179); at depth 31 reEnablePIN writes duress[31], drops normal[32], returns true, so the new PIN is unusable at a cold start; clearVerifiers(from:) would trap on depth > 32 but deactivateSecureMode guards depth < count first (:463). reEnablePIN and activateSecureMode also overwrite an existing layer at N+1 without orphaning its vault entries or BEK (hardening only).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift"
+        ],
+        "invariant": "coercerBaseDepth as one persisted value shared by all operators is not an escalation by itself",
+        "method": "source",
+        "result": "Single column (AL:93) read by state (:68) and Settings (:205); writers: activate (:430), reEnablePIN (:982), deactivate (:499). It only widens which depth shows Deactivate; the escalation is in the pop (finding C1). A second operator's reEnablePIN moves the affordance away from the first, which is a UI change visible to the first operator on next use (low).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/SecureMode/ContactClassification.swift",
+          "Occulta/Services/ContactManager+Classification.swift",
+          "Occulta/Data Models/Contact+Model.swift",
+          "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift"
+        ],
+        "invariant": "ContactClassification/saveClassification/setVisibility at depth>0 write only to rows visible at that depth",
+        "method": "source",
+        "result": "saveClassification skips rows with !isVisible(atDepth:) (CM:99); setVisibility fetches by identifier without a visibility guard (CM:124-128) but its only caller (TrustCheckV2.swift:315) passes the open, visible contact. Rows visible at N are rewritten to Int.max or N, which also changes visibility at depths deeper than N (rows classified deeper by another operator are overwritten): hardening, same-direction-of-trust. Hidden rows are untouched. loadSensitiveIDs has no depth guard but isSensitive compares to currentDepth (CC:174-189).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/scenarios.md"
+        ],
+        "invariant": "Code agrees with scenarios.md section 4-6, 13, 14",
+        "method": "source",
+        "result": "Disagreements: 6.4 and 13.5 (deactivation unreachable above depth 0) and 14.1/14.2 step 4 (button hidden at any depth>0) versus code (button reachable at depth==coercerBaseDepth after activation); 14.4 step 6 (strips N+2, returns to N+1) versus code (strips own layer N+1, lands at N); 5.8 (classification frozen at depth N) versus loadSensitiveIDs/saveClassification (no guard, Bug 57); 4.3 toggle disabled text versus current isAtSecureModeHomeDepth; 5.1-5.4/11-12/13.4/15.x describe removed rotation/blob machinery.",
+        "artifact": null
+      },
+      {
+        "agent_id": "parent",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "Occulta/App/AppScreen.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift"
+        ],
+        "invariant": "Parent-originated candidate securemode/reenable-pin-moves-session-deeper",
+        "method": "source",
+        "result": "candidate: read by the parent before hunters were assigned; packaged for independent verification",
+        "artifact": null
+      },
+      {
+        "agent_id": "parent",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "Occulta/App/AppScreen.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift"
+        ],
+        "invariant": "Parent-originated candidate securemode/lowered-lock-learn-more-enabled",
+        "method": "source",
+        "result": "candidate: read by the parent before hunters were assigned; packaged for independent verification",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/scenarios.md",
+          "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift"
+        ],
+        "invariant": "Independent verification of candidate securemode/lowered-lock-learn-more-enabled",
+        "method": "source",
+        "result": "needs_validation: Read Settings.swift:213-243: the toggle goes off with the lock lowered while the Learn-more section stays enabled (requiresPIN only), unlike a no-PIN install where it is dimmed; the divergence from the file's own stated invariant is real. Rendering not observed.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v2",
+        "reviewed_paths": [
+          "Docs/Features/Secure Mode/bugs.md",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/scenarios.md",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "OccultaTests/SecureMode/DuressDeactivationEscalationTests.swift"
+        ],
+        "invariant": "Independent verification of candidate securemode/reenable-pin-moves-session-deeper",
+        "method": "source",
+        "result": "needs_validation: Source confirms the whole chain from the Settings sheet through reEnablePIN, verify's step-1 match on normal[N+1] and applyVerifyState to the exact-depth vault filter; the routing is deliberate (Bug 37, scenarios 4.8) but its content effect is undocumented. Trace lines corrected (Settings 263 to 266, applyVerifyState 759 to 760, scenarios 164 to 167).",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v3",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/scenarios.md",
+          "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "OccultaTests/SecureMode/PINManagerTests.swift"
+        ],
+        "invariant": "Independent verification of candidate securemode/deactivate-pop-lands-shallower-without-auth",
+        "method": "source",
+        "result": "needs_validation: Read the whole path (Settings gate :202-207 and :232, activate :375-431, deactivate :446-503, state getter :68-72, DeactivateFlow :25): no control stops a depth-1 operator reaching depth 0 with only the depth-1 PIN; only the UI re-render and end-to-end run are unobserved.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "securemode/deactivate-pop-lands-shallower-without-auth",
+      "securemode/reenable-pin-moves-session-deeper",
+      "securemode/lowered-lock-learn-more-enabled"
+    ],
+    "unresolved": [],
+    "priority": 1,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "reEnablePIN (Manager+Security.swift:976-982) and activateSecureMode (:409-410) overwrite duress[N]/normal[N+1] without checking whether a layer already exists at N+1 and without orphaning that depth's vault entries/BEKs; the owner's deeper decoy layer is destroyed or its depth-stamped data inherited by whoever sets the new PIN (Bug 110 class). Same file, deactivate at depth N also destroys every deeper layer (clearVerifiers from N).",
+      "32-depth ceiling: writeNormalVerifier/writeDuressVerifier (AppLayerConfig+Model.swift:166-179) and writePinEnabled (:304-312) silently no-op for index >= 32 while the callers report success; at depth 31 reEnablePIN/activate create a PIN that cannot route at cold start, and verify step 2 can raise currentDepth to 32. DepthCodec clamps, so no trap, but the last layer behaves differently from every other.",
+      "Lock lowered at depth 0 with a foreign PIN returns false (known tell, scenarios 4.6); reEnablePIN at depth>0 creates a layer silently (Bug 37). Both known; noted only because the same function is the guess oracle in F3.",
+      "A depth-N operator's ContactClassification/TrustCheckV2 setVisibility can rewrite visibleThroughDepth of rows visible to them to Int.max or N, altering visibility at depths deeper than N that another operator set; add a guard so a write may only narrow, and add an isVisible guard in setVisibility(for:) (ContactManager+Classification.swift:124).",
+      "20 wrong lock-screen entries by any party make the owner's correct PIN return .locked for 24 h, and every reboot re-anchors the full delay (Manager+Security.swift:656-663): availability only, no owner override exists.",
+      "forceDeactivateForRecovery and checkNormalPIN have no production callers; if wired to UI they authenticate the master PIN from any depth with no counter.",
+      "Docs: scenarios.md sections 4.3, 5.1-5.4, 6.1, 6.4, 11-13 and 14.1/14.2/14.4 are stale or contradict the code (see check 5 of the first unit); the 'Only depth 0 can deactivate' claim should not be relied on by anyone reviewing C1."
+    ],
+    "verifier_decisions": {
+      "securemode/lowered-lock-learn-more-enabled": "needs_validation",
+      "securemode/reenable-pin-moves-session-deeper": "needs_validation",
+      "securemode/deactivate-pop-lands-shallower-without-auth": "needs_validation"
+    }
+  },
+  {
+    "coverage_id": "Occulta%2FFeatures%2FSecureMode%2FPIN%2BManager.swift%23Manager.PINManager.checkVerifier::Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security.verify::profile%2Fquick%2Fall-in-scope-subsystems::ATTACK-CLASSES.md%23Cryptography%20and%20secrets",
+    "canonical_refs": {
+      "surface": "Occulta/Features/SecureMode/PIN+Manager.swift#Manager.PINManager.checkVerifier",
+      "boundary": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security.verify",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "ATTACK-CLASSES.md#Cryptography and secrets"
+    },
+    "surface": "PIN verifiers, lockout and PIN oracles",
+    "boundary": "Verifier secrecy and attempt limiting",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Verifier construction, oracles and lockout",
+    "starting_paths": [
+      "Occulta/Features/SecureMode/PIN+Manager.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Services/Key+Manager.swift",
+      "Occulta/Services/Manager+Ambient.swift",
+      "Occulta/Services/KeyReseal+Verifiers.swift",
+      "Occulta/UI/Tabs/SecureMode/PINEntry.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Credential-store and local-secret boundary mismatch",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-s1",
+    "reviewed_paths": [
+      "Docs/Features/Secure Mode/bugs.md",
+      "Docs/v2.0.0/PASSPHRASE_ROLLOUT.md",
+      "Occulta/App/AppScreen.swift",
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/Features/SecureMode/PIN+Manager.swift",
+      "Occulta/Features/SecureMode/plan.md",
+      "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+      "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+      "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/PIN+Manager.swift"
+        ],
+        "invariant": "Verifier construction and comparison are sound",
+        "method": "source",
+        "result": "AES-GCM(HKDF(seKey, label||pin), sentinel), wrapped under an Enclave-bound key; the comparison is on an AEAD-opened sentinel, not a secret-dependent early exit; filler slots get the same inner work (:78). PIN is not length-checked in the manager (the UI enforces 6 digits). No stretching (Bug 119, known).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift"
+        ],
+        "invariant": "Lockout cannot be reset by an attacker holding one valid PIN",
+        "method": "source",
+        "result": "resetCounters runs on any normal (:677) or duress (:687) match; counter is global; five free guesses (:704). Candidate securemode/lockout-reset-by-any-valid-pin",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+          "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift"
+        ],
+        "invariant": "Every PIN guess surface is covered by the lockout",
+        "method": "source",
+        "result": "checkCurrentLayerPIN (:1003), reEnablePIN (:909), disablePIN (:868), deactivateSecureMode/activateSecureMode confirmations (:446, :360) never touch the counter. Candidate securemode/settings-pin-checks-bypass-lockout. checkNormalPIN (:838) and forceDeactivateForRecovery (:514) have no production callers (a latent counterless master-PIN oracle if wired).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/SecureMode/PINEntry.swift"
+        ],
+        "invariant": "Lockout timing and reboot handling",
+        "method": "source",
+        "result": "Uptime-anchored; backward uptime re-anchors (full delay again after a reboot, :656-663), lockoutExpiry is display-only. Wrong entries by any party also lock the owner (20 wrong entries -> 24 h, correct PIN refused): availability only, recorded as hardening. The 500 ms pad is applied to locked, wrong and correct results alike (PINEntry.swift:246-256).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s1",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift"
+        ],
+        "invariant": "Legacy scalar columns agree with the arrays",
+        "method": "source",
+        "result": "Scalars sealedNormalVerifier/sealedDuressVerifier are written at depth 0 only (configurePIN :315, activate :412, deactivate :340/:490); arrays are truth for verify. No path leaves the scalar set while the arrays are empty or the reverse except the unwired forceDeactivateForRecovery (cbd not reset there). Scalar nil-ness is plain Data? (known item Q2, peer-owned AppLayerConfig unit).",
+        "artifact": null
+      },
+      {
+        "agent_id": "parent",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "Occulta/App/AppScreen.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift"
+        ],
+        "invariant": "Parent-originated candidate securemode/duress-verifier-scalar-null",
+        "method": "source",
+        "result": "candidate: read by the parent before hunters were assigned; packaged for independent verification",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v1",
+        "reviewed_paths": [
+          "Docs/v2.0.0/PASSPHRASE_ROLLOUT.md",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift"
+        ],
+        "invariant": "Independent verification of candidate securemode/duress-verifier-scalar-null",
+        "method": "source",
+        "result": "needs_validation: Source confirms the scalar is a plain Data? set only at depth 0 activation and cleared on full deactivation, and the model states a non-nil-presence rule for other fields; keyless readability depends on the on-disk NULL, not observed.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v2",
+        "reviewed_paths": [
+          "Docs/Features/Secure Mode/bugs.md",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/plan.md",
+          "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift"
+        ],
+        "invariant": "Independent verification of candidate securemode/settings-pin-checks-bypass-lockout",
+        "method": "source",
+        "result": "needs_validation: Source confirms no counter in checkCurrentLayerPIN, disablePIN or reEnablePIN, the all-depth scan with setState(k), and the UI path from Settings; Bug 62 Gap 2 covers activation probes only, so this is not a restatement. Part (b) is weak (guesser already at depth N). Entrypoint line corrected from 263 to 266.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v3",
+        "reviewed_paths": [
+          "Occulta/App/OccultaApp.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/SecureMode/PINEntry.swift"
+        ],
+        "invariant": "Independent verification of candidate securemode/lockout-reset-by-any-valid-pin",
+        "method": "source",
+        "result": "needs_validation: verify() resets the shared counter on any normal or duress match and the first five wrong entries impose no delay, so the claim holds in source; impact is bounded (0.5 s pad, re-lock per cycle, PIN weakness already known) so severity is low.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "securemode/lockout-reset-by-any-valid-pin",
+      "securemode/settings-pin-checks-bypass-lockout",
+      "securemode/duress-verifier-scalar-null"
+    ],
+    "unresolved": [],
+    "priority": 1,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "reEnablePIN (Manager+Security.swift:976-982) and activateSecureMode (:409-410) overwrite duress[N]/normal[N+1] without checking whether a layer already exists at N+1 and without orphaning that depth's vault entries/BEKs; the owner's deeper decoy layer is destroyed or its depth-stamped data inherited by whoever sets the new PIN (Bug 110 class). Same file, deactivate at depth N also destroys every deeper layer (clearVerifiers from N).",
+      "32-depth ceiling: writeNormalVerifier/writeDuressVerifier (AppLayerConfig+Model.swift:166-179) and writePinEnabled (:304-312) silently no-op for index >= 32 while the callers report success; at depth 31 reEnablePIN/activate create a PIN that cannot route at cold start, and verify step 2 can raise currentDepth to 32. DepthCodec clamps, so no trap, but the last layer behaves differently from every other.",
+      "Lock lowered at depth 0 with a foreign PIN returns false (known tell, scenarios 4.6); reEnablePIN at depth>0 creates a layer silently (Bug 37). Both known; noted only because the same function is the guess oracle in F3.",
+      "A depth-N operator's ContactClassification/TrustCheckV2 setVisibility can rewrite visibleThroughDepth of rows visible to them to Int.max or N, altering visibility at depths deeper than N that another operator set; add a guard so a write may only narrow, and add an isVisible guard in setVisibility(for:) (ContactManager+Classification.swift:124).",
+      "20 wrong lock-screen entries by any party make the owner's correct PIN return .locked for 24 h, and every reboot re-anchors the full delay (Manager+Security.swift:656-663): availability only, no owner override exists.",
+      "forceDeactivateForRecovery and checkNormalPIN have no production callers; if wired to UI they authenticate the master PIN from any depth with no counter.",
+      "Docs: scenarios.md sections 4.3, 5.1-5.4, 6.1, 6.4, 11-13 and 14.1/14.2/14.4 are stale or contradict the code (see check 5 of the first unit); the 'Only depth 0 can deactivate' claim should not be relied on by anyone reviewing C1."
+    ],
+    "verifier_decisions": {
+      "securemode/duress-verifier-scalar-null": "needs_validation",
+      "securemode/settings-pin-checks-bypass-lockout": "needs_validation",
+      "securemode/lockout-reset-by-any-valid-pin": "needs_validation"
+    }
+  },
+  {
+    "coverage_id": "Occulta%2FServices%2FContact%2BManager.swift%23ContactManager.deleteContact::Occulta%2FData%20Models%2FContact%2BModel.swift%23Contact.Profile.isVisible::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Missing%20tenant%20or%20owner%20enforcement",
+    "canonical_refs": {
+      "surface": "Occulta/Services/Contact+Manager.swift#ContactManager.deleteContact",
+      "boundary": "Occulta/Data Models/Contact+Model.swift#Contact.Profile.isVisible",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Missing tenant or owner enforcement"
+    },
+    "surface": "Contact lifecycle at a duress depth: delete, soft-delete retention cap and eviction, group membership cleanup, edit of a shared row",
+    "boundary": "A coercer at depth N acts only on rows visible at N; deletion and eviction must not leave depth-dependent traces or remove shallower data",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Coercer actions on shared rows; lifecycle edges; forensic trace of deletion",
+    "starting_paths": [
+      "Occulta/Services/Contact+Manager.swift",
+      "Occulta/Services/ContactManager+Classification.swift",
+      "Occulta/Services/Contact+Manager+Groups.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactDetailV2.swift",
+      "Occulta/UI/Tabs/Contacts/v3/ContactDetailV3.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactFormV2.swift",
+      "Occulta/Features/IntroductionCards/ContactManager+Cards.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Missing tenant or owner enforcement",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "deferred",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "quick_profile_final_critic"
+    ],
+    "priority": 2,
+    "priority_rationale": "named by the final coverage critic: deleteContact(identifier:) (Contact+Manager.swift:516-560) takes an identifier and fetches via fetchContact(by:) with no visibility check, evicts the oldest soft-deleted row at 50, deletes prekeys and drafts, then edits group membership; discardCardConversation (Cards.swift:172) is the same shape. h"
+  },
+  {
+    "coverage_id": "Occulta%2FServices%2FExchange%2BManager.swift%23ExchangeManager::Occulta%2FData%20Models%2FContact%2BModel.swift%23Contact.Profile.isVisible::profile%2Fquick%2Fall-in-scope-subsystems::PROTOCOLS-RPC-AND-MESSAGING.md%23Peer%20identity%20to%20application-principal%20confusion",
+    "canonical_refs": {
+      "surface": "Occulta/Services/Exchange+Manager.swift#ExchangeManager",
+      "boundary": "Occulta/Data Models/Contact+Model.swift#Contact.Profile.isVisible",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "PROTOCOLS-RPC-AND-MESSAGING.md#Peer identity to application-principal confusion"
+    },
+    "surface": "Key exchange transport (Exchange+Manager: MultipeerConnectivity advertise/browse, NearbyInteraction, identity and ciphertext messages) used at any depth",
+    "boundary": "Nearby radio peer and depth: exchange traffic, peer matching and duplicate-contact handling must not differ with hidden contacts or depth",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Nearby radio peer attacks; depth observable on exchange; crash traps on peer-supplied bytes",
+    "starting_paths": [
+      "Occulta/Services/Exchange+Manager.swift",
+      "Occulta/UI/Tabs/Contacts/Key+Exchange/KeyExchange.swift",
+      "Occulta/UI/Tabs/Contacts/Key+Exchange/KeyExchangeLiveView.swift",
+      "Occulta/Services/Contact+Manager+Pairing.swift",
+      "Occulta/Features/Pairing/PairingCodec.swift",
+      "Occulta/Features/Pairing/PairingOffer.swift",
+      "Occulta/Features/Pairing/PairingState.swift",
+      "Occulta/UI/Tabs/Contacts/v2/PairingCapabilitySection.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Peer identity to application-principal confusion",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Universal moves",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "deferred",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "quick_profile_final_critic"
+    ],
+    "priority": 2,
+    "priority_rationale": "named by the final coverage critic: Principal 6 (nearby radio peer) has no unit. hunter-s4 reviewed only KeyExchange.swift (the @Query/identifier lookup). Exchange+Manager.swift (MCSession required encryption, discovery without discoveryInfo, buffered identity messages, receivedDiscoveryTokens, sendIdentity/sendCiphertext), the Pairin"
+  },
+  {
+    "coverage_id": "Occulta%2FServices%2FManager%2BApp.swift%23Manager.App.eraseAllData::Occulta%2FUI%2FTabs%2FSettings%2FSettings.swift%23Settings::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Soft-delete%20and%20tombstone%20bypass",
+    "canonical_refs": {
+      "surface": "Occulta/Services/Manager+App.swift#Manager.App.eraseAllData",
+      "boundary": "Occulta/UI/Tabs/Settings/Settings.swift#Settings",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Soft-delete and tombstone bypass"
+    },
+    "surface": "Erase All Data at a duress depth and its completeness",
+    "boundary": "A coercer at depth N must not be able to destroy shallower-depth data without the real PIN; the post-erase state must not mark that hiding was used",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Coercer action on hidden data; wipes and sweeps that miss a store",
+    "starting_paths": [
+      "Occulta/UI/Tabs/Settings/Settings.swift",
+      "Occulta/Services/Manager+App.swift",
+      "Occulta/Features/Vault/Vault+Manager.swift",
+      "Occulta/Services/Contact+Manager+Groups.swift",
+      "Occulta/Services/Key+Manager.swift",
+      "Occulta/App/OccultaApp.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Soft-delete and tombstone bypass",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "deferred",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "quick_profile_final_critic"
+    ],
+    "priority": 2,
+    "priority_rationale": "named by the final coverage critic: Settings.swift:155-183 offers Erase All Data behind a confirmation dialog only (no PIN) at every depth, and Manager.App.eraseAllData (Manager+App.swift:30-48) destroys all depths' contacts, vault and keys. No ledger unit checks whether this is a coercer-reachable destructive action on hidden data, o"
+  },
+  {
+    "coverage_id": "Occulta%2FServices%2FStreamedReceive.swift%23StreamedReceive::Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security.currentDepth::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Retention%20and%20queued-work%20overrun",
+    "canonical_refs": {
+      "surface": "Occulta/Services/StreamedReceive.swift#StreamedReceive",
+      "boundary": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security.currentDepth",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Retention and queued-work overrun"
+    },
+    "surface": "Attachment, Quick Look and temp-file lifecycle (received plaintext attachments, share providers, export temp files, Drafts/ extension names)",
+    "boundary": "Forensic examiner: no plaintext or depth-dependent file artefacts outside the sealed store",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Forensic traces; plaintext copies outside the store",
+    "starting_paths": [
+      "Occulta/Services/StreamedReceive.swift",
+      "Occulta/Services/ReceivedAttachmentKey.swift",
+      "Occulta/Services/Attachment+Manager.swift",
+      "Occulta/Services/NoCacheFile.swift",
+      "Occulta/Services/MemoryGuard.swift",
+      "Occulta/Extensions/FileManager.swift",
+      "Occulta/Data Models/Message+Draft.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Retention and queued-work overrun",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "deferred",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "quick_profile_final_critic"
+    ],
+    "priority": 2,
+    "priority_rationale": "named by the final coverage critic: hunter-s6's wildcard checked tmp files only at a glance (reviewed FileManager.swift, UIPasteboard.swift, ComposeViewModel.swift); StreamedReceive, ReceivedAttachmentKey, Attachment+Manager and NoCacheFile are in no reviewed_paths, though the surface map C3 lists streamed plaintext attachments in tmp"
+  },
+  {
+    "coverage_id": "Occulta%2FUI%2FTabs%2FContacts%2Fv2%2FComposeViewModel.swift%23ComposeViewModel::Occulta%2FData%20Models%2FContact%2BModel.swift%23Contact.Profile.isVisible::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Stale%20authorization%20and%20derived%20copy%20use",
+    "canonical_refs": {
+      "surface": "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift#ComposeViewModel",
+      "boundary": "Occulta/Data Models/Contact+Model.swift#Contact.Profile.isVisible",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Stale authorization and derived copy use"
+    },
+    "surface": "Message compose-and-send at a duress depth: encryptBundle, encryptGroupBundle, prekey consumption and fresh-batch install, attachments and export files",
+    "boundary": "Outbound crypto actions only reach recipients visible at depth N and cause the same keychain, store and tmp writes as at depth 0",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Coercer acts on hidden data; depth observable in write and keychain pattern; derived-copy use",
+    "starting_paths": [
+      "Occulta/Services/Contact+Manager.swift",
+      "Occulta/Services/Contact+Manager+Prekeys.swift",
+      "Occulta/Features/Forward+Secrecy/PrekeySecretsManager.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+      "Occulta/UI/Tabs/Contacts/v1/ComposableMessage.swift",
+      "Occulta/Services/Attachment+Manager.swift",
+      "Occulta/Services/StreamedReceive.swift",
+      "Occulta/Services/Contact+Manager+AttachmentKey.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Stale authorization and derived copy use",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "deferred",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "quick_profile_final_critic"
+    ],
+    "priority": 2,
+    "priority_rationale": "named by the final coverage critic: hunter-s4's drafts unit looked at ComposeViewModel for draft scope and hunter-s3 at the inbound side. The send side (Contact+Manager.swift:1186-1207, 1466-1529 membership at depth, one-time prekey consumption, sweepPrekeys limited to visible contacts so hidden contacts' prekeys are not replenished w"
+  },
+  {
+    "coverage_id": "Occulta%2FUI%2FTabs%2FContacts%2Fv2%2FContactsListV2.swift%23ContactsListV2::Occulta%2FUI%2FTabs%2FContacts%2Fv2%2FContactListFilter.swift%23ContactListFilter.visibleContacts::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Enumeration%20and%20aggregate%20oracles",
+    "canonical_refs": {
+      "surface": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift#ContactsListV2",
+      "boundary": "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift#ContactListFilter.visibleContacts",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Enumeration and aggregate oracles"
+    },
+    "surface": "Unlocked screens: contacts, groups, compose, cards, key exchange",
+    "boundary": "Depth filter on every list, count, badge, empty state and action",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Depth observables on unlocked screens",
+    "starting_paths": [
+      "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactDetailV2.swift",
+      "Occulta/UI/Tabs/Contacts/v3/ContactDetailV3.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactFormV2.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift",
+      "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+      "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift",
+      "Occulta/Services/Contact+Manager+Groups.swift",
+      "Occulta/Data Models/Group+Model.swift",
+      "Occulta/UI/Tabs/Contacts/IntroductionCards/ContactCardSection.swift",
+      "Occulta/UI/Tabs/Contacts/Key+Exchange/KeyExchange.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Enumeration and aggregate oracles",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Policy and query disagreement",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Missing tenant or owner enforcement",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-s4",
+    "reviewed_paths": [
+      "Docs/Features/Group Messaging/FINDINGS.md",
+      "Docs/Features/Group Messaging/SPEC.md",
+      "Docs/Features/Secure Mode/bugs.md",
+      "Occulta/Data Models/Contact+Model.swift",
+      "Occulta/Data Models/Group+Model.swift",
+      "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+      "Occulta/Features/SecureMode/scenarios.md",
+      "Occulta/Services/Contact+Manager+Groups.swift",
+      "Occulta/Services/Contact+Manager.swift",
+      "Occulta/Services/ContactManager+Classification.swift",
+      "Occulta/UI/Tabs/Contacts/Key+Exchange/KeyExchange.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactDetailV2.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactFormV2.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+      "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+      "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+      "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift",
+      "Occulta/UI/Tabs/SecureMode/ContactClassification.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift",
+      "OccultaTests/SecureMode/PINManagerTests.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s4",
+        "reviewed_paths": [
+          "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ContactListFilter.swift",
+          "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift",
+          "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+          "Occulta/Data Models/Group+Model.swift"
+        ],
+        "invariant": "contact list, count, empty state, trust summary and search depend only on visible contacts",
+        "method": "source",
+        "result": "List, footer count, empty state, trust summary and search all derive from ContactListFilter.visibleContacts; open(request) refuses hidden identifiers. Group list is unfiltered by design (names, footer count), so a real group with no members at depth N is listed; group detail/member counts/send targets filter members by isVisible.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s4",
+        "reviewed_paths": [
+          "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+          "Occulta/Data Models/Group+Model.swift",
+          "Occulta/Services/ContactManager+Classification.swift",
+          "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+          "Occulta/UI/Tabs/SecureMode/ContactClassification.swift"
+        ],
+        "invariant": "write/edit/delete actions on shared rows are scoped to the operator's depth",
+        "method": "source",
+        "result": "Group rename and delete act on the shared row at any depth; classification writes collapse deeper ceilings to Int.max; originDepth bypasses ceiling. See candidates.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s4",
+        "reviewed_paths": [
+          "Occulta/Services/Contact+Manager.swift",
+          "Occulta/Features/IntroductionCards/ContactManager+Cards.swift",
+          "Occulta/UI/Tabs/Contacts/Key+Exchange/KeyExchange.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ContactFormV2.swift",
+          "Occulta/Data Models/Contact+Model.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ContactDetailV2.swift"
+        ],
+        "invariant": "create/import/exchange paths stamp originDepth and visibleThroughDepth and cannot touch hidden contacts",
+        "method": "source",
+        "result": "Address-book import seals the identifier with a fresh nonce so it never collides with a hidden row (no dedupe); form create uses a fresh UUID; edit and key exchange act on the identifier of a visible contact; card import holder check is visibleAt-filtered; own-card refusal consults every depth's issued cards (needs the card bytes, weak oracle, hardening). Contact form has no visibility control; visibility lives in TrustCheckV2.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v4",
+        "reviewed_paths": [
+          "Occulta/Data Models/Contact+Model.swift",
+          "Occulta/Features/SecureMode/scenarios.md",
+          "Occulta/Services/ContactManager+Classification.swift",
+          "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+          "Occulta/UI/Tabs/SecureMode/ContactClassification.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift",
+          "OccultaTests/SecureMode/PINManagerTests.swift"
+        ],
+        "invariant": "Independent verification of candidate classification-rewrites-deeper-ceiling-to-int-max",
+        "method": "source",
+        "result": "needs_validation: Source confirms K>N is visible at N, absent from isSensitive, and re-stamped Int.max by saveClassification and setVisibility; no doc or test covers it. Corrected setVisibility line to 131; reachability depends on who holds a classification control at N<K.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v4",
+        "reviewed_paths": [
+          "Docs/Features/Group Messaging/FINDINGS.md",
+          "Docs/Features/Group Messaging/SPEC.md",
+          "Docs/Features/Secure Mode/bugs.md",
+          "Occulta/Services/Contact+Manager+Groups.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+          "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+          "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift"
+        ],
+        "invariant": "Independent verification of candidate group-delete-rename-shared-row-from-duress-depth",
+        "method": "source",
+        "result": "needs_validation: Source confirms unscoped rename and delete of the shared row; SPEC, Bug 177/178 and register section I decide only listing and visible names (and accepted richness), not write or delete, so the decision does not cover this. Lines corrected (35, 380, Group+Model 24).",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v4",
+        "reviewed_paths": [
+          "Docs/Features/Secure Mode/bugs.md",
+          "Occulta/Data Models/Contact+Model.swift",
+          "Occulta/Services/Contact+Manager.swift",
+          "Occulta/Services/ContactManager+Classification.swift",
+          "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift"
+        ],
+        "invariant": "Independent verification of candidate origin-depth-floor-bypasses-classification-ui-lies",
+        "method": "source",
+        "result": "needs_validation: Source confirms the isSensitive/isVisible disagreement for originDepth>0 contacts; the bypass is documented as deliberate, so only the misleading control and the owner-home case are new. Kept as a low-severity design question.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "classification-rewrites-deeper-ceiling-to-int-max",
+      "group-delete-rename-shared-row-from-duress-depth",
+      "origin-depth-floor-bypasses-classification-ui-lies"
+    ],
+    "unresolved": [],
+    "priority": 2,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "Draft purge is only in applyVerifyState; reEnablePIN steps 1/2 and Manager.Security.init persisted-depth restore change depth without purgeDraftsNotSafeAtCurrentDepth. Call the purge from setState when depth increases.",
+      "Group.FormV3.atCapacity counts hidden stale members (members from a shallower classification are not purged at depth>0), so rows can disable below 32 visible members; the displayed count hides it, the disabled rows and orange header do not.",
+      "ContactManager.ownIssuedAgreementKeys covers cards issued at every depth, so refusing an imported card as 'own card' can reflect a hidden contact's issued card; needs the card bytes in the coercer's hands.",
+      "Groups footer 'N groups' and the group list count rows that have no members at the current depth; known REG section I / Bug 178 residual.",
+      "Message.Draft rows for contacts created at depth N are never persisted at depth N because isSensitive (==currentDepth) is true for them; harmless but inconsistent with depth N+1."
+    ],
+    "verifier_decisions": {
+      "classification-rewrites-deeper-ceiling-to-int-max": "needs_validation",
+      "group-delete-rename-shared-row-from-duress-depth": "needs_validation",
+      "origin-depth-floor-bypasses-classification-ui-lies": "needs_validation"
+    }
+  },
+  {
+    "coverage_id": "Occulta%2FUI%2FTabs%2FContacts%2Fv2%2FDraftStore.swift%23DraftStore::Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security.purgeDraftsNotSafeAtCurrentDepth::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Stale%20authorization%20and%20derived%20copy%20use",
+    "canonical_refs": {
+      "surface": "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift#DraftStore",
+      "boundary": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security.purgeDraftsNotSafeAtCurrentDepth",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Stale authorization and derived copy use"
+    },
+    "surface": "Drafts and attachments across depths",
+    "boundary": "Depth scope and purge of drafts",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Drafts surviving or leaking across depths",
+    "starting_paths": [
+      "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift",
+      "Occulta/Data Models/Message+Draft.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Stale authorization and derived copy use",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Retention and queued-work overrun",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-s4",
+    "reviewed_paths": [
+      "Occulta/Data Models/Message+Draft.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+      "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift",
+      "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s4",
+        "reviewed_paths": [
+          "Occulta/UI/Tabs/Contacts/v2/DraftStore.swift",
+          "Occulta/Data Models/Message+Draft.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+          "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift"
+        ],
+        "invariant": "drafts for contacts hidden at the entered depth are purged on going deeper, with attachment folders",
+        "method": "source",
+        "result": "purgeUnsafe deletes the row and Drafts/<id> folder for every draft whose recipient is not visible at the new depth, and every group draft; checkpoint follows. Draft survival for contacts visible at both depths is by design. Group draft typed at depth N is unscoped (Bug 178 residual, known).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s4",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift"
+        ],
+        "invariant": "purge runs on every depth transition",
+        "method": "source",
+        "result": "Purge is wired only into applyVerifyState (deeper). In-place transitions through reEnablePIN (setState k or k+1) and the persisted-depth restore in Manager.Security.init do not purge; reachable only when the gate was lowered and the operator knows the target PIN, so exposure is bounded to the operator's own depth-N drafts. Recorded as hardening.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "priority": 2,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "Draft purge is only in applyVerifyState; reEnablePIN steps 1/2 and Manager.Security.init persisted-depth restore change depth without purgeDraftsNotSafeAtCurrentDepth. Call the purge from setState when depth increases.",
+      "Group.FormV3.atCapacity counts hidden stale members (members from a shallower classification are not purged at depth>0), so rows can disable below 32 visible members; the displayed count hides it, the disabled rows and orange header do not.",
+      "ContactManager.ownIssuedAgreementKeys covers cards issued at every depth, so refusing an imported card as 'own card' can reflect a hidden contact's issued card; needs the card bytes in the coercer's hands.",
+      "Groups footer 'N groups' and the group list count rows that have no members at the current depth; known REG section I / Bug 178 residual.",
+      "Message.Draft rows for contacts created at depth N are never persisted at depth N because isSensitive (==currentDepth) is true for them; harmless but inconsistent with depth N+1."
+    ]
+  },
+  {
+    "coverage_id": "Occulta%2FUI%2FTabs%2FVault%2FVault%2BTab.swift%23VaultTab::Occulta%2FFeatures%2FSecureMode%2FManager%2BSecurity.swift%23Manager.Security.visibleVaultEntries::profile%2Fquick%2Fall-in-scope-subsystems::DATA-ISOLATION-AND-LIFECYCLE.md%23Export%20and%20backup%20scope%20expansion",
+    "canonical_refs": {
+      "surface": "Occulta/UI/Tabs/Vault/Vault+Tab.swift#VaultTab",
+      "boundary": "Occulta/Features/SecureMode/Manager+Security.swift#Manager.Security.visibleVaultEntries",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Export and backup scope expansion"
+    },
+    "surface": "Vault, backup keys, trustees and shard custody at a duress depth",
+    "boundary": "Exact-depth vault filter and per-depth backup key",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Cross-depth vault, backup and custody disclosure",
+    "starting_paths": [
+      "Occulta/UI/Tabs/Vault/Vault+Tab.swift",
+      "Occulta/UI/Tabs/Vault/Vault+NewEntrySheet.swift",
+      "Occulta/UI/Tabs/Vault/Vault+ShardSetup.swift",
+      "Occulta/UI/Tabs/Vault/Vault+Restore.swift",
+      "Occulta/UI/Tabs/Vault/Vault+Backup+Export.swift",
+      "Occulta/Features/Vault/Vault+Manager.swift",
+      "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+      "Occulta/Features/Vault/Vault+Model.swift",
+      "Occulta/Features/Vault/BackupEncryptionKey+Model.swift",
+      "Occulta/Features/Vault/ShardCustody+Manager.swift",
+      "Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift",
+      "Occulta/Features/Vault/Vault+Manager+PendingRestore.swift"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export and backup scope expansion",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Import and restore authority expansion",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Enumeration and aggregate oracles",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Restore reintroduces invalid state",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-s5",
+    "reviewed_paths": [
+      "Docs/Features/Secure Mode/bugs.md",
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/Features/SecureMode/scenarios.md",
+      "Occulta/Features/Vault/BackupEncryptionKey+Model.swift",
+      "Occulta/Features/Vault/ShardCustody+Manager.swift",
+      "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+      "Occulta/Features/Vault/Vault+Manager+PendingRestore.swift",
+      "Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift",
+      "Occulta/Features/Vault/Vault+Manager.swift",
+      "Occulta/Features/Vault/Vault+Model.swift",
+      "Occulta/Services/Contact+Manager.swift",
+      "Occulta/Services/ContactManager+Classification.swift",
+      "Occulta/UI/Tabs/Settings/Settings.swift",
+      "Occulta/UI/Tabs/Vault/Vault+Backup+Export.swift",
+      "Occulta/UI/Tabs/Vault/Vault+Restore.swift",
+      "Occulta/UI/Tabs/Vault/Vault+ShardSetup.swift",
+      "Occulta/UI/Tabs/Vault/Vault+Tab.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s5",
+        "reviewed_paths": [
+          "Occulta/UI/Tabs/Vault/Vault+Tab.swift",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/Vault/Vault+Model.swift",
+          "Occulta/Features/Vault/Vault+Manager.swift"
+        ],
+        "invariant": "Entry list, counts, empty state, header and footer counts, detail, and delete at depth N use only rows stamped exactly N; nothing else on the Vault tab is computed from another depth's rows.",
+        "method": "source",
+        "result": "The only query that feeds the list is @Query of every VaultEntry (Vault+Tab.swift:81), narrowed by Manager.Security.visibleVaultEntries (Manager+Security.swift:1053-1060): not orphaned and VaultEntry.isVisible(atDepth:whenUnclassified: depth == 0) = exact match (Vault+Model.swift:892-910), fail-closed to [] on key failure. The unfiltered id list is used only as a .task(id:) trigger (Vault+Tab.swift:169-175), so no output depends on it. Row count, section header count, footer text and the empty-state string all use rows.count of the filtered list (:347-384). Detail is reached only through NavigationLink(value:) from filtered rows (:354) and a @Query by id (Vault+EntryDetail.swift:19-31); delete uses ids taken from the filtered rows (:361) and VaultManager.deleteEntry(id:) (Vault+Manager.swift:546-551) which fetches by id only. New entry stamps security.currentDepth read at save time (Vault+NewEntrySheet.swift:198-203) via addEntry (Vault+Manager.swift:352-363), whose depth default of 0 has no other caller. A legacy nil stamp is visible at depth 0 only; an undecryptable stamp or token is hidden at every depth. An in-place depth change runs endSession (OccultaApp.swift:337, 578) which locks the vault and clears backupStaleness, backupErosion and the post-restore flag (Vault+Manager.swift:330-336), and .id(sessionID) rebuilds the tree, so no depth-scoped state survives a depth change. No depth-N observable found.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s5",
+        "reviewed_paths": [
+          "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+          "Occulta/UI/Tabs/Vault/Vault+Backup+Export.swift",
+          "Occulta/UI/Tabs/Vault/Vault+Tab.swift"
+        ],
+        "invariant": "Backup export, staleness, erosion and setup state at depth N contain and depend on depth N's rows only.",
+        "method": "source",
+        "result": "exportBackup (Vault+Manager+Backup.swift:145-209) seals under the depth-N backup key row (fetchDecoded -> liveRow(forDepth:) exact match, :1020-1030), gates on that row's own confirmed pieces (:150-166), and selects entries by entriesVisible(atDepth:) (:229-236, exact depth through fetchAllEntries, orphans excluded). The staleness count compares the current depth's visible entry count with the same depth's export slot (:867-899). Erosion and setup state read only shardMetadata(currentDepth:) (Vault+Manager+Shards.swift:33-43; :1101-1117). Export file contents are one depth's entries only. The one lifecycle gap in this path is the export-metadata slot surviving a freed depth (candidate vault.export-meta-slot-survives-freed-depth).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s5",
+        "reviewed_paths": [
+          "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+          "Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift",
+          "Occulta/UI/Tabs/Vault/Vault+Restore.swift",
+          "Occulta/App/OccultaApp.swift"
+        ],
+        "invariant": "Restore lands entries and a backup key only at the depth the file is opened at, and every failure looks the same at every depth.",
+        "method": "source",
+        "result": "restoreBackup (Vault+Manager+Backup.swift:404-452) takes the depth once, returns false for 'depth already has a key', too few visible-sender pieces, no match and undecodable file alike; the UI shows one string (Vault+Restore.swift:36-37, 90-96; OccultaApp.swift:807-821). Entries are stamped with the opening depth (insertEntries :290-336) and the key is staged in the depth's own row (:1695-1715) in one save with rollback. Banked pieces are depth-blind but counted only from senders visible at the opening depth (:416-420): this is the accepted Bug 99 residual (known item 11), not re-reported. insertEntries skips an id that fetchEntry(by:) finds at any depth or as an orphan (:294); that only makes a restore quietly import fewer rows and is not a disclosure.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s5",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/Vault/BackupEncryptionKey+Model.swift",
+          "Occulta/Features/Vault/Vault+Model.swift"
+        ],
+        "invariant": "An operator at depth N cannot cause a row of a shallower depth to be orphaned or deleted by activating and deactivating layers; the 50-row cap deletes only already-orphaned rows.",
+        "method": "source",
+        "result": "deactivateSecureMode computes clearFrom = max(1, depth) (Manager+Security.swift:479) and both sweeps select value >= clearFrom (:566-573, :621-627), so only the operator's own depth and deeper are orphaned; depth 0 and shallower depths are never touched. forceDeactivateForRecovery needs the master PIN (:514-532). A nil stamp (:568-571) or a stamp that fails to decrypt or decode is skipped, never orphaned. Filler and already-orphaned BEK rows are skipped (:620). The cap loop (:581-592) deletes only entries already in alreadyOrphaned, and the newly orphaned row is added after the delete. Residual: the fail-safe isOrphaned (Vault+Model.swift:825-829) treats a nil or undecryptable token as orphaned, so such a live row would be counted and could be evicted (hardening note). Orphaning is skipped silently if the ambient key cannot be derived (:557, :616), which fails open for depth reuse (hardening note).",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s5",
+        "reviewed_paths": [
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+          "Occulta/UI/Tabs/Settings/Settings.swift"
+        ],
+        "invariant": "A depth number is never handed to a new layer while the previous layer's vault entries and backup key are still live under it.",
+        "method": "source",
+        "result": "Orphaning runs only on the two deactivation paths. activateSecureMode (Manager+Security.swift:360-432) writes duress[depth] and normal[depth+1] with no check that those slots are free and no orphaning, and the Settings gate shows the activate flow whenever state == .duress (Settings.swift:232-243), which includes a depth shallower than coercerBaseDepth. See candidate securemode.activate-overwrites-live-layer-without-orphaning.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s5",
+        "reviewed_paths": [
+          "Occulta/UI/Tabs/Vault/Vault+ShardSetup.swift",
+          "Occulta/Features/Vault/ShardCustody+Manager.swift",
+          "Occulta/UI/Tabs/Vault/Vault+Tab.swift",
+          "Occulta/Services/ContactManager+Classification.swift",
+          "Occulta/Services/Contact+Manager.swift"
+        ],
+        "invariant": "Trustee setup, recovery health, and 'Held for Others' custody at depth N show only contacts visible at N and only depth N's backup-key record.",
+        "method": "source",
+        "result": "The trustee list is mlkemEligibleContacts (visible at current depth, ContactManager+Classification.swift:76-82); status chips, threshold, counts and the CTA derive from fetchDistributionMeta = backupShardMetadata(currentDepth:) (Vault+ShardSetup.swift:572-577); a hidden trustee cannot be selected. distributeBackup and reconcileBackupPieces read and write the current depth's row only and match queued and watch rows by that row's piece ids (ShardCustody+Manager.swift:482-600). Held-for-others rows are filtered by owner visibility, unknown owners show only at depth 0, and no piece count is shown (Vault+Tab.swift:465-481; ShardCustody+Manager.swift:411-421). Inbound ops from a hidden sender are dropped by filterShardOperations (OccultaApp.swift:995-1010). Residuals that are known: Bug 99 residual, Bug 162, item 17. Contact deletion purges custody for the deleted contact at any depth (ShardCustody+Manager.swift:646-696) and reconcile then marks that trustee lost at depth 0; that is a shared contact deleted by design, noted as hardening.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-s5",
+        "reviewed_paths": [
+          "Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift",
+          "Occulta/Features/Vault/Vault+Manager+PendingRestore.swift",
+          "Occulta/Features/Vault/Vault+Manager.swift"
+        ],
+        "invariant": "Pending-restore and return-buffer rows carry no depth and cannot complete a restore for a depth other than the one the file is opened at; vault lock and timers are independent of depth.",
+        "method": "source",
+        "result": "PendingShamirSecretRestore rows are keyed by distributionID only, sealed under the local key (attributeID, token) and the restore key (shards), with no depth field (ReturnBuffer.swift:92-123, 185-199). A row is consumed (orphaned) only on a successful restore at the opening depth (Backup.swift:444). bekRestoreDistributionIDs lists live rows whose id is not a VaultEntry id (ReturnBuffer.swift:297-311). The inactivity timer is a fixed 5 minutes at every depth and lock() runs on background, resign-active, protected-data loss and in-place depth change (Vault+Manager.swift:199-206, 330-336; OccultaApp.swift:578).",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v2",
+        "reviewed_paths": [
+          "Docs/Features/Secure Mode/bugs.md",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+          "Occulta/UI/Tabs/Vault/Vault+Tab.swift"
+        ],
+        "invariant": "Independent verification of candidate vault.export-meta-slot-survives-freed-depth",
+        "method": "source",
+        "result": "needs_validation: Source supports the trace: the only writer and only deleter of the slot file are as claimed, orphan sweeps skip it, and the staleness read has no key binding. Impact is low (a signal about an already-freed layer); trace line 409 corrected to 410.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-v2",
+        "reviewed_paths": [
+          "Docs/Features/Secure Mode/bugs.md",
+          "Occulta/Features/SecureMode/Manager+Security.swift",
+          "Occulta/Features/SecureMode/scenarios.md",
+          "Occulta/UI/Tabs/Settings/Settings.swift"
+        ],
+        "invariant": "Independent verification of candidate securemode.activate-overwrites-live-layer-without-orphaning",
+        "method": "source",
+        "result": "needs_validation: Source confirms the unconditional writes with no occupancy check or orphaning, and that the Settings gate keys on state == .duress, which is computed against coercerBaseDepth; a concrete reachable stack exists. Not refuted; impact direction is undecided in the docs, so low to medium and needs_validation.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "vault.export-meta-slot-survives-freed-depth",
+      "securemode.activate-overwrites-live-layer-without-orphaning"
+    ],
+    "unresolved": [],
+    "priority": 2,
+    "priority_rationale": "coercer or examiner boundary",
+    "hardening": [
+      "orphanVaultEntries and orphanBackupKeys return silently when Manager.Ambient.keyManager.createHybridLocalEncryptionKey() fails (Manager+Security.swift:557, 616) after clearVerifiers has already run in the same call; the deactivation then completes with nothing orphaned, so a later layer at that depth inherits the old entries and key. Make deactivation throw before clearing verifiers if the key is unavailable.",
+      "VaultEntry.isOrphaned (Vault+Model.swift:825-829) treats a nil or undecryptable deletionToken as orphaned, and the cap loop in orphanVaultEntries (Manager+Security.swift:581-592) hard-deletes the oldest 'orphaned' rows once 50 exist. A live row whose token cannot be read under the current key (for example mid-reseal) would be counted and could be evicted. Consider counting only rows whose token decrypts to the orphaned sentinel.",
+      "Operator at the coercerBaseDepth who taps 'Deactivate Protection' lands one depth shallower (Manager+Security.swift:488); at depth 1 that is depth 0 (known question Q1). The vault side of it: sessionID changes, so the vault locks and needs Face ID or the device passcode at depth 0 (OccultaApp.swift:578), which a coercer can compel; no vault-specific gate sits between the landing and the real entries.",
+      "A hidden sender's custody manifest is still processed at a duress depth while its shard operations are dropped by filterShardOperations (OccultaApp.swift:1033-1045, 995-1010; ShardCustody+Manager.swift:61-92, 291-330). The dropped operations (a hand-back, a distribute) are consumed with the message and not retried, so the owner can lose a recovery piece if a hidden trustee's message is opened at a depth where it is hidden. Related to known items Bug 103/104 and item 17.",
+      "Contact deletion at any depth runs purgeCustody for that contact unconditionally (ShardCustody+Manager.swift:646-696) and the owner's reconcile then marks that trustee lost at depth 0 (OccultaApp.swift:553-559: liveContacts is every non-deleted contact). A contact visible at a duress depth and also a real trustee can be deleted there by whoever holds the unlocked phone. Same family as known item 17; worth stating next to Bug 144.",
+      "restoreBackup's early 'depth already has a key' return (Vault+Manager+Backup.swift:408) skips the shard loop and the per-distribution key verification, so a coercer comparing the time to the failure message at depth 0 and at a depth with no key can tell the two apart; the message text is identical at every depth.",
+      "VaultEntry.createdAt is a plaintext column on every depth's rows and orders the 50-row eviction (Manager+Security.swift:577-580); it is already recorded (forensic-trace-avoidance.md:196). The eviction order uses a value a restore can set from the backup file (insertEntries :301), so a backup holder chooses which orphaned rows are evicted first; low value, noted for completeness."
+    ],
+    "verifier_decisions": {
+      "vault.export-meta-slot-survives-freed-depth": "needs_validation",
+      "securemode.activate-overwrites-live-layer-without-orphaning": "needs_validation"
+    }
+  },
+  {
+    "coverage_id": "scope%23all-in-scope-paths::scope%23all-trust-boundaries::profile%2Fquick%2Fall-in-scope-subsystems::ATTACK-CLASSES.md%23Wildcard",
+    "canonical_refs": {
+      "surface": "scope#all-in-scope-paths",
+      "boundary": "scope#all-trust-boundaries",
+      "subsystem": "profile/quick/all-in-scope-subsystems",
+      "attack_class": "ATTACK-CLASSES.md#Wildcard"
+    },
+    "surface": "All secure-mode scope paths",
+    "boundary": "All depth and lock boundaries",
+    "subsystem": "Secure Mode (quick profile, subsystem audit)",
+    "attack_class": "Wildcard",
+    "starting_paths": [
+      "Occulta/Features/SecureMode/Manager+Security.swift",
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Features/SecureMode/plan.md",
+      "Occulta/Features/SecureMode/scenarios.md",
+      "Docs/Features/Secure Mode/USER_GUIDE.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Wildcard",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "No HTTP server or client, cookies, OAuth or web auth; the app is offline and serverless."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No webview, DOM or browser storage; the UI is SwiftUI."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "No cloud, IAM or deployment infrastructure; SwiftData uses cloudKitDatabase .none."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No model, prompt or agent integration."
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-s6",
+    "reviewed_paths": [
+      "Occulta/App/OccultaApp.swift",
+      "Occulta/Extensions/FileManager.swift",
+      "Occulta/Extensions/UIPasteboard.swift",
+      "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+      "OccultaPreview/Info.plist",
+      "OccultaPreview/PreviewProvider.swift",
+      "OccultaPreview/PreviewViewController.swift"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-s6",
+        "reviewed_paths": [
+          "OccultaPreview/PreviewProvider.swift",
+          "OccultaPreview/PreviewViewController.swift",
+          "OccultaPreview/Info.plist",
+          "Occulta/Extensions/UIPasteboard.swift",
+          "Occulta/Extensions/FileManager.swift",
+          "Occulta/UI/Tabs/Contacts/v2/ComposeViewModel.swift",
+          "Occulta/App/OccultaApp.swift"
+        ],
+        "invariant": "Outside-the-store traces (Quick Look extension, pasteboard, keyboard learning, tmp files, print/debugPrint, backup exclusion) reveal no hidden content or Secure Mode use.",
+        "method": "source",
+        "result": "The Quick Look extension is static text (no decryption). Every text input in the app that was counted has autocorrectionDisabled (counts match per file). The pasteboard uses copySensitive (known O2). The store, WAL and SHM are excluded from backup and file-protected. debugPrint calls are not stripped in Release but go to stdout only (hardening). tmp holds plaintext imports for compose until sealed and is cleared at launch (narrow crash window, not depth-specific). No new finding.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "priority": 3,
+    "priority_rationale": "lower-traffic surface",
+    "hardening": [
+      "lockoutCountEncrypted (JSON Int) and lockoutAnchorUptimeEncrypted (JSON Double) have variable sealed length, so a count of 10 or more and the rough magnitude of the uptime anchor are readable without a key; encode both fixed-width like DepthCodec.",
+      "Manager.Security.walCheckpoint and OccultaApp.walCheckpoint discard the sqlite3_exec result and set no busy timeout; a BUSY result silently skips the flush that purge, wipe and sweep comments depend on. Check the result and retry.",
+      "The vault Enclave key and r_B are created at the first vault unlock (Key+Manager.swift:899-918), so their keychain creation dates mark first vault use, although bootstrapVaultRecord creates the tier B record at launch for exactly that reason.",
+      "The depth-deeper path runs checkpointStore twice per unlock (applyVerifyState purge, then the OccultaApp unlock handler) against once for a real unlock; harmless alone but a keyless timing signal in WAL mtimes.",
+      "debugPrint/print calls (OccultaApp.swift:1087 and :1147, Contact+Manager.swift:388, PrekeySecretsManager.swift:158 and :278, Features.swift:16) are not stripped in Release; stdout only, no persistent log found.",
+      "ComposeViewModel.handleFile copies the user's file into tmp under its original filename (plaintext) until sealed; a kill in that window leaves it until the next launch's tmp sweep.",
+      "Orphaned VaultEntry/BEK rows and the 32-row BEK baseline: a BEK row count above 32 needs 32 orphaning cycles, so the keyless count signal is theoretical."
+    ]
+  }
+]

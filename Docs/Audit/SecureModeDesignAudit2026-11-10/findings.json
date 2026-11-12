@@ -1,0 +1,1055 @@
+[
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "classification-rewrites-deeper-ceiling-to-int-max",
+    "title": "Classification at depth N rewrites a contact hidden at a deeper depth (stored ceiling K, N<K<Int.max) to visible-everywhere",
+    "description": "isSensitive is an equality test (value == currentDepth), so a contact whose stored ceiling K is deeper than the operator's depth N reads as not private, yet isVisible (value >= depth) still counts it as visible at N. ContactClassification.save builds safeIDs as every classifiable contact minus the sensitive set, and saveClassification writes Int.max for each contact in safeIDs, overwriting K. A contact the owner hid from depth K+1 becomes visible at every deeper depth. HideDestinationV2 does the same if its toggle is switched on and then off (setVisibility writes depth, then Int.max). Reachable from the activation flow at any depth where Learn more is shown and the classification step is not frozen, and from the per-contact Private toggle at any depth N<K. No document or test covers K>N: the existing tests cover only K<N contacts being left alone, and the docs describe the stamps only as 0 or Int.max.",
+    "claimed_root_cause": "Per-contact visibility is one scalar, but the read (isSensitive) and the writers (saveClassification, setVisibility) treat it as a boolean relative to currentDepth: 'not equal to N' is collapsed to 'safe' and re-stamped Int.max, discarding a deeper ceiling K.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/SecureMode/ContactClassification.swift",
+        "line": 191,
+        "scope": "ContactClassification.save",
+        "description": "safeIDs = classifiableContacts (isVisible, so K>=N included) minus sensitiveIDs (seeded from isSensitive, K==N only); a K>N contact lands in safeIDs"
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/ContactManager+Classification.swift",
+        "line": 21,
+        "scope": "ContactManager.isSensitive",
+        "description": "returns value == currentDepth (line 30), false for K != N"
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Services/ContactManager+Classification.swift",
+        "line": 100,
+        "scope": "ContactManager.saveClassification",
+        "description": "depthValue = safeIDs.contains ? Int.max : depth, written to visibleThroughDepth, overwriting K; the guard at line 98 passes because K>=N is visible"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Services/ContactManager+Classification.swift",
+        "line": 131,
+        "description": "setVisibility encodes isSensitive ? depth : Int.max, so the toggle path also overwrites K"
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+        "line": 315,
+        "description": "HideDestinationV2 toggle calls setVisibility(for:isSensitive:) with no check of the stored ceiling"
+      },
+      {
+        "file": "Occulta/Data Models/Contact+Model.swift",
+        "line": 235,
+        "description": "isVisible uses value >= depth, so Int.max is visible at every depth"
+      },
+      {
+        "file": "OccultaTests/SecureMode/PINManagerTests.swift",
+        "line": 591,
+        "description": "existing test covers only already-hidden K<N contacts being left untouched, not K>N"
+      }
+    ],
+    "blockers": [
+      "Source-only run: nothing executed, so the K>N overwrite is not observed on a fixture.",
+      "Which operator realistically sits at depth N<K with a classification control reachable (owner at depth 0 with the gate lowered, a coercer at an intermediate depth, or the Private toggle) is a product decision; the code path itself is unguarded."
+    ],
+    "validation_plan": {
+      "local": "In OccultaTests/SecureMode with @Test(.ambientTestKeyManager): insert contact c; at depth 0 saveClassification(safeIDs:[c]); applyVerifyState(.normal(depth:1)); saveClassification(safeIDs:[]) so c has ceiling 1; applyVerifyState(.normal(depth:0)); saveClassification(safeIDs:[c]) (what ContactClassification.save does); assert c.isVisible(atDepth:2) is still false. Second test: same setup, then at depth 0 setVisibility(for:c,isSensitive:true) then setVisibility(for:c,isSensitive:false) and assert isVisible(atDepth:2) is still false. Both are expected to fail today. Fix: rewrite only contacts whose stored value is N or Int.max; leave K>N untouched, and make the Private toggle read-only or disabled for them."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "erase-all-data-config-row-not-reseeded",
+    "title": "Erase All Data restores the BEK and Vault rows to the fresh-install shape but deletes the AppLayerConfig row and leaves Group rows",
+    "description": "VaultManager.deleteAllData deletes every AppLayerConfig row (:453-463), then calls ensureBackupKeyFillerRows and ensureVaultExists with a comment that the wipe returns to a fresh install's shape without waiting for a relaunch. The AppLayerConfig row is not re-created: Manager.Security.init (:192-206) is the only seeding point and states the row must always exist because its absence is a forensic tell. Manager.App.eraseAllData also deletes no Group rows (deleteAllContacts removes Contact.Profile only), so they stay until a depth-0 unlock sweeps them. Between the wipe and the next launch an image shows no config row and old Group rows. Mitigations seen in source: the wipe is a deliberate action, and the wipe already deletes the Enclave and tier keys, which independently shows a wipe happened, so the added signal is small and an owner decision. Settings.swift:176 reaches it behind one confirmation dialog.",
+    "claimed_root_cause": "The wipe's restore-to-fresh list omits the AppLayerConfig row and does not remove Group rows, contradicting the invariant in Manager.Security.init and deleteAllData's own comment.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 176,
+        "scope": "Delete Everything button",
+        "description": "Calls eraseAllData() after a confirmation dialog."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/Manager+App.swift",
+        "line": 24,
+        "scope": "Manager.App.eraseAllData",
+        "description": "Deletes prekeys, contacts, drafts, vault data, staging and keys; no Group deletion."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/Vault/Vault+Manager.swift",
+        "line": 453,
+        "scope": "VaultManager.deleteAllData",
+        "description": "Deletes AppLayerConfig, then re-creates only BEK filler rows and the Vault row."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 192,
+        "description": "States the config row must always be present; seeded only here (AppLayerConfig.seeded() has no other app caller)."
+      },
+      {
+        "file": "Occulta/Features/Vault/Vault+Manager.swift",
+        "line": 458,
+        "description": "Comment names the BEK filler rows and the Vault row as restored 'without waiting for a relaunch'; the config row is absent from the list."
+      },
+      {
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 586,
+        "description": "deleteAllContacts deletes Contact.Profile only."
+      }
+    ],
+    "blockers": [
+      "Whether an image taken between the wipe and the next launch matters is an owner decision, since a wipe also deletes the keys and is visible anyway; no test may run here to confirm the post-wipe row set."
+    ],
+    "validation_plan": {
+      "local": "Add a test that builds a store with an AppLayerConfig row, Group rows and contacts, calls Manager.App.eraseAllData with injected seams, and asserts the post-wipe state equals a fresh install: one AppLayerConfig row, no Group rows, 32 BEK rows and one Vault row. Expected to fail on the first two."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "group-delete-rename-shared-row-from-duress-depth",
+    "title": "A depth-N operator can rename or delete a Group row shared across depths, destroying the real-depth group and its member arrays",
+    "description": "Groups are listed unfiltered (ContactsV2.sortedGroups over every Group row, search-filtered only) and GroupDetailV3 resolves a group by id with no depth check. Group.FormV3 edit writes the shared encryptedName through writeName, and the Delete group button calls modelContext.delete(group), removing the whole row including realMemberSlots and every other depth's member array. An operator at depth N can therefore rename or delete a group whose members exist only at depth 0. Source reading of the decision: Group Messaging SPEC 'Secure Mode - Depth Routing', Bug 177's note and register section I decide only that groups are listed at every depth with a visible name, and that a thin duress group layer is an accepted richness gap (F-14). None of them mentions write or delete actions; 'Deletion: hard delete only' (SPEC:192) is about the storage mechanism, not who may delete. Bug 178's open residual covers drafts only. So this is a case the decision does not cover. Severity is bounded because a coercer can also use Erase All Data (limitation 9, partial) and sees only the name, not the members.",
+    "claimed_root_cause": "Group is one row for all depths with per-depth member arrays but a single shared name and lifecycle; edit and delete are not scoped to the depth that holds the group's members, and the list/detail do not require the group to have any member at the current depth.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift",
+        "line": 66,
+        "scope": "ContactsV2.sortedGroups",
+        "description": "every Group row listed, only search-filtered (ContactListFilter.sortedGroups)"
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v3/GroupDetailV3.swift",
+        "line": 35,
+        "scope": "GroupDetailV3.group",
+        "description": "resolved by id only; no member-at-depth requirement"
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+        "line": 352,
+        "scope": "Group.FormV3.saveGroup",
+        "description": "group.writeName overwrites the shared encryptedName at any depth"
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+        "line": 380,
+        "scope": "Group.FormV3.deleteGroup",
+        "description": "modelContext.delete(group) removes the shared row, including realMemberSlots, at any depth"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Data Models/Group+Model.swift",
+        "line": 24,
+        "description": "single encryptedName on the row; member arrays are per depth"
+      },
+      {
+        "file": "Docs/Features/Group Messaging/SPEC.md",
+        "line": 192,
+        "description": "'Deletion: hard delete only', no mention of depth scoping"
+      },
+      {
+        "file": "Docs/Features/Group Messaging/SPEC.md",
+        "line": 207,
+        "description": "'Groups are not filtered - depth selects which member array is active. All group names are visible at all depths': decides listing, not rename or delete"
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 14445,
+        "description": "Bug 177 note: groups are listed at every depth, only membership differs; says nothing about edit or delete"
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v3/Group+FormV3.swift",
+        "line": 143,
+        "description": "Delete group button shown whenever isEditing, with no depth condition"
+      }
+    ],
+    "blockers": [
+      "Source-only run: the delete and rename were not observed on a fixture.",
+      "Whether the owner accepts shared-row delete and rename from a duress depth is a design decision not yet recorded in the specs, bugs.md or the register."
+    ],
+    "validation_plan": {
+      "local": "Test with @Test(.ambientTestKeyManager) (group name encryption may need the real key manager; otherwise gate with secureEnclaveAvailable): at depth 0 create a Group with a real member via ContactManager.createGroup and addGroupMember(atDepth:0); applyVerifyState(.normal(depth:1)); call ContactManager.deleteGroup(id:) (same operation as Group.FormV3.deleteGroup) and, in a second test, group.writeName at depth 1; return to depth 0 and assert the group still exists with its name and members. Expected to fail today. Fix options: refuse delete and rename at depth N>0 for a group with no member at that depth, or make delete at depth N only clear that depth's member slots.",
+      "deployment": "Owner decision: record in Group Messaging SPEC and bugs.md whether a duress-depth operator may rename or delete a group they can see, and whether the UI should hide those actions."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "origin-depth-floor-bypasses-classification-ui-lies",
+    "title": "Contacts created at depth N>0 ignore visibleThroughDepth, so the Private toggle and classification list show them hidden while they stay visible at deeper depths",
+    "description": "Creation at depth N stamps visibleThroughDepth=N and originDepth=N. isVisible short-circuits on originDepth>0 with floor semantics and never reads visibleThroughDepth, while isSensitive reads only visibleThroughDepth. At depth N such a contact therefore reads as Private: the HideDestinationV2 toggle starts on, the classification screen lists it under Sensitive, and Mark Private copy says it is hidden entirely at any layer below. Switching the toggle or moving it between sections changes nothing about its visibility at N+1. The floor semantics themselves are documented as deliberate (Contact+Model originDepth doc comment: a contact born under coercion has no protective purpose in being hidden; a vault-entry bug note in bugs.md calls its floor semantics a deliberate policy). What the documents do not cover is the control that claims to hide it, and the owner-as-operator case of Bugs 58/61 where depth N is the owner's home. The affordance misreports protection, so this is a UI-honesty and design question rather than a proven leak; it is reachable only by someone who created the contact at depth N.",
+    "claimed_root_cause": "Two disagreeing definitions of 'hidden': the writers and UI (isSensitive, setVisibility, saveClassification) use visibleThroughDepth, the filter (isVisible) uses originDepth first. The comment justifies the bypass by assuming the creator is the coercer.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/Services/Contact+Manager.swift",
+        "line": 226,
+        "scope": "ContactManager.save(contact:currentDepth:) create branch",
+        "description": "stamps visibleThroughDepth = currentDepth (line 226-227) and originDepth = currentDepth (line 234)"
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Services/ContactManager+Classification.swift",
+        "line": 21,
+        "scope": "ContactManager.isSensitive",
+        "description": "true at depth N for such a contact (visibleThroughDepth == currentDepth)"
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Data Models/Contact+Model.swift",
+        "line": 240,
+        "scope": "Contact.Profile.isVisible",
+        "description": "originDepth>0 returns depth >= origin before visibleThroughDepth is consulted, so classification has no effect at N+1"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Data Models/Contact+Model.swift",
+        "line": 142,
+        "description": "originDepth doc comment: sensitivity classification is bypassed entirely for duress-origin contacts"
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+        "line": 287,
+        "description": "Mark Private copy: 'Hidden entirely at any duress layer below this one', shown for every contact"
+      },
+      {
+        "file": "Occulta/UI/Tabs/Contacts/v2/TrustCheckV2.swift",
+        "line": 315,
+        "description": "toggle writes setVisibility with no check of originDepth"
+      }
+    ],
+    "blockers": [
+      "Source-only run: nothing executed.",
+      "Whether owners are meant to create real contacts at a coercerBaseDepth (Bugs 58/61) and expect to hide them from the next layer is a design decision; the bypass itself is documented as deliberate."
+    ],
+    "validation_plan": {
+      "local": "Test with @Test(.ambientTestKeyManager): applyVerifyState(.normal(depth:1)); save a contact via ContactManager.save(contact:currentDepth:1); assert isSensitive is true; setVisibility(for:isSensitive:true); applyVerifyState(.normal(depth:2)); assert isVisible(atDepth:2) is true (expected today), documenting the mismatch. Fix: hide or disable the Private control and the Sensitive row for origin>0 contacts, or make isSensitive agree with isVisible.",
+      "deployment": "Owner decision: confirm whether a contact created at a duress home depth is meant to be un-hideable from deeper depths, and if so remove the control that implies otherwise."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "secure-mode:appscreen-grace-period-uses-wall-clock",
+    "title": "PIN gate's 5-minute grace period is measured on the wall clock, so setting the clock back skips the PIN",
+    "description": "AppScreen stores Date() on backgrounding and decides on return with now.timeIntervalSince(entered) > 300 in lockIfGracePeriodExpired and again in evaluate. Setting Date & Time back while Occulta is suspended in memory gives an elapsed time that is small or negative, so neither path sets .pinRequired and the app returns unlocked at the depth held before backgrounding. Nothing else sets .pinRequired on a warm return, and no clock-change notification is handled. The lockout counter uses monotonic uptime for this reason; the gate does not. The parent's Simulator test with now = entered - 3600 leaves phase == .unlocked.",
+    "claimed_root_cause": "backgroundEntryDate is a Date and the expiry test is a difference of wall-clock Dates that the device user can set backward.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 96,
+        "scope": "AppScreen.sceneDidEnterBackground",
+        "description": "backgroundEntryDate = Date() (wall clock)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 162,
+        "scope": "AppScreen.lockIfGracePeriodExpired",
+        "description": "now.timeIntervalSince(entered) > gracePeriod decides .pinRequired on sceneWillEnterForeground; a backward-set clock gives a value <= 300."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 183,
+        "scope": "AppScreen.evaluate",
+        "description": "Same Date() comparison; within grace sets phase = .unlocked and removes the cover."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 397,
+        "scope": "phaseContent .unlocked",
+        "description": "Unlocked tree renders for the depth held before backgrounding, with no PIN."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 162,
+        "description": "Date-based comparison in lockIfGracePeriodExpired."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 650,
+        "description": "verify() uses systemUptime so that Date & Time changes have no effect; the grace period does not."
+      },
+      {
+        "file": "OccultaTests/SecureMode/AppScreenLockTests.swift",
+        "line": 81,
+        "description": "Tests only move now forward past the grace period; none rolls it back."
+      }
+    ],
+    "blockers": [
+      "No runtime execution allowed: a backward clock change against a suspended process on a device was not observed.",
+      "Whether iOS keeps the process alive across the change and delivers the lifecycle callbacks normally was not observed."
+    ],
+    "validation_plan": {
+      "local": "Add a test to AppScreenLockTests that sets backgroundEntryDate = Date() and calls lockIfGracePeriodExpired(now: Date().addingTimeInterval(-3600)); it must end in .pinRequired once the timer uses a monotonic source.",
+      "deployment": "Owner-observed on a test device with a throwaway PIN: unlock, background Occulta, turn off Set Automatically, set the date back one hour, wait more than five minutes of real time, return from the app switcher; check whether the PIN is requested."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "secure-mode:deactivate-at-coercer-base-depth-pops-to-depth0",
+    "title": "A coercer at depth 1 can reach depth 0 without the real PIN: activate a layer, then Deactivate Protection (duplicate)",
+    "description": "Same path as securemode/deactivate-pop-lands-shallower-without-auth: Learn more at depth 1, activateSecureMode sets coercerBaseDepth = 1, Deactivate Protection confirms normal[1] and setState(0). The trace is accurate; the claim is not wrong.",
+    "claimed_root_cause": "coercerBaseDepth is writable by activateSecureMode from any depth > 0 and the Deactivate gate trusts it; deactivateSecureMode authenticates only with the current depth's PIN and lands one depth shallower, which at depth 1 is depth 0.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 237,
+        "scope": "SecuritySettings 'Learn more'",
+        "description": "Shown while state == .duress (gate at :232)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 430,
+        "scope": "activateSecureMode",
+        "description": "For depth > 0 writes coercerBaseDepth = depth."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 202,
+        "scope": "isAtSecureModeHomeDepth",
+        "description": "True at depth 1 after activation; Deactivate button shown."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 488,
+        "scope": "deactivateSecureMode",
+        "description": "newDepth = max(0, depth-1) = 0; setState(0) at :492 with no depth-0 PIN."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 478,
+        "description": "clearFrom = max(1, depth) removes the depth 0-to-1 layer's verifiers."
+      },
+      {
+        "file": "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+        "line": 25,
+        "description": "Only the current-depth PIN is requested."
+      }
+    ],
+    "reason": "Duplicate of securemode/deactivate-pop-lands-shallower-without-auth, which is the retained record (same root cause, same source path, same fix). Rejected as a duplicate, not because the claim is wrong."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode.activate-overwrites-live-layer-without-orphaning",
+    "title": "Activating a layer from a decoy depth overwrites an existing deeper layer's PIN without orphaning its vault entries or backup key",
+    "description": "activateSecureMode writes duress[depth] and the routing alias normal[depth+1] without testing whether a deeper layer already holds those slots, and runs no orphaning (that exists only on the two deactivation paths). The Settings gate shows 'Learn more' whenever state == .duress, and state is .duress at any depth other than coercerBaseDepth. Reachable stack: layers 0 to 3 built by activating at depths 0, 1 and 2 leaves coercerBaseDepth = 2; a cold-start PIN for depth 1 then gives depth 1 with state .duress and the activate flow. A new PIN replaces the one that reached depth 2; entering it lands in the old depth 2 with its exact-stamp vault entries and its backup key and trustee list still live, which is what Bug 110 and orphanBackupKeys' header say a reused depth number must not inherit. The old depth-2 PIN stops working. reEnablePIN's coercion branch (:976-977) has the same unconditional write. scenarios.md 5.3 states that adding a layer from depth N is intentional but does not consider an occupied depth N+1. Severity depends on which direction the product treats as hidden, which the docs leave open (see blockers); low to medium.",
+    "claimed_root_cause": "activateSecureMode's only guards are the current-depth PIN and a PIN collision check; it never tests that normal[depth+1] and duress[depth] are filler, and it does not call orphanVaultEntries or orphanBackupKeys for depth+1 and deeper before reusing the number.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 232,
+        "scope": "SecuritySettings.body",
+        "description": "The 'Learn more' section shows when state == .duress, which holds at any depth other than coercerBaseDepth even when deeper layers exist; it opens SecureModeSetupFlow."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 375,
+        "scope": "Manager.Security.activateSecureMode",
+        "description": "Guard is isRestricted || !isSecureModeActive (:375-377); it confirms the current depth's PIN (:381-386) and checks collisions (:392-400), nothing about depth+1 being occupied."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 409,
+        "scope": "Manager.Security.activateSecureMode",
+        "description": "writeDuressVerifier(at: depth) and writeNormalVerifier(at: depth + 1) run unconditionally, replacing whatever the deeper layer held."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 1053,
+        "scope": "Manager.Security.visibleVaultEntries",
+        "description": "After the new PIN routes to the reused depth, entries stamped with that number and not orphaned are listed, and the depth's old BackupEncryptionKey row is read by the backup and trustee screens."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 410,
+        "description": "config.writeNormalVerifier(routingAlias, at: depth + 1) with no occupancy test and no orphan call."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 480,
+        "description": "orphanVaultEntries and orphanBackupKeys are called only from deactivateSecureMode (:480-481) and forceDeactivateForRecovery (:527-528)."
+      },
+      {
+        "file": "Occulta/Features/Vault/Vault+Model.swift",
+        "line": 892,
+        "description": "VaultEntry visibility is exact-depth, so an entry stamped with the reused number appears at the new layer."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/scenarios.md",
+        "line": 183,
+        "description": "5.3 records that activating a deeper layer from depth N is intended; it does not address an occupied N+1."
+      }
+    ],
+    "blockers": [
+      "Not executed (no build or test run permitted), so the overwrite was not observed.",
+      "Reaching it needs a stack deeper than the operator's depth with coercerBaseDepth not equal to that depth; source shows the gate allows it (state is computed from coercerBaseDepth, Manager+Security.swift:68-71), not that an owner would build it.",
+      "The docs do not settle whether content at a deeper (higher-numbered) depth is meant to be hidden from a shallower decoy depth; severity depends on that."
+    ],
+    "validation_plan": {
+      "local": "Test in OccultaTests/SecureMode: configure a PIN, activate layers from depths 0, 1 and 2 (coercerBaseDepth 2, layers to 3), return to depth 1 via verify, add a VaultEntry and a BackupEncryptionKey at depth 2, call activateSecureMode(confirmingEntryPIN: pin1, duressPIN: newPIN), verify(newPIN) and assert it lands at depth 2 and that visibleVaultEntries is empty and backupSetupState is .notSetup. Expected today: the old entry is visible and the old key is live. Fix to test: refuse activation when normal[depth+1] is occupied, or run both orphan sweeps for depth+1 and deeper first."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode/app-switcher-cover-only-when-active",
+    "title": "The app-switcher cover is installed only when a duress verifier exists, so a blank card with a spinner shows Secure Mode is active",
+    "description": "AppScreen installs a blank cover with a spinner on resign-active and on entering the foreground only when secureModeActive, which is security.isSecureModeActive (sealedDuressVerifier != nil). An install with no Secure Mode, even one with a PIN, shows live content in the app-switcher card; an install with Secure Mode shows the cover at every depth, including a duress depth meant to look like an ordinary install. A coercer holding the unlocked phone who knows what a plain install's card looks like can tell. The doc records the condition as design (U5d); it does not treat it as a depth observable, and the open U5d item concerns the animation frame, not this.",
+    "claimed_root_cause": "The cover is conditional on the very state it is meant to help hide.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 82,
+        "scope": "AppScreen.sceneWillResignActive",
+        "description": "Called on every resign-active."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 84,
+        "scope": "AppScreen.sceneWillResignActive",
+        "description": "guard self.secureModeActive else { return } precedes installCover; the same guard is at :76 on foreground."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 92,
+        "scope": "AppScreen.secureModeActive",
+        "description": "Returns security.isSecureModeActive once security is wired (true before wiring)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 86,
+        "scope": "Manager.Security.isSecureModeActive",
+        "description": "Reads sealedDuressVerifier != nil, so no cover is installed and live content is snapshotted when Secure Mode is not active."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/forensic-trace-avoidance.md",
+        "line": 457,
+        "description": "U5d: 'Condition: only installed when security.isSecureModeActive. No-op for users without Secure Mode configured.'"
+      },
+      {
+        "file": "Occulta/App/AppScreen.swift",
+        "line": 197,
+        "description": "installCover draws a systemBackground view with a spinner; nothing else gates it."
+      }
+    ],
+    "blockers": [
+      "Not observed at runtime: the card shown in the app switcher for each install state was not compared.",
+      "Whether a coercer can realistically be expected to know the plain-install card is not a source fact."
+    ],
+    "validation_plan": {
+      "local": "Extract the install condition into a pure function and test it returns the same result for every Manager.Security state (no PIN, PIN only, Secure Mode at each depth, lowered lock); today it differs by sealedDuressVerifier.",
+      "deployment": "Owner-observed on two test installs with throwaway PINs: one PIN only, one with Secure Mode unlocked at a duress depth; background each and compare the app-switcher card."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode/deactivate-pop-lands-shallower-without-auth",
+    "title": "A depth-N operator holding only the depth-N PIN can pop the session to depth N-1, and from depth 1 to the real depth 0, without that depth's PIN",
+    "description": "deactivateSecureMode authenticates against the verifier of the depth the operator is already at, deletes that depth's verifiers, and then setState()s the in-memory session to depth-1 with no authentication at the landing depth. The Settings gate for 'Deactivate Protection' is the persisted, single-valued coercerBaseDepth, which any operator at a duress depth can set to their own depth by finishing the 'Learn more' (activateSecureMode) flow, offered at every depth where state == .duress. A coercer holding only the depth-1 duress PIN can run Learn more, Activate with a throwaway new PIN, see 'Deactivate Protection' at depth 1, confirm with the depth-1 PIN and land unlocked at depth 0 showing every contact, with sealedDuressVerifier nil and the owner's duress layers' verifiers cleared and vault entries and backup keys orphaned. At depth N>=2 the same sequence lands at depth N-1. Source path read end to end with no control found on it (the Settings and flow views add no extra authentication; PINEntry .verifyCurrentLayer only calls checkCurrentLayerPIN). The parent's Simulator test of the manager-level sequence agrees; only the SwiftUI re-render making the button appear in the same session is unobserved. Not a documented limitation: known-limitations Q1 says it was never examined as a coercer action.",
+    "claimed_root_cause": "Authorization to deactivate is a persisted flag (coercerBaseDepth) that any operator can set to their own depth via activateSecureMode, not a property of who authenticated; deactivateSecureMode lands the session at depth-1 (setState) without verifying a PIN for that depth, and for depth <= 1 lands at the real depth 0.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 232,
+        "scope": "SecuritySettings.body",
+        "description": "'Learn more' is shown while state == .duress (any duress depth that is not the coercer base depth); the flow opens at line 237."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/SecureMode/SecureModeSetupFlow.swift",
+        "line": 303,
+        "scope": "SecureModeSetupFlow activate button",
+        "description": "Calls activateSecureMode(confirmingEntryPIN: current-depth PIN, duressPIN: any new PIN)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 430,
+        "scope": "Manager.Security.activateSecureMode",
+        "description": "Valid because isRestricted (:375); confirms normal[depth] (:385); for depth > 0 writes coercerBaseDepth = depth, so state (:68-72) becomes .normal at the current depth."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 202,
+        "scope": "SecuritySettings.isAtSecureModeHomeDepth",
+        "description": "isSecureModeActive && state == .normal && (depth == 0 || depth == coercerBaseDepth) && pinEnabled is now true; 'Deactivate Protection' shows (:246-251)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/SecureMode/SecureModeDeactivateFlow.swift",
+        "line": 25,
+        "scope": "SecureModeDeactivateFlow",
+        "description": "PINEntry(.verifyCurrentLayer) with the current-depth PIN calls deactivateSecureMode(confirmingEntryPIN:)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 478,
+        "scope": "Manager.Security.deactivateSecureMode",
+        "description": "Checks normal[depth] only (:463-466); clearFrom = max(1, depth); clears verifiers, orphans vault entries and backup keys (:479-481)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 492,
+        "scope": "Manager.Security.deactivateSecureMode -> setState",
+        "description": "newDepth = max(0, depth-1) (:488); setState(newDepth) switches the live session to the shallower depth, at depth 1 the real depth 0, with no PIN check for the landing depth."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 483,
+        "description": "Comment states the LIFO pop lands one depth shallower and that depth <= 1 lands at 0, which is also a full deactivation; no authentication at the landing depth."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 499,
+        "description": "coercerBaseDepth is rewritten to newDepth, so the affordance reappears at the landing depth."
+      },
+      {
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 202,
+        "description": "Gate is state == .normal and (currentDepth == 0 or currentDepth == coercerBaseDepth); the doc comment at Manager+Security.swift:107-111 argues deactivation there only strips the coercer's own layer, which does not hold at depth 1 where the landing depth is the real depth 0."
+      },
+      {
+        "file": "OccultaTests/SecureMode/PINManagerTests.swift",
+        "line": 143,
+        "description": "deactivateSecureMode_fromDepth1_transitionsToPinOnly encodes depth-1 deactivation with the duress PIN as expected behaviour."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/scenarios.md",
+        "line": 249,
+        "description": "Scenario 6.4 says deactivation from depth N is intentionally unreachable; code reaches it after activateSecureMode sets coercerBaseDepth = N (Bugs 58/61)."
+      }
+    ],
+    "blockers": [
+      "Source-only audit: the UI sequence (Learn more, Activate, Deactivate, tab tree rebuilt at depth 0) was not driven end to end; the parent ran only the manager-level sequence.",
+      "Same-session SwiftUI re-render of SecuritySettings after activateSecureMode (so the Deactivate button appears) is inferred from @Query on AppLayerConfig and the computed state getter, not observed."
+    ],
+    "validation_plan": {
+      "local": "In OccultaTests/SecureMode with ambientTestKeyManager: configurePIN(master); activateSecureMode(master, D1); applyVerifyState(verify(D1)) so currentDepth == 1, state == .duress; activateSecureMode(confirmingEntryPIN: D1, duressPIN: D2); assert state == .normal and coercerBaseDepth == 1; deactivateSecureMode(confirmingEntryPIN: D1); assert currentDepth == 0 and sealedDuressVerifier == nil (the failing invariant: depth must not decrease without the landing depth's PIN). Add the N=2 variant (lands at 1). Fix test: deactivate at depth N must require the master PIN or must end the session to the lock screen rather than setState below N.",
+      "deployment": "Owner on a test install with throwaway PINs: enter the duress PIN, Settings > Security > Learn more > complete the flow, confirm 'Deactivate Protection' appears at once, confirm with the duress PIN and check whether depth-0 contacts appear."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode/duress-verifier-scalar-null",
+    "title": "AppLayerConfig.sealedDuressVerifier is NULL until Secure Mode is activated: a keyless flag in the store",
+    "description": "sealedNormalVerifier and sealedDuressVerifier are plain optional Data columns that serve as 'PIN set' and 'Secure Mode active' flags: the duress scalar is nil until Secure Mode is activated at depth 0 and set back to nil on full deactivation. The model's own comments say neighbouring fields are kept always non-nil so presence cannot be read from the file; this one is not. Whoever can read the SQLite file sees whether Secure Mode has been set up without any key. Open item PASSPHRASE_ROLLOUT concedes only the normal scalar; the duress scalar is not discussed. The lockout columns are likewise nil outside a lockout.",
+    "claimed_root_cause": "nil versus non-nil of an optional column is used as the Secure Mode state flag.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+        "line": 23,
+        "scope": "AppLayerConfig.sealedDuressVerifier",
+        "description": "var sealedDuressVerifier: Data? with no always-present rule, unlike persistedDepth (:29-34)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 413,
+        "scope": "Manager.Security.activateSecureMode",
+        "description": "Set only when depth == 0 (config.sealedDuressVerifier = duressVerifier)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 490,
+        "scope": "Manager.Security.deactivateSecureMode",
+        "description": "Set back to nil when the pop lands at depth 0."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 86,
+        "description": "isSecureModeActive is sealedDuressVerifier != nil."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/AppLayerConfig+Model.swift",
+        "line": 29,
+        "description": "persistedDepth comment says a consistently present field prevents inferring threat state from presence or absence; the scalar columns have no such treatment."
+      }
+    ],
+    "blockers": [
+      "The column was not inspected in a store file; that SwiftData writes NULL for a nil Data? was assumed.",
+      "Whether the flag adds to what an examiner already learns (Bug 119 crackable verifiers; PASSPHRASE_ROLLOUT open item on lock presence) is not settled from source."
+    ],
+    "validation_plan": {
+      "local": "Test with an on-disk store: open the SQLite file after first launch, after PIN setup and after activation, and compare ZSEALEDDURESSVERIFIER IS NULL."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode/lockout-reset-by-any-valid-pin",
+    "title": "The lock-screen lockout counter is reset by a correct entry of any PIN, so a holder of one valid PIN can guess another without ever being locked out",
+    "description": "verify() keeps one persistent wrong-attempt counter shared by all depths and resets it on a match of any normal verifier (:677) or the current-depth duress verifier (:687). lockoutDelay returns nil below 6 (:706). A coercer holding a duress PIN can alternate five guesses at the master PIN with one entry of the duress PIN, never reaching the documented delay; a master match routes to depth 0. Each cycle needs the app re-locked, and the pace is bounded by the 0.5 s pad and keypad taps; the PIN space is 10^6 and the passphrase rollout and Bug 119 already treat PIN verifiers as weak against an examiner, and Bug 62 Gap 2 records no attempt limit on activation collision probes. This is therefore a bounded, low-severity weakness that a new variant of an acknowledged gap rather than a new boundary break. The parent's Simulator test (200 wrong guesses in rounds of five, never .locked) confirms the manager behaviour. Source also confirms the secondary availability effect: 20 wrong entries by anyone lock the owner out for 24 h.",
+    "claimed_root_cause": "The counter is global and success-resetting rather than scoped to guesses against a particular verifier, so a success at a lower-privilege verifier clears failures accumulated against a higher-privilege one.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 389,
+        "scope": "RootView .pinRequired",
+        "description": "Lock-screen PINEntry (.verify) accepts repeated submissions, each handled by verify() (PINEntry.swift:246-256)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 693,
+        "scope": "Manager.Security.verify step 3",
+        "description": "A wrong entry increments the persisted count; the anchor is written only when lockoutDelay(for:) is non-nil (count >= 6)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 677,
+        "scope": "Manager.Security.verify step 1",
+        "description": "A match on any normal verifier (including a duress PIN's routing alias) calls resetCounters() before returning."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 1071,
+        "scope": "Manager.Security.resetCounters",
+        "description": "config.resetLockout() clears the shared count and anchor, erasing failures accumulated against other verifiers."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 704,
+        "description": "lockoutDelay returns nil for count < 6."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 687,
+        "description": "resetCounters also runs on a current-depth duress match."
+      },
+      {
+        "file": "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+        "line": 74,
+        "description": "Only floor on per-guess cost is timingPadDuration = 0.5 s."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/plan.md",
+        "line": 529,
+        "description": "Design text records 5 free attempts and a counter that any correct verification resets."
+      }
+    ],
+    "blockers": [
+      "Not executed here; the parent's Simulator run covers the manager logic only.",
+      "Real-world guess rate through the lock screen (re-lock between cycles, keypad speed) and whether the coercer can be given that time are device and scenario facts outside source."
+    ],
+    "validation_plan": {
+      "local": "Using the LockoutClock fake and ambientTestKeyManager: configure master M and duress D; loop 1000 times { 5x verify(wrong_i); verify(D) } and assert .locked is never returned and readLockoutCount() is 0 after each cycle; contrast with 6 consecutive wrong entries returning .locked on the 7th call. Fix test: the counter must not reset on a match at a verifier other than the one being guarded, or must keep a total a success cannot clear."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode/lowered-lock-learn-more-enabled",
+    "title": "With the lock lowered, Settings shows the PIN toggle off but 'Learn more' enabled, and its second step asks for a current passcode",
+    "description": "The toggle reads requiresPIN && pinEnabled, so it is off when the lock is lowered, and its comment states it must look identical to a device with no PIN. The 'Learn more' section is shown when !isSecureModeActive || state == .duress || !pinEnabled, and is dimmed and disabled only on !requiresPIN. With the lock lowered the normal verifier still exists, so the section is enabled; on an install with no PIN it is dimmed and disabled. Tapping it opens SecureModeSetupFlow, whose PIN step is PINEntry(.confirmThenSet) titled 'Current Passcode'. A coercer who knows how a no-PIN install looks sees a difference.",
+    "claimed_root_cause": "The section's enabled state keys on the stored verifier (requiresPIN), while the toggle keys on the verifier and pinEnabled.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 216,
+        "scope": "SecuritySettings.pinEnabledBinding",
+        "description": "Toggle reads requiresPIN && security.pinEnabled: off when the lock is lowered, by design to match a no-PIN device."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 232,
+        "scope": "SecuritySettings.body",
+        "description": "Section shown when !isSecureModeActive || state == .duress || !pinEnabled."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 242,
+        "scope": "SecuritySettings.body",
+        "description": ".disabled(!self.requiresPIN) and opacity at :243: still enabled with the lock lowered, since the verifier exists."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+        "line": 90,
+        "scope": "PINEntry.title",
+        "description": "confirmThenSet phase 1 is titled 'Current Passcode'; SecureModeSetupFlow.swift:45 uses it for its PIN step."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 213,
+        "description": "Comment states the toggle must look identical to a device with no PIN."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/scenarios.md",
+        "line": 509,
+        "description": "Section 14.5 compares the lowered lock with a '.pinOnly gate-down' state; no such state is read in Settings."
+      }
+    ],
+    "blockers": [
+      "A SwiftUI body was not rendered; the conditions were read, not observed.",
+      "The lowered-lock state's reachability at a given depth in the UI was not exercised."
+    ],
+    "validation_plan": {
+      "local": "Move the three visibility conditions in SecuritySettings into one pure function and test that a lowered lock at depth N > 0 yields the same toggle, Learn-more visibility and enabled state as an install with no PIN."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode/reenable-pin-moves-session-deeper",
+    "title": "Setting a PIN on a lowered lock moves the session one depth deeper, so the decoy's vault entries and drafts vanish",
+    "description": "With the lock lowered at depth N (disablePIN), Settings shows 'Enable PIN' off. The holder turns it on with a PIN that matches nothing, and reEnablePIN's coercion-acceptance branch writes it as duress[N] and as the routing alias normal[N+1] (the Bug 37 design, which scenarios.md 4.8 records as 'routes to depth N+1'). At the next lock screen verify() matches normal[N+1] and applyVerifyState sets currentDepth = N+1 and purges drafts. Vault entries match their depth exactly, so depth-N entries and depth N's backup key are no longer visible; contacts whose visibleThroughDepth is exactly N also drop out. On an install that really had no PIN, setting one changes nothing on screen, so a holder who watches the content can tell depth structure exists. The docs describe the routing but not its visible effect on content; Bugs 47 and 48 cover only Secure Mode operations at N+1. A fix is not a one-liner, since the branch avoids overwriting the PIN of depth N. Medium: needs the lock lowered first.",
+    "claimed_root_cause": "The coercion-acceptance branch gives the holder a PIN for a new, deeper depth instead of a PIN for the depth they are looking at, so a change of PIN is also a change of what the session can see.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 266,
+        "scope": "SecuritySettings PIN sheet (!pinEnabled branch)",
+        "description": "PINEntry(.setup) delivers the holder's PIN to reEnablePIN (:267)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 976,
+        "scope": "Manager.Security.reEnablePIN",
+        "description": "Unknown PIN at depth > 0: writeDuressVerifier(at: currentDepth) and writeNormalVerifier(at: currentDepth + 1) (:976-977), coercerBaseDepth = N+1 (:982)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 674,
+        "scope": "Manager.Security.verify",
+        "description": "At the next lock screen the PIN matches sealedNormalVerifiers[N+1] in the step-1 scan and returns .normal(depth: N+1)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 760,
+        "scope": "Manager.Security.applyVerifyState",
+        "description": "currentDepth = N+1 and, being deeper, drafts not safe at the new depth are purged."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 1053,
+        "scope": "Manager.Security.visibleVaultEntries",
+        "description": "Exact-depth filter: entries stamped N are not visible at N+1."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/scenarios.md",
+        "line": 167,
+        "description": "4.8 records 'Next PIN entry with C routes to depth N+1' and says nothing about content."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 803,
+        "description": "Bug 37's resolution states the PIN is written as a new layer and the session moves to depth N+1; the content change is not discussed."
+      },
+      {
+        "file": "OccultaTests/SecureMode/DuressDeactivationEscalationTests.swift",
+        "line": 1,
+        "description": "The parent's test file; used only to see what loweredLock_settingAPIN_keepsTheSameDepthAndVault asserts (same depth and vault entry still visible)."
+      }
+    ],
+    "blockers": [
+      "Not executed here (no test run permitted); the parent's Simulator failure is not treated as my evidence.",
+      "Impact depends on how much the depth-N and depth-N+1 views differ (vault entries, contacts with visibleThroughDepth == N), which varies per install.",
+      "Whether a changed view after setting a PIN is accepted behaviour of Bug 37's design needs an owner decision; the docs do not record it as accepted."
+    ],
+    "validation_plan": {
+      "local": "Run DuressDeactivationEscalationTests.loweredLock_settingAPIN_keepsTheSameDepthAndVault (fails while the behaviour is present): at depth 1 add a vault entry, disablePIN, reEnablePIN(newPIN), verify(newPIN) and applyVerifyState; assert currentDepth stays 1 and the entry is still visible. Add a contact with visibleThroughDepth == 1 and assert it too."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "securemode/settings-pin-checks-bypass-lockout",
+    "title": "Settings-level PIN confirmations and reEnablePIN test PIN guesses with no lockout counter, and reEnablePIN scans every shallower verifier, including the master PIN",
+    "description": "checkCurrentLayerPIN (behind PINEntry .verifyCurrentLayer and .confirmThenSet phase 1) and reEnablePIN never read or write the lockout counter or honour an active lockout; only verify() does. (a) A holder of the depth-N PIN (the PIN a coercer is given) can loop disablePIN (confirm with PIN N) then reEnablePIN(guess). reEnablePIN scans normal[0...31] then duress[0...31] and on a hit calls setState(k), so the master PIN lands the session at depth 0 with no lock screen. A miss at depth > 0 silently writes duress[N], normal[N+1] and coercerBaseDepth, returns true, and leaves PIN N valid, so the loop repeats with no counter and no visible failure. The lock screen's step-1 scan runs the same comparison but under the 5-free-then-1-minute-to-24-hour schedule. (b) With the lock lowered at depth N, 'Learn more' is shown (state == .duress or !pinEnabled) and its first phase checks guesses against the depth-N PIN with no counter; this gives less, since the guesser already sits at depth N. Each reEnablePIN miss also overwrites any existing layer N+1's alias. Not covered by Bug 62 Gap 2, which concerns activation-collision probes. Rate is bounded by about 0.5 s per entry and several entries per guess; a common-PIN dictionary is the realistic reach, so likelihood is moderate and impact is a coercer reaching depth 0.",
+    "claimed_root_cause": "Settings-session PIN confirmation was deliberately built without a counter (plan.md:227, :242), but the unlocked session at a duress depth is the coercer's, so these paths are an unthrottled oracle; reEnablePIN also accepts any shallower verifier as a match and moves the session there.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/UI/Tabs/Settings/Settings.swift",
+        "line": 266,
+        "scope": "SecuritySettings PIN sheet (!pinEnabled branch)",
+        "description": "PINEntry(.setup) delivers a PIN to reEnablePIN (:267); the toggle sheet at :273-285 reaches disablePIN after checkCurrentLayerPIN."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 918,
+        "scope": "Manager.Security.reEnablePIN step 1",
+        "description": "Loops every sealed normal verifier with checkVerifier; on a hit setState(k) with no counter read or write."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 929,
+        "scope": "Manager.Security.reEnablePIN step 2",
+        "description": "Loops every duress verifier; on a hit setState(k+1)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 976,
+        "scope": "Manager.Security.reEnablePIN coercion acceptance",
+        "description": "A miss at depth > 0 writes duress[N], normal[N+1], coercerBaseDepth = N+1 and returns true, so a miss is an unlimited, invisible retry."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 1003,
+        "description": "checkCurrentLayerPIN has no lockout read or write ('No counter mutation')."
+      },
+      {
+        "file": "Occulta/UI/Tabs/SecureMode/PINEntry.swift",
+        "line": 261,
+        "description": "submitVerifyCurrentLayer and submitConfirmPhase (:284) call checkCurrentLayerPIN; the only delay is the timing pad."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 654,
+        "description": "The lockout gate (anchor, delay, re-anchor on reboot) exists only inside verify()."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 868,
+        "description": "disablePIN confirms with checkCurrentLayerPIN, no counter."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/plan.md",
+        "line": 227,
+        "description": "Records that Settings confirmations were deliberately kept off the counter; the coercer-reachable consequence is not recorded as accepted."
+      }
+    ],
+    "blockers": [
+      "Not executed here (no test run permitted); the parent's Simulator result (1,100 wrong PINs left lockoutExpiry() nil and reEnablePIN(master) set currentDepth to 0) is not treated as my evidence.",
+      "Throughput of a manual or robotic keypad is not measurable from source; at about 0.5 s per entry a full 10^6 space is days to weeks, a dictionary of common PINs minutes to hours.",
+      "Whether the Enable-PIN toggle is enabled for the depth in question depends on coercerBaseDepth (isAtSecureModeHomeDepth); source shows it is enabled at a duress depth that is not coercerBaseDepth."
+    ],
+    "validation_plan": {
+      "local": "Test: configure master M, activate duress D1; at depth 1 run 200 x { disablePIN(at: 1, confirmingPIN: D1); reEnablePIN(guess_i) } with guesses != M and assert readLockoutCount() == 0 and no .locked; then disablePIN + reEnablePIN(M) and assert currentDepth == 0. Second test: at a lowered gate at depth 1, 10,000 calls of checkCurrentLayerPIN(wrong) leave the lockout count at 0. Fix to test: route these checks through the counter verify() uses and refuse while locked; make reEnablePIN's scans match only the current depth's PIN or deeper."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "sqlite-secure-delete-header-persistence-claim",
+    "title": "secure_delete is set on a throwaway connection on the claim that it persists in the database header",
+    "description": "OccultaApp.init creates the ModelContainer with a plain ModelConfiguration (no pragma option), then applySecureDeletePragma opens a helper sqlite3 connection, runs PRAGMA secure_delete = ON and closes it. The doc comment (OccultaApp.swift:158-162) and forensic-trace-avoidance.md S2 state the setting is stored in the database header and persists to SwiftData's own connections; Prekey Continuity DESIGN.md:986 and bugs.md:5549 rely on it. No other source sets secure_delete on the connections that perform deletes. SQLite documents secure_delete as per-connection with a compile-time default, and the parent's macOS run showed a new connection reporting 2 (FAST), not 1, after the pragma was set elsewhere. If SwiftData's connections run without it, deleted rows (draft purge at a duress unlock, soft-delete eviction, Erase All Data) leave AES-GCM ciphertext in freed pages, readable by an examiner with the passcode. The checkpoint helpers (OccultaApp.walCheckpoint, Manager.Security.walCheckpoint) discard the sqlite3_exec result and set no busy timeout, so the flush can fail silently. This is not in the known-limitations list; every doc treats S2 as closed.",
+    "claimed_root_cause": "A security control rests on an unverified premise: a pragma set on a separate short-lived connection is assumed to be inherited by the connections that do the deletes, and checkpoint outcomes are never checked.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 86,
+        "scope": "OccultaApp.init",
+        "description": "applySecureDeletePragma(at:) runs once on a helper connection after the ModelContainer is created."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 160,
+        "scope": "applySecureDeletePragma doc comment",
+        "description": "Claims secure_delete is stored in the database header and persists across future connections, including SwiftData's."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 797,
+        "scope": "purgeDraftsNotSafeAtCurrentDepth",
+        "description": "Duress-entry draft purge deletes rows and relies on secure_delete plus a checkpoint."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 173,
+        "scope": "applySecureDeletePragma",
+        "description": "The pragma is exec'd on a connection closed by defer; nothing sets it on SwiftData's connections."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 69,
+        "description": "ModelConfiguration is built with isStoredInMemoryOnly false and cloudKitDatabase none only; no pragma option is passed."
+      },
+      {
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 158,
+        "description": "The comment itself says NSSQLitePragmasOption is not reachable from SwiftData, which is why the helper connection is used."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 1080,
+        "description": "walCheckpoint discards sqlite3_exec's result and sets no busy timeout; OccultaApp.swift:176-181 is the same."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/forensic-trace-avoidance.md",
+        "line": 114,
+        "description": "S2 asserts header persistence as fact and marks the control complete."
+      }
+    ],
+    "blockers": [
+      "Whether SwiftData's connections on iOS 18.6+ run with secure_delete on (Apple's compile-time default, or any header persistence) is framework behaviour that cannot be read from the repository, and no build or test may run here. The macOS result (2) is not the iOS runtime."
+    ],
+    "validation_plan": {
+      "local": "Add a test that creates a ModelContainer on a temporary URL with OccultaApp.schema, calls the pragma helper, inserts a Message.Draft with a marker payload and saves, deletes it through SwiftData and saves, runs wal_checkpoint(TRUNCATE) asserting SQLITE_OK, then scans the main file and WAL for the old bytes (expect absent). Also open a fresh sqlite3 connection and assert PRAGMA secure_delete returns nonzero. Run on an iOS Simulator; a failure of either assertion confirms.",
+      "deployment": "Owner check on a spare device with no real data: image the store after a draft purge and look for the pre-delete ciphertext in free pages."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "swiftdata-store-bookkeeping-outside-sealed-columns",
+    "title": "Store bookkeeping outside the sealed columns (Z_PRIMARYKEY counters, SwiftData history tables) is not addressed by any forensic-trace rule",
+    "description": "The candidate says SwiftData's default store keeps persistent history and Z_PRIMARYKEY counters that nothing disables or scrubs, and that no document mentions them.",
+    "claimed_root_cause": "The forensic-trace model enumerates sealed model columns only; framework metadata tables in the same file are neither disabled nor scrubbed.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/App/OccultaApp.swift",
+        "line": 69,
+        "scope": "OccultaApp.init",
+        "description": "ModelConfiguration with default store, no history option."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/Vault/Vault+Manager.swift",
+        "line": 453,
+        "scope": "VaultManager.deleteAllData",
+        "description": "Deletes rows only; store file and bookkeeping tables remain."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 14997,
+        "description": "Bug 196's open item states that in the 2.0.1 store every column write is logged with row, column and time by SwiftData's history, and that migrated rows carry a higher Z_OPT."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 15004,
+        "description": "Records the decision (2026-11-01, not built) that the 2.1.0 store is plain SQLite with no history tables, no Z_OPT and no ordered Z_PK."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 5420,
+        "description": "A bugs.md entry already treats Z_OPT as a known per-row trace."
+      }
+    ],
+    "reason": "The central claim that no code or document mentions the history tables is false. Bug 196's open entry (bugs.md:14996-15004, known item 30, Open-ND) names SwiftData's history log (row, column, time) and Z_OPT in the 2.0.1 store and records the decision to remove the class by moving to a plain SQLite store with no history tables. A grep of Occulta, OccultaCore and Docs finds no code that disables or purges history, so the facts match, but the issue is a known, decided item and this candidate only restates it; Z_PRIMARYKEY counters fall under the same removed class. At most a hardening note citing Bug 196/190."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "vault.export-meta-slot-survives-freed-depth",
+    "title": "A freed depth's backup-export record is not cleared, so a new layer at the same depth number sees the old layer's backup staleness",
+    "description": "backup-export-meta.dat holds one sealed export record per depth number. Deactivating a layer orphans that depth's BackupEncryptionKey row and VaultEntry rows but leaves the depth's record in place. When a new, unrelated layer is later created at the same depth number, refreshBackupStaleness reads the old record for it. With no key at the new depth, the old nonzero shard count against a count of zero raises 'Trustee set changed - Backup coverage has shifted - re-export'; once a key is staged there, the old key id against the new one raises 'Backup can't be restored - Backup key changed' in red. A holder of the new layer can thus infer that an earlier layer at that depth exported a backup. This is Bug 110's class (depth-number reuse inheriting state) on a store the orphan sweeps do not cover. Impact is a stale-state signal about a layer that has already been freed, so low severity.",
+    "claimed_root_cause": "writeBackupExportMetadata is the only writer of a depth slot and nothing clears a slot when its depth is freed: orphanVaultEntries and orphanBackupKeys touch only VaultEntry and BackupEncryptionKey rows, and the file is deleted only by the full wipe. refreshBackupStaleness trusts slot[currentDepth] with no check that the slot belongs to the depth's current key.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+        "line": 208,
+        "scope": "VaultManager.exportBackup",
+        "description": "An export at depth N seals entry count, key id and shard count into slot N of backup-export-meta.dat (writeBackupExportMetadata at :208)."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 480,
+        "scope": "Manager.Security.deactivateSecureMode",
+        "description": "Deactivation calls orphanVaultEntries and orphanBackupKeys for depths >= clearFrom (:480-481); neither touches backup-export-meta.dat, so slot N keeps the old record."
+      },
+      {
+        "kind": "propagation",
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 410,
+        "scope": "Manager.Security.activateSecureMode",
+        "description": "A later layer is created at the same depth number N (normal verifier written at depth+1)."
+      },
+      {
+        "kind": "sink",
+        "file": "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+        "line": 892,
+        "scope": "VaultManager.refreshBackupStaleness",
+        "description": "The new layer's Vault tab loads slot N (:876), computes trusteeSetChanged and bekRotated against the old record, and Vault+Tab.swift:284-342 renders the Needs Attention rows."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+        "line": 929,
+        "description": "loadAllExportMetaSlots/loadBackupExportMetadata read slot[depth] only; nothing binds a slot to the key row that wrote it."
+      },
+      {
+        "file": "Occulta/Features/Vault/Vault+Manager+Backup.swift",
+        "line": 854,
+        "description": "deleteBackupExportMetadata is the only deletion and its doc says only the wipe calls it (Vault+Manager.swift:457)."
+      },
+      {
+        "file": "Occulta/Features/SecureMode/Manager+Security.swift",
+        "line": 594,
+        "description": "orphanBackupKeys' own header names the same class (a later session at the same depth inherits) but covers the key row only."
+      },
+      {
+        "file": "Docs/Features/Secure Mode/bugs.md",
+        "line": 9387,
+        "description": "Bug 110 is the vault-entry form of the class, rated Low (stale-state confusion); slot reuse of the export-metadata file is not recorded there."
+      }
+    ],
+    "blockers": [
+      "Not executed (no build or test run permitted), so the banners on a reused depth were not observed.",
+      "Whether the rows appear at the new depth with no staged key depends on the Vault tab loading state, which only a run shows."
+    ],
+    "validation_plan": {
+      "local": "Test in OccultaTests/Vault with .ambientTestKeyManager: set up a backup key at depth 2 with confirmed pieces and export; call deactivateSecureMode from depth 2 so depth 2 is orphaned; leave depth 2 with no key (then again with a fresh key); call refreshBackupStaleness(currentDepth: 2) and assert backupStaleness is nil. Expected today: non-nil with trusteeSetChanged true (and bekRotated true once a key exists). Fix to test: clear slot N in orphanBackupKeys (or when a depth's key row is created), or bind the slot to the key row id."
+    }
+  }
+]

@@ -1,0 +1,78 @@
+{
+  "commit": "87d9bf11d4d8190f19da0cad8ac12aaaba4a6bb3",
+  "note": "Hand-written summary of the coverage table in REPORT.md; not validated with validate-coverage-ledger.cjs.",
+  "units": [
+    {
+      "unit": "E3a",
+      "status": "covered"
+    },
+    {
+      "unit": "E3b",
+      "status": "covered"
+    },
+    {
+      "unit": "D1x",
+      "status": "covered"
+    },
+    {
+      "unit": "P1",
+      "status": "covered"
+    },
+    {
+      "unit": "U1",
+      "status": "covered"
+    },
+    {
+      "unit": "U2",
+      "status": "covered"
+    },
+    {
+      "unit": "PQ",
+      "status": "covered"
+    },
+    {
+      "unit": "B1-B4-B5",
+      "status": "covered"
+    },
+    {
+      "unit": "E3c",
+      "status": "covered"
+    },
+    {
+      "unit": "B2",
+      "status": "partial"
+    },
+    {
+      "unit": "C5",
+      "status": "covered"
+    },
+    {
+      "unit": "C4",
+      "status": "covered"
+    },
+    {
+      "unit": "A-KE",
+      "status": "partial"
+    },
+    {
+      "unit": "D3-KE",
+      "status": "covered"
+    },
+    {
+      "unit": "C1-KE",
+      "status": "covered"
+    },
+    {
+      "unit": "G1",
+      "status": "deferred"
+    },
+    {
+      "unit": "M1",
+      "status": "deferred"
+    },
+    {
+      "unit": "T1",
+      "status": "deferred"
+    }
+  ]
+}

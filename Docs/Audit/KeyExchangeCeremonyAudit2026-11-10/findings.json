@@ -1,0 +1,88 @@
+{
+  "commit": "87d9bf11d4d8190f19da0cad8ac12aaaba4a6bb3",
+  "run_status": "incomplete",
+  "note": "Hand-written; not validated with validate-findings.cjs. Severities are proposed. Every finding is needs_validation: nothing was executed.",
+  "findings": [
+    {
+      "id": "KX-1",
+      "bug": 198,
+      "proposed_severity": "high",
+      "title": "The verification words can be made to match by a man in the middle of the Multipeer session",
+      "state": "needs_validation",
+      "evidence": "Exchange+Manager.swift:182,479-488,566-568,649-675,777; KeyExchange.swift:171,285-309; PairwiseDerivation.swift:131-138; Key+Manager.swift:1880",
+      "verification": "verifier: confirmed from source"
+    },
+    {
+      "id": "KX-2",
+      "bug": 199,
+      "proposed_severity": "medium",
+      "title": "ML-KEM can be stripped in transit and the words still match",
+      "state": "needs_validation",
+      "evidence": "Exchange+Manager.swift:614-616,649; KeyExchange.swift:188-202; PairwiseDerivation.swift:174-183; Contact+Manager.swift:663-665",
+      "verification": "verifier: confirmed from source"
+    },
+    {
+      "id": "KX-3",
+      "bug": 200,
+      "proposed_severity": "low",
+      "title": "Teardown does not fence callbacks already queued",
+      "state": "needs_validation",
+      "evidence": "Exchange+Manager.swift:236-282,488,668-675,686-695,777,837-844; KeyExchangeLiveView.swift:90-92",
+      "verification": "verifier: all parts hold"
+    },
+    {
+      "id": "KX-4",
+      "bug": 201,
+      "proposed_severity": "low",
+      "title": "Revoke leaves the revoked pairing's keys on its row and a re-pair does not clear them",
+      "state": "needs_validation",
+      "evidence": "Contact+Manager.swift:685-704,748-763",
+      "verification": "parent only"
+    },
+    {
+      "id": "KX-5",
+      "bug": 202,
+      "proposed_severity": "low",
+      "title": "A decoded Contact.Draft can install keys with no exchange (latent)",
+      "state": "needs_validation",
+      "evidence": "Contact+Manager.swift:439-441,1076-1095; Contact+Draft.swift:389-419; Import+View.swift:34,187",
+      "verification": "parent only"
+    },
+    {
+      "id": "CD-1",
+      "bug": 203,
+      "proposed_severity": "medium",
+      "title": "A classical-only exchange skips the card meeting check",
+      "state": "needs_validation",
+      "evidence": "CardMeetingContext.swift:39-40; Exchange+Manager.swift:451; KeyExchange.swift:339-350",
+      "verification": "hunter; parent re-read"
+    },
+    {
+      "id": "PK-1",
+      "bug": 204,
+      "proposed_severity": "medium",
+      "title": "A prekey batch is accepted without checking its keys are curve points",
+      "state": "needs_validation",
+      "evidence": "PrekeyBookkeeper.swift:121-131,158-161; Contact+Manager+Pairing.swift:112-116; Crypto+Manager+KeyDerivation.swift:32-40",
+      "verification": "hunter; parent re-read"
+    },
+    {
+      "id": "PK-2",
+      "bug": 205,
+      "proposed_severity": "low",
+      "title": "A failed send still uses up the contact's one-time key",
+      "state": "needs_validation",
+      "evidence": "Contact+Manager.swift:1305-1307,1390,1498-1511",
+      "verification": "hunter; parent re-read"
+    },
+    {
+      "id": "CD-2",
+      "bug": 206,
+      "proposed_severity": "low",
+      "title": "Unknown-sender rejection time grows with issued cards at every depth",
+      "state": "needs_validation",
+      "evidence": "ContactManager+Cards.swift:647-671",
+      "verification": "hunter; parent re-read"
+    }
+  ]
+}

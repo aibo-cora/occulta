@@ -1,0 +1,219 @@
+//
+//  DuressDeactivationEscalationTests.swift
+//  OccultaTests
+//
+//  Audit lead SM-1 (Docs/Audit/SecureModeDesignAudit2026-11-10): an operator who holds only a
+//  duress PIN must never end up at a shallower depth than that PIN opens.
+//
+//  Written to FAIL while the lead holds. Uses only calls the Settings screen makes, with the
+//  conditions `Settings.swift` gates its buttons on.
+//
+
+import Testing
+import Foundation
+import SwiftData
+import LocalAuthentication
+
+@testable import Occulta
+
+@MainActor
+@Suite("Security — a duress PIN never reaches a shallower depth", .serialized)
+struct DuressDeactivationEscalationTests {
+
+    private func makeContainer() throws -> ModelContainer {
+        let schema = Schema([
+            AppLayerConfig.self,
+            Contact.Profile.self,
+            Contact.Profile.PhoneNumber.self,
+            Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddress.self,
+            Contact.Profile.URLAddress.self,
+            Contact.Profile.Key.self,
+        ])
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return try ModelContainer(for: schema, configurations: [config])
+    }
+
+    /// `Settings.swift`'s `isAtSecureModeHomeDepth`: what shows "Deactivate Protection".
+    private func deactivateIsShown(_ s: Manager.Security) -> Bool {
+        s.isSecureModeActive && s.state == .normal
+            && (s.currentDepth == 0 || s.currentDepth == s.coercerBaseDepth)
+            && s.pinEnabled
+    }
+
+    /// `Settings.swift`'s condition for the "Learn more" (activate) section.
+    private func activateIsShown(_ s: Manager.Security) -> Bool {
+        !s.isSecureModeActive || s.state == .duress || !s.pinEnabled
+    }
+
+    /// The owner has one duress layer. The coercer is given the duress PIN and nothing else.
+    @Test(.ambientTestKeyManager) func duressPINHolder_activateThenDeactivate_staysAtDepth1() throws {
+        let container = try self.makeContainer()
+        let s  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let cm = ContactManager(modelContainer: container, security: s)
+
+        // Owner: master PIN 111111, duress PIN 999999, one contact hidden from every duress depth.
+        let ctx = ModelContext(container)
+        for identifier in ["safe", "hidden"] {
+            ctx.insert(Contact.Profile(
+                identifier: identifier, givenName: "", familyName: "", middleName: "",
+                nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+            ))
+        }
+        try ctx.save()
+        try s.configurePIN("111111")
+        try cm.saveClassification(safeIDs: ["safe"])
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+
+        // Coercer: enters the duress PIN at the lock screen.
+        s.applyVerifyState(for: try s.verify("999999"))
+        #expect(s.currentDepth == 1)
+        #expect(!cm.isSafeContact("hidden"))
+        #expect(self.activateIsShown(s))
+        #expect(!self.deactivateIsShown(s))
+
+        // Coercer: Settings → "Learn more" → confirms with the PIN they hold, sets any new PIN.
+        #expect(s.checkCurrentLayerPIN("999999"))
+        try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "222222")
+
+        // Coercer: "Deactivate Protection" is now offered at depth 1; confirms with the same PIN.
+        if self.deactivateIsShown(s) {
+            try? s.deactivateSecureMode(confirmingEntryPIN: "999999")
+        }
+
+        // The master PIN was never entered. The session must not be at the real depth,
+        // and the hidden contact must still be hidden.
+        #expect(s.currentDepth >= 1, "a duress PIN alone moved the session to depth \(s.currentDepth)")
+        #expect(!cm.isSafeContact("hidden"), "the contact hidden from duress depths is visible to the duress PIN holder")
+    }
+
+    /// The owner made a second layer from depth 1 at some point, which leaves
+    /// `coercerBaseDepth == 1`. A later holder of the first duress PIN needs one step.
+    @Test(.ambientTestKeyManager) func duressPINHolder_ownerHasTwoLayers_deactivateStaysAtDepth1() throws {
+        let container = try self.makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+
+        try s.configurePIN("111111")
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        s.applyVerifyState(for: try s.verify("999999"))
+        try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        // Owner goes back to the real depth; the app is later killed and relaunched.
+        s.applyVerifyState(for: try s.verify("111111"))
+        let relaunched = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+
+        // Coercer: enters the first duress PIN.
+        relaunched.applyVerifyState(for: try relaunched.verify("999999"))
+        #expect(relaunched.currentDepth == 1)
+
+        if self.deactivateIsShown(relaunched) {
+            try? relaunched.deactivateSecureMode(confirmingEntryPIN: "999999")
+        }
+        #expect(relaunched.currentDepth >= 1, "a duress PIN alone moved the session to depth \(relaunched.currentDepth)")
+    }
+
+    /// Audit lead SM-2. The lock was lowered at depth 1 and the phone handed over. The holder
+    /// turns "Enable PIN" on with a PIN of their own, which the screen presents as first-time
+    /// PIN setup. Setting a PIN must not change what the app shows: after they enter that PIN
+    /// at the lock screen they must be at the depth they were at, with the same vault.
+    @Test(.ambientTestKeyManager) func loweredLock_settingAPIN_keepsTheSameDepthAndVault() throws {
+        let container = try self.makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+
+        try s.configurePIN("111111")
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        s.applyVerifyState(for: try s.verify("999999"))
+        try s.disablePIN(at: s.currentDepth, confirmingPIN: "999999")
+        #expect(s.currentDepth == 1 && !s.pinEnabled)
+
+        // A decoy vault entry the owner made at depth 1.
+        let vaultContainer = try ModelContainer(
+            for: Schema([VaultEntry.self]),
+            configurations: ModelConfiguration(schema: Schema([VaultEntry.self]), isStoredInMemoryOnly: true)
+        )
+        let vm = VaultManager(modelContainer: vaultContainer, keyManager: TestKeyManager())
+        vm.unlock(context: LAContext())
+        let decoy = try vm.addEntry(label: "decoy", content: Data(), type: .note, currentDepth: 1)
+        #expect(s.visibleVaultEntries(from: [decoy]).count == 1)
+
+        // Holder: Settings → Enable PIN → enters a PIN of their own twice.
+        #expect(s.reEnablePIN("555555"))
+        #expect(s.pinEnabled)
+
+        // Next lock screen: they enter the PIN they just set.
+        s.applyVerifyState(for: try s.verify("555555"))
+        #expect(s.currentDepth == 1, "setting a PIN moved the session from depth 1 to depth \(s.currentDepth)")
+        #expect(s.visibleVaultEntries(from: [decoy]).count == 1, "the vault entry shown before the PIN was set is gone after it")
+    }
+
+    /// Audit lead SM-5. A correct PIN of any depth resets the wrong-attempt counter, so the
+    /// holder of a duress PIN can guess at another depth's PIN five at a time, entering their
+    /// own PIN between rounds, and is never locked out.
+    @Test(.ambientTestKeyManager) func duressPINHolder_isLockedOutWhenGuessingAnotherPIN() throws {
+        let container = try self.makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        try s.configurePIN("111111")
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+
+        var lockedOut = false
+        var guesses   = 0
+        for round in 0..<40 {
+            for attempt in 0..<5 {
+                let guess = String(format: "3%05d", round * 5 + attempt)
+                if case .locked = try s.verify(guess) { lockedOut = true }
+                guesses += 1
+            }
+            _ = try s.verify("999999")   // their own PIN: resets the counter
+        }
+        #expect(lockedOut, "\(guesses) wrong guesses at the lock screen and no lockout")
+    }
+
+    /// Audit lead SM-7 (Bug 227). The grace period is measured with `Date()`. With the app
+    /// suspended in memory, setting the device clock back makes the time away read as short
+    /// (or negative), and the app returns unlocked at the depth it was left at, with no PIN.
+    @Test(.ambientTestKeyManager) func clockSetBackWhileAway_stillAsksForThePIN() throws {
+        let container = try self.makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        try s.configurePIN("111111")
+
+        let screen = AppScreen()
+        screen.wire(security: s)
+        screen.pinDidSucceed()
+        #expect(screen.phase == .unlocked)
+
+        // Backgrounded at `entered`. The holder comes back a day later, having first set the
+        // clock to an hour before `entered`.
+        let entered = Date()
+        screen.backgroundEntryDate = entered
+        screen.lockIfGracePeriodExpired(now: entered.addingTimeInterval(-3600))
+
+        #expect(screen.phase == .pinRequired, "a clock set back while the app was away skipped the PIN")
+    }
+
+    /// Audit lead SM-6 (Bug 226). PIN checks made from Settings are not counted. A holder of
+    /// the depth-1 PIN can lower the lock and "set" a guessed PIN, over and over; `reEnablePIN`
+    /// tests each guess against every depth's PIN and moves the session to the one it matches.
+    @Test(.ambientTestKeyManager) func settingsPINChecks_areCountedLikeTheLockScreen() throws {
+        let container = try self.makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        try s.configurePIN("111111")
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        s.applyVerifyState(for: try s.verify("999999"))
+        #expect(s.currentDepth == 1)
+
+        // 100 wrong guesses through Settings, none through the lock screen.
+        for guess in 0..<100 {
+            try s.disablePIN(at: 1, confirmingPIN: "999999")
+            _ = s.reEnablePIN(String(format: "4%05d", guess))
+        }
+        // 1,000 wrong confirmations of the current layer's PIN.
+        for guess in 0..<1_000 {
+            _ = s.checkCurrentLayerPIN(String(format: "5%05d", guess))
+        }
+        #expect(s.lockoutExpiry() != nil, "1,100 wrong PINs entered in Settings and no lockout is in force")
+
+        // The 101st guess is the master PIN.
+        try s.disablePIN(at: 1, confirmingPIN: "999999")
+        _ = s.reEnablePIN("111111")
+        #expect(s.currentDepth == 1, "an uncounted guess in Settings moved the session to depth \(s.currentDepth)")
+    }
+}

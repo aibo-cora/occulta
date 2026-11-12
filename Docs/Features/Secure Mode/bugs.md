@@ -15962,3 +15962,731 @@ the next launch. Sites 7 and 8 are on the manager's context; 8 changes a live ro
 
 **Not done.** Nothing outside site 1 was changed or tested. No site was checked for a user-visible effect, and none was checked for a
 difference between depths.
+
+---
+
+## Bug 198 — A man in the middle of the key exchange can make both phones show the same verification words
+
+**Status:** unconfirmed. Lead KX-1 of the key exchange ceremony audit, 2026-11-10 (`Docs/Audit/KeyExchangeCeremonyAudit2026-11-10/REPORT.md`), at `87d9bf11`. Traced in source and confirmed from source by an independent verifier; no test has reproduced it.
+
+### Severity: High (proposed)
+
+Whoever is pinned as the Multipeer peer on both phones ends up holding both pairings and reads and forges everything sent afterwards, while both confirmation screens show the same five words. It needs a device in radio range at the exchange and about a minute of GPU time.
+
+### What happens
+
+1. The Multipeer session authenticates nobody (`securityIdentity: nil`, every invitation accepted, the first peer to connect pinned) and the 25 cm gate checks a discovery token that is not bound to the Multipeer peer. An attacker M pinned by both phones passes each phone the other's real token, so the two real phones range each other while every message goes through M. The docs name the words as the only defence against this.
+2. M picks a display name that sorts above both phones', so both are the initiator and send M their nonce and their whole identity message first.
+3. M answers with no `encapsulationKey`, so both take the classical path. Every input to `RoutingKey.wordsKey` is then known to M.
+4. M can still change its own contribution: `peerNonce` is overwritten by every discovery message (`Exchange+Manager.swift:566-568`), and the prekey batch's `generatedAt` and `id` reach the transcript unchecked. Nothing commits M to a value before it sees the phones' values.
+5. M searches for a pair of values that gives the same words on both phones. For 64.6 bits that is about 2^32 trials a side, each a few dozen SHA-256 compressions.
+6. A waiting phone has no deadline while ranging updates keep arriving, which they do between the two real phones.
+
+With ML-KEM left in, M sends the last ciphertext and the search costs about 2^33 ML-KEM encapsulations. With no pair keys and no ML-KEM the words are `createSharedSecret(using:)`, the identity ECDH with no nonces, and the search can be done ahead of time by anyone who knows both public identity keys.
+
+What limits it: M has to win the pin on both phones against the phones' own connection (a race it can retry, not measured), and the two fingerprint rows on the screen would expose it if the people compared them, which the screen does not ask for.
+
+### Fix
+
+Commit, then reveal. The discovery message carries a hash of the nonce; the nonce is sent last, initiator first, after every other message, and is checked against the hash; one discovery message per exchange. The words are derived over both nonces and a hash of every message of the exchange in order, on the classical path too, under a label of its own. A peer on an older build sends no commitment, and the screen says so. Until then: a per-step deadline that ranging does not reset, and a line asking for the fingerprints to be compared.
+
+### Guard
+
+A software-key fixture in which an attacker that knows a phone's messages cannot change that phone's words after the commitment; a second discovery message does not replace `peerNonce`; a nonce that does not match its commitment fails the exchange.
+
+---
+
+## Bug 199 — ML-KEM can be removed from a key exchange in transit and the words still match
+
+**Status:** unconfirmed; **open, needs a decision**. Lead KX-2 of the same audit, confirmed from source by the verifier.
+
+### Severity: Medium (proposed)
+
+The pairing ends up classical with nothing on screen but a missing label. The attacker learns nothing that day and keeps the files for a quantum computer.
+
+### What happens
+
+A relay that removes `encapsulationKey` from both identity messages and passes everything else unchanged makes both phones take the classical branch (`Exchange+Manager.swift:614-616`, `:649`). The words cover the ML-KEM secrets only when there are some, and nothing covers "I offered a key", so the words match. The screen shows a note when pair keys were offered and not returned (`KeyExchange.swift:197-202`) and nothing when an ML-KEM key was. `update(key:for:pairing:)` refuses a re-exchange that loses pair keys and accepts one that loses ML-KEM, so an existing hybrid pairing is downgraded the same way, and the contact stops being eligible as a trustee. Bug 196 accepted the same strip for the `pairing` field, with a note; there is no decision for this one.
+
+### Fix
+
+Put each phone's ML-KEM key, or its absence, in the transcript the words cover (Bug 198's fix does). Show a note when this phone sent a key and got none. Refuse a re-exchange that would replace a hybrid pairing with a classical one, as `pairingWouldBeWeaker` does.
+
+### Guard
+
+`KeyExchangeSaveTests`: a classical payload over a hybrid pairing is refused (saved today). Two offers that differ only in "sent a key, received none" give different words.
+
+---
+
+## Bug 200 — Ending a key exchange does not stop callbacks already queued: a crash, a re-armed watchdog, and a confirmation for an exchange that was ended
+
+**Status:** unconfirmed. Lead KX-3 of the same audit; the verifier found all parts hold.
+
+### Severity: Low (proposed)
+
+### What happens
+
+Multipeer and NearbyInteraction callbacks are re-dispatched to the main queue. `teardownSessions()` clears state, and a block already queued runs against the cleared manager.
+
+1. `handleSessionStateChange` passes the pin check (`connectedPeerID` is nil) and force-unwraps `self.multipeerSession!` (`Exchange+Manager.swift:488`): a crash. A device that keeps connecting keeps such a block queued.
+2. `handleNearbyObjectsUpdate` re-arms the 30-second watchdog first (`:777`), which later sets `.timedOut` on a resting manager and can take down the confirmation, or the card warning after a save.
+3. The classical-path tasks set `phase = .mlKemExchanged(payload)` after sleeping with only `guard let self` (`:668-675`, `:686-695`, `:837-844`). Sending the app to the background from the live view calls `finish()` and leaves the view up (`KeyExchangeLiveView.swift:90-92`); the confirmation then appears anyway and Confirm saves it, on one phone only.
+4. The handler never checks which session a callback came from, so a stale connect can pin a new exchange to the old peer. `receivedDiscoveryTokens` is never cleared.
+
+### Fix
+
+A generation counter incremented at teardown and checked by every dispatched block and task. A `guard let` in place of the force-unwrap, and a check of the `session` argument. Clear the token map and the `NISession` delegate at teardown.
+
+### Guard
+
+In `ExchangeManagerPeerPinningTests`' style: a `.connected` delivered around `finish()` neither crashes nor pins; a classical identity message followed by `finish()` leaves the phase at `.resting` seven seconds later (fails today).
+
+---
+
+## Bug 201 — Revoke leaves the revoked pairing's routing key and pair-key blobs on its row, and a re-pair does not clear them
+
+**Status:** unconfirmed. Lead KX-4 of the same audit; read by the parent session only.
+
+### Severity: Low (proposed)
+
+### What happens
+
+A re-pair overwrites a retired row's pairing column with the sealed empty state, over rows `where held.expiredOn == nil` (`Contact+Manager.swift:685-696`). `reset(identity:)` only stamps `expiredOn` (`:748-763`). After a revoke the row keeps the routing key and the Enclave blobs; the next exchange skips it because it is already expired. An outstanding identity challenge is also kept across a revoke followed by a plain re-exchange, since `formChanges` looks at unexpired rows only.
+
+### Fix
+
+`reset(identity:)` writes the sealed empty state to the row it expires and drops outstanding challenges, in the same save. One pass clears rows revoked before the fix; the column's size does not change.
+
+### Guard
+
+`PairingLifecycleTests`: pair with pair keys, revoke, and the expired row reads as `.empty` (fails today); the same after a re-pair.
+
+---
+
+## Bug 202 — `save(contact:)` installs whatever keys a `Contact.Draft` carries, and the unused `Import` screen decodes drafts from a received file
+
+**Status:** unconfirmed. Lead KX-5 of the same audit; read by the parent session only. Not reachable in this build.
+
+### Severity: Low (proposed, latent)
+
+### What happens
+
+`Contact.Draft.Key` is `Codable` with its `material` and `quantumKeyMaterial`. For a new contact `save(contact:)` runs `update(key:for:)` for every key in the draft (`Contact+Manager.swift:439-441`). `Import.DisplayImportedContactList` decodes `[Contact.Draft]` from a received basket's files and saves the selection (`Import+View.swift:34`, `:187`). `Import` is instantiated only in its own preview. Wired back in, a contact could send a file that creates another contact with a key the sender holds: a key no in-person exchange made.
+
+### Fix
+
+Remove the loop, stop decoding `contactPublicKeys`, and delete the screen or make it drop keys. Leave key material out of the edit form's draft.
+
+### Guard
+
+Saving a new draft that carries a key leaves the contact with no key row (fails today).
+
+---
+
+## Bug 203 — A classical-only in-person exchange skips the card meeting check, so a forged or intercepted card conversation ends as Verified with no warning
+
+**Status:** unconfirmed. Lead CD-1 of the same audit (hunter trace in `agents/hunter-cards.md`); the parent re-read the cited lines.
+
+### Severity: Medium (proposed)
+
+### What happens
+
+`CardMeetingContext.verdict` returns `.none` without a hybrid result, even when the card field gives a key to check (`CardMeetingContext.swift:39-40`), and the proof is only sent on the hybrid path. A card conversation needs iOS 26 at both ends, so a peer whose phone cannot do ML-KEM cannot have been its other end: the case W-11 exists for. The save wipes the card field and shows "Key saved". `CardMeetingCheckTests` pins `.none`; SPEC §7 says "Otherwise: W-11". Bug 199's strip reaches the same path.
+
+### Fix
+
+`.mismatch` when the context holds a peer signing key and there is no hybrid result. Add the row to SPEC §7.
+
+### Guard
+
+`CardMeetingCheckTests.classicalOnly` expects `.mismatch` for the rows that show a verdict (fails today).
+
+---
+
+## Bug 204 — A contact's prekey batch is accepted without checking its keys are curve points, so one bad batch stops every send to them and to any group they are in
+
+**Status:** unconfirmed. Lead PK-1 of the same audit (`agents/hunter-challenge-prekeys.md`, HC-1); the parent re-read the cited lines. That Security.framework refuses the key is read, not run.
+
+### Severity: Medium (proposed)
+
+### What happens
+
+`PrekeyBookkeeper.accept` checks sizes only (`PrekeyBookkeeper.swift:121-131`, `:158-161`); the exchange validates the pair keys and not the batch beside them. A send to a key that will not load throws `keyDerivationFailed` with no fallback. After the bad one-time keys are gone the bad last-resort key is chosen every time. A group send fails as a whole.
+
+### Fix
+
+`accept` and `PairingOffer.accepted` require every key to load as a P-256 point. A send drops a prekey whose derivation fails and tries the next, ending in the long-term mode.
+
+### Guard
+
+`PrekeyBookkeeperTests`: a batch with a non-point throws `malformedBatch` (accepted today; the suite's helper builds keys from random bytes). A send to a contact holding such a batch produces a bundle.
+
+---
+
+## Bug 205 — A send that fails after taking a contact's one-time key still uses the key up
+
+**Status:** unconfirmed. Lead PK-2 of the same audit (HC-2); the parent re-read the cited lines.
+
+### Severity: Low (proposed)
+
+### What happens
+
+`encryptBundle` writes the shortened record onto the contact (`Contact+Manager.swift:1305-1307`) before the steps that can throw, and does not put it back. The group path's comment says autosave being off prevents this (`:1498-1511`); the `defer` turns it back on with the objects changed. A group with a revoked member takes a key from every member mapped before it on each attempt.
+
+### Fix
+
+Restore the sealed record in a `catch`, or write it only after the bundle is delivered. Correct the comment.
+
+### Guard
+
+The inbound key count is unchanged after a send that throws, one-to-one and group (both fail today).
+
+---
+
+## Bug 206 — Rejecting a file from an unknown sender takes longer when a contact at any depth holds an issued card
+
+**Status:** unconfirmed; the part left after the fix is **open, needs a decision**. Lead CD-2 of the same audit (CARDS-2); the parent re-read the cited lines. The size of the difference on a device was not measured.
+
+### Severity: Low (proposed)
+
+### What happens
+
+`redeemCard` runs one Enclave ECDH per forward-secret slot, up to 32, for every contact at every depth whose card is `issued` (`ContactManager+Cards.swift:647-671`). A coercer at a duress depth compares a crafted 32-slot file with a slotless one: the same alert, and a time difference that remains after the visible cards are cancelled means a hidden contact issued a card in the last 24 hours. Related to the open cases in `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, but needs no card file.
+
+### Fix
+
+Try redemption only for a bundle with exactly one slot. Whether to pad the rest to a fixed amount of Enclave work is the decision.
+
+### Guard
+
+A counting `CardKeyProviding`: the number of `sharedSecret` calls for a 32-slot unknown-sender bundle is the same with and without a hidden issued card (32 against 0 today).
+
+---
+
+## Bug 210 — `PRAGMA secure_delete` is set on a helper connection and does not reach SwiftData's, so deleted rows stay in the store file
+
+**Status:** unconfirmed (lead 1 of `Docs/Audit/LocalEncryptionKeysAudit2026-11-10/REPORT.md`, 2026-11-11). Read from source and supported by a check outside the app; not yet reproduced through SwiftData on iOS. Numbered 210 by the split the three 2026-11-10 audit sessions agreed (key exchange 198–209, local keys 210–219, secure mode 220–239).
+
+**Target:** `v2.0.1` or the next release.
+
+### Severity: High, proposed (a forensic control recorded as done, S2, does not do what it says; deleted and purged content stays recoverable to whoever can use the device's keys)
+
+### What happens
+
+`OccultaApp.applySecureDeletePragma` (`OccultaApp.swift:169-174`) opens a short-lived connection, runs `PRAGMA secure_delete = ON` and closes it. Its comment (`:160-163`) says the setting is stored in the database header and carries over to SwiftData's own connection. In SQLite the setting belongs to a connection and nothing is written to the file.
+
+Checked on the Mac's system SQLite 3.54.0 and Core Data, which is not Occulta code and not a Simulator run:
+
+- after one connection sets it to ON and closes, a second connection reads 2 (FAST, Apple's default), which leaves freed pages as they were;
+- a standalone Core Data program (`Docs/Audit/LocalEncryptionKeysAudit2026-11-10/secure-delete-check.swift`) set the pragma through a helper connection as the app does, inserted 60 rows with 9 KB blobs, deleted them through Core Data and ran a `TRUNCATE` checkpoint: 38,961 of 41,460 marker copies were still in the store file (38,835 without the pragma; 768 of 1,440 with 300-byte blobs);
+- deleting on a connection that itself has ON left none.
+
+Everything that deletes rows and then checkpoints relies on the zeroing: Erase All Data (`Manager+App.swift:40-42`), the prekey scrub (`Contact+Manager+Prekeys.swift:201-205`), the card-key clear (`ContactManager+Cards.swift:160`), contact deletion and the duress draft purge. `forensic-trace-avoidance.md` S2 (`:79`, `:113`) and `bugs.md:5549` record it as working. The WAL checkpoint itself does work. A same-size in-place update leaves no old bytes, so the exposure is deletions and values that shrink.
+
+**Not determined.** Whether SwiftData on iOS sets the pragma on its own connection.
+
+### Fix
+
+Not applied. SwiftData exposes no pragma option, so scrub from the helper connection: `VACUUM` in `checkpointStore()` after the `TRUNCATE` checkpoint and once at launch before the container opens, checked under test to get its lock while the store is open. Correct the comment and S2. The plain-SQLite store decided for 2.1.0 can set the pragma on its own connection and makes this moot for what moves to it.
+
+### Guard
+
+A test that opens a file-backed SwiftData container, applies the app's helper, inserts rows carrying a known 9 KB marker in a sealed column, deletes them, calls `checkpointStore()` and scans the store and `-wal` for the marker. It needs no key material and runs on CI.
+
+---
+
+## Bug 211 — The Secure Mode layer file of releases up to 1.10.3 stays in the App Group, under a key derived from a public point
+
+**Status:** unconfirmed (lead 2 of the same report). The source and history are verified; whether upgraded devices hold a real payload is a device check.
+
+**Target:** `v2.0.1` or the next release.
+
+### Severity: Critical on a device that upgraded from 1.9.2–1.10.3 with Secure Mode active and hidden contacts, proposed; Low elsewhere
+
+### What happens
+
+Releases 1.9.2 to 1.10.3 wrote `group.com.occulta.shared/blobs/<uuid>.occbak` at every launch: 32 AES-GCM slots under `HKDF(deriveSecureModeKey(), "layer-store-key")`, with no PIN in the key (`release/v1.10.3:Occulta/Features/SecureMode/SecureMode+LayerStore.swift:155-156`, `:359-372`). `deriveSecureModeKey()` is ECDH against the generator, a function of the PIN Enclave key's public point (Bug 171). With Secure Mode active one slot held every hidden contact as a plaintext `Contact.Draft`, with signed attributes and depths (`:40-72`).
+
+Removal Stage 2 (`1bf5c5d2`, 2026-09-10) deleted the code that reads and writes the file and left the file:
+
+- no code touches the `blobs` directory now; `KeyReseal+Inventory.swift:350-354` lists it as a retired leftover that nothing reads;
+- the key reseal does not move it, so it stays under the legacy key;
+- `ShareSession.removeAll` (`ShareSession.swift:333-338`), which Erase All Data calls, removes only `pending`, `inbound` and the legacy index. After a wipe the file remains and its key is deleted;
+- `forensic-trace-avoidance.md:32` says "There is no blob".
+
+On an affected device an examiner who holds or can use the PIN key's public point reads the hidden contacts as they were at the last launch of the old build, including ones deleted since, and a slot that opens to JSON shows Secure Mode was in use. On other upgraded devices the file is random slots with a frozen modification date.
+
+### Fix
+
+Not applied. Delete the `blobs` directory at launch (in `LaunchSequence`, every depth, before any PIN) and add `blobs` and `cache` to `ShareSession.removeAll`. Correct `forensic-trace-avoidance.md:32` and the inventory entry. Open, needs a decision: this deletes a legacy artefact, against the convention that a downgraded build should fail closed; a 1.10.3 build that finds no file writes a fresh no-op one.
+
+### Guard
+
+Plant `blobs/x.occbak` and `cache/y.occbak` in a temp container, run the launch cleanup and `eraseAllData(stagingContainer:)`, and assert neither directory survives.
+
+---
+
+## Bug 212 — After Erase All Data the process cannot derive its local keys until relaunch: new contact data is dropped and the identifier is stored in the clear
+
+**Status:** unconfirmed (lead 3 of the same report). Verified from source by a second reader.
+
+**Target:** `v2.0.1` or the next release.
+
+### Severity: Medium, proposed (silent data loss right after a wipe, and one plaintext identifier)
+
+### What happens
+
+Erase All Data does not relaunch the app (`Settings.swift:176`). It deletes `r_U`, `r_B`, the tier PQ records (`Key+Manager.swift:1190-1207`) and the `AppLayerConfig` row with both epochs (`Vault+Manager.swift:441-464`). `Manager.Ambient.tierUKeys` is set only at launch and stays `.enclaveBound`; `enclaveBoundKey(.localDB)` returns nil for a missing secret (`Key+Manager.swift:1350-1359`); nothing recreates `r_U` outside the launch bootstrap (`KeyReseal+Run.swift:72`). So `Manager.Crypto().encrypt(data:)` returns nil for the rest of the process.
+
+A contact created before the next launch is stored with its identifier as the raw UUID (`Contact+Manager.swift:395`), every sealed field empty, and the scheme stamped v2. The fields are not recoverable after relaunch.
+
+The vault: `unlock` finds no epoch and keeps the previous mode (`Vault+Manager.swift:263-271`). If the vault was not opened earlier in the process that is `.legacy`, so entries added then are sealed under the key that is a function of the public point until the first unlock after the next launch. If it was opened, the key is nil and the vault stays locked.
+
+This applies when the reseal has completed, the normal state. Whether the key-exchange and import paths drop key material the same way was not traced.
+
+### Fix
+
+Not applied. End `eraseAllData` with the bootstrap a fresh install's launch runs, so the secrets, records and config row exist again and the process state is decided from them. Make `Contact+Manager.swift:395` throw instead of storing the raw identifier.
+
+### Guard
+
+Under `.ambientTestKeyManager`, on a store with an epoch: erase through the seams, create a contact in the same process, read it back through a fresh context; the fields round-trip and the stored identifier is not the raw UUID.
+
+---
+
+## Bug 213 — Staged share files are not bound to their session or manifest
+
+**Status:** unconfirmed (lead 4 of the same report). Verified from source.
+
+**Target:** open, needs a decision (whether write access to the App Group without the key is in scope beyond Bug 171's item 7).
+
+### Severity: Low, proposed
+
+### What happens
+
+Each staged file is sealed under the long-lived share staging key; the manifest is sealed separately with no authenticated data (`ShareStagingKeyManager.swift:590-597`). A manifest entry holds only a file name, UTI and extension (`ShareManifest.swift:21-28`). `ShareSession.staged` checks freshness on the manifest's date only and opens any file whose header verifies under any staging key (`ShareSession.swift:104-145`, `:166-171`).
+
+Someone who can write the App Group container but cannot use the key can put a sealed file kept from an earlier share into a new session, or swap files between sessions. The app encrypts the substituted content for the recipient the user picks, and the picker does not show the content. This works with files sealed under the current key, so it outlives the legacy fallback.
+
+### Fix
+
+Not applied. Record each file's header MAC (or salt and plaintext size) in its manifest entry and compare before opening; put the session id in the manifest's authenticated data.
+
+### Guard
+
+`ShareSessionTests`, in-memory key: stage sessions A and B, copy `A/0.tmp` over `B/0.tmp`, load B, expect a throw. A second case moves A's manifest into a new directory.
+
+---
+
+## Bug 214 — No default data-protection entitlement: store sidecars and the Drafts directory can sit at the default class
+
+**Status:** unconfirmed (lead 5 of the same report). Verified from source; the classes themselves need a device.
+
+**Target:** open.
+
+### Severity: Low, proposed (field values are sealed by the app; what a weaker class exposes is schema, row counts, sizes and plaintext columns)
+
+### What happens
+
+Neither target has `com.apple.developer.default-data-protection`. The store is stamped `.complete` after `ModelContainer(...)` creates it, with `try?` (`OccultaApp.swift:69-80`); recreated `-wal` and `-shm` files are re-stamped only from a view's save notification (`:373-377`, `:1272-1278`). `Application Support/Drafts/<id>/` gets no explicit class (`DraftStore.swift:199-210`). `forensic-trace-avoidance.md:120` names the default class as `completeUnlessOpen`; for app files it is complete-until-first-authentication.
+
+### Fix
+
+Not applied. Add the entitlement with `NSFileProtectionComplete` to both targets and keep the explicit stamps.
+
+### Guard
+
+On a device with no real data: create the store, force a checkpoint, and read `URLResourceValues.fileProtection` for the store, its sidecars and the Drafts directory.
+
+---
+
+> **Bugs 220–239 are reserved for the Secure Mode design audit of 2026-11-10** (`Docs/Audit/SecureModeDesignAudit2026-11-10/`).
+> The key exchange audit of the same date took 198–209 and the local keys audit 210–219, so that three sessions
+> working from one commit did not each file "Bug 198". 207–219 may be unused.
+
+## Bug 220 — A duress PIN alone reaches the real depth through "Deactivate Protection"
+
+**Status:** open. Confirmed by test on the Simulator, 2026-11-11 (`DuressDeactivationEscalationTests`, two tests, both fail while the bug is present). Found by the Secure Mode design audit of 2026-11-10. The on-screen path was read, not driven on a device.
+
+**Target:** `v2.0.1`. Present since Bug 58/61 made any activation from a duress depth set `coercerBaseDepth` to that depth; the landing at depth 0 is older (the first multi-layer commit).
+
+### Severity: Critical (a coercer who holds only a duress PIN sees everything hidden at the real depth)
+
+### What happens
+
+`deactivateSecureMode` removes the layer the operator is in and moves the session one depth shallower. It checks only the PIN of the depth being left (`Manager+Security.swift:463-466`), clears from that depth (`:478-479`) and sets `currentDepth = max(0, depth - 1)` (`:488`, `:492`). From depth 1 that is depth 0. `setState` changes `sessionID`, so the view tree rebuilds at the real depth.
+
+"Deactivate Protection" shows at a duress depth whenever `currentDepth == coercerBaseDepth` (`Settings.swift:202-207`), and `coercerBaseDepth` becomes the current depth as soon as a layer is added from it (`Manager+Security.swift:429-431`). "Learn more" is offered at every duress depth by design.
+
+- **Two steps.** Duress PIN at the lock screen → depth 1. Settings → Learn more → confirm with the duress PIN, set any new PIN → Activate. "Deactivate Protection" now shows; confirm with the duress PIN. The session is at depth 0.
+- **One step.** If the owner ever added a second layer from depth 1, `coercerBaseDepth` is already 1 for every operator, and the button is there as soon as the first duress PIN is entered.
+
+The master PIN is never entered. Afterwards Secure Mode is off and the owner's duress PINs no longer work.
+
+The same step moves any operator from depth N to N−1 with depth N's PIN. One surrendered PIN buys one depth.
+
+`PINManagerTests.swift:512-514` asserts the landing as intended (`// depth 1 → pinOnly`, `#expect(s.currentDepth == 0)`). `scenarios.md` §14.4 step 6 describes something else: the coercer's deactivation removes the layer below them and they stay where they are. §6.4 says only depth 0 can deactivate. Bug 45 hid the button above depth 0 for this reason; Bugs 47, 58, 61 and 111 brought it back from the real user's point of view.
+
+### Fix
+
+Not done. Proposed: adopt now the rule decided for the passphrase release (`PASSPHRASE_ROLLOUT.md:432-436`, decision 9a): a depth can remove the depths below it, and no depth removes itself or anything above it.
+
+- `deactivateSecureMode` at depth D clears `sealedNormalVerifiers[D+1...]` and `sealedDuressVerifiers[D...]`, orphans vault entries and backup keys stamped D+1 or deeper, and leaves `currentDepth` at D. At D = 0 that is today's behaviour.
+- `currentDepth` decreases only after `verify` (or `reEnablePIN`'s scan) matched that depth's PIN.
+- After a removal at D > 0, `coercerBaseDepth` is set so the screen returns to "Learn more" at D.
+- The three tests that assert the upward pop are rewritten for the new rule.
+
+No stored format changes, so no migration.
+
+### Guard
+
+`DuressDeactivationEscalationTests.duressPINHolder_activateThenDeactivate_staysAtDepth1` and `duressPINHolder_ownerHasTwoLayers_deactivateStaysAtDepth1`, in the working tree, not committed. To add with the fix: a test that fails if any function other than `applyVerifyState`, `reEnablePIN` and `init` lowers `currentDepth`.
+
+## Bug 221 — Setting a PIN on a lowered lock moves the session one depth deeper, and the decoy's vault empties
+
+**Status:** open, needs a decision on the fix. Confirmed by test on the Simulator, 2026-11-12 (`DuressDeactivationEscalationTests.loweredLock_settingAPIN_keepsTheSameDepthAndVault`).
+
+**Target:** `v2.0.1`. Present since the Bug 37 fix (the coercion-acceptance branch of `reEnablePIN`).
+
+### Severity: High (whoever holds the phone can tell depths exist), conditional on a lowered lock at a depth that has vault entries, a backup, drafts or contacts visible only through that depth
+
+### What happens
+
+With the lock lowered at depth N, the holder turns "Enable PIN" on and enters a PIN of their own. It matches nothing, so `reEnablePIN` writes it as the PIN of a new layer N+1 (`Manager+Security.swift:969-989`). At the next lock screen that PIN routes to depth N+1.
+
+Depth N+1 is not what they were looking at. Vault entries match their depth exactly (`:1053-1059`), so every entry made at depth N is gone, with depth N's backup key and trustees. Going deeper purges every group draft and the drafts to contacts not visible at N+1 (`:759-761`, `:797-808`). Contacts whose `visibleThroughDepth` is exactly N disappear.
+
+On an install that really had no PIN, setting one changes nothing on screen. `scenarios.md` §4.8 records the routing and not its effect on content.
+
+If the owner already had a layer N+1, its PIN is overwritten (`:976-977`) and the holder inherits that layer's content.
+
+### Fix
+
+Not done. Proposed: make the holder's PIN the PIN of depth N. The branch writes the new verifier into `sealedNormalVerifiers[N]` and `sealedDuressVerifiers[N-1]` and leaves deeper slots alone. The cost is that the owner's old duress PIN for depth N stops working; the owner still reaches depth 0 with the master PIN. Open, needs a decision.
+
+### Guard
+
+The test above, in the working tree, not committed.
+
+## Bug 222 — The app-switcher cover appears only when Secure Mode is active
+
+**Status:** unconfirmed. Read from source; not observed on a Simulator or a device.
+
+**Target:** `v2.0.1`. Present since `e64583f6` ("hide app contents on app switch only when secure mode is on").
+
+### Severity: High (one gesture shows a duress layer exists, at every depth and with the lock lowered)
+
+### What happens
+
+`AppScreen` covers the window with a blank view and a spinner when the scene resigns active, behind `guard self.secureModeActive else { return }` (`AppScreen.swift:73-77`, `:82-86`). `secureModeActive` is `sealedDuressVerifier != nil` (`:89-92`).
+
+An install with no Secure Mode shows its contacts list in the app switcher. An install with Secure Mode shows a blank card with a spinner, including at a duress depth that is meant to look like an ordinary install, and including a lowered lock where Settings says there is no PIN. The saved snapshot under `Library/SplashBoard/Snapshots/` differs the same way.
+
+`forensic-trace-avoidance.md` U5d documents the condition as a no-op for users without Secure Mode. It is not treated as an observable anywhere.
+
+Installs without Secure Mode also get no snapshot protection: their contacts list is written into the snapshot on every backgrounding.
+
+### Fix
+
+Not done. Proposed: install the cover on every resign on every install and remove `secureModeActive`.
+
+### Guard
+
+None yet. To check first: two Simulator installs, one with a PIN only and one unlocked with a duress PIN; background each and compare the app-switcher card.
+
+## Bug 223 — With the lock lowered, "Learn more" stays enabled and asks for a current passcode
+
+**Status:** unconfirmed. Read from source.
+
+**Target:** `v2.0.1`.
+
+### Severity: Medium (shows a PIN still exists), conditional on a lowered lock
+
+### What happens
+
+`Settings.swift:232-243` dims and disables the "Learn more" section when `sealedNormalVerifier == nil`. The toggle reads off when `requiresPIN && pinEnabled` is false (`:216`). With the lock lowered the verifier is still there, so the toggle is off and "Learn more" is enabled. On an install with no PIN the toggle is off and "Learn more" is dimmed.
+
+Tapping it opens the setup flow, whose second step is titled "Current Passcode" (`PINEntry.swift:90`), on a phone whose Settings say there is no PIN.
+
+`scenarios.md` §14.5 compares the lowered lock with "`.pinOnly` gate-down", a state that does not exist: turning the PIN off without Secure Mode removes it.
+
+### Fix
+
+Not done. Proposed: enable the section on `requiresPIN && security.pinEnabled`, what the toggle shows.
+
+### Guard
+
+None yet. Proposed: the three visibility conditions of `SecuritySettings` become one pure function, tested to give the same result for a lowered lock at depth N > 0 as for no PIN.
+
+## Bug 224 — A correct PIN of any depth resets the lockout, so a duress PIN holder can guess the master PIN without limit
+
+**Status:** open. Confirmed by test on the Simulator, 2026-11-12 (`DuressDeactivationEscalationTests.duressPINHolder_isLockedOutWhenGuessingAnotherPIN`: 200 wrong guesses, no lockout). A lock-screen variant of Bug 62's open "no attempt limit" gap.
+
+**Target:** `v2.0.1`.
+
+### Severity: Medium (a coercer with a duress PIN can search the six-digit space for the master PIN; weeks by hand, days with a keypad robot)
+
+### What happens
+
+`verify` locks from the sixth consecutive wrong PIN (`Manager+Security.swift:693-699`, `:704-723`). A correct PIN at any depth clears the count (`:677`, `:687`). Five guesses, then the duress PIN, repeated, never reaches six. Each guess is tested against all 32 normal verifiers (`:674-680`), so a hit on the master PIN opens depth 0.
+
+### Fix
+
+Not done. Proposed: a count that a correct PIN does not clear and that decays with elapsed uptime. It has to behave the same on every install; making the reset depend on which depth's PIN was entered would be observable.
+
+### Guard
+
+The test above, in the working tree, not committed.
+
+## Bug 225 — `AppLayerConfig.sealedDuressVerifier` is NULL until Secure Mode is activated
+
+**Status:** unconfirmed. Read from source; the column was not inspected in a store file.
+
+**Target:** the passphrase release; low value before it, since Bug 119 gives an examiner with the passcode everything.
+
+### Severity: Low today (a keyless flag for "Secure Mode is active" in the store)
+
+### What happens
+
+`sealedNormalVerifier` and `sealedDuressVerifier` (`AppLayerConfig+Model.swift:22-23`) are optional columns used as flags (`Manager+Security.swift:79-80`, `:85-86`; `Settings.swift:197-198`). The second is nil on every install that has not activated Secure Mode. The rest of the row is padded and seeded so that presence tells nothing; `forensic-trace-avoidance.md` K1 calls the row "all opaque Data", which does not hold for the scalars. `PASSPHRASE_ROLLOUT.md:219` and `:374` concede the normal scalar and are open; the duress scalar is not discussed.
+
+`lockoutCountEncrypted` and `lockoutAnchorUptimeEncrypted` are NULL except between a wrong PIN and the next correct one, and their sealed length varies with the JSON text of the number.
+
+### Fix
+
+Not done. Proposed: seed both scalars with filler at first launch and read "PIN set" and "Secure Mode active" from a sealed fixed-width state value; seed the lockout fields with a sealed zero in fixed width. Migration: fill a nil scalar and write the state value from the old reading in one save.
+
+### Guard
+
+None yet. Proposed: an install with no PIN, one with a PIN and one with Secure Mode have the same NULL pattern and column lengths in `AppLayerConfig`.
+
+## Bug 226 — PIN checks made from Settings are not counted, and `reEnablePIN` tests a guess against every depth's PIN
+
+**Status:** open. Confirmed by test on the Simulator, 2026-11-12 (`DuressDeactivationEscalationTests.settingsPINChecks_areCountedLikeTheLockScreen`: 1,100 wrong PINs entered through `disablePIN`/`reEnablePIN`/`checkCurrentLayerPIN` leave no lockout in force, and the next guess, the master PIN, moves the session to depth 0). Found by a hunter; checked from source by a separate verifier, who judged the second path below (a search for depth N's own PIN) the weaker half.
+
+**Target:** `v2.0.1`. Fix together with Bug 224 and Bug 62 Gap 2: one attempt counter.
+
+### Severity: Medium (an unthrottled search for another depth's PIN from inside the unlocked app)
+
+### What happens
+
+`checkCurrentLayerPIN` (`Manager+Security.swift:1003`) and `reEnablePIN` (`:909`) never read or write the lockout counter. `plan.md` built them that way so a Settings confirmation would not count as a lock-screen attempt; at a duress depth the unlocked session is the coercer's.
+
+- A holder of the depth-N PIN lowers the lock (`disablePIN`), then "sets" a guess. `reEnablePIN` scans all 32 normal verifiers and then all 32 duress verifiers (`:918-936`) and on a hit calls `setState(k)`: the master PIN lands the session at depth 0 with no lock screen. A miss creates a layer and reports success, so the holder lowers the lock again and repeats.
+- A holder of the phone with the lock lowered and no PIN can open "Learn more" (Bug 223) and search for depth N's PIN in the setup flow's first step (`PINEntry.swift:284-302`), 0.5 s a guess and no counter. With that PIN, Bug 220 follows.
+
+### Fix
+
+Not done. Proposed: route every PIN check through the counter `verify` uses and refuse while locked; make `reEnablePIN` match only the current depth's PIN or deeper, so reaching a shallower depth always goes through the lock screen.
+
+### Guard
+
+The test above, in the working tree, not committed.
+
+## Bug 227 — The grace period is measured on the wall clock, so setting the clock back skips the PIN
+
+**Status:** open for the app's logic, confirmed by test on the Simulator, 2026-11-12 (`DuressDeactivationEscalationTests.clockSetBackWhileAway_stillAsksForThePIN`: `phase` stays `.unlocked`). Not observed end to end: that the suspended process survives a change in Settings → Date & Time was assumed, not run. Found by a hunter.
+
+**Target:** `v2.0.1`.
+
+### Severity: Critical, conditional (whoever can change the device clock while Occulta is still in memory returns to the depth it was left at, usually depth 0, with no PIN)
+
+### What happens
+
+`AppScreen` records `Date()` when the scene enters the background (`AppScreen.swift:96`) and compares `Date()` on return (`:158-165`, `:183`). A clock set back makes the time away read as short or negative, so `lockIfGracePeriodExpired` does nothing and `evaluate` sets `.unlocked`. `Manager.Security.currentDepth` is in memory and is not reset when the app locks, so the session resumes at the owner's last depth.
+
+The lockout already avoids this by using uptime (`Manager+Security.swift:649-669`). `ProcessInfo.systemUptime` does not count sleep, so it is the wrong clock for a grace period (and makes a lockout last longer than its stated time).
+
+### Fix
+
+Not done. Proposed: measure the time away on a clock the user cannot set and that counts sleep (`ContinuousClock`, or `clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)` checked against sleep), and treat a negative or unreadable interval as expired. A reboot ends the process, and a cold launch already asks for the PIN.
+
+### Guard
+
+The test above, in the working tree, not committed.
+
+## Bug 228 — SwiftData's history log records Secure Mode events that depend on the depth
+
+**Status:** open, needs a decision. The log itself is a known item: Bug 196 (`bugs.md`, "Open, needs a decision (Bug 190's …)") records that SwiftData's history logs every write with row, column and time, and that the plain SQLite store decided for 2.1.0 (2026-11-01) has no history tables. That entry looked at the pairing column and concluded "the writes are the same at every depth and no signal depends on the layer". This entry is the part it does not cover: Secure Mode's own writes, which do depend on the depth. An independent verifier rejected the hunter's wider claim ("no document mentions these tables") as wrong, and it is; that sentence was in the first draft of this entry.
+
+Confirmed on the Simulator, 2026-11-12: the tables are in an Occulta store left by an earlier run, and `StoreForensicTraceTests.secureModeWrites_leaveNoHistoryRows` fails with 4 transaction rows, 4 change rows and 3 update rows that carry a changed-columns mask after a PIN is set, Secure Mode is activated and one wrong PIN is entered.
+
+**Target:** decide for `v2.0.1` whether a stopgap is worth it before the 2.1.0 store.
+
+### Severity: High (one image, no key: the time of every duress unlock that purged drafts, of every change to the Secure Mode configuration, and which contact rows had their visibility changed)
+
+### What happens
+
+`ATRANSACTION` holds one row per save with a wall-clock `ZTIMESTAMP`. `ACHANGE` holds one row per inserted, updated or deleted object with its entity, primary key and `ZCOLUMNS`, the mask of columns an update changed. Nothing clears them.
+
+Signals that depend on the depth or on Secure Mode use, read from one image without any key:
+
+- **A duress unlock that went deeper.** `purgeDraftsNotSafeAtCurrentDepth` runs only then (`Manager+Security.swift:759-764`). Its `Draft` deletes are one transaction, timestamped. A real unlock writes nothing of the kind.
+- **`setVisibility`.** One `Profile` row whose `visibleThroughDepth` column changed (`ContactManager+Classification.swift:124-145`): that contact was hidden or unhidden, and when.
+- **Activation, adding or removing a layer, lowering the lock.** Updates to the one `AppLayerConfig` row with the columns that changed, including `sealedDuressVerifier` (Bug 225).
+- **Wrong PINs.** Each is an `AppLayerConfig` update of the lockout columns.
+
+Two documents are affected. Bug 120 and the protection assessment's "Device imaged repeatedly" row assume it takes two images to see that rows the surrendered depth cannot account for are changing; with the log, one image shows it, with times. `forensic-trace-avoidance.md` S10/S11 rely on a fresh-nonce re-seal of every column to hide which one changed; `ZCOLUMNS` records it. Neither document mentions the log.
+
+### Fix
+
+Not done. The decided fix is the 2.1.0 store. Open for a decision: whether 2.0.1 gets a stopgap, since images taken before the migration keep the log.
+
+1. Purge history at launch and after saves (`ModelContext.deleteHistory`, iOS 18+), then checkpoint. It removes the rows; freed pages depend on Bug 229, and `Z_PRIMARYKEY.Z_MAX` still counts every row ever created.
+2. Whether SwiftData can open this store with history off was not checked.
+
+Whatever is decided, add the log to `forensic-trace-avoidance.md` and to the protection assessment's "Device imaged repeatedly" row.
+
+### Guard
+
+`StoreForensicTraceTests.secureModeWrites_leaveNoHistoryRows`, in the working tree, not committed.
+
+## Bug 229 — `secure_delete = ON` does not persist: the next connection reports FAST
+
+**Status:** open for the claim. Confirmed on the Simulator, 2026-11-12 (`StoreForensicTraceTests.secureDelete_setOnOneConnection_isOnForTheNext`: a connection opened after the pragma reports 2, FAST, not 1). The same on macOS's system SQLite 3.54. What SwiftData's own connections run with was not observed, and no page was inspected for residue. Found by a hunter.
+
+**Target:** `v2.0.1`.
+
+### Severity: Medium (the control every purge and wipe relies on is weaker than documented; residue is sealed, so it needs the passcode, as Bug 119)
+
+### What happens
+
+`OccultaApp.applySecureDeletePragma` (`OccultaApp.swift:169-174`) opens its own connection, runs `PRAGMA secure_delete = ON` and closes it. Its comment (`:160-163`) and `forensic-trace-avoidance.md` S2 say the setting is stored in the database header and applies to SwiftData's connections. It is a per-connection setting. A new connection gets the library default, which on Apple's build is FAST: freed content is overwritten only where that costs no extra I/O, and a page that moves to the freelist can keep what it held.
+
+The draft purge on a duress unlock, the group purge, the soft-delete eviction, the orphan eviction and Erase All Data all cite `secure_delete` as what removes the old ciphertext. `Manager.Security.walCheckpoint` and `OccultaApp.walCheckpoint` also ignore the result of the checkpoint and set no busy timeout, so a busy store skips the flush silently.
+
+### Fix
+
+Not done. Proposed: stop relying on the helper connection. Either pass the pragma to the store's own connections (Core Data takes `NSSQLitePragmasOption`; whether SwiftData's `ModelConfiguration` can is not checked), or after each purge overwrite and vacuum on a connection that has the pragma set, and check the checkpoint's result. The 2.1.0 plain SQLite store owns its connection and can set it directly. Correct S2 and the comment either way.
+
+### Guard
+
+The test above, in the working tree, not committed. To add once fixed: delete a row holding a known marker, checkpoint, and assert the marker's bytes are nowhere in the store, `-wal` or `-shm` files.
+
+## Bug 230 — A group that belongs to the real depth can be renamed or deleted from a duress depth
+
+**Status:** unconfirmed. Read from source by a hunter and checked by a separate verifier; not run.
+
+**Target:** `v2.0.1`.
+
+### Severity: Medium (whoever holds the unlocked phone at a duress depth can destroy or alter real-depth data: the group's name and every depth's member list)
+
+### What happens
+
+Every `Group` row is listed at every depth (`ContactsListV2.swift:66`), and `GroupDetailV3` resolves a group by id with no check that it has a member at the current depth (`GroupDetailV3.swift:35`). From there the edit form overwrites the one shared name (`Group+FormV3.swift:352`) and "Delete group" deletes the row (`:380`), which holds `realMemberSlots` and every other depth's membership (`Group+Model.swift:24`).
+
+What is decided covers less than this: `Docs/Features/Group Messaging/SPEC.md:207`, Bug 177's note and register §I accept that a group is listed at every depth with its name visible and that a duress depth's group layer is thin. None covers rename or delete. Open, needs a decision.
+
+The same listing gives two smaller observables a hunter noted: the "N groups" footer counts groups with no member at the current depth, and the member picker's capacity check counts members hidden at the current depth, so rows disable below 32 visible members.
+
+### Fix
+
+Not done. Proposed: at depth N > 0, refuse rename and delete for a group that has members at a shallower depth, in a way that reads the same as a group with none (for example, delete only clears the current depth's member list and hides the group at this depth). That needs a per-depth "hidden here" mark on the group, which is a design change. Open, needs a decision.
+
+### Guard
+
+None yet. Proposed: create a group with a real member at depth 0, go to depth 1, call `ContactManager.deleteGroup(id:)` and `writeName`, return to depth 0 and assert the group, its name and its members are unchanged.
+
+## Bug 231 — Saving a classification at depth N rewrites a deeper visibility limit to "visible everywhere"
+
+**Status:** unconfirmed. Read from source by the parent and a hunter, checked by a separate verifier; not run. Needs three or more depths.
+
+**Target:** `v2.0.1`.
+
+### Severity: Low (a contact hidden from depth K+1 becomes visible at every deeper depth after an unrelated save at a shallower depth; the leak runs towards deeper, less trusted depths)
+
+### What happens
+
+`visibleThroughDepth` is one number, but the read and the writers treat it as a yes/no relative to the current depth. `isSensitive` is `value == currentDepth` (`ContactManager+Classification.swift:21-30`), so a contact whose limit K is deeper than the current depth N reads as not private. `ContactClassification.save()` puts every contact that is not "sensitive" into `safeIDs` (`ContactClassification.swift:191`) and `saveClassification` writes `Int.max` for each (`ContactManager+Classification.swift:100`). `setVisibility(for:isSensitive: false)` does the same for one contact (`:131`) and has no check that the contact is visible at the current depth.
+
+### Fix
+
+Not done. Proposed: a write may only change a contact whose stored value is `Int.max` or the current depth, and leaves any other value alone; `setVisibility` checks `isVisible(atDepth:)` first.
+
+### Guard
+
+None yet. Proposed: give a contact a limit of 1, save a classification at depth 0 with it marked safe, assert it is still hidden at depth 2.
+
+## Bug 232 — A contact created at a duress depth shows as "Private" but stays visible at every deeper depth
+
+**Status:** unconfirmed. Read from source by a hunter, checked by a separate verifier; not run. The bypass is deliberate; the new part is the control that implies otherwise.
+
+**Target:** `v2.0.1`.
+
+### Severity: Low (the Private toggle and the Sensitive section promise a protection that is not applied)
+
+### What happens
+
+A contact created at depth N > 0 is stamped `visibleThroughDepth = N` and `originDepth = N` (`Contact+Manager.swift:226-234`). `isVisible` returns `depth >= origin` for it before it reads `visibleThroughDepth` (`Contact+Model.swift:240`). `isSensitive` reads only `visibleThroughDepth`, so at depth N the contact shows as Private, sits in the Sensitive section of the classification screen, and has no drafts saved for it. Switching the toggle changes nothing at depth N+1.
+
+An owner who uses a duress depth as their working depth and marks such a contact Private to keep it from the next layer gets no protection and no warning.
+
+### Fix
+
+Not done. Proposed: hide or disable the Private control and the Sensitive row for a contact whose origin is a duress depth, or make `isSensitive` agree with `isVisible`. Open, needs a decision on which.
+
+### Guard
+
+None yet.
+
+## Bug 233 — Adding a layer from a decoy depth overwrites an existing deeper layer's PIN and inherits its vault and backup key
+
+**Status:** unconfirmed. Read from source by two hunters, checked by a separate verifier; not run. Needs a stack deeper than the operator's depth.
+
+**Target:** `v2.0.1`. The Bug 110 and Bug 118 class (a reused depth number inherits state), on the activation path.
+
+### Severity: Low (the owner's deeper decoy PIN stops working without warning, and the new PIN's holder sees that depth's vault entries and backup setup)
+
+### What happens
+
+`activateSecureMode` writes `sealedDuressVerifiers[depth]` and `sealedNormalVerifiers[depth + 1]` (`Manager+Security.swift:409-410`) after checking only the current depth's PIN and that the new PIN collides with nothing (`:375-400`). It does not check whether depth + 1 is already in use and runs neither orphan sweep; those run only on deactivation. `reEnablePIN` does the same (`:976-977`). "Learn more" is offered at any duress depth other than `coercerBaseDepth` (`Settings.swift:232`).
+
+### Fix
+
+Not done. With Bug 220's rule (a depth can remove what is below it) the natural fix is: adding a layer at depth D first removes everything below D, with both orphan sweeps, then writes the new layer.
+
+### Guard
+
+None yet. Proposed in the verifier's record: layers to depth 3, an entry and a backup key at depth 2, activate from depth 1, enter the new PIN, assert the vault is empty and no backup is set up.
+
+## Bug 234 — A freed depth keeps its backup-export record, so a new layer at that depth number shows the old layer's backup warnings
+
+**Status:** unconfirmed. Read from source by a hunter, checked by a separate verifier; not run.
+
+**Target:** `v2.0.1`. The Bug 110 class again, on a file the orphan sweeps do not cover.
+
+### Severity: Low (a new layer can show "Trustee set changed" or "Backup key changed" for a backup it never made: a trace of an earlier layer at that depth)
+
+### What happens
+
+`backup-export-meta.dat` holds one sealed record per depth number, written on export (`Vault+Manager+Backup.swift:208`). Deactivating a layer orphans that depth's vault entries and backup key (`Manager+Security.swift:480-481`) and leaves the record. A later layer at the same number loads it (`Vault+Manager+Backup.swift:876-892`) and compares its own state with the old one.
+
+### Fix
+
+Not done. Proposed: clear the depth's slot in `orphanBackupKeys`, or bind the slot to the backup key row's id.
+
+### Guard
+
+None yet.
+
+## Bug 235 — Erase All Data deletes the `AppLayerConfig` row without re-seeding it, and leaves `Group` rows
+
+**Status:** unconfirmed. Read from source by a hunter, checked by a separate verifier; not run. Whether an image taken between a wipe and the next launch matters is the owner's call, since a wipe also deletes the keys and is visible anyway.
+
+**Target:** `v2.0.1`.
+
+### Severity: Low (the wipe restores some rows to a fresh install's shape and not others, against its own comment)
+
+### What happens
+
+`VaultManager.deleteAllData` deletes `AppLayerConfig` and re-creates the 32 backup-key filler rows and the `Vault` row "back to a fresh install's shape" (`Vault+Manager.swift:453`). The config row, which `Manager.Security.init` says must always exist, comes back only at the next launch. `Manager.App.eraseAllData` (`Manager+App.swift:24-48`) does not delete `Group` rows; they stay, unreadable, until a depth-0 unlock sweeps them. The coverage critic adds that the function leaves the `hasCompletedOnboarding` and `whatsNewLastSeenVersion` defaults.
+
+Related and known: Erase All Data is reachable at every depth behind a confirmation only (`Docs/Bugs/v1.10.0/Erase-All-Data-Reachable-By-Coercer-With-Zero-Confirmation.md`, partly fixed, its panic-wipe question undecided).
+
+### Fix
+
+Not done. Proposed: re-seed the config row and delete `Group` rows in the same pass.
+
+### Guard
+
+None yet. Proposed: after `eraseAllData` the store equals a fresh install's: one `AppLayerConfig` row, no `Group` rows, 32 backup-key rows, one `Vault` row.
