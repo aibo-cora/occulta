@@ -84,6 +84,9 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   image, the file's key and the phrase;
 - 29, found while writing the migration tests (§3.3): whether copies of a contact that several depths show share
   one ID and its prekey state, and what happens to a contact record or a vault note too large for its row;
+- 31, six v2.0.1 audit findings the design carries over: the grace period's clock (Bug 227), the app-switcher
+  cover (222), the backup-export record (234), the data-protection class (214), the 1.10.3 layer file (211) and
+  Settings with the lock off (223);
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -499,7 +502,8 @@ confirm step.
 dictation and no third-party keyboard. Spec §4 requires this whichever way the rest is settled.
 
 **Snapshots and state restoration.** The phrase stays out of both. `AppScreen` already covers the
-app-switcher snapshot.
+app-switcher snapshot. *2026-11-12:* only with Secure Mode active (Bug 222); the cover must be on every install
+(§8, 31).
 
 ### 2.3 Generator
 
@@ -1266,6 +1270,8 @@ there and aren't repeated here.
       records are re-opened (37 ms per 1,000). Later, or after iOS kills the app, the phrase is needed. The wrapped
       copy is dropped when the 5 minutes run out on return, when the app locks itself and when the space changes.
     - **Every depth alike** (Bug 41).
+    - *2026-11-12:* the time away must be measured on a clock the user can't set; today's grace uses the wall
+      clock (Bug 227; §8, 31). Open, needs a decision.
     - **A memory dump of a locked phone** gets only the wrapped copy: the Enclave refuses while the phone is locked.
       The copy never reaches disk, where it would be §1.1's device slot, which older images unwrap.
     - **What it leaves, as today's PIN grace does:** someone who takes the phone unlocked, or compels its passcode,
@@ -1387,6 +1393,33 @@ there and aren't repeated here.
         It doesn't depend on the passphrase, and it keeps two large changes in separate releases (2026-10-19).
       - *What stays open:* a pairing with a contact still on an older build keeps the identity fingerprint, and this
         item stays open for it until they upgrade; item 29's copies share one pairing.
+31. **v2.0.1 audit findings this design carries over** (added 2026-11-12, from the three audits of 2026-11-10:
+    `Docs/Audit/V2.0.1AuditIndex2026-11-10.md`; the bugs are in `bugs.md`, filed on `v2.1.0/v2.0.1-audit-docs`).
+    Each is open, needs a decision, and each would ship in 2.1.0 unless the plan takes it in.
+    - **Bug 227, the grace period runs on the wall clock** (Critical, conditional). Item 27's 5-minute grace counts
+      time in the background and names no clock, so as written it inherits the bug: whoever sets the clock back
+      returns to the space last open with no phrase. Proposed: measure on a clock the user can't set that counts
+      sleep, and treat a negative or unreadable interval as expired. Stage 0, with the key cache (C2).
+    - **Bug 222, the app-switcher cover appears only with Secure Mode active** (High). §2.2 assumed it covers every
+      snapshot. Proposed: the cover on every resign, on every install, whether or not a lock is set. Stage 6.
+    - **Bug 234, the backup-export record is per depth number** (Low). `backup-export-meta.dat` is not in stage 5's
+      list. Proposed: a record sealed in the space's table, so no per-depth file remains. Stage 5.
+    - **Bug 214, no default data-protection entitlement** (Low). The new store file and its `-wal` need the class as
+      well. Proposed: the entitlement with `NSFileProtectionComplete`, and a check of the new files' class on a device
+      with no real data. Stage 0, with the store layer.
+    - **Bug 211, the layer file of releases up to 1.10.3 stays in the App Group** (Critical on devices upgraded with
+      Secure Mode active). The migration doesn't touch it. Proposed: fixed before 2.1.0; failing that, the migration
+      deletes the `blobs` directory. Stage 6 at the latest.
+    - **Bug 223, "Learn more" on a lowered lock asks for a current passcode** (Medium). The PIN setup flow goes in
+      stage 6, but the check stays: with the lock off (7a), nothing in Settings may show that a phrase exists.
+      Stage 6, as a test.
+    - **Closed by the design once 2.1.0 ships, each still open in 2.0.x:** Bugs 206, 210, 212, 220, 221, 224, 225,
+      226, 228, 229, 230, 231, 232, 233 and 235. Erase (212, 235) is new code and needs its own fresh-install test.
+      Images taken before the migration keep the old store's history log and residue until that store is deleted,
+      and stale blocks after it (item 26's remainder).
+    - **Bugs 198 and 199** (key exchange) are outside this plan but reach Bug 194: its pairing secret is derived
+      from the words' input, so a man in the middle who forces matching words holds it, and an ML-KEM strip leaves
+      the classical pairing where key binding matters most.
 
 ---
 
@@ -1397,6 +1430,7 @@ depends on or changes.
 
 | Item | Summary | Status | Here |
 |---|---|---|---|
+| Bugs 211, 214, 222, 223, 227, 234 | v2.0.1 audit findings the design carries over | Open (filed 2026-11-12 on `v2.1.0/v2.0.1-audit-docs`) | §8, 31 |
 | Bug 194 | A file names its sender by identity key alone, so two pairings with one person can't be told apart | Open; design decided 2026-11-03, not built | §8, 30; stage P, in a release before 2.1.0 |
 | Bug 37 | Re-enable PIN fails silently at a lowered gate with an unknown PIN | Closed (fixed) | §1.3: the fix has no phrase equivalent yet |
 | Bug 62 | `pinCollision` PIN oracle | Open | Gone with the old store once the reseal is verified (§3.2) |

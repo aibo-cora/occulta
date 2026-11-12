@@ -15395,6 +15395,11 @@ keychain item, nothing outside the record).
   the confirmation, opened after it, would be refused. Decide before building it.
 - **Restore and device migration:** every path that rebuilds a contact record (backup restore, Device Migration,
   identity rotation, Bugs 82 and 94) must carry the secret or fall back to the swap.
+- **Bugs 198 and 199** (v2.0.1 key exchange audit, 2026-11-10; filed on `v2.1.0/v2.0.1-audit-docs`). Step 1
+  derives the secret from the input the verification words come from. Under Bug 198 a man in the middle can make
+  both phones show the same words, so he would hold both pairings' secrets; derive over the committed transcript
+  198's fix proposes, after that fix. Under Bug 199 ML-KEM can be stripped in transit, which leaves the classical
+  pairing where key binding matters most. Added 2026-11-12 (rollout §8, 31).
 
 ### What the building session also changes
 
