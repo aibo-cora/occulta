@@ -457,7 +457,7 @@ extension VaultManager {
     /// Called on every unlock and on wipe; after the first run there's nothing left to delete.
     /// Takes no depth, so it behaves the same in every layer.
     func deleteLegacyRestoreState() {
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let directory = Manager.Paths.applicationSupport
         for name in ["backup-import-cache.occbak", "pending-restore.occbak", "pending-restore-shards.dat"] {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
         }
@@ -830,10 +830,9 @@ extension VaultManager {
 
     // MARK: - Export metadata helpers
 
-    private static let backupExportMetaURL: URL =
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("backup-export-meta.dat")
+    private static var backupExportMetaURL: URL {
+        Manager.Paths.applicationSupport.appendingPathComponent("backup-export-meta.dat")
+    }
 
     private static let backupExportMetaAAD: Data =
         Data("occulta.backup-export-meta-v1".utf8)

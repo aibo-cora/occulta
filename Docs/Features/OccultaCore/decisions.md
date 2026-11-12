@@ -91,3 +91,20 @@ group HMAC sender proof, and the per-recipient key wraps.
 
 **Consequences:** The design was settled before the deferral and is recorded in bugs.md OC-3 so that it
 isn't re-derived. Nothing is built.
+
+## `sessionKey` throws typed errors instead of returning nil (2026-11-01)
+
+**Decision:** `TransportKeyDerivation.sessionKey` is `throws(TransportKeyDerivation.Error) -> SymmetricKey`. The cases
+are `invalidOwnPublicKeyLength`, `invalidPeerPublicKeyLength`, `invalidECDHOutputLength` and
+`invalidPostQuantumSecretLength`, checked in that order, and they carry no data. `ecdhOutput` must now be 32 bytes.
+
+**Why:** `nil` could not tell a caller which input was wrong, and the one input nothing checked, `ecdhOutput`, was the
+one whose absence made the key computable from public values (bugs.md OC-1; Bug 191). Fixing the missing check with
+another `nil` would have left a host app guessing. The cases carry no associated values so that no key bytes can end
+up in an error, a log or a crash report.
+
+**Consequences:** A public API break, taken now because no host app uses the package. The app's callers (`Manager.Key`,
+`TestKeyManager`, the card code, `PQTestKeyPair`) use `try?`, so they return the same `nil` as before, no new error
+text reaches the UI or a log, and no interop vector moves. A caller that passed an `ecdhOutput` of another size on
+purpose would now get an error; none is known. `PostQuantumProvider`'s optional returns are a separate question, not
+decided here.

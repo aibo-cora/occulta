@@ -39,8 +39,9 @@
 //     - An observer sees E, P and the ciphertexts, so the salt; without the ECDH output (and,
 //       in a hybrid form, one of the ML-KEM secrets) the key is out of reach.
 //     - The same pair under two labels gets two independent keys (HKDF info).
-//     - Malformed input is rejected, not repaired: a public key that is not 65 bytes, or an
-//       ML-KEM secret that is not 32, returns nil.
+//     - Malformed input is rejected, not repaired: a public key that is not 65 bytes, an
+//       ecdhOutput that is not 32, or an ML-KEM secret that is not 32, throws an Error that
+//       names which one. The cases carry no data, so no key bytes reach an error.
 //
 //  4. Security property verification
 //     - Property: the output is indistinguishable from random to anyone who doesn't know the
@@ -68,11 +69,12 @@
 //       by static-static ECDH; a forward-secret form authenticates nobody — Occulta signs the
 //       sender's ephemeral key separately), forward secrecy beyond the caller's key lifetimes,
 //       key confirmation, replay resistance, direction binding (both directions get the same
-//       key), zeroing of intermediates. ecdhOutput's length is not checked: every Occulta
-//       caller passes 32 bytes.
+//       key), zeroing of intermediates. ecdhOutput's length is checked (32 bytes), but its value
+//       is not: a 32-byte output the caller got wrong is a key anyone holding the same wrong
+//       bytes derives. That the output came from a real ECDH is the caller's.
 //
 //  5. Layer boundary check
-//     - Input: Data, (Data, Data)?. Output: SymmetricKey?. One pure function.
+//     - Input: Data, (Data, Data)?. Output: SymmetricKey, or a thrown Error. One pure function.
 //     - External calls: CryptoKit's HKDF<SHA256>.deriveKey, nothing else.
 //     - No SwiftData, no UI, no KeyManagerProtocol, no SecKey, no Enclave.
 //     - Tested without an Enclave: OccultaCoreAPITests (properties and rejections), and the
@@ -86,6 +88,20 @@ import CryptoKit
 // MARK: - TransportKeyDerivation
 
 public enum TransportKeyDerivation {
+
+    // MARK: Errors
+
+    public enum Error: Swift.Error {
+        /// `ownPublicKey` is not 65 bytes.
+        case invalidOwnPublicKeyLength
+        /// `peerPublicKey` is not 65 bytes.
+        case invalidPeerPublicKeyLength
+        /// `ecdhOutput` is not 32 bytes. An empty one in the classical form would derive a key
+        /// computable from the public keys and the label alone.
+        case invalidECDHOutputLength
+        /// Either ML-KEM shared secret is not 32 bytes.
+        case invalidPostQuantumSecretLength
+    }
 
     /// A 256-bit session key from an ECDH output and, in a hybrid form, two ML-KEM shared secrets.
     ///
@@ -108,19 +124,22 @@ public enum TransportKeyDerivation {
     ///   - peerPublicKey:      x963 public key (65 bytes) of the other side.
     ///   - postQuantumSecrets: the two ML-KEM shared secrets (32 bytes each), or nil for the classical form.
     ///   - info:               the HKDF info: the caller's label for this purpose.
-    /// - Returns: The key, or nil if a public key is not 65 bytes or a secret is not 32.
+    /// - Throws: `Error`, for the first check that fails, in this order: `ownPublicKey` is not 65 bytes,
+    ///   `peerPublicKey` is not 65 bytes, `ecdhOutput` is not 32 bytes, either ML-KEM secret is not 32 bytes.
     public static func sessionKey(
         ecdhOutput: Data,
         ownPublicKey: Data,
         peerPublicKey: Data,
         postQuantumSecrets: (Data, Data)?,
         info: Data
-    ) -> SymmetricKey? {
-        guard ownPublicKey.count == 65, peerPublicKey.count == 65 else { return nil }
+    ) throws(Error) -> SymmetricKey {
+        guard ownPublicKey.count == 65  else { throw .invalidOwnPublicKeyLength }
+        guard peerPublicKey.count == 65 else { throw .invalidPeerPublicKeyLength }
+        guard ecdhOutput.count == 32    else { throw .invalidECDHOutputLength }
 
         var ikm = ecdhOutput
         if let secrets = postQuantumSecrets {
-            guard secrets.0.count == 32, secrets.1.count == 32 else { return nil }
+            guard secrets.0.count == 32, secrets.1.count == 32 else { throw .invalidPostQuantumSecretLength }
             let sorted = [secrets.0, secrets.1].sorted { $0.lexicographicallyPrecedes($1) }
             ikm.append(contentsOf: sorted[0])
             ikm.append(contentsOf: sorted[1])

@@ -77,6 +77,33 @@ struct PrekeyBookkeeper {
         record.inboundLastResort.map { Prekey(id: $0.id, contactID: contactID, publicKey: $0.publicKey) }
     }
 
+    /// Forgets everything the contact's old phone gave us, because their identity key changed (Bug 194): the one-time
+    /// keys and last-resort key we'd seal to, which only that phone can open, and the batch IDs and date that decide
+    /// which batch to accept next. A date left from the old phone could be ahead of the new phone's clock and make
+    /// `accept` refuse its first batch. Our own batches stay: the old phone sealed them, and nothing in them is
+    /// wrong.
+    ///
+    /// - Returns: whether the record changed.
+    @discardableResult
+    func dropInbound(from record: inout PrekeyRecord) -> Bool {
+        let before = record
+        record.inboundBatches = []
+        record.inboundLastResort = nil
+        record.acceptedBatchIDs = []
+        record.latestInboundGeneratedAt = nil
+        return record != before
+    }
+
+    /// Whether what we hold from the contact was given to us before their current key arrived at `acquiredAt`, so it
+    /// belongs to a phone that no longer is theirs. A record with nothing inbound isn't stale. One with inbound state
+    /// and no date predates the date being kept, and is.
+    func inboundIsStale(_ record: PrekeyRecord, since acquiredAt: Date) -> Bool {
+        guard !record.inboundBatches.isEmpty || record.inboundLastResort != nil
+                || !record.acceptedBatchIDs.isEmpty || record.latestInboundGeneratedAt != nil
+        else { return false }
+        return record.latestInboundGeneratedAt.map { $0 < acquiredAt } ?? true
+    }
+
     /// The batch we're still waiting to deliver, to attach to every message to this contact.
     ///
     /// The record doesn't store the public keys of keys it holds a blob for; `publicKeyOfBlob` derives them, which
@@ -285,6 +312,41 @@ struct PrekeyBookkeeper {
             lastResort: lastResort.map(ownKey)
         ))
 
+        Self.holdToMaxOwnKeys(&record)
+    }
+
+    /// A pairing's first batch, made in the exchange before the contact's record could hold it (`bugs.md` Bug 196).
+    /// The peer has been sent this batch's public keys with its ID, so it is installed as it stands, pending, and keeps
+    /// travelling until a key from it is used.
+    ///
+    /// A new pairing is a new peer key, so what the record held of the old one is over: the peer's keys, which the old
+    /// phone gave us, are dropped, and no message may be sealed to them. Our own earlier batches are kept and retired,
+    /// to open anything the old phone sealed before the re-pair and we haven't opened, and the sweep deletes them after
+    /// the grace period like any retired batch. The legacy keychain keys stay as they were.
+    ///
+    /// - Precondition: `batch` is pending and holds the keys of one batch.
+    func startPairing(with batch: PrekeyRecord.OwnBatch, in record: inout PrekeyRecord, now: Date) {
+        for index in record.ownBatches.indices {
+            if record.ownBatches[index].retiredAt == nil { record.ownBatches[index].retiredAt = now }
+            if record.ownBatches[index].isPending {
+                // Undeliverable now: the peer it was for is gone. Its keys open nothing sent to a key the peer never saw,
+                // so only the grace period needs them.
+                record.ownBatches[index].isPending = false
+                record.ownBatches[index].id = nil
+                for key in record.ownBatches[index].keys.indices { record.ownBatches[index].keys[key].publicKey = nil }
+            }
+        }
+        record.inboundBatches = []
+        record.inboundLastResort = nil
+        record.acceptedBatchIDs = []
+        record.latestInboundGeneratedAt = nil
+
+        record.ownBatches.append(batch)
+        Self.holdToMaxOwnKeys(&record)
+    }
+
+    /// Holds the record to `maxOwnKeys` by deleting the oldest retired keys first (`install`).
+    private static func holdToMaxOwnKeys(_ record: inout PrekeyRecord) {
         var excess = record.ownBatches.reduce(0) { $0 + Self.keyCount($1) } - Self.maxOwnKeys
         let retired = record.ownBatches.indices.filter { record.ownBatches[$0].retiredAt != nil }
         for index in retired where excess > 0 {

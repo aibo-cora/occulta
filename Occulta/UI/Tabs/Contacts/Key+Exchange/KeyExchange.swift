@@ -146,8 +146,7 @@ struct KeyExchange: View {
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         @Environment(\.dismiss) private var dismiss
 
-        private enum SaveState { case confirming, saving, saved, failed }
-        private enum SaveError: Error { case invalidKeyMaterial }
+        private enum SaveState { case confirming, saving, saved, failed, refusedWeaker }
         @State private var saveState: SaveState = .confirming
         /// What the in-person check found about an earlier card conversation. Held only while its screen is up;
         /// nothing about it is stored.
@@ -192,6 +191,16 @@ struct KeyExchange: View {
                             .foregroundStyle(Color.occultaVerified)
                     }
 
+                    // We sent pair keys and the other phone sent none we could use: the pairing is made as before, and
+                    // both people can see it here, where a phone on an older version looks the same as one whose message
+                    // was interfered with. Shown on this screen only; nothing about it is stored.
+                    if self.payload.offeredPairing && self.payload.pairing == nil {
+                        Text("Pair keys weren't exchanged. If both phones are on the latest version, try again.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
                     switch self.saveState {
                     case .confirming, .saving:
                         Button {
@@ -220,6 +229,26 @@ struct KeyExchange: View {
                         Label("Key saved", systemImage: "checkmark.circle.fill")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(Color.occultaVerified)
+
+                    case .refusedWeaker:
+                        // A retry runs the same exchange and is refused the same way, so none is offered: the way on is a new
+                        // exchange once the other person's phone can give pair keys (Bug 196).
+                        Label("Not saved: the other phone gave no pair keys", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.occultaDanger)
+
+                        Text("You and this contact already share a stronger pairing than this exchange would make, so it was kept as it was. Ask them to update Occulta, then exchange keys again.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button("Done") {
+                            self.manager.finish()
+                            self.dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.occultaAccent)
+                        .frame(maxWidth: .infinity)
 
                     case .failed:
                         Label("Couldn't save key", systemImage: "exclamationmark.triangle.fill")
@@ -256,7 +285,15 @@ struct KeyExchange: View {
         private var words: [String] {
             let sharedKey: Data?
             
-            if let result = self.payload.hybridResult {
+            if let pairing = self.payload.pairing {
+                // A pair-key exchange: the words cover both phones' pair keys and the identity ECDH (Bug 196, stage 2), so a
+                // key a man in the middle added, removed or swapped changes them. A failure to derive shows words that
+                // cannot match, and `save()` refuses the pairing.
+                sharedKey = pairing.wordsKey(
+                    withPeer: self.payload.classicalKey, quantum: self.payload.hybridResult.map(QuantumKeyMaterial.init(from:)),
+                    using: self.keyManager
+                )
+            } else if let result = self.payload.hybridResult {
                 let material = QuantumKeyMaterial(from: result)
                 sharedKey = self.keyManager.createDicewareKey(
                     peerP256Material: result.peerP256PublicKey,
@@ -294,24 +331,12 @@ struct KeyExchange: View {
         private func save() {
             self.saveState = .saving
 
-            do {
-                let myIdentity = try self.keyManager.retrieveIdentity()
-                let date = String(Date.now.timeIntervalSince1970)
-                let quantum = self.payload.hybridResult.map {
-                    QuantumKeyMaterial(
-                        encapsulatedSecret: $0.mlkemSecret1,
-                        decapsulatedSecret: $0.mlkemSecret2,
-                        ourCiphertext: $0.ourCiphertext,
-                        peerCiphertext: $0.peerCiphertext
-                    )
-                }
-
-                guard let key = Contact.Draft.Key(material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum) else {
-                    throw SaveError.invalidKeyMaterial
-                }
-
-                try self.contactManager?.update(key: key, for: self.identifier)
-
+            switch KeyExchange.saveExchange(self.payload, for: self.identifier, in: self.contactManager, using: self.keyManager) {
+            case .refusedWeaker:
+                self.saveState = .refusedWeaker
+            case .failed:
+                self.saveState = .failed
+            case .saved:
                 // After the key is saved and before `finish()`, which discards the peer's proof (SPEC §7).
                 let verdict = self.manager.cardMeetingVerdict(for: self.payload)
 
@@ -327,9 +352,65 @@ struct KeyExchange: View {
                     // The exchange closes from the verdict screen: after "I understand", or when W-12 is closed.
                     self.cardVerdict = verdict
                 }
-            } catch {
-                self.saveState = .failed
             }
+        }
+    }
+}
+
+extension KeyExchange {
+
+    /// What Save did, for the confirmation screen to show.
+    enum SaveOutcome: Equatable {
+        case saved
+        /// The contact's pairing has pair keys and this exchange gave none: nothing is saved, and the exchange can be run again.
+        case refusedWeaker
+        case failed
+    }
+
+    /// Saves a confirmed exchange: derives the routing key, builds the key row and hands both to `update(key:for:pairing:)`.
+    /// Anything it can't do leaves nothing saved.
+    @MainActor
+    static func saveExchange(
+        _ payload: ExchangeManager.ExchangePhase.Payload, for identifier: String,
+        in contactManager: ContactManager?, using keyManager: any KeyManagerProtocol
+    ) -> SaveOutcome {
+        do {
+            let myIdentity = try keyManager.retrieveIdentity()
+            let date = String(Date.now.timeIntervalSince1970)
+            let quantum = payload.hybridResult.map {
+                QuantumKeyMaterial(
+                    encapsulatedSecret: $0.mlkemSecret1,
+                    decapsulatedSecret: $0.mlkemSecret2,
+                    ourCiphertext: $0.ourCiphertext,
+                    peerCiphertext: $0.peerCiphertext
+                )
+            }
+
+            // Both phones sent a `pairing` field, so both hold a routing key and a pair of keys and derive the same one
+            // (Bug 196). One we can't derive is not a weaker pairing to save: nothing is saved, and the screen says so.
+            var pairing = PairingState.empty
+            if let offer = payload.pairing {
+                guard let derived = offer.routingKey(withPeer: payload.classicalKey, quantum: quantum, using: keyManager) else {
+                    return .failed
+                }
+                pairing = .paired(routingKey: derived, keys: offer.pairKeys)
+            }
+
+            guard let key = Contact.Draft.Key(
+                material: payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum,
+                pairing: pairing
+            ) else {
+                return .failed
+            }
+
+            // No manager is not a save: the caller discards the exchange's keys right after "saved".
+            guard let contactManager else { return .failed }
+            try contactManager.update(key: key, for: identifier, pairing: payload.pairing)
+            return .saved
+        } catch ContactManager.Errors.pairingWouldBeWeaker {
+            return .refusedWeaker
+        } catch {
+            return .failed
         }
     }
 }

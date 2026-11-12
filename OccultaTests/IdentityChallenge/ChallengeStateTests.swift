@@ -432,7 +432,6 @@ struct ChallengeFieldMigrationTests {
             return try AES.GCM.open(try AES.GCM.SealedBox(combined: data), using: self.key, authenticating: EncryptionScheme.v2_hybridPQ.aad)
         }
         func decryptLegacy(data: Data?) throws -> Data? { try self.decrypt(data: data) }
-        func encrypt(message: Data, using material: Data?) throws -> Data? { nil }
         func decrypt(message: Data, using material: Data?) throws -> Data? { nil }
         func sign(data: Data?) throws -> String { "" }
     }

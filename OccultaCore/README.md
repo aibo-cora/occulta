@@ -146,15 +146,17 @@ key  = HKDF-SHA256(IKM, Salt, info, 32 bytes)
 - `ecdhOutput` is 32 bytes you computed with your own private key, wherever it lives: the X9.63 KDF
   output of the exchange, with SHA-256 and no shared info (`SecKeyCopyKeyExchangeResult` with
   `.ecdhKeyExchangeCofactorX963SHA256` and size 32, or CryptoKit's `x963DerivedSymmetricKey`). No
-  private key reaches this function. **Its length is not checked** (see the open item in
-  `Docs/Features/OccultaCore/bugs.md`), so pass exactly 32 bytes.
+  private key reaches this function. It must be exactly 32 bytes.
 - `ownPublicKey` and `peerPublicKey` are x963 P-256 keys, 65 bytes. Each side passes its own as
   `ownPublicKey`; both then derive the same key.
 - `postQuantumSecrets` is two 32-byte ML-KEM shared secrets, in either order, or `nil` for the
   classical form.
 - `info` is **your** label, one per purpose, with your version in it. It is the only domain
   separation the function has. Occulta's labels are not for you.
-- It returns `nil` for a public key that isn't 65 bytes or a secret that isn't 32.
+- It throws `TransportKeyDerivation.Error` for input of the wrong size, and the case says which:
+  `invalidOwnPublicKeyLength`, `invalidPeerPublicKeyLength` (not 65 bytes), `invalidECDHOutputLength`
+  (not 32) or `invalidPostQuantumSecretLength` (either secret not 32). It checks in that order and
+  reports the first that fails. The cases carry no data.
 
 **Pin the post-quantum mode per peer. Do not infer it from a message.** Store, when you add a
 peer, whether you hold ML-KEM secrets for them, and pass `postQuantumSecrets` from that record on
@@ -176,7 +178,7 @@ struct Peer {
     var postQuantumSecrets: (Data, Data)?        // set when the peer was added; nil: classical-only
 }
 
-enum TransportError: Error { case badKeyMaterial, malformed }
+enum TransportError: Error { case malformed }
 
 /// One label per purpose, chosen by your app. The version is part of it.
 let label = Data("com.example.myapp.message.v1".utf8)
@@ -188,14 +190,13 @@ func sessionKey(own: P256.KeyAgreement.PrivateKey, peer: Peer) throws -> Symmetr
         .x963DerivedSymmetricKey(using: SHA256.self, sharedInfo: Data(), outputByteCount: 32)
         .withUnsafeBytes { Data($0) }
 
-    guard let key = TransportKeyDerivation.sessionKey(
+    return try TransportKeyDerivation.sessionKey(
         ecdhOutput: ecdhOutput,
         ownPublicKey: own.publicKey.x963Representation,
         peerPublicKey: peer.publicKey,
         postQuantumSecrets: peer.postQuantumSecrets,     // from the record, never from the message
         info: label
-    ) else { throw TransportError.badKeyMaterial }
-    return key
+    )
 }
 
 /// `header` is whatever else the receiver acts on (a message ID, the sender, a timestamp). It travels

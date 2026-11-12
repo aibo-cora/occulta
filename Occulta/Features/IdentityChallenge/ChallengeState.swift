@@ -40,6 +40,18 @@ struct ChallengeState: Equatable {
         set { self.slots[ChallengeStateCodec.slotIndex(forDepth: depth)] = newValue }
     }
 
+    /// Drops the outstanding challenge of every slot and keeps each verified-at time. For a re-pair, which makes a challenge
+    /// outstanding to the old pairing unanswerable but leaves what was verified before it true. Returns whether anything changed.
+    @discardableResult
+    mutating func removeOutstandingChallenges() -> Bool {
+        var changed = false
+        for index in self.slots.indices where self.slots[index].challenge != nil {
+            self.slots[index].challenge = nil
+            changed = true
+        }
+        return changed
+    }
+
     /// Clears what has expired in every slot (the rule of `OutstandingChallenge.isExpired(at:)`, and the same for
     /// the verified-at time). Returns whether anything changed.
     mutating func removeExpired(now: Date) -> Bool {

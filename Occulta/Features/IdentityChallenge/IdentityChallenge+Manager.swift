@@ -154,9 +154,13 @@ extension IdentityChallenge {
 
         /// Build a challenge and hand its envelope to `seal`, which picks the format. Same side effects as above:
         /// the challenge is registered only once `seal` returns.
+        ///
+        /// `pairing` is a pair-key pairing's keys (`bugs.md` Bug 196, stage 2): the inner fingerprint is then made from our
+        /// pair signing key, and the response is checked against the contact's, in place of the identity key.
         func createChallenge<Sealed>(
             contactID:   String,
             contextNote: String? = nil,
+            pairing:     PairingSlotKeys? = nil,
             seal:        (IdentityChallengeEnvelope) throws -> Sealed
         ) throws -> Sealed {
             // 0. Rate limit first — avoid wasting SE work on a request we'll reject.
@@ -175,7 +179,7 @@ extension IdentityChallenge {
             //    AND for the outer routing fingerprint).
             let ourPublicKey: Data
             do {
-                ourPublicKey = try self.crypto.keyManager.retrieveIdentity()
+                ourPublicKey = try pairing?.ourSigningKey ?? self.crypto.keyManager.retrieveIdentity()
             } catch {
                 throw ManagerError.noIdentity
             }
@@ -264,7 +268,8 @@ extension IdentityChallenge {
             senderKey:     Data,
             senderQuantum: QuantumKeyMaterial?,
             senderID:      String,
-            senderName:    String
+            senderName:    String,
+            pairing:       PairingSlotKeys? = nil
         ) throws -> PendingApproval {
             guard envelope.kind == .challenge else { throw ManagerError.malformedBundle }
             let payloadBytes = envelope.payload
@@ -284,9 +289,9 @@ extension IdentityChallenge {
                 throw ManagerError.malformedBundle
             }
 
-            // Inner fingerprint must bind to the sender's long-term key.
+            // Inner fingerprint must bind to the sender's long-term key, or to their pair signing key for a pair-key pairing.
             // Prevents a stored-but-misrouted bundle from being accepted.
-            let expected = OccultaBundle.SecrecyContext.fingerprint(for: senderKey, nonce: payload.nonce)
+            let expected = OccultaBundle.SecrecyContext.fingerprint(for: pairing?.peerSigningKey ?? senderKey, nonce: payload.nonce)
             guard expected == payload.challengerFingerprint else {
                 throw ManagerError.verificationFailed
             }
@@ -338,14 +343,18 @@ extension IdentityChallenge {
 
         /// Sign the approved challenge and hand the response envelope to `seal`, which picks the format: for a
         /// challenger at `.bodyDigestCapable`, `ContactManager.encryptBundle` (prekey continuity §3.4).
-        func respond<Sealed>(to pending: PendingApproval, seal: (IdentityChallengeEnvelope) throws -> Sealed) throws -> Sealed {
+        ///
+        /// For a pair-key pairing the response is signed by our pair signing key, not the identity key (`bugs.md` Bug 196).
+        func respond<Sealed>(
+            to pending: PendingApproval, pairing: PairingSlotKeys? = nil, seal: (IdentityChallengeEnvelope) throws -> Sealed
+        ) throws -> Sealed {
             let signedData = Occulta.Manager.Crypto.buildSignedData(
                 nonce:                 pending.payload.nonce,
                 timestamp:             pending.payload.timestamp,
                 challengerFingerprint: pending.payload.challengerFingerprint
             )
 
-            let signature = try self.crypto.signChallenge(signedData)
+            let signature = try pairing?.sign(signedData) ?? self.crypto.signChallenge(signedData)
             let response  = ResponsePayload(challengeNonce: pending.payload.nonce, signature: signature)
 
             // `.response(payload:)` forces contextNote == nil — the rule that
@@ -384,7 +393,8 @@ extension IdentityChallenge {
         func verifyResponse(
             envelope:  IdentityChallengeEnvelope,
             senderKey: Data,
-            senderID:  String
+            senderID:  String,
+            pairing:   PairingSlotKeys? = nil
         ) throws -> VerificationResult {
             guard envelope.kind == .response else { throw ManagerError.malformedBundle }
 
@@ -428,7 +438,7 @@ extension IdentityChallenge {
             // NOT from any responder-supplied field.
             let ourPublicKey: Data
             do {
-                ourPublicKey = try self.crypto.keyManager.retrieveIdentity()
+                ourPublicKey = try pairing?.ourSigningKey ?? self.crypto.keyManager.retrieveIdentity()
             } catch {
                 throw ManagerError.noIdentity
             }
@@ -444,7 +454,7 @@ extension IdentityChallenge {
             )
 
             // Construct a SecKey view over the responder's stored public key.
-            guard let publicKey = Self.makePublicKey(x963: senderKey) else {
+            guard let publicKey = Self.makePublicKey(x963: pairing?.peerSigningKey ?? senderKey) else {
                 self.settle(entry, for: senderID, passedAt: nil)
                 return .failed(contextNote: note)
             }

@@ -70,7 +70,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   mixed into every slot's key derivation; derived at pairing for new pairings, swapped in a `RecipientPayload`
   field with a confirmation for existing ones, from the card's ML-KEM material for cards; each slot carries
   HMAC(secret, nonce) as its routing label in place of the outer `senderFingerprint`, and the sender proof covers
-  it; shipped in a release before 2.1.0 (decided 2026-11-03, not built; Bug 194);
+  it; shipped in a release before 2.1.0 (decided 2026-11-03; built and shipped in 2.0.1 as Bug 196 with pair keys,
+  no in-band swap for existing pairings, and cards deferred, decided 2026-11-04 and 2026-11-05);
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
 
@@ -883,6 +884,13 @@ more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ agains
   **Decided 2026-10-19 by the owner (15a–15d; `decisions.md`, 2026-10-19).**
   - **15a.** The new per-install phrase key is a keychain item, like the app's other keys.
   - **15b.** The identity key stays in the keychain.
+    - *Revisited 2026-11-05 (`bugs.md` Bug 196, stage 2):* there is still one identity key per install, in the keychain. For a
+    pairing made with pair keys it is no longer the long-term agreement key or the key that signs that pairing's slots and
+    challenges: each such pairing has its own Enclave key pair. It stays the pseudonym, the in-person hash check, `Key.owner`,
+    the continuity check, and the key for backup pieces, signed attributes and the Sign tab. Under spaces, one person paired in
+    two spaces still shares an identity key across records, so linking by it is unchanged; their long-term slots and signatures
+    no longer work across spaces. Pair keys are Enclave blobs in the app container, so they go with the app, while the keychain
+    identity key survives a reinstall.
   - **15c.** The keys graduation retires aren't moved first.
   - **15d.** Erase All Data deletes the share staging key, which stays a keychain item. This doesn't depend on the
     passphrase work. Built and merged 2026-10-19 (PR #118, with #119), so it ships in 2.0.0.
@@ -944,7 +952,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| P | Pairing secret, in a release before 2.1.0 | `bugs.md` Bug 194; §8, 30: the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material; a routing label in each slot; key binding; a new bundle version and interop vectors | Not estimated |
+| P | Pairing secret, in a release before 2.1.0 | `bugs.md` Bug 196; §8, 30: ~~the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material;~~ a routing key and pair keys derived at a new exchange; a routing tag in each slot; key binding; a new capability tier and interop vectors. *Shipped in 2.0.1; no swap, cards deferred* | Done |
 | 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
@@ -991,8 +999,8 @@ there and aren't repeated here.
      SQLite reads and trial decryption at scale. It uses throwaway keys and its own files, links no Occulta code
      that touches the store or keychain, and is never a test host for Occulta. iOS keeps its container and
      keychain apart from Occulta's, so it can run on a phone with real data, but each install is asked for first,
-     naming the phone. ~~Not built.~~ *Built 2026-11-02 as `Tools/OccultaMeasure`, PR #155 to `develop` (not
-     merged): run on the iPhone 17 Pro Simulator only, not on a device.*
+     naming the phone. ~~Not built.~~ *Built 2026-11-02 as `Tools/OccultaMeasure/`, PR #155 to `develop`, merged:
+     run on the iPhone 17 Pro Simulator only, not on a device. A device run is manual and per phone (its README).*
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ ~~**Decided:** refused while duress depths exist.~~ **Superseded
@@ -1300,7 +1308,8 @@ there and aren't repeated here.
         quality is a case to cover.
 30. **One person paired in two spaces** (added 2026-11-03). ~~Open, needs a decision.~~ **Decided 2026-11-03 by
     the owner: a random secret per pairing, used for both routing and key binding, with `senderProof` covering it**
-    (`decisions.md`, 2026-11-03). Not built. ~~Still open, needs a decision: how existing pairings get a secret,
+    (`decisions.md`, 2026-11-03). ~~Not built.~~ **Built and shipped in 2.0.1 as `bugs.md` Bug 196, changed in three
+    places (2026-11-05): see "As built" at the end of this item.** ~~Still open, needs a decision: how existing pairings get a secret,
     where the fingerprint goes in a group bundle, how a card carries the secret, and which stage it ships in.~~
     **The remainder, decided 2026-11-03 by the owner,** is at the end of this item.
     - **How it happens.** Any user can pair the same person in two spaces. A coercer can force it: two travel
@@ -1365,8 +1374,9 @@ there and aren't repeated here.
       - ~~*Recommended, not decided:*~~ *Decided 2026-11-03:* both. `senderProof` (`Contact+Manager.swift`, step 5.5), which today
         authenticates the sender's public key, would also cover the pairing secret, so the routing field is checked
         no less strictly than today.
-    - **The remainder, decided 2026-11-03 by the owner** (`decisions.md`, 2026-11-03). Not built; the work is
-      tracked as `bugs.md` Bug 194, with the files to change, the tests and what is still open.
+    - **The remainder, decided 2026-11-03 by the owner** (`decisions.md`, 2026-11-03). Tracked as `bugs.md` Bug 196,
+      filed here as Bug 194 and renumbered 2026-11-12, since `release/v2.1.0` holds a different Bug 194. Parts of it
+      changed when it was built: see "As built" below.
       - *New pairings derive the secret at pairing,* from what the exchange already shares: the identity ECDH, both
         pairing nonces and the ML-KEM secrets where present, under a label of its own. It is the same input the
         verification words come from, so the words authenticate it, and it covers the first message after pairing,
@@ -1393,6 +1403,26 @@ there and aren't repeated here.
         It doesn't depend on the passphrase, and it keeps two large changes in separate releases (2026-10-19).
       - *What stays open:* a pairing with a contact still on an older build keeps the identity fingerprint, and this
         item stays open for it until they upgrade; item 29's copies share one pairing.
+    - **As built, shipped in 2.0.1** (Bug 196, "Stage 2"; decided by the owner 2026-11-04 and 2026-11-05). Where it
+      differs from the remainder above, the build stands:
+      - *The secret is the routing key,* derived at the exchange and never sent. New exchanges also make **pair keys**:
+        two P-256 Enclave keys per pairing, one for agreement and one for signing, plus an ML-DSA-87 key stored for a
+        later release, all sealed in the contact's key row. The routing key comes from the identity ECDH, the pair-key
+        ECDH, the ML-KEM secrets, both nonces and a transcript of what both phones sent, and the words cover the same.
+        A pair-key pairing's long-term slot uses the pair-key ECDH, with no identity key in it.
+      - *Existing pairings get no secret in-band.* The swap was built and dropped: a pairing made before 2.0.1, or with
+        a peer on an older build, stays as released, and a re-exchange in person upgrades it. A glyph on the contact and
+        the release notes say so.
+      - *A pairing with a routing key refuses old-form files.* With no swap, the split rule's second half (a swapped
+        record that keeps accepting) has nothing to apply to.
+      - *Cards are deferred* to a later release.
+      - *A group with a member whose pairing has no routing key* carries the identity fingerprint (accepted for 2.0.1).
+      - *Routing matches every contact at every depth* in 2.0.1, so a hidden contact routes as a visible one does.
+        Under independent spaces the open space holds only its own contacts.
+    - **What this leaves for the passphrase release.** Pairings without a routing key keep the identity fingerprint
+      and the NoPQ gap until they are re-made in person, so a person paired in two spaces is told apart only once both
+      pairings hold a routing key. And Bug 198 (item 31): a man in the middle who forces matching words also holds the
+      routing key and the pair keys.
 31. **v2.0.1 audit findings this design carries over** (added 2026-11-12, from the three audits of 2026-11-10:
     `Docs/Audit/V2.0.1AuditIndex2026-11-10.md`; the bugs are in `bugs.md`, filed on `v2.1.0/v2.0.1-audit-docs`).
     Each is open, needs a decision, and each would ship in 2.1.0 unless the plan takes it in.
@@ -1417,9 +1447,9 @@ there and aren't repeated here.
       226, 228, 229, 230, 231, 232, 233 and 235. Erase (212, 235) is new code and needs its own fresh-install test.
       Images taken before the migration keep the old store's history log and residue until that store is deleted,
       and stale blocks after it (item 26's remainder).
-    - **Bugs 198 and 199** (key exchange) are outside this plan but reach Bug 194: its pairing secret is derived
-      from the words' input, so a man in the middle who forces matching words holds it, and an ML-KEM strip leaves
-      the classical pairing where key binding matters most.
+    - **Bugs 198 and 199** (key exchange) are outside this plan but reach Bug 196: its routing key is derived from
+      the words' input, so a man in the middle who forces matching words holds it, and an ML-KEM strip leaves the
+      classical pairing where key binding matters most.
 
 ---
 
@@ -1431,7 +1461,7 @@ depends on or changes.
 | Item | Summary | Status | Here |
 |---|---|---|---|
 | Bugs 211, 214, 222, 223, 227, 234 | v2.0.1 audit findings the design carries over | Open (filed 2026-11-12 on `v2.1.0/v2.0.1-audit-docs`) | §8, 31 |
-| Bug 194 | A file names its sender by identity key alone, so two pairings with one person can't be told apart | Open; design decided 2026-11-03, not built | §8, 30; stage P, in a release before 2.1.0 |
+| Bug 196 | A file names its sender by identity key alone, so two pairings with one person can't be told apart (filed here as Bug 194) | Shipped in 2.0.1 for new exchanges; pairings made before stay as released | §8, 30; stage P |
 | Bug 37 | Re-enable PIN fails silently at a lowered gate with an unknown PIN | Closed (fixed) | §1.3: the fix has no phrase equivalent yet |
 | Bug 62 | `pinCollision` PIN oracle | Open | Gone with the old store once the reseal is verified (§3.2) |
 | Bug 92 | Exported backup opens with the backup key alone; opt-in export passphrase unbuilt | Open, re-scoped 2026-09-24 | §6: shares the keyboard |

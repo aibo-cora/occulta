@@ -59,11 +59,13 @@ extension ContactManager {
 
     // MARK: - Sending
 
-    /// How the next message to `contact` will be sealed, as `encryptBundle` chooses: one of their one-time keys if
-    /// we hold one; else their last-resort key, used only in the group format; else the long-term keys. Read by the
-    /// compose indicator (D2). Per contact and never per depth, so a coerced duress session sees what any depth would.
-    func nextSendSecrecy(for contact: Contact.Profile) -> NextSendSecrecy {
-        guard let record = try? self.prekeyRecord(for: contact) else { return .longTerm }
+    /// How the next message to the contact `identifier` names will be sealed, as `encryptBundle` chooses: one of their
+    /// one-time keys if we hold one; else their last-resort key, used only in the group format; else the long-term
+    /// keys. Read by the compose indicator (D2). Per contact and never per depth, so a coerced duress session sees what
+    /// any depth would.
+    func nextSendSecrecy(for identifier: String) -> NextSendSecrecy {
+        guard let contact = try? self.fetchContact(by: identifier),
+              let record = try? self.prekeyRecord(for: contact) else { return .longTerm }
         if !record.inboundBatches.isEmpty { return .forwardSecret }
         if record.inboundLastResort != nil,
            Self.resolveTargetVersion(for: contact, using: Manager.Crypto()).supportsGroups {
@@ -194,6 +196,70 @@ extension ContactManager {
             changed = try self.sweepPrekeys(of: contact, now: now) || changed
         }
         if changed { try self.modelContext.save() }
+    }
+
+    // MARK: - A contact's key change (Bug 194)
+
+    /// Drops what the contact's old phone gave us from `contact`'s record (`PrekeyBookkeeper.dropInbound`), so the next
+    /// message goes in long-term mode to their current key. An unreadable record is left as it is: replacing it
+    /// would lose our own batches too. Doesn't save.
+    ///
+    /// - Returns: whether the record changed.
+    @discardableResult
+    func dropInboundPrekeys(of contact: Contact.Profile) throws -> Bool {
+        guard var record = try? self.prekeyRecord(for: contact) else { return false }
+        guard PrekeyBookkeeper().dropInbound(from: &record) else { return false }
+        try self.store(record, for: contact)
+        return true
+    }
+
+    /// When `contact`'s current identity key first appeared, if an earlier key had different material: the start of the
+    /// run of identical material that ends the key list. `nil` for a contact who never changed key, or whose records
+    /// won't read, which the pass leaves alone.
+    private func currentKeyAcquiredAt(of contact: Contact.Profile) -> Date? {
+        let open = { (sealed: Data?) -> Data? in sealed?.decrypt() }
+        guard let keys = contact.contactPublicKeys, keys.count > 1,
+              let current = open(keys[keys.count - 1].material)
+        else { return nil }
+
+        var start = keys.count - 1
+        while start > 0, open(keys[start - 1].material) == current { start -= 1 }
+        guard start > 0, open(keys[start - 1].material) != nil,
+              let plaintext = open(keys[start].acquiredAt),
+              let text = String(data: plaintext, encoding: .utf8), let seconds = Double(text)
+        else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    /// Repairs the contacts a key change left holding their old phone's prekeys, from before the fix: the same drop
+    /// as the change itself, for each whose inbound state is older than the first appearance of their current key
+    /// (`currentKeyAcquiredAt`, `PrekeyBookkeeper.inboundIsStale`). Every contact at every depth, like `sweepCards`.
+    ///
+    /// Keeps no state and runs at every launch and unlock. It undoes its own trigger: a repaired contact has nothing
+    /// inbound left, and once the new phone's batch is accepted its date is newer than its key. The one case it
+    /// misjudges is a new phone whose clock is behind ours by more than the time between the exchange and its first
+    /// batch: that contact goes back to long-term mode at each launch, and stays readable.
+    ///
+    /// Saves once and flushes the log. A contact that fails doesn't stop the others; the first error is thrown at
+    /// the end.
+    func sweepStaleInboundPrekeys() throws {
+        var changed = false
+        var firstError: Error?
+
+        for contact in try self.fetchAllContacts() {
+            guard let acquiredAt = self.currentKeyAcquiredAt(of: contact),
+                  let record = try? self.prekeyRecord(for: contact),
+                  PrekeyBookkeeper().inboundIsStale(record, since: acquiredAt)
+            else { continue }
+            do {
+                changed = try self.dropInboundPrekeys(of: contact) || changed
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+
+        if changed { try self.saveAndFlush() }
+        if let firstError { throw firstError }
     }
 
     /// `secure_delete` scrubs the freed page, but the write-ahead log still holds the previous record, deleted keys

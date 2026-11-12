@@ -205,7 +205,7 @@ struct CardConversationTests {
         // Bob replies; Carol opens it.
         let reply = try bob.send(to: bobSide, "reply")
         #expect(try bob.heldKeyCount(bobSide) == Manager.PrekeySecretsManager.defaultBatchSize - 1, "Bob used one of Carol's keys")
-        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: try carol.contact(carolSide)) }, "still imported")
+        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: carolSide) }, "still imported")
         let openedReply = try carol.receive(reply)
         #expect(openedReply.ownerID == carolSide)
         #expect(openedReply.text == "reply")
@@ -243,14 +243,105 @@ struct CardConversationTests {
             #expect(try carol.receive(try bob.send(to: bobSide, "b\(round)")).text == "b\(round)")
             #expect(try bob.receive(try carol.send(to: carolSide, "c\(round)")).text == "c\(round)")
         }
-        #expect(try bob.run { bob.cm.cardSecrecyIsStandard(for: try bob.contact(bobSide)) } == false)
-        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: try carol.contact(carolSide)) } == false)
+        #expect(try bob.run { bob.cm.cardSecrecyIsStandard(for: bobSide) } == false)
+        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: carolSide) } == false)
         #expect(Conversation(try bob.state(bobSide))?.quantum == bobQuantum, "the material doesn't change")
     }
 
     private func carolConversationAgreementBlob(_ carol: CardPhone, _ id: String) throws -> Data {
         guard case .conversation(let blob, _, _, _, _, _, _) = try carol.contact(id).cardState else { throw Forged.notImported }
         return blob
+    }
+
+    @Test("A reply opened a second time is refused as a spent prekey, not as a slot that isn't there")
+    func replyOpenedTwiceNamesTheSpentKey() throws {
+        let pair = try CardPhonePair()
+        let (first, _) = try pair.redeem()
+        try pair.bob.receive(first)
+        let reply = try pair.bob.send(to: pair.bobSide, "reply")
+        #expect(try pair.carol.receive(reply).text == "reply")
+
+        #expect { try pair.carol.receive(reply) } throws: { error in
+            (error as? GroupDecryptError) == .cardSlotNotOpened(.prekeyNotHeld)
+        }
+    }
+
+    @Test("A reply with its slot altered names the outer layer, spends no key, and the genuine reply still opens")
+    func tamperedReplyNamesTheOuterLayer() throws {
+        let pair = try CardPhonePair()
+        let (first, _) = try pair.redeem()
+        try pair.bob.receive(first)
+        let reply = try pair.bob.send(to: pair.bobSide, "reply")
+        let record = try pair.carol.record(pair.carolSide)
+
+        #expect { try pair.carol.receive(try tampered(reply, "slot")) } throws: { error in
+            (error as? GroupDecryptError) == .cardSlotNotOpened(.outerLayerDidNotOpen)
+        }
+        #expect(try pair.carol.record(pair.carolSide) == record, "no key is spent on a slot that didn't open")
+        #expect(try pair.carol.receive(reply).text == "reply")
+    }
+
+    /// Bug A (`FINDINGS.md` "Known bugs"): a reply whose slot opens and is then rejected by a later check in
+    /// `openGroup` spends Carol's one-time prekey (saved at once by `SenderPrekeys.consume`) but never reaches
+    /// `applyCardOpening`, so she stays `imported`. Every later open of that file names a prekey she no longer holds,
+    /// which 2.0.0 reported as `recipientSlotNotFound` ("GroupDecryptError error 1"). The rejection here is a sender
+    /// proof made over the wrong key, the cheapest check after the slot to fail on purpose; any throw between
+    /// `openCardSlot` and the final save strands the file the same way. Bob's next reply, on his next key of hers,
+    /// still opens.
+    @Test("Bug A: a reply rejected after its slot opened spends Carol's key, so every retry of it fails; Bob's next opens")
+    func replyRejectedAfterSlotOpenedStrandsTheFile() throws {
+        let pair = try CardPhonePair()
+        let (bob, carol) = (pair.bob, pair.carol)
+        let (first, _) = try pair.redeem()
+        try bob.receive(first)
+
+        // Bob's first reply, sealed exactly as `sendCardBundle` seals it, except the sender proof is over another key.
+        let rejected = try bob.run {
+            guard case .conversation(let agreementBlob, let signingBlob, let peerKey, _, let held, true, true) =
+                    try bob.contact(pair.bobSide).cardState else { throw Forged.notImported }
+            var record = try bob.cm.prekeyRecord(for: try bob.contact(pair.bobSide))
+            let prekey = try #require(PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: pair.bobSide))
+            let slot = CardSlot(
+                keys: bob.keys, agreementBlob: agreementBlob, signingBlob: signingBlob,
+                ownAgreementKey: try bob.keys.agreementPublicKey(blob: agreementBlob), bootstrap: .bob(ct2: held.ourCiphertext)
+            )
+            let bundle = try Manager.Crypto().seal(
+                sealedPayload: OccultaBundle.SealedPayload(
+                    message: try WireHandle.encode(basket: CardPhone.basket("rejected")), appVersion: Bundle.main.appVersion
+                ),
+                groupID: UUID(),
+                recipients: [GroupRecipient(
+                    publicKey: peerKey, quantumMaterial: held, contactPrekey: prekey, pendingBatch: nil,
+                    prefixesEphemeralSignature: true, card: slot
+                )],
+                senderIdentity: try bob.keys.makeAgreementKey().publicKey
+            )
+            // As `sendCardBundle` does once the bundle exists: the key he used is off his record.
+            try bob.cm.store(record, for: try bob.contact(pair.bobSide))
+            try bob.cm.modelContext.save()
+            return try bundle.encoded(version: .v4)
+        }
+        // Its fingerprint names no contact, so it is handed to Carol's contact directly, as an identified file would be.
+        func open(_ data: Data) throws {
+            _ = try carol.run { try carol.cm.openGroup(bundle: try OccultaBundle.decoded(from: data), ownerID: pair.carolSide) }
+        }
+        let keysBefore = try carol.ownKeyCount(pair.carolSide)
+
+        #expect { try open(rejected) } throws: { ($0 as? GroupDecryptError) == .senderProofMismatch }
+        #expect(try carol.ownKeyCount(pair.carolSide) == keysBefore - 1, "the slot opened, so its key is spent and saved")
+        guard case .imported = try carol.state(pair.carolSide) else {
+            Issue.record("Carol must still be imported: the card step never ran"); return
+        }
+
+        // The retry, and every one after it: what 2.0.0 showed as "GroupDecryptError error 1".
+        for _ in 0..<2 {
+            #expect { try open(rejected) } throws: { ($0 as? GroupDecryptError) == .cardSlotNotOpened(.prekeyNotHeld) }
+        }
+
+        // Bob's next reply goes to his next key of hers and is still a bootstrap slot, so it opens and completes the card.
+        let next = try bob.send(to: pair.bobSide, "next")
+        #expect(try carol.receive(next).text == "next")
+        #expect(Conversation(try carol.state(pair.carolSide)) != nil)
     }
 
     @Test("Bob's first reply is a bootstrap slot; the bootstrap slots carry no marker the ordinary ones lack")
@@ -298,10 +389,10 @@ struct CardConversationTests {
     func secrecyLabel() throws {
         let pair = try CardPhonePair()
         let carol = pair.carol
-        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: try carol.contact(pair.carolSide)) })
+        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: pair.carolSide) })
         try pair.converse()
-        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: try carol.contact(pair.carolSide)) } == false)
-        #expect(try pair.bob.run { pair.bob.cm.cardSecrecyIsStandard(for: try pair.bob.contact(pair.bobSide)) } == false)
+        #expect(try carol.run { carol.cm.cardSecrecyIsStandard(for: pair.carolSide) } == false)
+        #expect(try pair.bob.run { pair.bob.cm.cardSecrecyIsStandard(for: pair.bobSide) } == false)
     }
 
     @Test("Carol can't send past the expiry before she has sent, and can after she has")
@@ -310,11 +401,11 @@ struct CardConversationTests {
         let bobSide = try bob.newContact("Carol"), carolSide = try carol.newContact("Bob")
         // A card that expired an hour ago, issued and imported back then.
         let issuedAt = Date.now.addingTimeInterval(-25 * 3_600)
-        let card = try bob.run { try bob.cm.createCard(for: try bob.contact(bobSide), now: issuedAt) }
-        _ = try carol.run { try carol.cm.importCard(card.encoded, into: try carol.contact(carolSide), newContactName: nil, now: issuedAt) }
+        let card = try bob.run { try bob.cm.createCard(for: bobSide, now: issuedAt) }
+        _ = try carol.run { try carol.cm.importCard(card.encoded, into: carolSide, newContactName: nil, now: issuedAt) }
         #expect(card.expiresAt < .now, "precondition")
 
-        #expect(try carol.run { carol.cm.canSendToCardContact(try carol.contact(carolSide)) } == false)
+        #expect(try carol.run { carol.cm.canSendToCardContact(carolSide) } == false)
         let before = try carol.rawField(carolSide)
         #expect {
             try carol.send(to: carolSide)
@@ -335,17 +426,17 @@ struct CardConversationTests {
                 for: try carol.contact(carolSide)
             )
         }
-        #expect(try carol.run { carol.cm.canSendToCardContact(try carol.contact(carolSide)) })
+        #expect(try carol.run { carol.cm.canSendToCardContact(carolSide) })
         _ = try carol.send(to: carolSide, "late follow-up")
     }
 
     @Test("A fresh imported card can send, and an issued or empty contact can't")
     func canSendStates() throws {
         let pair = try CardPhonePair()
-        #expect(try pair.carol.run { pair.carol.cm.canSendToCardContact(try pair.carol.contact(pair.carolSide)) })
-        #expect(try pair.bob.run { pair.bob.cm.canSendToCardContact(try pair.bob.contact(pair.bobSide)) } == false, "issued")
+        #expect(try pair.carol.run { pair.carol.cm.canSendToCardContact(pair.carolSide) })
+        #expect(try pair.bob.run { pair.bob.cm.canSendToCardContact(pair.bobSide) } == false, "issued")
         let other = try pair.bob.newContact("Plain")
-        #expect(try pair.bob.run { pair.bob.cm.canSendToCardContact(try pair.bob.contact(other)) } == false, "empty")
+        #expect(try pair.bob.run { pair.bob.cm.canSendToCardContact(other) } == false, "empty")
     }
 
     // MARK: 3
@@ -423,7 +514,7 @@ struct CardConversationTests {
         let lengthBefore = try bob.rawField(pair.bobSide)?.count
         #expect(try bob.ownKeyCount(pair.bobSide) > 0 && bob.heldKeyCount(pair.bobSide) > 0, "precondition: batches exist")
 
-        try bob.run { try bob.cm.discardCardConversation(for: try bob.contact(pair.bobSide)) }
+        try bob.run { try bob.cm.discardCardConversation(for: pair.bobSide) }
 
         #expect(try bob.state(pair.bobSide) == .empty)
         #expect(try bob.rawField(pair.bobSide)?.count == lengthBefore)
@@ -441,7 +532,7 @@ struct CardConversationTests {
     func discardBeforeReply() throws {
         let pair = try CardPhonePair()
         let (first, second) = try pair.redeem()
-        try pair.bob.run { try pair.bob.cm.discardCardConversation(for: try pair.bob.contact(pair.bobSide)) }
+        try pair.bob.run { try pair.bob.cm.discardCardConversation(for: pair.bobSide) }
 
         #expect { try pair.bob.receive(first) } throws: { isUnrecognised($0) }
         #expect { try pair.bob.receive(second) } throws: { isUnrecognised($0) }
@@ -452,7 +543,7 @@ struct CardConversationTests {
     func discardNeedsConversation() throws {
         let pair = try CardPhonePair()
         #expect {
-            try pair.bob.run { try pair.bob.cm.discardCardConversation(for: try pair.bob.contact(pair.bobSide)) }
+            try pair.bob.run { try pair.bob.cm.discardCardConversation(for: pair.bobSide) }
         } throws: { error in
             if case ContactManager.CardError.noCardConversation = error { return true }
             return false
@@ -475,7 +566,7 @@ struct CardConversationTests {
             carol.cm.security.applyVerifyState(for: .duress)
         }
         let second = try carol.newContact("Bob again", depth: carol.cm.security.currentDepth)
-        let outcome = try carol.run { try carol.cm.importCard(pair.card.encoded, into: try carol.contact(second), newContactName: nil) }
+        let outcome = try carol.run { try carol.cm.importCard(pair.card.encoded, into: second, newContactName: nil) }
         #expect(outcome == .imported(contactIdentifier: second), "precondition: a second, separate import")
         let fromSecond = try carol.send(to: second, "from the second contact")
 
@@ -496,7 +587,7 @@ struct CardConversationTests {
         // Carol's side of the same conversation can't be discarded (W-15 is Bob's).
         let carolField = try pair.carol.rawField(pair.carolSide)
         #expect {
-            try pair.carol.run { try pair.carol.cm.discardCardConversation(for: try pair.carol.contact(pair.carolSide)) }
+            try pair.carol.run { try pair.carol.cm.discardCardConversation(for: pair.carolSide) }
         } throws: { error in
             if case ContactManager.CardError.noCardConversation = error { return true }
             return false
@@ -505,7 +596,7 @@ struct CardConversationTests {
 
         let before = try pair.bob.run { try pair.bob.contact(pair.bobSide).maxBundleVersion }
         #expect(before != nil, "precondition: Carol's messages recorded a version")
-        try pair.bob.run { try pair.bob.cm.discardCardConversation(for: try pair.bob.contact(pair.bobSide)) }
+        try pair.bob.run { try pair.bob.cm.discardCardConversation(for: pair.bobSide) }
         #expect(try pair.bob.run { try pair.bob.contact(pair.bobSide).maxBundleVersion } == nil, "Pending again, with nothing from whoever used the card")
     }
 }
@@ -522,7 +613,7 @@ struct CardRedemptionRejectionTests {
         let (bob, carol) = (pair.bob, pair.carol)
         let dave = try CardPhone()
         let daveSide = try dave.newContact("Bob")
-        _ = try dave.run { try dave.cm.importCard(pair.card.encoded, into: try dave.contact(daveSide), newContactName: nil) }
+        _ = try dave.run { try dave.cm.importCard(pair.card.encoded, into: daveSide, newContactName: nil) }
 
         let fromCarol = try carol.send(to: pair.carolSide, "carol")
         let fromDave = try dave.send(to: daveSide, "dave")
@@ -792,7 +883,7 @@ struct CardHardBlockTests {
         #expect(reason == .cardConversation)
         // An issued card is not yet a card conversation.
         let issuedSide = try pair.bob.newContact("Issued")
-        _ = try pair.bob.run { try pair.bob.cm.createCard(for: try pair.bob.contact(issuedSide)) }
+        _ = try pair.bob.run { try pair.bob.cm.createCard(for: issuedSide) }
         let issuedReason = try pair.bob.run { try pair.bob.cm.groupIneligibilityReason(for: issuedSide) }
         #expect(issuedReason != .cardConversation)
     }
@@ -933,7 +1024,7 @@ struct CardNonCardRegressionTests {
         try bob.addOrdinary(eve, as: "eve")
         try eve.addOrdinary(bob, as: "bob")
         let issuedSide = try bob.newContact("Issued")
-        let card = try bob.run { try bob.cm.createCard(for: try bob.contact(issuedSide)) }
+        let card = try bob.run { try bob.cm.createCard(for: issuedSide) }
 
         #expect(try bob.receive(try eve.send(to: "bob", "hello")) == ("eve", "hello"))
         #expect(try bob.run { try bob.cm.ownIssuedAgreementKeys() } == [card.agreementKey], "the card is still out")

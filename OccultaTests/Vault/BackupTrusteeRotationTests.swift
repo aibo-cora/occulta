@@ -24,7 +24,7 @@ import SwiftData
 
 /// `exportBackup` writes `backup-export-meta.dat` under Application Support — must exist
 /// before the first export, same requirement `VaultRestoreTrustTests` works around.
-private let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+private let appSupport = Manager.Paths.applicationSupport
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {

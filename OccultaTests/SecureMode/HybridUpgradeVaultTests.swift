@@ -302,7 +302,7 @@ struct HybridUpgradeVaultTests {
     func backupsSurvive() throws {
         let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
         keys.tierPQRecordB = .classical
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupport = Manager.Paths.applicationSupport
         try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
         // A phone below iOS 26: the vault has epoch (1, classical) and the first unlock moves it onto the classical key.
