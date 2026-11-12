@@ -486,6 +486,13 @@ more than ECDH. Keeping that property would need ML-KEM, which is iOS 26+ agains
   **Decided 2026-10-19 by the owner (15a–15d; `decisions.md`, 2026-10-19).**
   - **15a.** The new per-install phrase key is a keychain item, like the app's other keys.
   - **15b.** The identity key stays in the keychain.
+    - *Revisited 2026-11-05 (`bugs.md` Bug 196, stage 2):* there is still one identity key per install, in the keychain. For a
+    pairing made with pair keys it is no longer the long-term agreement key or the key that signs that pairing's slots and
+    challenges: each such pairing has its own Enclave key pair. It stays the pseudonym, the in-person hash check, `Key.owner`,
+    the continuity check, and the key for backup pieces, signed attributes and the Sign tab. Under spaces, one person paired in
+    two spaces still shares an identity key across records, so linking by it is unchanged; their long-term slots and signatures
+    no longer work across spaces. Pair keys are Enclave blobs in the app container, so they go with the app, while the keychain
+    identity key survives a reinstall.
   - **15c.** The keys graduation retires aren't moved first.
   - **15d.** Erase All Data deletes the share staging key, which stays a keychain item. This doesn't depend on the
     passphrase work. Built and merged 2026-10-19 (PR #118, with #119), so it ships in 2.0.0.
@@ -574,6 +581,8 @@ there and aren't repeated here.
    depth 0.
 6. **A test phone with no real data.** Which one? As of 2026-10-19 none is cleared: the iPhone 11 still holds real
    data. Stage 0's timing and every stage from 3 on wait for one.
+   *2026-11-02: a measuring app for stage 0's device timings is built, `Tools/OccultaMeasure/` (its own bundle ID, no
+   Occulta code, no stored keys). It runs on the Simulator; a device run is manual and per phone (its README).*
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ **Decided:** refused while duress depths exist.

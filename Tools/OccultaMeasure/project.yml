@@ -1,0 +1,32 @@
+name: OccultaMeasure
+options:
+  deploymentTarget:
+    iOS: "18.6"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: R6F5KHKKNX
+    CODE_SIGN_STYLE: Automatic
+targets:
+  OccultaMeasure:
+    type: application
+    platform: iOS
+    sources:
+      - OccultaMeasure
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.github.aibo-cora.occulta.measure
+        PRODUCT_NAME: OccultaMeasure
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Occulta Measure
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+schemes:
+  OccultaMeasure:
+    build:
+      targets:
+        OccultaMeasure: all
+    run:
+      config: Release

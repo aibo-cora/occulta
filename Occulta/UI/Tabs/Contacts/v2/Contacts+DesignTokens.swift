@@ -90,7 +90,7 @@ extension Contact.Profile {
 
         // No usable key: only a card can make the contact Not verified (Q-14). It's read here and not before,
         // so a contact with keys never pays for the card field's decryption.
-        guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else {
+        guard keys?.isEmpty == false, self.currentKey != nil else {
             let card = self.cardState
             return (CardRules.tier(card, hasInPersonKeys: false) == .notVerified ? .unverified : .pending, card)
         }
@@ -100,7 +100,7 @@ extension Contact.Profile {
 
     var fingerprintPreview: String? {
         guard
-            let material  = self.contactPublicKeys?.last?.material,
+            let material  = self.displayedKey?.material,
             let decrypted = material.decrypt()
         else { return nil }
         let hex    = decrypted.sha256.map { String(format: "%02X", $0) }
@@ -111,7 +111,7 @@ extension Contact.Profile {
 
     var fingerprintFull: String? {
         guard
-            let material  = self.contactPublicKeys?.last?.material,
+            let material  = self.displayedKey?.material,
             let decrypted = material.decrypt()
         else { return nil }
         return decrypted.sha256.map { String(format: "%02X", $0) }.joined(separator: " ")
@@ -119,7 +119,7 @@ extension Contact.Profile {
 
     var freshnessLabel: String {
         guard
-            let acquiredData = self.contactPublicKeys?.last?.acquiredAt,
+            let acquiredData = self.displayedKey?.acquiredAt,
             let decrypted    = acquiredData.decrypt(),
             let str          = String(data: decrypted, encoding: .utf8),
             let interval     = Double(str)
@@ -135,7 +135,7 @@ extension Contact.Profile {
 
     var exchangedDateLabel: String {
         guard
-            let acquiredData = self.contactPublicKeys?.last?.acquiredAt,
+            let acquiredData = self.displayedKey?.acquiredAt,
             let decrypted    = acquiredData.decrypt(),
             let str          = String(data: decrypted, encoding: .utf8),
             let interval     = Double(str)
@@ -148,7 +148,7 @@ extension Contact.Profile {
 
     @MainActor
     var encryptionSchemeLabel: String {
-        let activeKey = self.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+        let activeKey = self.currentKey
         
         guard let enc = activeKey?.quantumKeyMaterialEncrypted else {
             return "Classical (v1) · exchange for full protection if the contact's device has iOS 26+"

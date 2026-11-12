@@ -1261,6 +1261,13 @@ the share staging key.
 **Decision:**
 - **15a.** The passphrase work's new per-install Enclave key is a keychain item.
 - **15b.** The identity key stays in the keychain.
+  - *Revisited 2026-11-05 (`bugs.md` Bug 196, stage 2):* there is still one identity key per install, in the keychain. For a
+    pairing made with pair keys it is no longer the long-term agreement key or the key that signs that pairing's slots and
+    challenges: each such pairing has its own Enclave key pair. It stays the pseudonym, the in-person hash check, `Key.owner`,
+    the continuity check, and the key for backup pieces, signed attributes and the Sign tab. Under spaces, one person paired in
+    two spaces still shares an identity key across records, so linking by it is unchanged; their long-term slots and signatures
+    no longer work across spaces. Pair keys are Enclave blobs in the app container, so they go with the app, while the keychain
+    identity key survives a reinstall.
 - **15c.** The keys graduation retires (the local DB key and its random component, which is shared with other
   tier U keys since Bug 171's fix, 2026-10-24; the Secure Mode PIN key; the
   vault key) aren't moved first.
@@ -1318,3 +1325,86 @@ the share staging key.
 - The tier secrets are never created by a read. A missing one is nil, a loud failure, once data is sealed under it.
 
 **Full reasoning:** `bugs.md` Bug 171 (Fix, with the stages; Guard).
+
+## A draft attachment may be lost when two contact records share an identity key and only one has re-paired
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. **Superseded 2026-11-09: fixed.** The pass now works draft by
+draft, so a draft's files move to its own recipient's current key (`bugs.md` Bug 196 addendum). Kept for the reasoning.
+
+**Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) moved the key a contact's attachments are sealed under, so
+`ContactManager.resealAttachmentKeys` moves the files that are still sealed under the old key: a draft to one contact and a
+received attachment not yet opened. It works from pairs of an old key and a new key, one pair per old key. Two records that hold
+one identity key share an old key but not always the new one: if one has re-paired and the other has not, they need different
+new keys. The pass keeps the first pair it meets, so a file belonging to the other record can be moved to the wrong key and then
+not open (security review, round 2, N1).
+
+**Decision:** Leave it. A file affected is lost for the draft or the unopened received attachment; no message, key or history is.
+The user attaches the file again, or asks for it again.
+
+**Why:**
+- It needs all of these at once: two records for one identity key, only one of them re-paired, a draft or unopened attachment for the
+  other record, and the one-time pass at the first unlock after the update (files sealed afterwards use the new key directly).
+- Resolving the target from a draft's recipient does not help received files in `tmp/`, which have no recipient. A fall-back to the
+  old key on the open path would touch every attachment and keep the old key in use for a release.
+
+**Not chosen:** (1) picking the target from the draft's recipient; (2) a fall-back open under the old key for one release.
+Either can be taken up if a real case turns up.
+
+**Consequences:** `bugs.md` Bug 196 keeps the finding in its "Not changed, on purpose or open" list, pointing here.
+
+**Full reasoning:** `bugs.md` Bug 196 addendum and the follow-up review (N1).
+
+## A failed key save can drop a used one-time prekey's pending "used" mark
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, narrow.
+
+**Context:** Opening a bundle that names one of our one-time prekeys removes that key from the sender's prekey record, with its
+Enclave blob, and saves at once (`SenderPrekeys.consume`, `ContactManager.senderPrekeys(for:)`). If that save throws, the closure
+swallows the error and the change stays pending in `ContactManager`'s context, to be written by the next save; the open's own save at
+the end retries and throws if it fails again, so the message is rejected (`Contact+Manager+Prekeys.swift`). The record is the only
+place the key's blob lives. `update(key:)` (an in-person exchange's save, or a contact created with a key) calls
+`modelContext.rollback()` when it fails. `rollback()` clears the context's record of what is pending without putting values back
+on live objects (`bugs.md` Bug 197), so the pending "used" mark is no longer marked for saving (security review, round 2, N7).
+
+**Decision:** Leave it.
+
+**What it takes:** a received bundle whose prekey save fails (a store error, a full disk), then a failed `update(key:)`, before any
+other save of that contact's row. The two failures are probably linked, since the same store problem would fail both.
+
+**What it costs:** the in-memory record still says the key is used, so the next message from that sender, in the same run, is opened
+against it and saves the record, which repairs it. If the app is relaunched first, the disk still holds the record from before the
+consume, with the key and its blob. A copy of the bundle that opened with it could then be opened again, and a later compromise of
+the phone's Enclave would expose that one message. One message per occurrence.
+
+**Why:** the trigger is narrow, the cost is one message, and the real fix is the one Bug 197 explores for 2.1.0: operations that work
+in their own short-lived context and cannot leave pending changes behind.
+
+**Not chosen:** removing `rollback()` from `update(key:)`, which would stop the collateral but remove the only thing that clears
+the pending marker on whatever the restore misses; a throwaway context for `update(key:)`, a larger change to code others read.
+
+**Full reasoning:** `bugs.md` Bug 196 ("Not changed, on purpose or open") and Bug 197; the follow-up security review (N7).
+
+## An attachment can be unreadable until the one-time reseal reaches it, after the update
+
+**Status:** Decided 2026-11-07 by the owner: documented, not fixed. Open limitation, temporary. *Revisited 2026-11-09:* the pass now
+works draft by draft and does not walk `tmp/`, which the app empties at every launch, so "a received attachment" below does not apply;
+the window for a draft file is unchanged.
+
+**Context:** Bug 196's attachment key (`bugs.md` Bug 196 addendum) changed the base key a contact's attachments are sealed under.
+From the first run of the new build `fileEncryptionKey(for:)` returns the new key, so new files are sealed under it at once. Files
+already on the phone, drafts and received attachments not yet opened, are still under the old key until
+`ContactManager.resealAttachmentKeys`, a background task started at unlock, reaches them (code review, round 1, #4).
+
+**Decision:** Leave it.
+
+**What it costs:** at the first unlock after the update, a file opened before the task reaches it does not open. `adopt(draftMessages:)`
+keeps such a file in the draft and does not delete it (`sealInPlace` leaves a file that is already sealed alone), so nothing is lost;
+the file opens once the task has moved it. For a small file that is a moment; for a large video it is as long as that file's streamed
+move takes. Drafts are listed first. Not traced: how attachment preview and send behave on a file in that state.
+
+**Why:** it happens once, only to a file opened in that window, and loses nothing. Making the open path wait for the task, or fall
+back to the old key, touches every attachment open and keeps the old key in use for a release.
+
+**Not chosen:** (1) opening waits for the reseal task; (2) a fall-back open under the old key for one release.
+
+**Full reasoning:** `bugs.md` Bug 196 addendum ("Cost") and the code review, round 1 (#4).

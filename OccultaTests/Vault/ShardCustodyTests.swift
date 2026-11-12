@@ -61,9 +61,10 @@ private func makeBob() throws -> (custody: ShardCustodyManager, km: TestKeyManag
 private func makeShardAttr(
     signer: TestKeyManager,
     entryID: UUID = UUID(),
-    shardBytes: Data = Data([UInt8(1)]) + Data.randomBytes(32),
+    shardBytes: Data? = nil,
     label: String = SignedAttribute.backupKeyPieceLabel
 ) throws -> SignedAttribute {
+    let shardBytes = shardBytes ?? Data([UInt8(1)]) + Data.randomBytes(32)
     let attrID    = UUID()
     let createdAt = Date()
     let payload   = SignedAttribute.signingPayload(

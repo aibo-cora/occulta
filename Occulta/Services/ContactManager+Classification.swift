@@ -78,7 +78,7 @@ extension ContactManager {
         let contacts = (try? self.fetchAllContacts()) ?? []
         return contacts
             .filter { $0.isVisible(atDepth: depth, usingKey: key) }
-            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
+            .filter { $0.currentKey?.quantumKeyMaterialEncrypted != nil }
     }
 
     // MARK: - Writes

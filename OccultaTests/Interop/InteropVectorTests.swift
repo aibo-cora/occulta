@@ -30,7 +30,8 @@ struct InteropVectorTests {
 
     @Test("Every vector reproduces its recorded bytes", arguments: try loadVectors())
     func vectorMatches(_ vector: Vector) throws {
-        let actual = try vector.compute().hex
+        let computed = try vector.compute()
+        let actual = vector.digest == true ? Data(SHA256.hash(data: computed)).hex : computed.hex
         // Opt-in recording mode: write the bytes instead of comparing them. One file per
         // vector, so parameterized cases running in parallel never share a file. Recording
         // is not a separate test, because a test that skips in every normal run would break
@@ -108,6 +109,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let name: String
     let kind: String
     let expected: String
+    /// For an output too large to record in full: `expected` is the SHA-256 of the bytes `compute()` returns.
+    let digest: Bool?
 
     // aad, envelope
     let version: String?
@@ -196,6 +199,56 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     let challengeState: String?
     let challengeSlot: ChallengeSlotInput?
 
+    // pairingRoutingTag, pairingSlotProof, pairingBind, pairingField, recipientPayload,
+    // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript, pairingBatchDigest
+    let pairing: PairingInput?
+
+    /// A secret per pairing (`bugs.md` Bug 196). Every field is hex; each kind reads its own subset.
+    struct PairingInput: Decodable, Sendable {
+        let secret: String?
+        let nonce: String?
+        let routingTag: String?
+        let senderPublicKey: String?
+        let key: String?
+        let mlkemSecret1: String?
+        let mlkemSecret2: String?
+        let ourNonce: String?
+        let peerNonce: String?
+        // pairingField (stage 2)
+        let routingKey: String?
+        let ourAgreementBlob: String?
+        let ourSigningBlob: String?
+        let ourSigningKey: String?
+        let peerSigningKey: String?
+        let ourMLDSABlobFill: String?
+        let ourMLDSABlobLength: Int?
+        let peerMLDSAKeyFill: String?
+        // pairingBatchDigest
+        let batchId: String?
+        let batchGeneratedAt: Double?
+        let batchPrekeyIds: [String]?
+        let batchPrekeyKeys: [String]?
+        let batchLastResortId: String?
+        let batchLastResortKey: String?
+        // routingKeyDerive, pairingWordsKey, pairwiseLongTermKey, pairingTranscript (stage 2)
+        let pairwiseECDH: String?
+        let identityECDH: String?
+        let identitySalt: String?
+        let ourAgreementKey: String?
+        let peerAgreementKey: String?
+        let transcript: String?
+        let blockOneAgreement: String?
+        let blockOneSigning: String?
+        let blockOneMLDSA: String?
+        let blockOneBatch: String?
+        let blockTwoBatch: String?
+        let blockTwoAgreement: String?
+        let blockTwoSigning: String?
+        let blockTwoMLDSA: String?
+        // recipientPayload
+        let slotProof: String?
+    }
+
     struct ChallengeSlotInput: Decodable, Sendable {
         let depth: Int
         let nonce: String
@@ -282,6 +335,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let ephemeralPublicKey: String
         let prekeyID: String?
         let wrappedPayload: String
+        /// Absent from the vectors recorded before a routing key per pairing (`bugs.md` Bug 196), which must keep their bytes.
+        let routingTag: String?
     }
 
     struct Batch: Decodable, Sendable {
@@ -420,7 +475,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                                 ephemeralPublicKey: try Self.bytes($0.ephemeralPublicKey),
                                 prekeyID:           $0.prekeyID
                             ),
-                            wrappedPayload: try Self.bytes($0.wrappedPayload)
+                            wrappedPayload: try Self.bytes($0.wrappedPayload),
+                            routingTag: try $0.routingTag.map(Self.bytes)
                         )
                     }
                 )
@@ -444,7 +500,8 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                         mlkemEncapsulationKey: try Self.bytes($0.mlkemEncapsulationKey),
                         signature:             try Self.bytes($0.signature)
                     )
-                }
+                },
+                slotProof:                try self.pairing?.slotProof.map(Self.bytes)
             )
             // Mirrors `wrapRecipient` (Crypto+Manager+GroupEncrypt.swift), which encodes the
             // payload with a sorted-keys JSONEncoder before wrapping it. Keep the two in step.
@@ -507,6 +564,112 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                 groupID:     try self.groupID.map(Self.uuid)
             )
             return try BodyStream.Manifest.frame(payload: payload)
+
+        case "pairingRoutingTag":
+            let input = try #require(self.pairing)
+            return RoutingKey.routingTag(routingKey: try Self.bytes(input.secret), nonce: try Self.bytes(input.nonce))
+
+        case "pairingSlotProof":
+            let input = try #require(self.pairing)
+            let proof = RoutingKey.slotProof(
+                routingKey: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
+                senderPublicKey: try Self.bytes(input.senderPublicKey)
+            )
+            #expect(RoutingKey.isValidSlotProof(
+                proof, routingKey: try Self.bytes(input.secret), routingTag: try Self.bytes(input.routingTag),
+                senderPublicKey: try Self.bytes(input.senderPublicKey)
+            ), "\(self.name): production verification rejected the proof")
+            return proof
+
+        case "pairingBind":
+            let input = try #require(self.pairing)
+            return RoutingKey.bind(SymmetricKey(data: try Self.bytes(input.key)), routingKey: try Self.bytes(input.secret))
+                .withUnsafeBytes { Data($0) }
+
+        case "pairingBatchDigest":
+            let input = try #require(self.pairing)
+            let keys = try #require(input.batchPrekeyKeys), ids = try #require(input.batchPrekeyIds)
+            let prekeys = try zip(ids, keys).map { OccultaBundle.WirePrekey(id: $0, publicKey: try Self.bytes($1)) }
+            let lastResort = try input.batchLastResortId.map {
+                OccultaBundle.WirePrekey(id: $0, publicKey: try Self.bytes(input.batchLastResortKey))
+            }
+            return RoutingKey.batchDigest(
+                id: try input.batchId.map(Self.bytes), generatedAt: Date(timeIntervalSinceReferenceDate: try #require(input.batchGeneratedAt)),
+                prekeys: prekeys, lastResort: lastResort
+            )
+
+        case "pairingTranscript":
+            let input = try #require(self.pairing)
+            let one = try #require(RoutingKey.PairBlock(
+                agreementKey: try Self.bytes(input.blockOneAgreement), signingKey: try Self.bytes(input.blockOneSigning),
+                mldsaKey: try input.blockOneMLDSA.map(Self.bytes), batchDigest: try Self.bytes(input.blockOneBatch)))
+            let two = try #require(RoutingKey.PairBlock(
+                agreementKey: try Self.bytes(input.blockTwoAgreement), signingKey: try Self.bytes(input.blockTwoSigning),
+                mldsaKey: try input.blockTwoMLDSA.map(Self.bytes), batchDigest: try Self.bytes(input.blockTwoBatch)))
+            let transcript = RoutingKey.transcript(one, two)
+            #expect(transcript == RoutingKey.transcript(two, one), "\(self.name): the two orders disagree")
+            return transcript
+
+        case "routingKeyDerive":
+            // Both phones derive it, each with itself as "our": the agreement keys, nonces and ML-KEM secrets, swapped, must agree.
+            let input = try #require(self.pairing)
+            let ours = try Self.bytes(input.ourAgreementKey), theirs = try Self.bytes(input.peerAgreementKey)
+            let nonceOne = try Self.bytes(input.ourNonce), nonceTwo = try Self.bytes(input.peerNonce)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            let derived = try #require(RoutingKey.derive(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                ourAgreementKey: ours, peerAgreementKey: theirs, mlkemSecrets: secrets,
+                ourNonce: nonceOne, peerNonce: nonceTwo, transcript: try Self.bytes(input.transcript)))
+            let otherSide = RoutingKey.derive(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                ourAgreementKey: theirs, peerAgreementKey: ours, mlkemSecrets: secrets.map { ($0.1, $0.0) },
+                ourNonce: nonceTwo, peerNonce: nonceOne, transcript: try Self.bytes(input.transcript))
+            #expect(derived == otherSide, "\(self.name): the two sides disagree")
+            return derived
+
+        case "pairingWordsKey":
+            let input = try #require(self.pairing)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            return try #require(RoutingKey.wordsKey(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                identitySalt: try Self.bytes(input.identitySalt), mlkemSecrets: secrets,
+                ourNonce: try Self.bytes(input.ourNonce), peerNonce: try Self.bytes(input.peerNonce),
+                transcript: try Self.bytes(input.transcript)))
+
+        case "pairwiseLongTermKey":
+            let input = try #require(self.pairing)
+            let ours = try Self.bytes(input.ourAgreementKey), theirs = try Self.bytes(input.peerAgreementKey)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            let key = try #require(RoutingKey.longTermKey(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), ourAgreementKey: ours, peerAgreementKey: theirs, mlkemSecrets: secrets))
+            let otherSide = RoutingKey.longTermKey(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), ourAgreementKey: theirs, peerAgreementKey: ours,
+                mlkemSecrets: secrets.map { ($0.1, $0.0) })
+            #expect(key.withUnsafeBytes { Data($0) } == otherSide?.withUnsafeBytes { Data($0) }, "\(self.name): the two sides disagree")
+            return key.withUnsafeBytes { Data($0) }
+
+        case "pairingField":
+            let input = try #require(self.pairing)
+            let state: PairingState
+            if let routingKey = try input.routingKey.map(Self.bytes) {
+                state = .paired(routingKey: routingKey, keys: PairKeys(
+                    ourAgreementBlob: try Self.bytes(input.ourAgreementBlob), ourAgreementKey: try Self.bytes(input.ourAgreementKey),
+                    ourSigningBlob: try Self.bytes(input.ourSigningBlob), ourSigningKey: try Self.bytes(input.ourSigningKey),
+                    peerAgreementKey: try Self.bytes(input.peerAgreementKey), peerSigningKey: try Self.bytes(input.peerSigningKey),
+                    ourMLDSABlob: try input.ourMLDSABlobFill.map { fill in
+                        Data(repeating: try Self.bytes(fill)[0], count: try #require(input.ourMLDSABlobLength))
+                    },
+                    peerMLDSAKey: try input.peerMLDSAKeyFill.map { fill in
+                        Data(repeating: try Self.bytes(fill)[0], count: PairingCodec.mldsaKeySize)
+                    }
+                ))
+            } else {
+                state = .empty
+            }
+            let plaintext = try PairingCodec().encode(state)
+            #expect(plaintext.count == PairingCodec.capacity, "\(self.name): the field is \(PairingCodec.capacity) bytes")
+            #expect(try PairingCodec().decode(plaintext) == state, "\(self.name): production decode disagrees")
+            return plaintext
 
         case "depth":
             return DepthCodec.encode(try #require(self.value))
@@ -759,7 +922,7 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         )
     }
 
-    enum VectorError: Error { case unknownFileFormat(String) }
+    enum VectorError: Error { case unknownFileFormat(String), unknownPairingPhase(String) }
 }
 
 // MARK: - Hex
