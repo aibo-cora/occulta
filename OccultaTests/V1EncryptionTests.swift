@@ -465,10 +465,6 @@ private final class LegacyOnlyCrypto: LegacyCryptoProtocol {
         try self.legacy.decryptLegacy(data: data)
     }
 
-    func encrypt(message: Data, using material: Data?) throws -> Data? {
-        try self.inner.encrypt(message: message, using: material)
-    }
-
     func decrypt(message: Data, using material: Data?) throws -> Data? {
         try self.inner.decrypt(message: message, using: material)
     }

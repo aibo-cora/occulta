@@ -773,54 +773,6 @@ extension ContactManager {
         if droppedInbound { self.security.checkpointStore() }
     }
     
-    /// Encrypt data for a contact using their public key, which is encrypted.
-    /// - Parameters:
-    ///   - data: Data to encrypt.
-    ///   - encrypted: Encrypt public keying material.
-    /// - Returns: Encrypted result.
-    func encrypt(data: Data, using encrypted: Data?) throws -> Data? {
-        guard
-            data.isEmpty == false
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        guard
-            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
-        else {
-            throw ContactManager.Errors.contactHasNoKeys
-        }
-        
-        let encryptedData = try self.encrypt(data: data, using: publicKeyingMaterial)
-        
-        return encryptedData
-    }
-    
-    func encrypt(data: Data, for identifier: String) throws -> Data? {
-        guard
-            let contact = try self.fetchContact(by: identifier)
-        else {
-            throw ContactManager.Errors.contactNotFound
-        }
-        
-        guard
-            let encrypted = contact.displayedKey?.material,
-            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
-        else {
-            throw ContactManager.Errors.contactHasNoKeys
-        }
-        
-        guard
-            data.isEmpty == false
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        let encryptedData = try self.encrypt(data: data, using: publicKeyingMaterial)
-        
-        return encryptedData
-    }
-    
     /// Derives the stable per-contact base key used to encrypt file attachments at rest.
     /// Callers pass this into `AttachmentManager(contactKey:)`.
     ///
@@ -841,10 +793,6 @@ extension ContactManager {
         return key
     }
 
-    private func encrypt(data: Data, using material: Data) throws -> Data? {
-        try self.cryptoManager.encrypt(message: data, using: material)
-    }
-    
     private func decrypt(message: Data?, for identifier: String) throws -> Data? {
         guard
             let payload = message, payload.isEmpty == false

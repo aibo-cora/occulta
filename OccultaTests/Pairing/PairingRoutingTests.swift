@@ -187,7 +187,8 @@ struct PairingRoutingTests {
 
     /// A file in the oldest form: the sender's identity ECDH key AES-GCM sealed the bytes with no bundle around them.
     private func legacyFile(to me: Data) throws -> Data {
-        try #require(try Manager.Crypto(keyManager: self.sender).encrypt(message: Data("legacy".utf8), using: me))
+        let key = try #require(self.sender.createSharedSecret(using: me))
+        return try #require(try AES.GCM.seal(Data("legacy".utf8), using: key, nonce: AES.GCM.Nonce()).combined)
     }
 
     @Test("A raw legacy file does not open on a pair-key pairing", .ambientTestKeyManager)
