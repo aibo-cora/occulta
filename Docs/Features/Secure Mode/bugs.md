@@ -15224,8 +15224,8 @@ The lead's statement that the old phone "can open the classical outer layer, but
 
 Decided 2026-11-03: **inbound side only.** `PrekeyBookkeeper.dropInbound(from:)` clears `inboundBatches`, `inboundLastResort`, `acceptedBatchIDs` and `latestInboundGeneratedAt`. `ContactManager.dropInboundPrekeys(of:)` applies it to a contact's record and is called from:
 
-- `update(key:for:)`, when the incoming material differs from the contact's unexpired key (`keyRotated`). The same material, such as a reinstall (Bug 82), keeps the record as before.
-- `reset(identity:)`, unconditionally. The next exchange compares against the unexpired key, and a revoked contact has none, so `keyRotated` stays false there whatever the new phone's key is. `reset` therefore drops the state itself, and doesn't rely on the next exchange to see the change. (That blind spot has a second effect, on backup pieces: Bug 195, still open.)
+- `update(key:for:)`, when the incoming material differs from the contact's displayed key (`keyRotated`; the unexpired key before Bug 195's fix). The same material, such as a reinstall (Bug 82), keeps the record as before.
+- `reset(identity:)`, unconditionally. The next exchange compares against the unexpired key, and a revoked contact has none, so `keyRotated` stays false there whatever the new phone's key is. `reset` therefore drops the state itself, and doesn't rely on the next exchange to see the change. (That blind spot also hit backup pieces: Bug 195, fixed in 2.0.1. Since that fix the next exchange does see the change, and dropping here as well stays, so a revoke alone stops sends to the old phone's prekeys.)
 
 The next send then goes in long-term mode to the current key. The new phone opens it and issues a batch (`replenish`, `.longTerm`), and forward secrecy resumes. A save that dropped something flushes the write-ahead log, like the card paths do.
 
@@ -15280,9 +15280,9 @@ Releases from 2.0.0 (prekey continuity) up to this fix are affected: between a c
 
 ## Bug 195 — After a revoke (`reset(identity:)`), a re-exchange with a changed key never fires `contactKeyRotated`, so the backup-piece re-send for that trustee waits on a conversation
 
-**Status:** Fixed on `v2.0.1/bug-195-revoke-rekey-event`, not yet merged. Filed 2026-11-03 while triaging Bug 194 (on the `v2.1.0` line). Reproduced by a test 2026-11-07.
+**Status:** **Fixed 2026-11-09** ([aibo-cora/occulta#163](https://github.com/aibo-cora/occulta/pull/163), to `release/v2.0.1`). Shipped in 2.0.1 ([aibo-cora/occulta#169](https://github.com/aibo-cora/occulta/pull/169)) and in `release/v2.1.0` through the merge of `develop` ([aibo-cora/occulta#172](https://github.com/aibo-cora/occulta/pull/172)). Filed 2026-11-03 while triaging Bug 194 (on the `v2.1.0` line). Reproduced by a test 2026-11-07.
 
-**Target:** `v2.0.1`, then forward-merged into `release/v2.1.0`, where the Bug 195 filing (written before this fix) will conflict with this entry. Resolve in favour of this one.
+**Target:** `v2.0.1`, then forward-merged into `release/v2.1.0`. Both done; the merge kept this entry over the earlier filing.
 
 ### Severity: Medium
 
