@@ -603,12 +603,13 @@ struct PINVerifierLaunchTests {
         #expect(security.reEnablePIN("999999"))
         uniform("reEnablePIN, a known PIN")
 
-        // An unknown PIN at a duress depth is accepted as a new layer (Bug 37): it writes two verifiers.
+        // An unknown PIN at a duress depth is accepted as that depth's own PIN (Bugs 37, 221): it
+        // writes two verifiers, over the ones depth 1 had.
         try security.disablePIN(at: security.currentDepth, confirmingPIN: "999999")
         #expect(security.reEnablePIN("888888"))
         uniform("reEnablePIN, coercion acceptance")
         security.applyVerifyState(for: try security.verify("888888"))
-        #expect(security.currentDepth == 2, "the new layer's PIN verifies")
+        #expect(security.currentDepth == 1, "the accepted PIN opens the depth it was set at")
 
         try security.deactivateSecureMode(confirmingEntryPIN: "888888")
         uniform("deactivateSecureMode")
@@ -630,7 +631,9 @@ struct PINVerifierLaunchTests {
         try security.configurePIN("111111");                                             uniform("configurePIN")
         try security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999"); uniform("activate")
         security.applyVerifyState(for: try security.verify("999999"));                   uniform("verify")
-        try security.deactivateSecureMode(confirmingEntryPIN: "999999");                 uniform("deactivateSecureMode")
+        try security.deactivateSecureMode(confirmingEntryPIN: "999999");                 uniform("deactivateSecureMode, depth 1")
+        security.applyVerifyState(for: try security.verify("111111"))
+        try security.deactivateSecureMode(confirmingEntryPIN: "111111");                 uniform("deactivateSecureMode, depth 0")
         try security.deactivatePIN(confirmingNormalPIN: "111111");                       uniform("deactivatePIN")
     }
 
