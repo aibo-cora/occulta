@@ -15260,7 +15260,7 @@ rows, and the same `Z_OPT` on every row of the new tables.
 
 **Status:** Fixed on `v2.1.0/transport-key-derivation-throws`, not merged. Filed as `OC-1` in `Docs/Features/OccultaCore/bugs.md`
 (found 2026-10-31 when the function was extracted); recorded here when it was fixed. Numbered 191 because 190 is taken on
-`v2.1.0/passphrase-independent-spaces`, not merged.
+`v2.1.0/passphrase-independent-spaces`, not merged *(merged 2026-11-12; Bug 190 above)*.
 
 **Target:** `v2.1.0`, `OccultaCore`. No shipped build of Occulta is affected: every app caller passes 32 bytes.
 
@@ -15397,8 +15397,6 @@ the same at pick time.
 
 None yet. A test that picks a photo with GPS metadata and finds none in what the contact stores.
 
----
-
 ## Bug 194 — After a contact's identity key changes, our messages to them are sealed to their old phone's prekeys: the new phone can't open them, and without ML-KEM the old phone can
 
 **Status:** **Fixed 2026-11-03** on branch `claude/bug-194-stale-inbound-prekeys-ee7f61` ([aibo-cora/occulta#156](https://github.com/aibo-cora/occulta/pull/156), to `release/v2.1.0`). Filed 2026-11-03 from audit lead 13 (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md` §13), confirmed by a code trace at `cea3927b` (`release/v2.1.0`), then reproduced by `StaleInboundPrekeysConversationTests` on a real Enclave: with the fix removed, the new phone throws `recipientSlotNotFound` on every message sent after the key change. The trace widens the lead in two ways: it needs no introduction card and no revoke, only a contact whose identity key changes; and it finds a confidentiality case the lead ruled out.
@@ -15431,8 +15429,8 @@ The lead's statement that the old phone "can open the classical outer layer, but
 
 Decided 2026-11-03: **inbound side only.** `PrekeyBookkeeper.dropInbound(from:)` clears `inboundBatches`, `inboundLastResort`, `acceptedBatchIDs` and `latestInboundGeneratedAt`. `ContactManager.dropInboundPrekeys(of:)` applies it to a contact's record and is called from:
 
-- `update(key:for:)`, when the incoming material differs from the contact's unexpired key (`keyRotated`). The same material, such as a reinstall (Bug 82), keeps the record as before.
-- `reset(identity:)`, unconditionally. The next exchange compares against the unexpired key, and a revoked contact has none, so `keyRotated` stays false there whatever the new phone's key is. `reset` therefore drops the state itself, and doesn't rely on the next exchange to see the change. (That blind spot has a second effect, on backup pieces: Bug 195, still open.)
+- `update(key:for:)`, when the incoming material differs from the contact's displayed key (`keyRotated`; the unexpired key before Bug 195's fix). The same material, such as a reinstall (Bug 82), keeps the record as before.
+- `reset(identity:)`, unconditionally. The next exchange compares against the unexpired key, and a revoked contact has none, so `keyRotated` stays false there whatever the new phone's key is. `reset` therefore drops the state itself, and doesn't rely on the next exchange to see the change. (That blind spot also hit backup pieces: Bug 195, fixed in 2.0.1. Since that fix the next exchange does see the change, and dropping here as well stays, so a revoke alone stops sends to the old phone's prekeys.)
 
 The next send then goes in long-term mode to the current key. The new phone opens it and issues a batch (`replenish`, `.longTerm`), and forward secrecy resumes. A save that dropped something flushes the write-ahead log, like the card paths do.
 
@@ -15487,9 +15485,9 @@ Releases from 2.0.0 (prekey continuity) up to this fix are affected: between a c
 
 ## Bug 195 — After a revoke (`reset(identity:)`), a re-exchange with a changed key never fires `contactKeyRotated`, so the backup-piece re-send for that trustee waits on a conversation
 
-**Status:** Fixed on `v2.0.1/bug-195-revoke-rekey-event`, not yet merged. Filed 2026-11-03 while triaging Bug 194 (on the `v2.1.0` line). Reproduced by a test 2026-11-07.
+**Status:** **Fixed 2026-11-09** ([aibo-cora/occulta#163](https://github.com/aibo-cora/occulta/pull/163), to `release/v2.0.1`). Shipped in 2.0.1 ([aibo-cora/occulta#169](https://github.com/aibo-cora/occulta/pull/169)) and in `release/v2.1.0` through the merge of `develop` ([aibo-cora/occulta#172](https://github.com/aibo-cora/occulta/pull/172)). Filed 2026-11-03 while triaging Bug 194 (on the `v2.1.0` line). Reproduced by a test 2026-11-07.
 
-**Target:** `v2.0.1`, then forward-merged into `release/v2.1.0`, where the Bug 195 filing (written before this fix) will conflict with this entry. Resolve in favour of this one.
+**Target:** `v2.0.1`, then forward-merged into `release/v2.1.0`. Both done; the merge kept this entry over the earlier filing.
 
 ### Severity: Medium
 
@@ -15554,8 +15552,7 @@ bundles for the swap; **the Multipeer/NearbyInteraction exchange itself has not 
 **Number:** filed as Bug 194 on `v2.1.0/passphrase-independent-spaces`, whose docs still say 194 (rollout §8 item 30
 and its Related table, `decisions.md`, the `PASSPHRASE_*` docs). `release/v2.1.0` already holds a different Bug 194
 (stale inbound prekeys, PR #156), so this is Bug 196 here. ~~The references on that branch need renumbering there.~~
-*Renumbered 2026-11-12 when that branch merged `release/v2.1.0`: its own Bug 194 entry was dropped for this one, and
-rollout item 30 now records what was built.*
+*Renumbered when that branch's commits were merged into `release/v2.1.0` (2026-11-12).*
 
 **Target:** release 2.0.1 (the owner chose it 2026-11-03), as its own stage (rollout §7.2, stage P). It must ship
 before the passphrase release, so pairings hold their secret before spaces exist.
@@ -15658,7 +15655,7 @@ bound to the pairing, and the capability on phones before 2.1.0.
   each. It must not be limited to contacts visible at the current depth: a known contact's file that routed at one depth
   and failed at another is the duress-detection oracle of `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
   What a depth changes is what is shown, later, in `buildOwnedBasket`. Pinned by `hiddenContactRoutesLikeAVisibleOne`.
-- **Open, needs a decision (Bug 190's, which lives on `v2.1.0/passphrase-independent-spaces`).** In the SwiftData store of
+- **Open, needs a decision (Bug 190's).** In the SwiftData store of
   2.0.1 every write to the column is logged with row, column and time by SwiftData's history; migrated rows carry a higher
   `Z_OPT` than rows created after, which separates pairings made before this release from after; free pages and the
   write-ahead log may keep older ciphertext of the column (sealed under the local DB key, like every sealed field). The

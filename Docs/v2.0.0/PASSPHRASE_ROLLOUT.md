@@ -67,11 +67,11 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   above (decided 2026-11-02);
 - the data slices ship together, in one reseal (§7.1);
 - 30, one person paired in two spaces: a 32-byte secret per pairing, held only in the contact's sealed record,
-  mixed into every slot's key derivation; derived at pairing for new pairings, swapped in a `RecipientPayload`
-  field with a confirmation for existing ones, from the card's ML-KEM material for cards; each slot carries
+  mixed into every slot's key derivation; derived at pairing for new pairings, ~~swapped in a `RecipientPayload`
+  field with a confirmation for existing ones, from the card's ML-KEM material for cards~~; each slot carries
   HMAC(secret, nonce) as its routing label in place of the outer `senderFingerprint`, and the sender proof covers
-  it; shipped in a release before 2.1.0 (decided 2026-11-03; built and shipped in 2.0.1 as Bug 196 with pair keys,
-  no in-band swap for existing pairings, and cards deferred, decided 2026-11-04 and 2026-11-05);
+  it; shipped in a release before 2.1.0 (decided 2026-11-03). *Built in 2.0.1 as `bugs.md` Bug 196, without the
+  swap: an existing pairing gets the secret only by exchanging keys again in person; cards deferred.*
 - Bug 120 is recorded as a stated limit: a duress space protects against one image, not a series; what is fixed
   in one image is uniform records, sizes and no space tag (§5; it stays open in the register).
 
@@ -758,6 +758,19 @@ keys.
 **What that means for the call sites.** Most field-level calls on contacts become one blob decode. The 175
 sites are the scope to sweep, together with requirement 5's "not swept yet" list.
 
+**Depth filtering is a second sweep, outside the 175.** Which contacts a depth sees is decided by reading the
+depth stamps requirement 1 drops, through an absolute depth number:
+- `Contact.Profile.isVisible(atDepth:)` and its `usingKey:` variant, `VaultEntry.isVisible(atDepth:whenUnclassified:)`,
+  and `ContactListFilter.visibleContacts`, `isEmptyList` and `groupsWithMembers`. As of `1482a64d`, 24 call sites in
+  16 files: every contact list, picker and search, card import, the prekey and classification managers, and
+  Secure Mode itself. The list screens are the Bug 25 / Bug 28 failure if one is missed.
+- `Group.members(atDepth:)`, 18 call sites, which requirement 5 replaces with one group row per depth.
+
+Under the new storage a depth sees what decrypts under its own key, and the shared-key contacts the origin lists
+don't hide from it (spec §2, 2026-10-15). Every one of these callers
+moves to that, and none may fall back to listing every row. New pickers, such as the top-level Trust Check's, go
+through `ContactListFilter` so they move with it.
+
 **`Contact.Profile.identifier` is a reference, not only a field** (`bugs.md` Bug 171, "What stays open" item 4;
 `decisions.md`, 2026-10-21). Its base64 ciphertext is stored as a value in `Group` member slots,
 `Draft.encryptedRecipientID`, the custody and shard payloads and the legacy keychain prekey tags
@@ -952,7 +965,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
-| P | Pairing secret, in a release before 2.1.0 | `bugs.md` Bug 196; §8, 30: ~~the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material;~~ a routing key and pair keys derived at a new exchange; a routing tag in each slot; key binding; a new capability tier and interop vectors. *Shipped in 2.0.1; no swap, cards deferred* | Done |
+| P | Pairing secret, in a release before 2.1.0. *Shipped in 2.0.1, without the swap; cards deferred* | `bugs.md` Bug 196; §8, 30: the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material; a routing label in each slot; key binding; a new bundle version and interop vectors | Not estimated |
 | 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
 | 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
@@ -999,8 +1012,9 @@ there and aren't repeated here.
      SQLite reads and trial decryption at scale. It uses throwaway keys and its own files, links no Occulta code
      that touches the store or keychain, and is never a test host for Occulta. iOS keeps its container and
      keychain apart from Occulta's, so it can run on a phone with real data, but each install is asked for first,
-     naming the phone. ~~Not built.~~ *Built 2026-11-02 as `Tools/OccultaMeasure/`, PR #155 to `develop`, merged:
-     run on the iPhone 17 Pro Simulator only, not on a device. A device run is manual and per phone (its README).*
+     naming the phone. ~~Not built.~~ *Built 2026-11-02 as `Tools/OccultaMeasure/`, PR #155, merged into `develop`
+     2026-11-03 and into this branch with #172. It runs on the Simulator; a device run is manual and per phone (its
+     README).*
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ ~~**Decided:** refused while duress depths exist.~~ **Superseded
@@ -1308,8 +1322,7 @@ there and aren't repeated here.
         quality is a case to cover.
 30. **One person paired in two spaces** (added 2026-11-03). ~~Open, needs a decision.~~ **Decided 2026-11-03 by
     the owner: a random secret per pairing, used for both routing and key binding, with `senderProof` covering it**
-    (`decisions.md`, 2026-11-03). ~~Not built.~~ **Built and shipped in 2.0.1 as `bugs.md` Bug 196, changed in three
-    places (2026-11-05): see "As built" at the end of this item.** ~~Still open, needs a decision: how existing pairings get a secret,
+    (`decisions.md`, 2026-11-03). Not built. ~~Still open, needs a decision: how existing pairings get a secret,
     where the fingerprint goes in a group bundle, how a card carries the secret, and which stage it ships in.~~
     **The remainder, decided 2026-11-03 by the owner,** is at the end of this item.
     - **How it happens.** Any user can pair the same person in two spaces. A coercer can force it: two travel
@@ -1374,9 +1387,9 @@ there and aren't repeated here.
       - ~~*Recommended, not decided:*~~ *Decided 2026-11-03:* both. `senderProof` (`Contact+Manager.swift`, step 5.5), which today
         authenticates the sender's public key, would also cover the pairing secret, so the routing field is checked
         no less strictly than today.
-    - **The remainder, decided 2026-11-03 by the owner** (`decisions.md`, 2026-11-03). Tracked as `bugs.md` Bug 196,
-      filed here as Bug 194 and renumbered 2026-11-12, since `release/v2.1.0` holds a different Bug 194. Parts of it
-      changed when it was built: see "As built" below.
+    - **The remainder, decided 2026-11-03 by the owner** (`decisions.md`, 2026-11-03). ~~Not built.~~ *Built in
+      2.0.1 (merged into `develop` 2026-11-10).* The work is tracked as `bugs.md` Bug 196 (194 when this was
+      written), with what was built, the tests and what is still open.
       - *New pairings derive the secret at pairing,* from what the exchange already shares: the identity ECDH, both
         pairing nonces and the ML-KEM secrets where present, under a label of its own. It is the same input the
         verification words come from, so the words authenticate it, and it covers the first message after pairing,
@@ -1389,6 +1402,8 @@ there and aren't repeated here.
         body-digest guard refuses a downgrade. For a classical pairing a half goes only in a one-time-prekey slot, so
         a captured long-term file can't give it away. Not in `SealedPayload` and not as a signed attribute: the
         sealed payload is shared by every member of a group file, so a half there reaches them all.
+        *Not kept (2026-11-05, Bug 196's Stage 2): an existing pairing gets a secret only by exchanging keys again
+        in person. Until then it stays open for that pairing, as the spec's "gap" says.*
       - *Each slot carries its routing label,* HMAC(pairing secret, the file's nonce), readable before decryption.
         The outer `senderFingerprint` goes, and so does trial decryption: the receiver computes one HMAC per contact
         in the open space and matches the labels. Every file is affected, since a one-to-one file is a group of one
@@ -1398,31 +1413,12 @@ there and aren't repeated here.
         new for every card, and only a holder of the card file can compute it, as with today's card fingerprint.
         Once both sides hold `ss1` and `ss2`, the secret is derived from them as at a pairing, and the labels
         switch with the confirmation above. Key binding adds nothing during the bootstrap, since cards need iOS 26.
+        *Deferred 2026-11-04 (Bug 196).*
       - *It ships in a release before 2.1.0,* as a stage of its own (§7.2, stage P). A pairing switches only once
         both phones run the new build, so shipped with spaces it would protect no pairing on the day they appear.
         It doesn't depend on the passphrase, and it keeps two large changes in separate releases (2026-10-19).
       - *What stays open:* a pairing with a contact still on an older build keeps the identity fingerprint, and this
         item stays open for it until they upgrade; item 29's copies share one pairing.
-    - **As built, shipped in 2.0.1** (Bug 196, "Stage 2"; decided by the owner 2026-11-04 and 2026-11-05). Where it
-      differs from the remainder above, the build stands:
-      - *The secret is the routing key,* derived at the exchange and never sent. New exchanges also make **pair keys**:
-        two P-256 Enclave keys per pairing, one for agreement and one for signing, plus an ML-DSA-87 key stored for a
-        later release, all sealed in the contact's key row. The routing key comes from the identity ECDH, the pair-key
-        ECDH, the ML-KEM secrets, both nonces and a transcript of what both phones sent, and the words cover the same.
-        A pair-key pairing's long-term slot uses the pair-key ECDH, with no identity key in it.
-      - *Existing pairings get no secret in-band.* The swap was built and dropped: a pairing made before 2.0.1, or with
-        a peer on an older build, stays as released, and a re-exchange in person upgrades it. A glyph on the contact and
-        the release notes say so.
-      - *A pairing with a routing key refuses old-form files.* With no swap, the split rule's second half (a swapped
-        record that keeps accepting) has nothing to apply to.
-      - *Cards are deferred* to a later release.
-      - *A group with a member whose pairing has no routing key* carries the identity fingerprint (accepted for 2.0.1).
-      - *Routing matches every contact at every depth* in 2.0.1, so a hidden contact routes as a visible one does.
-        Under independent spaces the open space holds only its own contacts.
-    - **What this leaves for the passphrase release.** Pairings without a routing key keep the identity fingerprint
-      and the NoPQ gap until they are re-made in person, so a person paired in two spaces is told apart only once both
-      pairings hold a routing key. And Bug 198 (item 31): a man in the middle who forces matching words also holds the
-      routing key and the pair keys.
 31. **v2.0.1 audit findings this design carries over** (added 2026-11-12, from the three audits of 2026-11-10:
     `Docs/Audit/V2.0.1AuditIndex2026-11-10.md`; the bugs are in `bugs.md`, filed on `v2.1.0/v2.0.1-audit-docs`).
     Each is open, needs a decision, and each would ship in 2.1.0 unless the plan takes it in.
@@ -1461,7 +1457,7 @@ depends on or changes.
 | Item | Summary | Status | Here |
 |---|---|---|---|
 | Bugs 211, 214, 222, 223, 227, 234 | v2.0.1 audit findings the design carries over | Open (filed 2026-11-12 on `v2.1.0/v2.0.1-audit-docs`) | §8, 31 |
-| Bug 196 | A file names its sender by identity key alone, so two pairings with one person can't be told apart (filed here as Bug 194) | Shipped in 2.0.1 for new exchanges; pairings made before stay as released | §8, 30; stage P |
+| Bug 196 | A file names its sender by identity key alone, so two pairings with one person can't be told apart | Fixed in 2.0.1 for new pairings; existing pairings and cards open, as the entry says | §8, 30; stage P, shipped in 2.0.1 |
 | Bug 37 | Re-enable PIN fails silently at a lowered gate with an unknown PIN | Closed (fixed) | §1.3: the fix has no phrase equivalent yet |
 | Bug 62 | `pinCollision` PIN oracle | Open | Gone with the old store once the reseal is verified (§3.2) |
 | Bug 92 | Exported backup opens with the backup key alone; opt-in export passphrase unbuilt | Open, re-scoped 2026-09-24 | §6: shares the keyboard |

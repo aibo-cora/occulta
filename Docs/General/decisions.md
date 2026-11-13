@@ -1647,9 +1647,7 @@ the share staging key.
 - *Cards need nothing new:* bootstrap slots are labelled with HMAC(card agreement key, nonce), which only a holder of the card file can compute, as today; the secret is derived from `ss1` and `ss2` once both are held.
 - *It ships in a release before 2.1.0,* as its own stage, so pairings hold secrets before spaces exist.
 
-**Still open:** a pairing with a contact on an older build keeps the identity fingerprint until they upgrade. The build, its tests and two smaller open points are tracked as `Docs/Features/Secure Mode/bugs.md` Bug 196 (filed as Bug 194 on `v2.1.0/passphrase-independent-spaces`; renumbered 2026-11-12).
-
-**As built, 2026-11-05 (shipped in 2.0.1; Bug 196, "Stage 2"):** the secret is a routing key derived at a new exchange from the identity ECDH, a pair-key ECDH (two P-256 Enclave keys per pairing), the ML-KEM secrets, the nonces and a transcript of both phones' messages. Existing pairings get no in-band swap: they stay as released, and a re-exchange in person upgrades them. A pairing with a routing key refuses old-form files. Cards are deferred.
+**Still open:** a pairing with a contact on an older build keeps the identity fingerprint until they upgrade. The build, its tests and two smaller open points are tracked as `Docs/Features/Secure Mode/bugs.md` Bug 196 (194 when this was written; built in 2.0.1 without the swap).
 
 ---
 
