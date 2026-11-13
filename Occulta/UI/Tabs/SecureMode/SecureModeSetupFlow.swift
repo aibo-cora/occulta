@@ -83,27 +83,6 @@ struct SecureModeSetupFlow: View {
     }
 }
 
-// MARK: - Activating overlay
-
-private struct ActivatingOverlay: View {
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            
-            VStack(spacing: 16) {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .tint(.white)
-                    .scaleEffect(1.2)
-                Text("Securing your data…")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.8))
-            }
-        }
-        .allowsHitTesting(true) // absorbs all taps
-    }
-}
-
 // MARK: - Step dots
 
 private struct StepDots: View {
@@ -226,14 +205,28 @@ private struct SummaryView: View {
     @Environment(VaultManager.self)     private var vaultManager
     @Query(Contact.Profile.descriptor)  private var contacts: [Contact.Profile]
 
-    @State private var isActivating     = false
-    @State private var activationFailed = false
+    /// `.activating` is never left on the paths that dismiss the sheet, so the summary doesn't come
+    /// back during the slide-out (Bug 240). Only a failure returns to the summary, with its alert.
+    private enum Phase { case review, activating, failed }
+
+    @State private var phase: Phase = .review
 
     private var sensitiveCount: Int {
         self.contacts.filter { self.contactManager.isSensitive($0.identifier) }.count
     }
 
     var body: some View {
+        switch self.phase {
+        case .activating:
+            SecureModeProgressScreen(message: "Securing your data…")
+                .toolbar(.hidden, for: .navigationBar)
+                .navigationBarBackButtonHidden()
+        case .review, .failed:
+            self.summary
+        }
+    }
+
+    private var summary: some View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
@@ -294,9 +287,10 @@ private struct SummaryView: View {
 
             Section {
                 Button {
-                    self.isActivating = true
+                    self.phase = .activating
 
                     Task {
+                        // Lets the progress screen commit a frame before activation blocks the main thread.
                         try? await Task.sleep(for: .milliseconds(50))
 
                         do {
@@ -304,14 +298,12 @@ private struct SummaryView: View {
                                 confirmingEntryPIN: self.normalPIN,
                                 duressPIN:          self.duressPIN
                             )
-                            self.isActivating = false
                             self.onDone()
                         } catch Manager.Security.SecurityError.invalidStateTransition {
                             // Secure Mode is already active (duress state). The flow was
                             // opened for tell-avoidance — the UI looks identical to pinOnly.
                             // Silently dismiss rather than showing an error that would reveal
                             // the app is in a protected state.
-                            self.isActivating = false
                             self.onDone()
                         } catch Manager.Security.SecurityError.pinCollision {
                             // The proposed duress PIN matches an existing verifier. Showing
@@ -319,14 +311,12 @@ private struct SummaryView: View {
                             // a direct tell that Secure Mode is active. Silently dismiss so
                             // collision and success are indistinguishable from the outside.
                             // NOTE: this does not fully close the oracle attack — see Bug 62.
-                            self.isActivating = false
                             self.onDone()
                         } catch {
                             #if DEBUG
                             debugPrint("Error activating [\(type(of: error))]: \(error)")
                             #endif
-                            self.isActivating     = false
-                            self.activationFailed = true
+                            self.phase = .failed
                         }
                     }
                 } label: {
@@ -334,23 +324,18 @@ private struct SummaryView: View {
                         .frame(maxWidth: .infinity)
                         .fontWeight(.semibold)
                 }
-                .disabled(self.isActivating)
+                .disabled(self.phase != .review)
                 .prominentButtonStyle()
                 .tint(Color.occultaAccent)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
         }
         .listStyle(.insetGrouped)
-        .overlay {
-            if self.isActivating {
-                ActivatingOverlay()
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: self.isActivating)
-        .interactiveDismissDisabled(self.isActivating)
         .navigationBarBackButtonHidden()
-        .alert("Activation Failed", isPresented: self.$activationFailed) {
+        .alert("Activation Failed", isPresented: Binding(
+            get: { self.phase == .failed },
+            set: { if !$0 { self.phase = .review } }
+        )) {
             Button("OK", role: .cancel) { }
         } message: {
             Text("Secure Mode could not be activated. Your data is unchanged. Please try again.")

@@ -184,8 +184,9 @@ struct BackupKeyOrphaningTests {
         try c.vault.setupBackup(currentDepth: 1)
         let sessionAKey = try c.vault.currentBackupKey(currentDepth: 1)
 
-        // End session A entirely.
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        // End session A entirely: the owner removes it from depth 0.
+        c.security.applyVerifyState(for: try c.security.verify("111111"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")
         #expect(!c.security.isSecureModeActive)
 
         // The row itself must still physically exist, marked inert — never hard-deleted.
@@ -237,8 +238,9 @@ struct BackupKeyOrphaningTests {
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
-        // Deactivate the depth-2 layer only — depth 1's own backup key must be untouched.
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+        // Remove the depth-2 layer from depth 1 — depth 1's own backup key must be untouched.
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
         #expect(c.security.currentDepth == 1)
 
         let stillDepth1Key = try c.vault.currentBackupKey(currentDepth: 1)
@@ -275,7 +277,8 @@ struct BackupKeyOrphaningTests {
 
         // End the session — orphans the depth-1 BEK row. Its encryptedPayload (and the
         // still-pending shard inside it) is left in place, only the deletionToken flips.
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("111111"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")
         #expect(!c.security.isSecureModeActive)
 
         let key = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
