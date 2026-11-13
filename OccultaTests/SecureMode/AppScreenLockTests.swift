@@ -39,7 +39,7 @@ private func makeUnlockedScreen(_ security: Manager.Security) -> AppScreen {
 struct AppScreenLockTests {
 
     /// 5-minute grace period, as `AppScreen.gracePeriod`.
-    private static let grace: TimeInterval = 5 * 60
+    private static let grace: Duration = .seconds(5 * 60)
 
     @Test("Past the grace period, the phase is .pinRequired before the scene becomes active", .ambientTestKeyManager)
     @MainActor
@@ -49,9 +49,24 @@ struct AppScreenLockTests {
         let screen = makeUnlockedScreen(security)
         #expect(screen.phase == .unlocked)
 
-        let entered = Date()
-        screen.backgroundEntryDate = entered
-        screen.lockIfGracePeriodExpired(now: entered.addingTimeInterval(Self.grace + 1))
+        let entered = ContinuousClock.now
+        screen.backgroundEntryInstant = entered
+        screen.lockIfGracePeriodExpired(now: entered + Self.grace + .seconds(1))
+
+        #expect(screen.phase == .pinRequired)
+    }
+
+    /// Bug 227: the default `now` is what production uses, so this checks the time away is
+    /// read from `ContinuousClock`, which Settings can't change.
+    @Test("The production clock is ContinuousClock: an entry past the grace period on it locks", .ambientTestKeyManager)
+    @MainActor
+    func defaultClockIsContinuous() throws {
+        let security = try makeSecurity()
+        try security.configurePIN("111111")
+        let screen = makeUnlockedScreen(security)
+
+        screen.backgroundEntryInstant = ContinuousClock.now - Self.grace - .seconds(1)
+        screen.lockIfGracePeriodExpired()
 
         #expect(screen.phase == .pinRequired)
     }
@@ -63,9 +78,9 @@ struct AppScreenLockTests {
         try security.configurePIN("111111")
         let screen = makeUnlockedScreen(security)
 
-        let entered = Date()
-        screen.backgroundEntryDate = entered
-        screen.lockIfGracePeriodExpired(now: entered.addingTimeInterval(Self.grace - 1))
+        let entered = ContinuousClock.now
+        screen.backgroundEntryInstant = entered
+        screen.lockIfGracePeriodExpired(now: entered + Self.grace - .seconds(1))
 
         #expect(screen.phase == .unlocked)
     }
@@ -77,8 +92,8 @@ struct AppScreenLockTests {
         try security.configurePIN("111111")
         let screen = makeUnlockedScreen(security)
 
-        screen.backgroundEntryDate = nil
-        screen.lockIfGracePeriodExpired(now: Date().addingTimeInterval(Self.grace * 10))
+        screen.backgroundEntryInstant = nil
+        screen.lockIfGracePeriodExpired(now: ContinuousClock.now + Self.grace * 10)
 
         #expect(screen.phase == .unlocked)
     }
@@ -91,9 +106,9 @@ struct AppScreenLockTests {
         screen.wire(security: security)
         #expect(screen.phase == .unlocked)
 
-        let entered = Date()
-        screen.backgroundEntryDate = entered
-        screen.lockIfGracePeriodExpired(now: entered.addingTimeInterval(Self.grace * 10))
+        let entered = ContinuousClock.now
+        screen.backgroundEntryInstant = entered
+        screen.lockIfGracePeriodExpired(now: entered + Self.grace * 10)
 
         #expect(screen.phase == .unlocked)
     }
@@ -109,9 +124,9 @@ struct AppScreenLockTests {
         screen.wire(security: security)
         #expect(screen.phase == .unlocked)
 
-        let entered = Date()
-        screen.backgroundEntryDate = entered
-        screen.lockIfGracePeriodExpired(now: entered.addingTimeInterval(Self.grace * 10))
+        let entered = ContinuousClock.now
+        screen.backgroundEntryInstant = entered
+        screen.lockIfGracePeriodExpired(now: entered + Self.grace * 10)
 
         #expect(screen.phase == .unlocked)
     }
@@ -120,9 +135,9 @@ struct AppScreenLockTests {
     @MainActor
     func unwiredDoesNothing() {
         let screen = AppScreen()
-        let entered = Date()
-        screen.backgroundEntryDate = entered
-        screen.lockIfGracePeriodExpired(now: entered.addingTimeInterval(Self.grace * 10))
+        let entered = ContinuousClock.now
+        screen.backgroundEntryInstant = entered
+        screen.lockIfGracePeriodExpired(now: entered + Self.grace * 10)
 
         #expect(screen.phase == .covered)
     }

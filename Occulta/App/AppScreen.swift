@@ -50,14 +50,17 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     private var coverView: UIView?
     private weak var windowScene: UIWindowScene?
 
-    private static let gracePeriod: TimeInterval = 5 * 60
+    private static let gracePeriod: Duration = .seconds(5 * 60)
 
     /// Set in sceneDidEnterBackground; cleared on every foreground return.
     /// nil means cold launch or brief inactive-only interruption (Face ID,
     /// share sheet) — counted as zero background duration, no re-lock.
     ///
+    /// `ContinuousClock`, not `Date` (Bug 227): this clock can't be set in Settings, never
+    /// goes back, and keeps counting while the device sleeps (`SuspendingClock` and `systemUptime` stop). A reboot ends the process.
+    ///
     /// Internal rather than private so tests can place it past the grace period.
-    var backgroundEntryDate: Date?
+    var backgroundEntryInstant: ContinuousClock.Instant?
 
     // MARK: - UIWindowSceneDelegate
 
@@ -73,27 +76,21 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     func sceneWillEnterForeground(_ scene: UIScene) {
         self.lockIfGracePeriodExpired()
         guard let ws = scene as? UIWindowScene else { return }
-        guard self.secureModeActive else { return }
         self.installCover(for: ws)
     }
 
     /// Synchronous cover install — must complete before this method returns
     /// so iOS captures the cover (not live content) in the app-switcher snapshot.
+    ///
+    /// On every install (Bug 222), so the app-switcher card looks the same whatever is
+    /// configured.
     func sceneWillResignActive(_ scene: UIScene) {
         guard let ws = scene as? UIWindowScene else { return }
-        guard self.secureModeActive else { return }
         self.installCover(for: ws)
     }
 
-    /// True when Secure Mode is active (duress verifier exists at any depth).
-    /// Returns true when security isn't wired yet (cold launch) as a safe default.
-    private var secureModeActive: Bool {
-        guard let security = self.security else { return true }
-        return security.isSecureModeActive
-    }
-
     func sceneDidEnterBackground(_ scene: UIScene) {
-        self.backgroundEntryDate = Date()
+        self.backgroundEntryInstant = .now
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
@@ -106,7 +103,7 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
             // by sceneWillResignActive (app-switcher visit, Face ID, banner pull-down)
             // and clear the background date so the post-PIN grace period isn't
             // poisoned by this stale measurement.
-            self.backgroundEntryDate = nil
+            self.backgroundEntryInstant = nil
             self.removeCover()
             return
         }
@@ -154,12 +151,12 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     /// expired session then — so `RootView.handleOpenURL` decrypted a file instead of queueing
     /// it, and its sheet presented over the cover before the PIN screen replaced it.
     ///
-    /// `backgroundEntryDate` is left for `sceneDidBecomeActive` to clear.
-    func lockIfGracePeriodExpired(now: Date = Date()) {
+    /// `backgroundEntryInstant` is left for `sceneDidBecomeActive` to clear.
+    func lockIfGracePeriodExpired(now: ContinuousClock.Instant = .now) {
         guard let security = self.security,
               security.requiresPIN, security.pinEnabled,
-              let entered = self.backgroundEntryDate,
-              now.timeIntervalSince(entered) > Self.gracePeriod
+              let entered = self.backgroundEntryInstant,
+              entered.duration(to: now) > Self.gracePeriod
         else { return }
 
         self.phase = .pinRequired
@@ -180,8 +177,8 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
             return
         }
 
-        let elapsed = self.backgroundEntryDate.map { Date().timeIntervalSince($0) } ?? 0
-        self.backgroundEntryDate = nil
+        let elapsed = self.backgroundEntryInstant.map { $0.duration(to: .now) } ?? .zero
+        self.backgroundEntryInstant = nil
 
         if elapsed > Self.gracePeriod {
             self.phase = .pinRequired
