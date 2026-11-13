@@ -575,6 +575,7 @@ Re-prioritisations folded from this pass: #21 promoted from opportunistic to sch
 ---
 
 ### 29. Situational Contact Actions — "Trust Check" Picker
+**Update, 2026-11:** the top-level flow replaces contact-detail-only placement: a "Something happened?" button in the Contacts tab, eight scenarios, a contact picker and remedies by verification state. See `Docs/Features/Trust Check/trust-check-top-level.md`. The paragraphs below are the 2026-07 design history.
 **Added July 22, 2026 (session following the Guardian Revocation Certificates re-scoping, #19)**
 **Revised July 22, 2026 (same-day, eight passes)** — rescoped from a global picker to a contact-detail-embedded one; narrowed to security/identity events only, CRUD excluded; renamed from "Something happened?" to "Significant Event" and moved below Message/Edit Contact since those are used far more often; added per-scenario eligibility so a scenario is only offered when the contact actually qualifies for it; the entry point itself is now hidden entirely when zero scenarios are eligible, rather than opening onto an empty list; renamed to "Security Actions," then to "Trust Check"; **the fourth scenario (Vault Trustee, originally "custody") removed entirely** — see below
 **Category:** UX / Discoverability

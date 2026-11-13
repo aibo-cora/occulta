@@ -386,6 +386,7 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 | U5c | `.privacySensitive(true)` on vault entry detail and new-entry sheet | Low | ✅ (widget/Focus Mode redaction only — no effect on OS snapshots) |
 | U5d | OS app-switcher snapshot — KTX file taken after `applicationDidEnterBackground` returns (QA1838); animation frame pre-callback | Critical | ✅ KTX gap closed (Bug 56, confirmed on-device) — ⚠️ animation-frame sub-issue remains open, see below |
 | U6 | Share index filtered to depth-1 on lock | Critical | ✅ |
+| U7 | Trust Check top-level flow: entry point, scenarios and remedies identical at every depth; only the picker's rows differ, through `ContactListFilter` | High | ✅ — ⚠️ copy review open, see U7 |
 
 ### U1 — PIN toggle always interactive
 In `.normal` and `.duress` states (Secure Mode active), disabling the Settings PIN toggle calls `disablePIN(at:confirmingPIN:)` — it lowers the gate without removing verifiers. When Secure Mode is not active (`isSecureModeActive == false`), the toggle calls `deactivatePIN`. In all cases the toggle is interactive and the UI is indistinguishable. A coerced user asked to "turn off the PIN" produces the same visual result regardless of which state the app is in.
@@ -513,6 +514,40 @@ One consequence worth recording here rather than only in the bug: the old `max(c
 clamp meant a contact classified as real-only could not be reached from the iOS share sheet at any
 depth, including depth 0. The in-app picker runs at the authenticated depth, so that contact is now
 shareable — at depth 0, and only there.
+
+### U7 — Trust Check top-level flow
+
+`TrustCheckSheetV2` is opened from a "Something happened?" toolbar button in `ContactsV2` and from the Trust Check card
+in contact detail. Design: "Occulta Trust Check — Top-Level Flow"; summary in `Docs/Features/Trust Check/trust-check-top-level.md`.
+Every item of its depth and forensic checklist, and where it is enforced:
+
+- **Same at every depth.** The button, the scenario list and every remedy are built from `TrustScenario` and
+  `TrustRemedy` (`TrustCheckPlaybook.swift`), values that read no depth. The one input that varies is the picker's
+  contact list. `TrustRemedyTests` covers the table; nothing in the flow reads `Manager.Security.currentDepth` except
+  the picker view and the sheet's contact lookup, and both pass it straight to `ContactListFilter`.
+- **Picker rows from visible contacts only.** `TrustCheckPicker.rows` takes `visibleContacts(atDepth:)`, narrows it with
+  `TrustScenario.lists`, orders it with `sortedContacts`, and decides its empty state with `isEmptyList`. A contact hidden
+  at the current depth never appears, and when every matching contact is hidden the screen reads "No Not verified
+  contacts" (or "No contacts"), exactly as it would with none stored. `TrustCheckPickerDepthTests` covers each scenario.
+- **No counts or markers over all stored contacts.** The picker shows no count, and a row's mark is its own contact's
+  remedy line, computed from that contact alone. The sheet resolves a tapped row among visible contacts too, so a
+  route naming a hidden contact reaches no contact's remedy.
+- **File scenario matches the alert.** The reasons Trust Check gives for a file that won't open and the alert in
+  `RootView` (`FileNotOpenedCopy`) are one source. A separate message for a file from a contact's old phone must not be
+  added: it would appear only if the app searched old keys, telling whoever delivers a file that such a contact exists
+  at this depth. `TrustFileRemedyCopyTests` checks all four reasons in both texts (see also C2).
+- **Search field (O1).** The picker's search field has `.autocorrectionDisabled()`. It is the flow's only text input,
+  and nothing describing what happened is typed.
+- **Nothing persisted, logged or donated.** The scenario and contact live in the sheet's navigation stack and `@State`
+  only: no `@AppStorage`, no `NSUserActivity`, no App Intents donation, no logging.
+- **Signed-text scenario.** Offered only when `FeatureFlags.isEnabled(.signature)`: varies by build, never by depth.
+- **Copy.** Titles and remedy text pass the word list in `HiddenStateWordList` (shared with `WhatsNewTests`) in
+  `TrustScenarioCopyTests`. That is a tripwire only. **Open, needs a decision:** a person's review of the copy for
+  subtler leaks, now and in each language the app ships. Nothing is localized yet.
+
+Pre-existing and unchanged: the Hide / Mark private card in contact detail names Secure Mode ("Move into Secure Mode
+protection") and is shown only there, for a contact the user opened. It is outside this flow's scope, but it is text
+that names the mechanism on a screen reachable at every depth. **Open, needs a decision.**
 
 ---
 
