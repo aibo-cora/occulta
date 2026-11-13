@@ -434,8 +434,12 @@ extension Manager {
             self.resetCounters()
         }
 
-        /// Verifies the normal PIN and removes the duress verifier for this depth
-        /// (`isSecureModeActive` becomes `false` if this was the last layer).
+        /// Verifies the current depth's PIN and removes every layer deeper than the current
+        /// depth. The session stays where it is (`isSecureModeActive` becomes `false` only
+        /// when this runs at depth 0).
+        ///
+        /// **Bug 220, 2026-11-12.** A depth removes the depths below it, never itself or
+        /// anything shallower (`PASSPHRASE_ROLLOUT.md`, decision 9a).
         ///
         /// **Removal Stage 1, 2026-09-10 (`plan.md`, "Removal — Stage 0: design decision").**
         /// No longer touches `Contact.Profile`, `VaultEntry`, `Message.Draft`, `Group`, or
@@ -451,52 +455,35 @@ extension Manager {
             let depth  = self.currentDepth
 
             guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
-            // depth 0 (real app) and depth 1 (first duress view) both deactivate the
-            // depth 0→1 layer and return to pinOnly. depth 0 is valid here — the real
-            // app owner deactivates from their master view.
 
             let keys = try self.pinKeys()
 
             // Confirm PIN against the normal verifier at the current depth.
             // depth 0 → sealedNormalVerifiers[0] (master PIN).
-            // depth 1 → sealedNormalVerifiers[1] (routing alias = duress PIN).
+            // depth N → sealedNormalVerifiers[N] (routing alias = that depth's duress PIN).
             guard depth < config.sealedNormalVerifiers.count,
                   PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
                                            verifier: config.sealedNormalVerifiers[depth], seKey: keys.seKey, wrapKey: keys.wrapKey)
             else { throw SecurityError.incorrectPIN }
 
-            // Clear verifiers and transition state.
-            //
-            // clearVerifiers(from: clearFrom) removes normalVerifiers[clearFrom..31]
-            // and duressVerifiers[(clearFrom-1)..31], leaving shallower depths intact.
-            //
-            //   depth ≤ 1 (last layer): clearFrom = 1 keeps normalVerifiers[0] (master PIN)
-            //             and removes the entire depth 0→1 configuration.
-            //   depth ≥ 2 (expendable): clearFrom = depth keeps every shallower layer
-            //             (0 through depth-1) intact — only the popped layer's own
-            //             verifiers are removed.
-            let clearFrom = max(1, depth)
+            // clearVerifiers(from: depth + 1) removes normalVerifiers[depth+1...] and
+            // duressVerifiers[depth...]: every layer below this one. This depth's own
+            // verifier and every shallower one stay, so the session stays at `depth`.
+            let clearFrom = depth + 1
             config.clearVerifiers(from: clearFrom)
             self.orphanVaultEntries(freedFrom: clearFrom)
             self.orphanBackupKeys(freedFrom: clearFrom)
 
-            // LIFO pop: land exactly one depth shallower than the layer just removed,
-            // never further. Every verifier for depths 0..depth-2 is untouched by the
-            // clear above, so that shallower stack is still fully intact and correctly
-            // becomes the new home. depth ≤ 1 has nowhere shallower than 0 to land —
-            // that is also a full deactivation, so the duress scalar clears too.
-            let newDepth = max(0, depth - 1)
-            if newDepth == 0 {
+            // Only at depth 0 is no layer left.
+            if depth == 0 {
                 config.sealedDuressVerifier = nil
             }
-            try self.setState(newDepth, config: config)
+            try self.setState(depth, config: config)
 
-            // coercerBaseDepth becomes the depth just landed on, mirroring
-            // activateSecureMode's own write (Bug 58/61) — 0 after a full deactivation
-            // (the real user's own home), or the popped-to depth after a cascade pop, so
-            // "Deactivate Protection" is reachable there immediately without a separate
-            // re-verify to re-establish `state == .normal`.
-            try? config.writeCoercerBaseDepth(newDepth)
+            // 0 at every depth: at depth 0 it's the real user's home, and at depth N > 0 it
+            // makes `state` read `.duress`, so Settings shows "Learn more" there again, as on
+            // an install with only a PIN.
+            try? config.writeCoercerBaseDepth(0)
 
             try self.modelContext.save()
             self.resetCounters()
@@ -895,7 +882,8 @@ extension Manager {
         ///    PIN matches nothing AND `currentDepth > 0` (gate was lowered while in a duress
         ///    or coercer layer). Rather than returning `false` (which would leave the toggle
         ///    OFF — a tell that existing verifiers are present), the system silently accepts
-        ///    the PIN as a new layer. See the "Coercion acceptance" block below for details.
+        ///    the PIN as the current depth's own PIN (Bug 221). See the "Coercion acceptance"
+        ///    block below for details.
         ///
         /// 4. **Unknown PIN at depth 0** — returns `false`. At depth 0 the coercion
         ///    acceptance path is not triggered because depth 0 is the real user's layer; a
@@ -946,26 +934,21 @@ extension Manager {
             //   - In genuine `.noPIN` → `.pinOnly` setup: any PIN succeeds, toggle flips ON.
             //   - Here: PIN entered twice, sheet closed, toggle stays OFF.
             // This asymmetry reveals that verifiers already exist — i.e. Secure Mode is
-            // running and the gate was deliberately lowered. The fix: silently create a new
-            // layer for the coercer's PIN so the toggle always flips ON.
+            // running and the gate was deliberately lowered. The fix: silently accept the
+            // coercer's PIN so the toggle always flips ON.
             //
-            // What "creating a new layer" means:
-            //   • `sealedDuressVerifiers[N]` — the push-down verifier: entering PIN C from
-            //     depth N advances to depth N+1. Built with duressLabel.
-            //   • `sealedNormalVerifiers[N+1]` — the routing alias: cold-start entry of
-            //     PIN C matches here and routes directly to depth N+1 (state = .normal),
-            //     exactly as if the coercer is at their "depth 0". Built with normalLabel
-            //     (same label as all other normal verifiers so the step-1 scan in verify()
-            //     finds it consistently).
-            //   • `coercerBaseDepth = N+1` — records the coercer's home depth so the UI
-            //     can present a fully functional Secure Mode experience from that depth
-            //     (deactivation button, ContactClassification). See AppLayerConfig field docs.
+            // What accepting it means (Bug 221, 2026-11-13): the PIN becomes depth N's own PIN.
+            //   • `sealedDuressVerifiers[N-1]` — the push-down into depth N. Built with duressLabel.
+            //   • `sealedNormalVerifiers[N]` — the routing alias: cold-start entry of the PIN
+            //     matches here and routes to depth N. Built with normalLabel, as every normal
+            //     verifier is, so verify()'s step-1 scan finds it.
+            //   • Deeper slots are left alone, so the owner's deeper layers keep working.
+            //   • `coercerBaseDepth = 0`, so depth N shows "Learn more" and no "Deactivate
+            //     Protection": what an install with only a PIN shows after one is set.
             //
-            // Same shape as activateSecureMode's own verifier writes — no DB key rotation,
-            // no blob, neither exists any more regardless of path (Removal Stage 2). The
-            // "Deactivate Protection" UI at the coercer's depth is gated on `coercerBaseDepth`;
-            // deactivating the coercer's own layer (depth N+1) goes through the same
-            // deactivateSecureMode as any other layer.
+            // The cost: the PIN the owner had for depth N stops working; the holder's replaces
+            // it. The owner still reaches depth 0 with the master PIN and can re-create the layer.
+            // The PIN matched nothing above, so it collides with no existing verifier.
             guard self.currentDepth > 0 else { return false }
 
             guard
@@ -973,17 +956,18 @@ extension Manager {
                 let routingAlias   = try? PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: keys.seKey, wrapKey: keys.wrapKey)
             else { return false }
 
-            config.writeDuressVerifier(duressVerifier, at: self.currentDepth)
-            config.writeNormalVerifier(routingAlias,   at: self.currentDepth + 1)
+            config.writeDuressVerifier(duressVerifier, at: self.currentDepth - 1)
+            config.writeNormalVerifier(routingAlias,   at: self.currentDepth)
+            // The depth-0 scalar mirrors `sealedDuressVerifiers[0]` (activateSecureMode writes both),
+            // so at depth 1 it is replaced too rather than left holding the PIN that was overwritten.
+            if self.currentDepth == 1 {
+                config.sealedDuressVerifier = duressVerifier
+            }
 
-            // Record the coercer's home depth. UI checks use
-            //   `currentDepth == 0 || currentDepth == coercerBaseDepth`
-            // so this does not affect the real user at depth 0.
-            try? config.writeCoercerBaseDepth(self.currentDepth + 1)
+            try? config.writeCoercerBaseDepth(0)
 
-            // Re-enable the gate. State stays .duress (we are at a depth above 0);
-            // currentDepth is unchanged (still N — the gate fires on next foreground and
-            // verify() will set currentDepth = N+1 when the coercer enters PIN C).
+            // Re-enable the gate at the same depth. The next unlock with this PIN routes back to
+            // depth N, so neither the depth nor the session changes.
             try? self.setState(self.currentDepth, pinEnabled: true, config: config)
             try? self.modelContext.save()
             return true
