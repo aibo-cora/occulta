@@ -332,21 +332,37 @@ enum ShareSession {
         }
     }
 
+    /// Delete `blobs/`, the Secure Mode layer file of releases 1.9.2 to 1.10.3 (Bug 211).
+    ///
+    /// Those builds wrote it on every install. Removal Stage 2
+    /// (`1bf5c5d2`) deleted the code that reads it and left the file. Nothing reads it now.
+    ///
+    /// Runs on every foreground, at every depth and before any PIN, like
+    /// `removeLegacyContactIndex`: every upgraded install has the file, so deleting it says
+    /// nothing about Secure Mode, and a marker would record when this build first ran. The
+    /// file is `.completeFileProtection`, so deleting it also discards its per-file key.
+    static func removeLegacyLayerStore(in container: URL) {
+        try? FileManager.default.removeItem(at: container.appendingPathComponent("blobs"))
+    }
+
     /// Delete everything the share extension has left in the App Group. Erase All Data calls
     /// this before it deletes the share-staging key.
     ///
     /// - `pending/` — staged sessions, including fresh ones `sweep` would keep
     /// - `inbound/` — `.occ` handoffs, including fresh ones `sweepInbound` would keep
     /// - the legacy contact index
+    /// - `blobs/` and `cache/`, the legacy layer file and backup-key array (Bug 211). `cache/`
+    ///   is kept otherwise: `migrateLegacyBackupStorageIfNeeded` still reads it on unlock.
     ///
-    /// Removes the two directories themselves, not just what is in them. The extension
+    /// Removes the directories themselves, not just what is in them. The extension
     /// creates each one on first use, so its creation date records the first share into
     /// Occulta just as the key's does.
     static func removeAll(in container: URL) {
-        for name in ["pending", "inbound"] {
+        for name in ["pending", "inbound", "cache"] {
             try? FileManager.default.removeItem(at: container.appendingPathComponent(name))
         }
         self.removeLegacyContactIndex(in: container)
+        self.removeLegacyLayerStore(in: container)
     }
 
     // MARK: - Private

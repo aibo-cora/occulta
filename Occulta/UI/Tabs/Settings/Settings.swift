@@ -182,6 +182,13 @@ struct Settings: View {
         }
     }
     
+    /// Whether Settings shows the PIN as on: configured, and the lock not lowered. The "Enable PIN"
+    /// toggle and the "Learn more" section both read it, so a lowered lock looks like no PIN in
+    /// both (Bug 223).
+    static func pinReadsAsOn(requiresPIN: Bool, pinEnabled: Bool) -> Bool {
+        requiresPIN && pinEnabled
+    }
+
     private struct SecuritySettings: View {
         @Environment(Manager.Security.self) private var security
         @Environment(ContactManager.self)   private var contactManager
@@ -213,7 +220,7 @@ struct Settings: View {
                 // the toggle appears off even though verifiers are intact — this is the
                 // tell-avoidance invariant: the toggle must look identical to a device
                 // with no PIN.
-                get: { self.requiresPIN && self.security.pinEnabled },
+                get: { Settings.pinReadsAsOn(requiresPIN: self.requiresPIN, pinEnabled: self.security.pinEnabled) },
                 set: { _ in self.showingPINSheet = true }
             )
         }
@@ -239,8 +246,9 @@ struct Settings: View {
                         }
                         .padding(.vertical, 4)
                     }
-                    .disabled(!self.requiresPIN)
-                    .opacity(!self.requiresPIN ? 0.4 : 1)
+                    // Same reading as the toggle (Bug 223), so a lowered lock reads as no PIN here too.
+                    .disabled(!Settings.pinReadsAsOn(requiresPIN: self.requiresPIN, pinEnabled: self.security.pinEnabled))
+                    .opacity(Settings.pinReadsAsOn(requiresPIN: self.requiresPIN, pinEnabled: self.security.pinEnabled) ? 1 : 0.4)
                 }
 
                 if self.isAtSecureModeHomeDepth {
