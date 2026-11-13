@@ -5458,6 +5458,10 @@ Whatever it suggests, it suggests about rows `deletionToken` already flags. Set 
 declining to act leaves a 29-byte value that says a contact was classified as sensitive — a concrete
 inference about the feature, traded away for a hypothetical one with no channel.
 
+**Corrected 2026-10-31 (Bug 190):** the store does keep a time for every write. SwiftData's persistent history
+(`ATRANSACTION`, `ACHANGE`) records each insert, update and delete with the row's primary key, the columns it
+changed and a timestamp. The scrub itself is logged there as one transaction updating these rows.
+
 **Note the interaction with the 50-row cap.** Soft-deleted rows are capped at 50, with one
 hard-deleted to make room when full, so the affected population is bounded and churns. That limits
 the exposure but does not remove it: a device that classified contacts and then deleted some will
@@ -10558,15 +10562,33 @@ The finding above stands. It is slightly worse, since no space can reseal anothe
 only when someone uses it (the "decoys go stale" cost, accepted).
 
 - **Fixed in one image, with no phrase:** per-type row counts (one sealed blob per contact in one table, spec §2
-  requirement 3), row sizes (a few fixed sizes, noise rows included), and no space tag on any row. Every change
-  is written as "append a new row, shred the old", so an edit, an addition and a deletion look alike.
+  requirement 3), row sizes (a few fixed sizes, noise rows included), and no space tag on any row. ~~Every change
+  is written as "append a new row, shred the old", so an edit, an addition and a deletion look alike.~~ *Changed
+  2026-11-01 (§8, 22):* an edit rewrites the row in place, a deletion overwrites it with random bytes, and an
+  addition appends one. The old claim never held: an addition only appended and a deletion only shredded.
 - **Not fixed:** rows a surrendered space can't open changing between images. Noise rows don't help. A key that
   recognises noise would let anyone holding it count the real unopenable rows, and without one a duress session
   can't tell noise from real rows, so it can't safely rewrite either.
 - **Stated limit, owner 2026-10-29:** a duress space protects against one image, not a series, and the setup
   guidance (step 16) says so. The append-only log stays a possible later release, not planned.
-- **Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
-  grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+- ~~**Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
+  grows, since no space can remove a shredded row~~ (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+  **Decided 2026-11-01 (§8, 22):** an edit rewrites the row in place, so the table grows only with rows added,
+  plus noise. Across images an edit shows one changed row, within this limit.
+  **Decided 2026-11-01 for the contact table (§8, 21):** the noise count is drawn per install, uniformly from
+  50–1,000, and never stored, so up to 1,000 unopened rows say nothing; more than that right after migration proves
+  a hidden space. ~~Noise sizes and the other space-sealed tables stay open.~~ **Decided 2026-11-02:** every small
+  space-sealed record shares one table and one row size, about 8 KB, so the same noise covers them and no per-type
+  count shows. ~~Photos and vault entries stay open.~~ **Decided 2026-11-02:** vault entries get their own table of
+  4 KB rows with noise drawn from 10–200. Photos get one size and no noise rows, so right after migration a photo
+  row the open space can't read proves another space: open, needs a decision.
+- ~~**Also open, needs a decision (2026-10-31):**~~ a write that reseals all of one space's rows at once (a rekey,
+  removing a space, a migration batch) shows across images which rows make up that space, with no phrase
+  (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25). **Decided 2026-11-01 by the owner:** Erase All Data's group is a
+  space that no longer exists, so nothing to fix. A rekey after an exposed phrase and lock-on (7c) are part of the
+  stated limit above, which now also covers the space's size: a rekey must overwrite rows the exposed phrase still
+  opens, and while a lock was off anyone who could unlock the phone read the space. A space that migrates later
+  than the others (8a, 8b) appends a random number of noise rows with its batch, how many settled with §8, 21.
 - **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
 
 ---
@@ -14159,7 +14181,7 @@ Fixed means: every key the app derives today (the local DB, shard custody, resto
 1. **Data copied before the reseal, and images taken while a device was classical.** Ciphertext sealed under a legacy key, and anything sealed under the classical form on a device below iOS 26, stays readable to whoever holds Q (and, for the classical form, the tier secret). No reseal protects what is already copied. Stage 6 moves a device to hybrid when it reaches iOS 26.
 2. **Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer.** No primitive there closes it (D1, the user's, 2026-10-21). The passphrase release closes it for phrase-protected depths on every version, and Stage 6 when the device reaches 26.
 3. **Whether an image alone yields Q.** No cleartext column of the Simulator's keychain database does (it holds SHA-1(Q)); a device answer needs extraction tooling we don't have (D4).
-4. **`Contact.Profile.identifier` is left byte-identical** (the user's decision, 2026-10-21), so for contacts imported from the address book a holder of Q can link each one to its address-book entry until the passphrase migration reseals each contact as one record. That migration's part, and what it leaves open, is in `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §4 (stages 4 and 5, decision 20).
+4. **`Contact.Profile.identifier` is left byte-identical** (the user's decision, 2026-10-21), so for contacts imported from the address book a holder of Q can link each one to its address-book entry until the passphrase migration reseals each contact as one record. That migration's part, and what it leaves open, is in `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §4 (stages 4 and 5, decision 20). **Decided 2026-11-02:** every contact gets a random 16-byte ID, references hold only that inside rows sealed under the same space key, and the address-book ID is never stored.
 5. **The vault window (D8).** The per-entry keys stay under the legacy key until the first unlock after the upgrade, and the vault epoch shows anyone who holds the tier U key whether the vault has been opened since. A kill after the export file moved leaves the file under the new key and the rest under the old until the next unlock (nothing becomes unreadable except the backup staleness snapshot in that window).
 6. **A reseal or an upgrade that stopped partway, over a later launch that aborts before writing.** Stage 2c and Stage 6 block a launch that ended mixed; the report knows only its own launch, so a launch that aborts before writing over a store an earlier launch left mixed is not blocked. A marker written before the first batch would close it, and for the upgrade the pending record could serve, but an upgrade that fails for a lasting reason would then block every launch from the second on.
 7. **Share staging's legacy fallback.** While `decrypt` accepts the legacy key (one release), anyone holding Q who can write into the App Group container can plant a session the app opens. The fallbacks go one release after 2.0.0.
@@ -15152,11 +15174,93 @@ same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of fil
 
 ---
 
+## Bug 190 — SwiftData's persistent history logs every write to the store, with a timestamp, the row and the columns changed
+
+**Status:** Open, needs a decision. Found 2026-10-31 while describing the contact table after the passphrase
+rollout (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23). **For the passphrase rollout's new store, decided
+2026-11-01:** plain SQLite, so none of this applies there (`decisions.md`, 2026-11-01). The SwiftData store that
+remains, and every store today's app writes, are still open.
+
+**Target:** None yet. It is in every shipped build, and the passphrase rollout's storage relies on it being gone.
+
+### Severity: High (proposed; one image, no key, every install, and it is a log of the writes Bug 120 needs two images for)
+
+### What happens
+
+SwiftData turns on Core Data's persistent history tracking, and nothing in the app turns it off or prunes it: there is
+no `deleteHistory`, `HistoryDescriptor` or `NSPersistentHistory` anywhere in `Occulta/`. The store
+(`OccultaApp.swift:69`, `ModelConfiguration(… cloudKitDatabase: .none)`) therefore carries three tables of its own:
+
+- `ATRANSACTION`: one row per save, with a timestamp, and the bundle ID and process name through `ATRANSACTIONSTRING`.
+- `ACHANGE`: one row per inserted, updated or deleted object, with its entity, its `Z_PK`, the change type, the
+  transaction, and a bitmask of the columns an update changed.
+- `Z_PRIMARYKEY`'s `CHANGE` and `TRANSACTION` counters: how many of each were ever written.
+
+So one image holds, in the clear and from install onwards, when each row of each table was written and which of its
+columns changed. That includes:
+
+- **Secure Mode activation and classification**, as one transaction updating the depth columns of a set of rows;
+- **Bug 89's scrub**, which assumed no timestamp exists;
+- **every write made in a duress session and every write made outside it**, by time, for a coercer who knows when
+  the duress session was open.
+
+Two more per-row traces, outside the history tables:
+
+- `Z_OPT`, the optimistic-locking counter, goes up by one on every update of a row, so it counts how often each row
+  was rewritten in place.
+- `Z_PK` is assigned in insertion order, so a row's position says when it was inserted relative to the others.
+
+### Verified, 2026-10-31
+
+- **A test store** (`swiftc`, macOS 26.6.2, SwiftData, one model of a UUID and a `Data`): four inserts, one row
+  updated once, one updated twice, one deleted and replaced. `ACHANGE` lists all nine changes with their `Z_PK` and a
+  column bitmask on the updates; `ATRANSACTION` has five timestamps; `Z_OPT` reads 2 and 3 on the updated rows and 1
+  on the rest; the replacement row took a new, higher `Z_PK`.
+- **Two of the app's Simulator stores**, read-only. One holds 34 changes in 3 transactions, which are the store's
+  whole history (32 backup-key rows, the vault and `AppLayerConfig`, matching `Z_MAX`). The other logs two `Profile`
+  inserts and one `Profile` update with times four minutes apart, and the updated row has `Z_OPT` 2.
+- **Not checked:** a device store; whether iOS prunes history on its own over months; whether SwiftData can open a
+  store with history tracking off.
+
+### Why it matters to the passphrase rollout
+
+The independent-spaces design (`PASSPHRASE_ROLLOUT.md` §1.5) says a deleted row, another space's row and a noise row
+look the same. In a SwiftData table they don't:
+
+- **Shredding in place is an update.** The shredded row gets `Z_OPT` 2 and an `ACHANGE` update, while live rows of
+  every space and noise rows stay at 1. Deleted rows stand apart from the other two in one image, which breaks the
+  "I deleted everything" story.
+- **Noise rows written in one batch** at migration take one run of `Z_PK` values, before or after the real rows.
+- **The history tables** list every append and every shred with its time, which is the series Bug 120 says a duress
+  space can't survive, in one image.
+
+### Fix — open, needs a decision
+
+- **Drop the history** after each save, or open the store with history tracking off if SwiftData allows it (not
+  checked). After a deletion, the freed pages need `secure_delete` and a checkpoint, as purges do today. The
+  `CHANGE` and `TRANSACTION` counters in `Z_PRIMARYKEY` would still count every write ever made.
+- **Make the per-row columns uniform** in the new contact and photo tables. Shred by deleting and inserting a new
+  random row instead of updating in place, so `Z_OPT` stays 1, and insert the migration's real and noise rows in a
+  random order. `Z_PK` still orders rows by insertion.
+- **Leave SwiftData for these tables.** A plain SQLite table or a file of fixed-size records has no history, no
+  `Z_OPT` and no insertion counter.
+- **Decided 2026-11-01 for the new store:** the third option. Every table sealed under a space key goes into a
+  plain SQLite file, each `WITHOUT ROWID` with a random 16-byte key and the sealed record. The first option is still
+  needed for the SwiftData store that remains and for today's app.
+- **Images already taken** keep the history up to that point, whatever is chosen.
+
+### Guard
+
+None yet. A test that saves, updates and deletes, then reads the store file and finds no `ACHANGE` or `ATRANSACTION`
+rows, and the same `Z_OPT` on every row of the new tables.
+
+---
+
 ## Bug 191 — `TransportKeyDerivation.sessionKey` takes an `ecdhOutput` of any length, and says nothing about which input was wrong
 
 **Status:** Fixed on `v2.1.0/transport-key-derivation-throws`, not merged. Filed as `OC-1` in `Docs/Features/OccultaCore/bugs.md`
 (found 2026-10-31 when the function was extracted); recorded here when it was fixed. Numbered 191 because 190 is taken on
-`v2.1.0/passphrase-independent-spaces`, not merged.
+`v2.1.0/passphrase-independent-spaces`, not merged *(merged 2026-11-12; Bug 190 above)*.
 
 **Target:** `v2.1.0`, `OccultaCore`. No shipped build of Occulta is affected: every app caller passes 32 bytes.
 
@@ -15191,6 +15295,107 @@ input wrong, the own-key error comes first, and each later check is reached only
 `ReadmeExamplesTests` mirrors the README's now-throwing example. The interop vectors are unchanged.
 
 ---
+
+## Bug 192 — A hosted test run on a device reads the real store under the legacy keys, and can purge every group
+
+*Numbered 191 until 2026-11-02, and still called that in PRs #152–#154 and this branch's commit messages.
+`release/v2.1.0` took Bug 191 for `TransportKeyDerivation.sessionKey` (PR #151), so this one is 192.*
+
+**Status:** Fixed in `release/v2.1.0` by [PR #154](https://github.com/aibo-cora/occulta/pull/154), merged
+2026-11-02 as `ac2a5a67` (it replaces PRs #152 and #153, both closed). It merged before its CI check finished; the
+full Simulator run passed with only the 6 expected skips. Found 2026-11-01, when two device runs of `ContactRecordCryptoMeasurementTests` on
+a phone with real data made its contacts and groups disappear from the app. The contacts came back after a normal
+launch; the groups were deleted for good.
+
+**Target:** `release/v2.1.0`. Debug builds hosting tests are where it was seen; the purge guard also covers any
+shipped path that reaches the purge with the wrong key.
+
+### Severity: Low for users, Critical for any development phone that holds data (proposed; it destroyed a phone's groups)
+
+### What happens
+
+- `OccultaTests` is hosted in Occulta.app, so a device run installs a Debug build over the app and launches it against
+  the real store.
+- In a test host, `OccultaApp.init` skips `LaunchSequence.run` (`OccultaApp.swift:96-104`, the same in `v2.0.0`). The
+  process's tier-U keys then stay `.legacy` (`Manager+Ambient.swift:70-79`).
+- A store the launch sequence has resealed (Bug 171, stage 2) does not decrypt under the legacy keys, so the app shows
+  no contacts and no groups. That is what was seen. Nothing was lost: the next normal launch ran the sequence and the
+  data reappeared.
+- **Every group was deleted (seen 2026-11-01, after a first note here said they survived).** The app body's `.task`
+  calls `purgeOrphanedGroupsIfAtRealDepth()` (`OccultaApp.swift:952`). On a phone with no Occulta PIN,
+  `requiresPIN` is false (`Manager+Security.swift:78`, a nil check that needs no key), so `evaluate(coldLaunch:)`
+  goes straight to `.unlocked` at depth 0 (`AppScreen.swift:171`), and the purge derives its key from
+  `Manager.Ambient`: the legacy key, which `legacyKey` creates if it is missing (`Key+Manager.swift:570`), so it is
+  never nil. `purgeUnreadableGroups` (`Contact+Manager+Groups.swift:108`) then finds no group that key opens and
+  deletes all of them, and the `checkpointStore()` right after flushes the deletion with `secure_delete` on, so the
+  rows are zeroed. Contacts survive only because nothing purges them. That the phone had no PIN is inferred, not
+  checked: the contact list showed during the run, which a PIN gate would have hidden. A phone with a PIN keeps the
+  phase at `.pinRequired` and the purge doesn't run.
+- **The purge is the only destructive step** (checked by the fix's session). The other launch-time sweeps and
+  migrations skip rows they can't read, which is why the contacts came back, and the legacy derivation reuses the
+  keychain and Enclave items that still exist on a resealed phone, so no fresh keys were created.
+- **No recovery from the app:** the vault backup doesn't hold groups, and the store is excluded from device backups.
+
+### Fix (PR #154, from PR #152's commit `261e6024` and PR #153)
+
+- **The test host gets an in-memory store.** `OccultaApp.init` builds an in-memory container in a test host, as a
+  blocked launch does, and its file-level calls point at a path that doesn't exist. A hosted run never opens the real
+  store, so no sweep, today's or a later one, can touch it.
+- **The purge refuses a key that doesn't open the store.** `purgeUnreadableGroups` first decrypts
+  `AppLayerConfig.persistedDepth` with the key it was given. If that fails, or the config row or `persistedDepth` is
+  missing, it throws `keyDoesNotOpenStore` and deletes nothing. With the right key, Bug 75's cleanup of genuinely
+  stranded groups still runs.
+- **Rejected:** skipping the sweeps in a test host (a guard at each call site, and the real store still open); a flag
+  set once the launch sequence has set up the keys (no unit test reaches it); refusing only when nothing decrypts (it
+  breaks Bug 75's all-stranded case and can't tell a wrong key from unreadable groups).
+- **Duress and forensics:** no change. With the right key the behaviour is the same, and the checkpoint still runs at
+  every depth.
+- **Tests use their own Application Support directory** (from PR #153). A source scan fails the run if anything
+  else names the system one.
+- **Still open, not in the PR:** a hosted test can still reach real Keychain and Enclave items (layer 3 of the
+  isolation plan, not started) and the App Group. `UserDefaults` is shared too; the PR leaves it, since
+  `OSTraceTests` bans a suite name and the one key tests touch is removed on every unlock. Device runs stay off
+  every phone with real data.
+
+### Guard
+
+`GroupOrphanPurgeTests`: a purge under a key that doesn't match the store, with no config row, and with no
+`persistedDepth` each delete nothing, and all three fail with the guard removed. A genuinely stranded group is still
+purged, and Bug 75's all-stranded case still clears. The in-memory test host has no test of its own:
+`OccultaApp.init` can't be unit-tested, so only a full hosted run covers it.
+
+---
+
+## Bug 193 — A contact photo picked from Photos is stored as the original file, metadata included
+
+**Status:** Open, needs a decision. Found 2026-11-02 while deciding the photo table (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`
+§1.5). Read from the code; what the stored bytes hold was not checked on a device.
+
+**Target:** None yet. The passphrase migration re-encodes every photo (§1.5, decided 2026-11-02); today's app could do
+the same at pick time.
+
+### Severity: Medium (proposed)
+
+### What happens
+
+- Both contact forms store the picker's bytes as they come: `loadTransferable(type: Data.self)` into
+  `contact.imageData` (`ContactFormV2.swift:111`, `Contact+Photo.swift:40`). For a photo from the library that is
+  the original asset at full resolution, possibly several MB, with whatever metadata it carries: typically the
+  capture time, the device and, when location was on, where it was taken.
+- It is sealed under the local DB key, so it takes the key to read. Anyone who does (a forensic examiner with the
+  key, or the space's owner under coercion once the passphrase ships) gets that metadata about a photo the app only
+  ever shows as an avatar.
+- Only the 120×120 thumbnail is re-encoded.
+
+### Fix (open, needs a decision)
+
+- Re-encode at pick time to the size the app shows, from pixels only, so no metadata is carried over; keep no
+  original. The new store does this with its 24 KB photo row (§1.5).
+- Existing photos stay as stored until a migration re-encodes them.
+
+### Guard
+
+None yet. A test that picks a photo with GPS metadata and finds none in what the contact stores.
 
 ## Bug 194 — After a contact's identity key changes, our messages to them are sealed to their old phone's prekeys: the new phone can't open them, and without ML-KEM the old phone can
 
@@ -15346,7 +15551,8 @@ bundles for the swap; **the Multipeer/NearbyInteraction exchange itself has not 
 
 **Number:** filed as Bug 194 on `v2.1.0/passphrase-independent-spaces`, whose docs still say 194 (rollout §8 item 30
 and its Related table, `decisions.md`, the `PASSPHRASE_*` docs). `release/v2.1.0` already holds a different Bug 194
-(stale inbound prekeys, PR #156), so this is Bug 196 here. The references on that branch need renumbering there.
+(stale inbound prekeys, PR #156), so this is Bug 196 here. ~~The references on that branch need renumbering there.~~
+*Renumbered when that branch's commits were merged into `release/v2.1.0` (2026-11-12).*
 
 **Target:** release 2.0.1 (the owner chose it 2026-11-03), as its own stage (rollout §7.2, stage P). It must ship
 before the passphrase release, so pairings hold their secret before spaces exist.
@@ -15449,7 +15655,7 @@ bound to the pairing, and the capability on phones before 2.1.0.
   each. It must not be limited to contacts visible at the current depth: a known contact's file that routed at one depth
   and failed at another is the duress-detection oracle of `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
   What a depth changes is what is shown, later, in `buildOwnedBasket`. Pinned by `hiddenContactRoutesLikeAVisibleOne`.
-- **Open, needs a decision (Bug 190's, which lives on `v2.1.0/passphrase-independent-spaces`).** In the SwiftData store of
+- **Open, needs a decision (Bug 190's).** In the SwiftData store of
   2.0.1 every write to the column is logged with row, column and time by SwiftData's history; migrated rows carry a higher
   `Z_OPT` than rows created after, which separates pairings made before this release from after; free pages and the
   write-ahead log may keep older ciphertext of the column (sealed under the local DB key, like every sealed field). The

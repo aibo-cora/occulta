@@ -386,9 +386,10 @@ analysis rather than the idea alone.
 
 ### What was decided
 
-**The flow is left exactly as it is.** A message from a contact hidden at the current depth opens
+~~**The flow is left exactly as it is.** A message from a contact hidden at the current depth opens
 and displays with the sender's name, as it does today. This is an accepted, documented limitation,
-not an oversight and not a deferred fix.
+not an oversight and not a deferred fix.~~ **Superseded 2026-10-31 by the owner:** a hidden contact's
+bundle is refused with the same message as a deleted contact's. See "2026-10-31" at the bottom.
 
 This answers open question #3 ("how much can actually be closed, versus accepted as a residual
 limit") for this specific case: it is a residual limit, and structurally so. The rejection oracle
@@ -630,3 +631,36 @@ data: hide a contact for a duress depth, unlock with the duress PIN, re-open an 
 forward-secret `.occ` from that contact, then one from a deleted contact, and compare the two alerts.
 
 **Status: both open, needs a decision. Neither is an accepted limitation.**
+
+## 2026-10-31 — Independent spaces bring back a rejection: open, needs a decision
+
+The passphrase rollout's independent spaces (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5, decided 2026-10-29) ignore a
+bundle whose sender matches no contact in the open space, with the same screen as a corrupt or misaddressed file. A
+contact in another space is such a sender. So a file from someone the transport names, and whom the coercer knows
+was paired in the real space, won't open in the duress space and would open in the real one. That is the
+depth-conditional rejection `b1f9045` removed, and the 2026-08-08 decision counted it as a tell even with identical
+wording.
+
+It also fixes three things this document accepts or leaves open: the hidden contact's content is never decrypted
+under duress, the 2026-08-13 presence oracle goes (no name renders for a contact missing from the list), and
+2026-10-23 case A goes (retained files can't be re-opened in the duress space). The same screen shows for a file
+from a deleted contact in every space, which is the cover. The duress space may also have no way to open such a
+bundle, since it holds neither the sender's key nor its prekey blobs.
+
+Tracked as the rollout's §8, item 24. ~~**Status: open, needs a decision. Not accepted.**~~
+
+**Decided 2026-10-31 by the owner** (`Docs/General/decisions.md`, 2026-10-31). Not implemented. At a duress depth,
+a bundle whose sender is a contact hidden at that depth is not decrypted, and the app shows "The contact who sent
+this message was deleted or cannot be found." The same message shows at every depth for every bundle whose sender
+matches no contact. This replaces the 2026-08-13 decision above, for today's app and for independent spaces.
+
+Why the 2026-08-08 objection doesn't hold here: that analysis counted any duress-only rejection as a tell, but
+never weighed deletion as the explanation. The duress list already lacks the contact, so the user needs "I deleted
+them" whether the file opens or not. A refusal that says so agrees with the list, and the same screen is reachable
+at depth 0 from a deleted contact. Opening with the sender's name contradicts the list, which is the 2026-08-13
+presence oracle.
+
+What the implementation has to hold is in the decision entry: one code path (hidden contacts left out of
+`identifyOwner`'s sender scan, so timing, writes and the card redemption attempt match an unknown sender's), one
+message for every no-sender outcome including 2026-10-23 case B, the queued-file drain and group bundles, Bug 173's
+identity challenges under the same rule, and depth-parity tests. Case A closes with it.

@@ -132,7 +132,8 @@ survivors on deletion since Bug 130. Everything else per-depth touches only its 
 
 **Recorded 2026-10-29 as a stated limit (Bug 120).** A duress space protects against one image, not a series.
 In one image and with no phrase the design fixes per-type row counts, row sizes and space tags, and writes every
-change as "append a new row, shred the old". Rows a surrendered space can't open changing between images are not
+change as "append a new row, shred the old" *(changed 2026-11-01: an edit rewrites the row in place,
+`PASSPHRASE_ROLLOUT.md` §8, 22)*. Rows a surrendered space can't open changing between images are not
 fixed, and noise rows don't close it. Still open in the register.
 
 **Not achievable as written, 2026-10-15** (spec §2, "Finding, 2026-10-15"). Open, needs a decision.
@@ -158,6 +159,10 @@ one fixed AAD byte. A value copied from one row to another therefore decrypts cl
 matter while code on the phone can forge these values outright. It becomes a real gap once steps 1–4
 make forging impossible. Use an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)`
 already does. Doing it in the same migration costs nothing extra.
+
+**Under independent spaces** (2026-11-02, proposed, not decided; `PASSPHRASE_ROLLOUT.md` §1.6): none of these
+fields stays a field of its own. The depth stamps are dropped and the rest move inside each record's seal, so the
+binding is of whole records to their row's ID, with a table label, in the store layer.
 
 **Tracked:** Bug 123 (subsumed into 119); spec §2, requirement of 2026-09-26.
 

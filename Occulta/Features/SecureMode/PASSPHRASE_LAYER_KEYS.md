@@ -183,7 +183,9 @@ discrete log the guess doesn't reveal would (Bug 171, "Fix").
   with no review. If the recommendation is taken, the requirement comes out of this section and out of step 2; until the user
   decides, both stay as written with this note beside them.
 
-**Proposed 2026-10-15: one salt and one Enclave key per install, not one of each per depth.** Not decided.
+**Proposed 2026-10-15: one salt and one Enclave key per install, not one of each per depth.** ~~Not decided.~~
+**Decided 2026-11-02: it follows from independent spaces** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5): a salt or
+an Enclave key per space would be a per-space record, which §1.5 rules out.
 At unlock the app doesn't know which depth a phrase belongs to, and must not learn how many depths exist.
 With a salt per depth it would run the KDF once per slot: 32 runs, about 30 s at §4's ~1 s per run on an
 iPhone 11. With an Enclave key per depth it would also call the Enclave once per key. A per-depth Enclave
@@ -235,14 +237,23 @@ the 2026-10-15 proposal:
 - **Changed:** deletion crypto-shreds a row into noise. A deleted row, another space's row and a noise row look
   alike, which replaces requirement 2's "orphan in place". The deletion marker moves inside the sealed record,
   since `Contact.Profile.deletionToken` is a plain optional field today that queries read without a key.
-- **Added:** photos in their own table, referenced only by row IDs inside the sealed contact record, with noise
-  rows in the same size buckets. Vault entries keep their wrapped entry key as the cheap check. Unlock decrypts
+- **Added:** photos in their own table, referenced only by row IDs inside the sealed contact record, ~~with noise
+  rows in the same size buckets~~ *(2026-11-02: one size, about 24 KB, and no noise rows; the leak that leaves is
+  open, `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5)*. Vault entries keep their wrapped entry key as the cheap check. Unlock decrypts
   contact and group records whole (a few KB each; an estimate to be measured on a device), with a 16-byte
   locator tag per row as the fallback.
 - **The finding of 2026-10-15 stands, and is now a stated limit** (Bug 120): a duress space protects against
   one image, not a series. Noise rows don't close it.
-- **Open, needs a decision (2026-10-30):** how many noise rows there are and when they are written, and a table
-  that only grows, since no space can remove a shredded row (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+- ~~**Open, needs a decision (2026-10-30):** how many noise rows there are and when they are written, and a table
+  that only grows, since no space can remove a shredded row~~ (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+  **Decided 2026-11-01:** an edit rewrites the row in place, so the table grows only with rows added (§8, 22).
+  **Decided 2026-11-01 for the contact table:** a per-install count drawn uniformly from 50–1,000, never stored,
+  written at migration, at a fresh install's first launch and with a late migration batch (§8, 21).
+- ~~**Open, needs a decision (2026-10-31):**~~ SwiftData's `Z_OPT` marks a row shredded in place, and its persistent
+  history logs every write with a time, so "look alike" doesn't hold in a SwiftData table (`bugs.md` Bug 190;
+  `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23). **Decided 2026-11-01:** the new store file is plain SQLite. Every
+  table sealed under a space key is `WITHOUT ROWID`, keyed by a random 16-byte ID, with the sealed record as its
+  only other column (`decisions.md`, 2026-11-01).
 
 This is the part that isn't settled, and it's the crux of whether this proposal is simpler than what
 it replaces or just differently shaped.
@@ -387,7 +398,7 @@ section hides.
     mixes it into every slot's key, and the routing key lives only in the contact's sealed record, so these modes need
     it too; a pair-key pairing's long-term key also comes from a pair-key ECDH in the Enclave, not the identity key. A
     pairing that doesn't hold a routing key, because it was made before 2.0.1 or with a peer on an older build, is still in
-    the gap until it is re-made by exchanging keys again in person (there is no in-band swap).
+    the gap until it is re-made by exchanging keys again in person (there is no in-band swap). Rollout §8, item 30.
 
 *Why prekeys stay in the Enclave.* Moving them into the contact's record would hide them behind the
 phrase but break forward secrecy. Consider an image taken before a prekey is used, with the phrase obtained
@@ -592,14 +603,16 @@ the configured depths. Requirement 7 states the general rule.
    per-depth state that changes in use lives in rows in the general pool.
 
 *Open, needs a decision.*
-- **Creating a depth shows across images.** The new depth's header slot changes from filler to a real
+- ~~**Creating a depth shows across images.**~~ *Gone under independent spaces (2026-11-02): a new space writes no
+  header, and its first row looks like any other addition.* The new depth's header slot changes from filler to a real
   header, and its parent's slot gains the new key. Comparing images taken either side of that shows that a
   depth was created between them, though not how many exist. A slot prepared in advance would need its
   phrase in advance, and phrases are generated when the depth is set up.
-- **The padding range.** It sets exactly how many hidden contacts can pass in one image. A wide range costs
+- ~~**The padding range.**~~ *Decided 2026-11-01: 50–1,000 per install, uniform (rollout §8, 21).* It sets exactly how many hidden contacts can pass in one image. A wide range costs
   storage; a narrow one covers only a few.
-- **The blob sizes** in requirement 4.
-- **What still leaks in one image:** hidden rows beyond the padding range stand out, and a duress depth can
+- ~~**The blob sizes** in requirement 4.~~ *Decided 2026-11-02 under independent spaces: one size, about 8 KB, for
+  every small record, in one table (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21).*
+- **What still leaks in one image:** *(2026-11-02: item 21's cap, and register §I)* hidden rows beyond the padding range stand out, and a duress depth can
   look thin next to the real one (register §I, accepted 2026-09-07).
 
 ---
@@ -653,7 +666,10 @@ that scale, and PBKDF2 is not memory-hard. So the choice is **7 words + PBKDF2**
 only. The SE-per-guess requirement in §1 would keep both rows off-device entirely; the table is the
 fallback if the SEP is broken.
 
-**Proposed 2026-10-15: 7 words with PBKDF2, through CommonCrypto's `CCKeyDerivationPBKDF`.** Not decided.
+**Proposed 2026-10-15: 7 words with PBKDF2, through CommonCrypto's `CCKeyDerivationPBKDF`.** ~~Not decided.~~
+**Decided 2026-11-02 by the owner** (`decisions.md`, 2026-11-02): PBKDF2-HMAC-SHA256 over the word indices, not
+Argon2id, with the iteration count tuned to about 1 s on an iPhone 11 by the measuring app (rollout §8, 6).
+`CLAUDE.md`'s "CryptoKit and Security.framework" line changes when the import lands.
 CommonCrypto is a system library, so this adds no dependency. It would be the app's first CommonCrypto
 import, so `CLAUDE.md`'s "CryptoKit and Security.framework" line would change with it. The iteration count
 is measured on an iPhone 11, not taken from the constant above.
@@ -666,7 +682,10 @@ decrypt. The derived `layerKey_D` needs to be cached in memory for a session, th
 flagged in this conversation: a live memory-inspection-capable AFU exploit could still catch a cached
 key mid-session, same as it could today.
 
-**Proposed 2026-10-15: hold the layer key while the device stays unlocked.** Not decided. Two plans meet
+**Proposed 2026-10-15: hold the layer key while the device stays unlocked.** ~~Not decided.~~ *Superseded
+2026-11-01 and 2026-11-02 (rollout §8, 27): the key is dropped when the app goes to the background, since a
+suspended app can't see a device lock, and a 5-minute grace keeps only an Enclave-wrapped copy in memory, never on
+disk, consistent with the Face ID re-entry ruled out below.* Two plans meet
 here. `Docs/v2.0.0` step 13 drops keys when the app goes to the background, and rollout rule 3 puts the
 phrase in front of everyone who uses an app lock. Together that is seven words at every return to the app,
 for people who only wanted a lock. Many will turn the lock off, and the people still using one become the
