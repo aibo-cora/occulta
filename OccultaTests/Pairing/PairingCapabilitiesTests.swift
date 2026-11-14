@@ -11,6 +11,7 @@
 import Testing
 import Foundation
 import SwiftData
+import CryptoKit
 @testable import Occulta
 @testable import OccultaFormats
 
@@ -161,5 +162,49 @@ struct PairingCapabilitiesTests {
         try cm.reset(identity: contact.identifier)
 
         #expect(contact.pairingCapabilities == .none)
+    }
+}
+
+// MARK: - Under one key
+
+/// The detail screen opens the pairing and the scheme label under the pass's key (`Docs/Bugs/v2.1.0/`). They have to
+/// read exactly what the per-call forms read, or the glyph and the rows would disagree with the list.
+@MainActor
+@Suite("Bug 196 — capabilities and scheme label under one key", .serialized)
+struct PairingCapabilitiesUnderKeyTests {
+
+    private func key() throws -> SymmetricKey {
+        try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
+    }
+
+    @Test("The capabilities read the same under a derived key", .ambientTestKeyManager)
+    func capabilitiesMatch() throws {
+        let cm = try makeContactManager()
+        let key = try self.key()
+        let contacts: [(String, Contact.Profile)] = [
+            ("paired",            try insert(cm, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))),
+            ("upgradeable",       try insert(cm)),
+            ("quantum",           try insert(cm, quantum: true)),
+            ("older build",       try insert(cm, tier: nil)),
+            ("no key at all",     try insert(cm, keys: 0)),
+        ]
+
+        for (name, contact) in contacts {
+            #expect(contact.pairingCapabilities(using: key) == contact.pairingCapabilities, "\(name)")
+        }
+        #expect(try insert(cm).pairingCapabilities(using: key).upgradeAvailable)
+    }
+
+    @Test("The scheme label reads the same under a derived key, and says classical without one", .ambientTestKeyManager)
+    func schemeLabelMatches() throws {
+        let cm = try makeContactManager()
+        let key = try self.key()
+        let plain   = try insert(cm)
+        let blob    = try insert(cm, quantum: true)
+
+        #expect(plain.encryptionSchemeLabel(using: key) == plain.encryptionSchemeLabel)
+        #expect(blob.encryptionSchemeLabel(using: key) == blob.encryptionSchemeLabel)
+        #expect(blob.encryptionSchemeLabel(using: nil) == "Classical (v1) · exchange again to restore full protection")
+        #expect(plain.encryptionSchemeLabel(using: nil) == plain.encryptionSchemeLabel)
     }
 }

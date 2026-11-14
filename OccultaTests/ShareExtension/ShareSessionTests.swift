@@ -413,6 +413,23 @@ struct ShareSessionLegacyIndexTests {
         ShareSession.removeLegacyContactIndex(in: container)
         #expect(exists(id, in: container))
     }
+
+    /// Bug 211: the layer file of releases 1.9.2–1.10.3 must not outlive an upgrade.
+    @Test func removeLegacyLayerStore_deletesBlobsAndLeavesCache() throws {
+        let container = try makeContainer()
+        for name in ["blobs", "cache"] {
+            let dir = container.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("slots".utf8).write(to: dir.appendingPathComponent("\(UUID().uuidString).occbak"))
+        }
+
+        ShareSession.removeLegacyLayerStore(in: container)
+        ShareSession.removeLegacyLayerStore(in: container)
+
+        #expect(!FileManager.default.fileExists(atPath: container.appendingPathComponent("blobs").path))
+        #expect(FileManager.default.fileExists(atPath: container.appendingPathComponent("cache").path),
+                "cache/ still holds the legacy backup-key array the vault migrates on unlock")
+    }
 }
 
 // MARK: - Erase
@@ -437,6 +454,23 @@ struct ShareSessionEraseTests {
         ShareSession.removeAll(in: container)
 
         for name in ["pending", "inbound", "ShareIndex.sqlite"] {
+            #expect(!FileManager.default.fileExists(atPath: container.appendingPathComponent(name).path), "\(name) survived")
+        }
+    }
+
+    /// Bug 211: Erase All Data deletes the key the legacy layer file and backup array were
+    /// sealed under, so the files must go too. Built by hand, so it runs without the share key.
+    @Test func removeAll_deletesLegacyLayerFileAndBackupArray() throws {
+        let container = try makeContainer()
+        for name in ["blobs", "cache"] {
+            let dir = container.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("slots".utf8).write(to: dir.appendingPathComponent("\(UUID().uuidString).occbak"))
+        }
+
+        ShareSession.removeAll(in: container)
+
+        for name in ["blobs", "cache"] {
             #expect(!FileManager.default.fileExists(atPath: container.appendingPathComponent(name).path), "\(name) survived")
         }
     }

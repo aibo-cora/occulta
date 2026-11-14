@@ -127,6 +127,22 @@ enum WhatsNew {
                     "A contact's details show the right key after you exchange keys again.",
                     "If saving a contact's key fails, nothing is left half changed."
                 ]
+            ),
+            Release(
+                version: "2.0.2",
+                features: [
+                    Feature(
+                        symbol: "eye.slash",
+                        title: "Private in the app switcher",
+                        detail: "Occulta now covers its screen whenever you leave it, so your contacts don't show in the app switcher or in the snapshot your phone saves of it."
+                    )
+                ],
+                fixes: [
+                    "The PIN lock now asks for your PIN after you've been away, even if the phone's date and time were changed.",
+                    "Security fixes in the PIN settings.",
+                    "Data left on your phone by older versions of Occulta is now removed, and Erase All Data removes it too.",
+                    "A progress screen in Settings no longer shows the page behind it."
+                ]
             )
         ]
 

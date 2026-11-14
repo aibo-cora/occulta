@@ -153,7 +153,7 @@ Enclave — they exercise the real `Manager.Key` or create prekeys through `Prek
 private keys live in it: `Key+Manipulation`, `LegacyRotationArtefactTests`,
 `DuressModePrekeyTests`, `PrekeySecretsManagerTests`, `ForwardSecrecyIntegrationTests`,
 `PrekeyConsumptionOnRejectionTests`, `PrekeyReplenishmentTriggerTests` (the five suites in that file),
-`PrekeyGenerationMeasurementTests`, `IdentityChallengeGroupForwardSecretTests` (a challenge on a forward-secret
+`PrekeyGenerationMeasurementTests`, the two Enclave measurements in `ContactRecordCryptoMeasurementTests` (they make transient Enclave keys), `IdentityChallengeGroupForwardSecretTests` (a challenge on a forward-secret
 slot needs a prekey this device holds), `PrekeyConversationTests` (two phones generating real prekeys), `PairwiseConversationTests` (the same with pair keys, which are software keys in tests), the two pair-key tests in `KeyExchangeTeardownTests` (the exchange makes its first prekeys in the Enclave), `IntroCardEnclaveKeyPersistenceTests` and the Enclave test in `PostQuantumPersistenceTests` (an introduction card's ML-KEM key kept as an Enclave blob), the introduction-card suites whose phones import or redeem a card, which generates prekeys (`CardConversationTests`, `CardRedemptionRejectionTests`, `CardHardBlockTests`, `CardNonCardRegressionTests`, `CardMeetingTableTests`, `CardMeetingConversationSaveTests`, and the import and crossing-card tests in `CardImportTests` and `CardScreenBehaviourTests`), the Enclave round-trip in `ForwardSecretDerivationEquivalenceTests`,
 the two prekey round-trips in `VersionCompatibilityTests`,
 `enclaveIdentityAgrees` in `InteropVectorTests` (the long-term transport vectors run on a software identity; it

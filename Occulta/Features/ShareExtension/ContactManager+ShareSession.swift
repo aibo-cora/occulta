@@ -24,5 +24,6 @@ extension ContactManager {
         ShareSession.sweep(in: container, keyManager: ShareStagingKeyManager())
         ShareSession.sweepInbound(in: container)
         ShareSession.removeLegacyContactIndex(in: container)
+        ShareSession.removeLegacyLayerStore(in: container)
     }
 }

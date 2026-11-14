@@ -41,10 +41,24 @@ extension Contact.Profile {
     /// Whether the contact holds keys from an in-person exchange on this device: today's `.verified` test
     /// (`verificationStatus`), an unexpired key whose owner hash is ours.
     var hasInPersonKeys: Bool {
+        self.hasInPersonKeys(
+            opening: { try? Manager.Crypto().decrypt(data: $0) },
+            ourHash: (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256
+        )
+    }
+
+    /// Same as `hasInPersonKeys`, under a local DB key the caller already derived and our own identity hash it
+    /// already read, for passes over many contacts.
+    func hasInPersonKeys(using key: SymmetricKey, ourHash: Data?) -> Bool {
+        self.hasInPersonKeys(opening: { $0.decrypt(using: key) }, ourHash: ourHash)
+    }
+
+    /// `ourHash` is read only once there is a key to compare, as before: reading it can create the identity key.
+    private func hasInPersonKeys(opening open: (Data) -> Data?, ourHash: @autoclosure () -> Data?) -> Bool {
         guard let latest = self.currentKey else { return false }
 
-        let ownerHash = try? Manager.Crypto().decrypt(data: latest.owner)
-        let ourHash   = (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256
+        let ownerHash = open(latest.owner)
+        let ourHash   = ourHash()
 
         guard let ownerHash, let ourHash, !ownerHash.isEmpty else { return false }
 

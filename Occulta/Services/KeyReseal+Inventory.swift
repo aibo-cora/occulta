@@ -350,7 +350,7 @@ nonisolated extension KeyReseal {
         SealedFile(
             name: "<uuid>.occbak", location: "App Group container/blobs and /cache",
             key: .other, aad: "unknown", treatment: .retired,
-            note: "`AppGroupLayerStoreBackend` has no consumer; a file here is a leftover from a build that had one. Nothing reads it."
+            note: "`blobs/`: the Secure Mode layer file of 1.9.2–1.10.3, never read; deleted on every foreground and by Erase All Data (`bugs.md` Bug 211). `cache/`: the legacy backup-key array, read only by `migrateLegacyBackupStorageIfNeeded`; deleted by Erase All Data."
         ),
     ]
 }

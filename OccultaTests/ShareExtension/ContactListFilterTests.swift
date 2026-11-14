@@ -150,3 +150,112 @@ struct ContactListFilterGroupTests {
         #expect(ContactListFilter.groupsWithMembers([group], atDepth: 0).isEmpty)
     }
 }
+
+// MARK: - One key for the pass
+
+/// `listing` is `visibleContacts`, `isEmptyList` and `sortedContacts` under a key derived once, for the contacts
+/// list's body. It has to give exactly what those three give, since the share picker still uses them and the two
+/// screens must not show different people (Bug 25 / Bug 28).
+@MainActor
+@Suite("ContactListFilter — listing under one key", .ambientTestKeyManager, .serialized)
+struct ContactListFilterListingTests {
+
+    private func key() throws -> SymmetricKey {
+        try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
+    }
+
+    private func fixtures() throws -> [Contact.Profile] {
+        [
+            try makeProfile(given: "Ann",  family: "Zeta",  organization: "Acme Logistics"),
+            try makeProfile(given: "Bob",  family: "Alpha", organization: "Other"),
+            try makeProfile(given: "Cy",   family: "Mid",   organization: "Acme Foods", visibleThroughDepth: 1),
+            try makeProfile(given: "Hid",  family: "Den",   organization: "Acme", visibleThroughDepth: 0),
+            try makeProfile(given: "Bea"),
+            try makeProfile(given: "Abe"),
+        ]
+    }
+
+    @Test(arguments: [0, 1, 2], ["", "acme", "an", "zz"])
+    func listing_matchesTheThreeCallsItReplaces(depth: Int, search: String) throws {
+        let contacts = try self.fixtures()
+        let key = try self.key()
+
+        let expectedVisible = ContactListFilter.visibleContacts(contacts, atDepth: depth)
+        let expectedShown   = ContactListFilter.sortedContacts(expectedVisible, matching: search)
+        let listing = ContactListFilter.listing(contacts, atDepth: depth, matching: search, usingKey: key)
+
+        #expect(listing.visible.map(\.contact.identifier) == expectedVisible.map(\.identifier))
+        #expect(listing.shown.map(\.contact.identifier) == expectedShown.map(\.identifier))
+        #expect(listing.visible.isEmpty == ContactListFilter.isEmptyList(contacts, atDepth: depth))
+    }
+
+    @Test func listing_carriesTheDecryptedNames() throws {
+        let listing = ContactListFilter.listing(try self.fixtures(), atDepth: 0, matching: "", usingKey: try self.key())
+
+        #expect(listing.shown.first { $0.familyName == "Zeta" }?.givenName == "Ann")
+        #expect(listing.shown.first { $0.givenName == "Abe" }?.familyName == "")
+    }
+
+    @Test func listing_hiddenContactIsNotCountedAsVisible() throws {
+        let listing = ContactListFilter.listing(try self.fixtures(), atDepth: 1, matching: "", usingKey: try self.key())
+
+        #expect(listing.visible.count == 5)
+        #expect(listing.visible.contains { $0.familyName == "Den" } == false)
+    }
+
+    @Test func listing_withoutAKey_isEmpty() throws {
+        let listing = ContactListFilter.listing(try self.fixtures(), atDepth: 0, matching: "", usingKey: nil)
+
+        #expect(listing.visible.isEmpty)
+        #expect(listing.shown.isEmpty)
+    }
+}
+
+// MARK: - Status under one key
+
+@MainActor
+@Suite("Contact status — under one key", .ambientTestKeyManager, .serialized)
+struct ContactStatusUnderKeyTests {
+
+    private func contact(ownerHash: Data?, expired: Bool = false) throws -> Contact.Profile {
+        let profile = try makeProfile(given: "Pat", family: "Lee")
+        if let ownerHash {
+            let key = Contact.Profile.Key(
+                material: try Data(count: 65).encrypt(),
+                owner: try #require(try ownerHash.encrypt()),
+                date: try #require(try Data("0".utf8).encrypt())
+            )
+            if expired { key.expiredOn = try Data("1".utf8).encrypt() }
+            profile.contactPublicKeys = [key]
+        }
+        return profile
+    }
+
+    @Test func statusAndCard_underKey_matchesPerCallRead() throws {
+        let ours  = try Manager.Ambient.keyManager.retrieveIdentity().sha256
+        let key   = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
+        let cases: [(String, Contact.Profile)] = [
+            ("no keys",           try self.contact(ownerHash: nil)),
+            ("in-person keys",    try self.contact(ownerHash: ours)),
+            ("someone else's",    try self.contact(ownerHash: Data(repeating: 7, count: 32))),
+            ("expired in-person", try self.contact(ownerHash: ours, expired: true)),
+        ]
+
+        for (name, profile) in cases {
+            let direct = profile.statusAndCard
+            let keyed  = profile.statusAndCard(using: key, ourHash: ours)
+
+            #expect(keyed.status == direct.status, "\(name)")
+            #expect(String(describing: keyed.card) == String(describing: direct.card), "\(name)")
+        }
+    }
+
+    @Test func statusAndCard_underKey_readsInPersonKeysAsVerified() throws {
+        let ours = try Manager.Ambient.keyManager.retrieveIdentity().sha256
+        let key  = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
+
+        #expect(try self.contact(ownerHash: ours).statusAndCard(using: key, ourHash: ours).status == .verified)
+        #expect(try self.contact(ownerHash: Data(repeating: 7, count: 32)).statusAndCard(using: key, ourHash: ours).status == .unverified)
+        #expect(try self.contact(ownerHash: nil).statusAndCard(using: key, ourHash: ours).status == .pending)
+    }
+}

@@ -339,7 +339,7 @@ struct RootView: View {
                     Task { await self.processInboundFile(file) }
                 }
             }
-            // A depth change while unlocked (`deactivateSecureMode` from Settings) has no PIN
+            // A depth change while unlocked (`reEnablePIN` from Settings) has no PIN
             // screen to tear anything down; the unlocked tree is rebuilt by its `.id`, and the
             // state held here ends too (Bug 140).
             .onChange(of: self.security.sessionID) {

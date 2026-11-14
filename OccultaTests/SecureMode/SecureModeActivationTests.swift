@@ -212,9 +212,11 @@ struct SecureModeNonInterferenceTests {
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")   // removes depth 2
         #expect(c.security.currentDepth == 1)
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("111111"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")   // removes depth 1
         #expect(!c.security.isSecureModeActive)
 
         let after = try #require(try fetchAllProfiles(from: c.container).first { $0.identifier == id })
@@ -281,20 +283,37 @@ struct SessionIdentifierTests {
 
     @Test("An in-place depth change starts a new session", .ambientTestKeyManager)
     @MainActor
-    func deactivationChangesSession() throws {
+    func inPlaceDepthChangeChangesSession() throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
         c.security.applyVerifyState(for: try c.security.verify("999999"))
         try c.security.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
-        c.security.applyVerifyState(for: try c.security.verify("777777"))
-        #expect(c.security.currentDepth == 2)
+        #expect(c.security.currentDepth == 1)
+        try c.security.disablePIN(at: 1, confirmingPIN: "999999")
         let before = c.security.sessionID
 
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+        // Turning the lock back on with depth 2's PIN moves the unlocked session to depth 2.
+        #expect(c.security.reEnablePIN("777777"))
+
+        #expect(c.security.currentDepth == 2)
+        #expect(c.security.sessionID != before)
+    }
+
+    @Test("Deactivating protection keeps the session: the depth doesn't change (Bug 220)", .ambientTestKeyManager)
+    @MainActor
+    func deactivationKeepsSession() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try c.security.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        let before = c.security.sessionID
+
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
 
         #expect(c.security.currentDepth == 1)
-        #expect(c.security.sessionID != before)
+        #expect(c.security.sessionID == before)
     }
 
     @Test("Setup, activation and PIN verification keep the session", .ambientTestKeyManager)
@@ -409,8 +428,9 @@ struct VaultEntryOrphaningTests {
         #expect(c.security.currentDepth == 1)
         let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: try DepthCodec.encode(1).encrypt())
 
-        // End session A entirely.
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        // End session A entirely: the owner removes it from depth 0.
+        c.security.applyVerifyState(for: try c.security.verify("111111"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")
         #expect(!c.security.isSecureModeActive)
 
         // The entry must already be orphaned — gone from the functional read, not merely
@@ -450,8 +470,9 @@ struct VaultEntryOrphaningTests {
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
-        // Deactivate the depth-2 layer only — depth 1's own entry must be untouched.
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+        // Remove the depth-2 layer from depth 1 — depth 1's own entry must be untouched.
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
         #expect(c.security.currentDepth == 1)
 
         let entries = try c.vault.fetchAllEntries()
@@ -480,7 +501,8 @@ struct VaultEntryOrphaningTests {
             Thread.sleep(forTimeInterval: 0.01)
         }
 
-        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("111111"))
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "111111")
 
         let allRows  = try fetchAllVaultEntries(from: c.container)
         let key      = try #require(try Manager.Ambient.keyManager.createHybridLocalEncryptionKey())
