@@ -103,8 +103,6 @@ private struct TrustCheckSheetV2: View {
     @Environment(\.dismiss) private var dismissSheet
     @Environment(ContactManager.self) private var contactManager
 
-    @State private var showRevokeConfirm = false
-
     private var canRevokeKey: Bool { self.profile.trustCheckCanRevokeKey }
     private var canChallenge: Bool { self.profile.trustCheckCanChallenge }
 
@@ -165,8 +163,10 @@ private struct TrustCheckSheetV2: View {
     }
 
     private var revokeCard: some View {
-        Button(role: .destructive) {
-            self.showRevokeConfirm = true
+        NavigationLink {
+            RevokeKeyV2(identifier: self.profile.identifier, displayName: self.displayName) {
+                self.dismissSheet()
+            }
         } label: {
             self.scenarioCard(
                 icon: "key.horizontal.fill",
@@ -176,14 +176,6 @@ private struct TrustCheckSheetV2: View {
             )
         }
         .buttonStyle(.plain)
-        .confirmationDialog("Warning", isPresented: self.$showRevokeConfirm) {
-            Button("Revoke", role: .destructive) {
-                try? self.contactManager.reset(identity: self.profile.identifier)
-                self.dismissSheet()
-            }
-        } message: {
-            Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
-        }
     }
 
     private var challengeCard: some View {
