@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SwiftData
+import CryptoKit
 import ContactsUI
 import UniformTypeIdentifiers
 import OccultaFormats
@@ -58,10 +59,6 @@ struct ContactsV2: View {
         self._openRequest = openRequest
     }
 
-    private var contactIdentifiersWithDrafts: Set<String> {
-        Message.Draft.allRecipientIdentifiers(from: self.drafts)
-    }
-
     private var sortedGroups: [Group] {
         ContactListFilter.sortedGroups(self.groups, matching: self.searchText)
     }
@@ -70,12 +67,13 @@ struct ContactsV2: View {
         ContactListFilter.visibleContacts(self.contacts, atDepth: self.security.currentDepth)
     }
 
-    private var isListEmpty: Bool {
-        ContactListFilter.isEmptyList(self.contacts, atDepth: self.security.currentDepth)
-    }
+    /// The status and card of each contact, under the pass's key. Empty without one, like the listing.
+    private func reads(of contacts: [Contact.Profile], key: SymmetricKey?) -> [String: (status: VerificationStatus, card: CardState?)] {
+        guard let key else { return [:] }
 
-    private var sortedContacts: [Contact.Profile] {
-        ContactListFilter.sortedContacts(self.visibleContacts, matching: self.searchText)
+        let ourHash = (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256
+
+        return Dictionary(contacts.map { ($0.identifier, $0.statusAndCard(using: key, ourHash: ourHash)) }, uniquingKeysWith: { first, _ in first })
     }
 
     var body: some View {
@@ -116,17 +114,23 @@ struct ContactsV2: View {
                             }
                         }
                     } else {
-                        let sorted = self.sortedContacts
+                        // The one derivation of the local DB key for this pass. Every field the pass opens, the depth
+                        // filter, the sort and search, the statuses and the draft marks, opens under it: each
+                        // `decrypt()` would derive afresh, and this body runs on every push, pop and keystroke.
+                        let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+                        let listing = ContactListFilter.listing(self.contacts, atDepth: self.security.currentDepth, matching: self.searchText, usingKey: key)
+                        let draftIdentifiers = key.map { Message.Draft.allRecipientIdentifiers(from: self.drafts, usingKey: $0) } ?? []
+                        let sorted = listing.shown.map(\.contact)
                         // Once per contact: the status opens the key owner hash and, with no keys, the card field.
                         // The card field is read along with it, for the contacts that needed it, so it is decrypted once.
-                        let reads = Dictionary(sorted.map { ($0.identifier, $0.statusAndCard) }, uniquingKeysWith: { first, _ in first })
+                        let reads = self.reads(of: sorted, key: key)
                         let statuses = reads.mapValues(\.status)
                         let cardLines = reads.compactMapValues { $0.card.flatMap { CardRowLine($0) } }
                         let verified = sorted.filter { statuses[$0.identifier] == .verified }
                         let unverified = sorted.filter { statuses[$0.identifier] == .unverified }
                         let pending = sorted.filter { statuses[$0.identifier] == .pending }
 
-                        if self.showTrustSummary && !self.isListEmpty {
+                        if self.showTrustSummary && !listing.visible.isEmpty {
                             Section {
                                 TrustSummaryCard(verified: verified.count, unverified: unverified.count, pending: pending.count)
                                 .listRowInsets(EdgeInsets())
@@ -136,11 +140,11 @@ struct ContactsV2: View {
 
                         if self.searchText.isEmpty {
                             if !verified.isEmpty {
-                                Section { self.rows(verified, statuses: statuses, cardLines: cardLines) } header: { SectionHeaderV2(status: .verified) }
+                                Section { self.rows(verified, statuses: statuses, cardLines: cardLines, draftIdentifiers: draftIdentifiers) } header: { SectionHeaderV2(status: .verified) }
                             }
                             if !unverified.isEmpty {
                                 Section {
-                                    self.rows(unverified, statuses: statuses, cardLines: cardLines)
+                                    self.rows(unverified, statuses: statuses, cardLines: cardLines, draftIdentifiers: draftIdentifiers)
                                 } header: {
                                     SectionHeaderV2(status: .unverified)
                                 } footer: {
@@ -148,11 +152,11 @@ struct ContactsV2: View {
                                 }
                             }
                             if !pending.isEmpty {
-                                Section { self.rows(pending, statuses: statuses, cardLines: cardLines) } header: { SectionHeaderV2(status: .pending) }
+                                Section { self.rows(pending, statuses: statuses, cardLines: cardLines, draftIdentifiers: draftIdentifiers) } header: { SectionHeaderV2(status: .pending) }
                             }
                         }
 
-                        if self.isListEmpty {
+                        if listing.visible.isEmpty {
                             Section {
                                 VStack(alignment: .leading, spacing: 10) {
                                     if #available(iOS 18.0, *) {
@@ -168,7 +172,7 @@ struct ContactsV2: View {
 
                         if self.searchText.isEmpty {
                             Section {
-                                Text("\(self.visibleContacts.count) contacts · encrypted at rest")
+                                Text("\(listing.visible.count) contacts · encrypted at rest")
                                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                                     .foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity, alignment: .center)
@@ -263,8 +267,7 @@ struct ContactsV2: View {
     }
 
     @ViewBuilder
-    private func rows(_ items: [Contact.Profile], statuses: [String: VerificationStatus], cardLines: [String: CardRowLine]) -> some View {
-        let draftIdentifiers = self.contactIdentifiersWithDrafts
+    private func rows(_ items: [Contact.Profile], statuses: [String: VerificationStatus], cardLines: [String: CardRowLine], draftIdentifiers: Set<String>) -> some View {
         ForEach(items) { contact in
             NavigationLink(value: contact.identifier) {
                 ContactRowV2(
