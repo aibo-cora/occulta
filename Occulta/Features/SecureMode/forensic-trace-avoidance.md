@@ -517,7 +517,7 @@ shareable — at depth 0, and only there.
 
 ### U7 — Trust Check top-level flow
 
-`TrustCheckSheetV2` is opened from a "Something happened?" toolbar button in `ContactsV2` and from the Trust Check card
+`TrustCheckSheetV2` is opened from a "Help" toolbar button in `ContactsV2` and from the Trust Check card
 in contact detail. Design: "Occulta Trust Check — Top-Level Flow"; summary in `Docs/Features/Trust Check/trust-check-top-level.md`.
 Every item of its depth and forensic checklist, and where it is enforced:
 

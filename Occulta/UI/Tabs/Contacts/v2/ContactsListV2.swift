@@ -209,7 +209,7 @@ struct ContactsV2: View {
                 // The same button at every depth: it reads no state, and the picker behind it filters like this list.
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button { self.showingTrustCheck = true } label: {
-                        Label("Something happened?", systemImage: "checkmark.shield")
+                        Label("Help", systemImage: "checkmark.shield")
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {

@@ -3,7 +3,7 @@
 //  Occulta
 //
 //  "Trust Check" — a scenario-first entry point, opened from the Contacts tab
-//  ("Something happened?") and from the bottom of Contact.DetailsV2, that routes a
+//  ("Help") and from the bottom of Contact.DetailsV2, that routes a
 //  plain-language event to whichever existing security/identity action already
 //  addresses it. What it says lives in TrustCheckPlaybook.swift; the contact
 //  picker is TrustCheckPicker.swift. No new cryptography: every
@@ -154,7 +154,7 @@ struct TrustCheckSheetV2: View {
                                 self.scenarioCard(
                                     icon: scenario.icon,
                                     tint: scenario.tint,
-                                    title: scenario.title(name: self.profile.map(TrustCheckNames.firstName(of:))),
+                                    title: scenario.title(name: self.profile.map { TrustCheckNames.firstName(of: $0) }),
                                     subtitle: scenario.subtitle
                                 )
                             }
@@ -336,7 +336,7 @@ private struct TrustCheckRemedyV2: View {
 
     private var remedyBody: some View {
         let status = self.profile?.verificationStatus ?? .pending
-        let name = self.profile.map(TrustCheckNames.firstName(of:))
+        let name = self.profile.map { TrustCheckNames.firstName(of: $0) }
         let remedy = TrustRemedy.make(for: self.scenario, profile: self.profile)
         let content = remedy.content(for: self.scenario, status: status, name: name)
 

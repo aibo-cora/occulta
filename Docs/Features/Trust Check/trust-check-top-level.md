@@ -1,6 +1,6 @@
 # Trust Check — top-level flow
 
-A "Something happened?" button in the Contacts tab opens Trust Check without the user first knowing which contact to
+A "Help" button in the Contacts tab opens Trust Check without the user first knowing which contact to
 open. The user picks what happened, picks the contact only when the scenario is about one, and reads a remedy written
 for that scenario and that contact's verification state. No model, no free text. Spec: the design doc "Occulta Trust
 Check — Top-Level Flow" and its mockup "Trust Check Top-Level Mockup"; this page records what was built.
