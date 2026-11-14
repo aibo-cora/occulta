@@ -105,4 +105,55 @@ struct EraseAllDataDraftTests {
         #expect(try check.fetchCount(FetchDescriptor<Contact.Profile.PostalAddress>()) == 0)
         #expect(try check.fetchCount(FetchDescriptor<Contact.Profile.URLAddress>()) == 0)
     }
+
+    /// Bug 215: `wipeDeletesContactChildren` inserts a profile with no children, so it passes whatever the batch delete
+    /// does. This one gives the profile one row of every child model, in memory and in a file, which is what the app uses.
+    @Test("Erase All Data deletes a contact's child rows (Bug 215)", arguments: [false, true])
+    func wipeDeletesContactChildRowsThatExist(onDisk: Bool) throws {
+        let schema = Schema([
+            Group.self,
+            Contact.Profile.self,
+            Contact.Profile.PhoneNumber.self,
+            Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddress.self,
+            Contact.Profile.URLAddress.self,
+            Contact.Profile.Key.self,
+            Message.Draft.self,
+        ])
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("erase-children-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configuration = onDisk
+            ? ModelConfiguration(schema: schema, url: directory.appendingPathComponent("store.sqlite"))
+            : ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: configuration)
+        let contacts  = ContactManager(modelContainer: container, security: Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
+
+        let context = ModelContext(container)
+        let profile = Contact.Profile(
+            identifier: "c", givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        context.insert(profile)
+        profile.phoneNumbers      = [Contact.Profile.PhoneNumber(value: "sealed")]
+        profile.emailAddresses    = [Contact.Profile.EmailAddress(value: "sealed")]
+        profile.postalAddresses   = [Contact.Profile.PostalAddress(street: "s", city: "c", state: "s", postalCode: "p", country: "c", isoCountryCode: "i")]
+        profile.urlAddresses      = [Contact.Profile.URLAddress(value: "sealed")]
+        profile.contactPublicKeys = [Contact.Profile.Key(owner: Data(repeating: 1, count: 32), date: Data(repeating: 2, count: 32))]
+        try context.save()
+
+        let before = ModelContext(container)
+        #expect(try before.fetchCount(FetchDescriptor<Contact.Profile.PhoneNumber>()) == 1, "precondition: the children exist")
+        #expect(try before.fetchCount(FetchDescriptor<Contact.Profile.Key>()) == 1, "precondition: the children exist")
+
+        try contacts.deleteAllContacts()
+
+        let check = ModelContext(container)
+        #expect(try check.fetchCount(FetchDescriptor<Contact.Profile>()) == 0)
+        #expect(try check.fetchCount(FetchDescriptor<Contact.Profile.Key>()) == 0, "key rows survived the wipe")
+        #expect(try check.fetchCount(FetchDescriptor<Contact.Profile.PhoneNumber>()) == 0, "phone rows survived the wipe")
+        #expect(try check.fetchCount(FetchDescriptor<Contact.Profile.EmailAddress>()) == 0, "email rows survived the wipe")
+        #expect(try check.fetchCount(FetchDescriptor<Contact.Profile.PostalAddress>()) == 0, "postal rows survived the wipe")
+        #expect(try check.fetchCount(FetchDescriptor<Contact.Profile.URLAddress>()) == 0, "URL rows survived the wipe")
+    }
 }
