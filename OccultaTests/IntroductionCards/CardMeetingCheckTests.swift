@@ -493,11 +493,13 @@ struct CardMeetingSaveTests {
         let phone = try CardPhone()
         let id = try phone.newContact("Pat")
         _ = try phone.run { try phone.cm.createCard(for: id) }
-        try phone.run { try phone.cm.update(key: try inPersonKey(for: Data([1])), for: id) }
+        // The same key both times: new material would drop the record for another reason (Bug 194).
+        let key = try inPersonKey(for: Data([1]))
+        try phone.run { try phone.cm.update(key: key, for: id) }
         let record = busyRecord()
         try phone.store(record, for: id)
 
-        try phone.run { try phone.cm.update(key: try inPersonKey(for: Data([1])), for: id) }
+        try phone.run { try phone.cm.update(key: key, for: id) }
 
         #expect(try phone.record(id) == record)
     }

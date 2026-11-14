@@ -139,9 +139,8 @@ extension Message {
         /// `@Query`) rather than fetching itself, so callers — like a contact
         /// list deciding whether to show a "Draft" indicator — stay reactive to
         /// `Message.Draft` changes without a second, non-reactive fetch.
-        static func allRecipientIdentifiers(from drafts: [Message.Draft]) -> Set<String> {
-            guard let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return [] }
-            return Set(drafts.compactMap { draft -> String? in
+        static func allRecipientIdentifiers(from drafts: [Message.Draft], usingKey key: SymmetricKey) -> Set<String> {
+            Set(drafts.compactMap { draft -> String? in
                 guard let box     = try? AES.GCM.SealedBox(combined: draft.encryptedRecipientID),
                       let opened  = try? AES.GCM.open(box, using: key, authenticating: draft.aad(for: .recipientID)),
                       let decoded = String(data: opened, encoding: .utf8)
@@ -164,7 +163,7 @@ extension Message {
 
         /// `Application Support/Drafts/` — parent of every draft's folder.
         static var attachmentsRoot: URL {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            let appSupport = Manager.Paths.applicationSupport
             return appSupport.appendingPathComponent("Drafts", isDirectory: true)
         }
 

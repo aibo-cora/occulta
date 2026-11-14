@@ -31,7 +31,7 @@ struct Import: View {
             
             for file in self.files {
                 let fileContent = file.content ?? Data()
-                let contacts = (try? JSONDecoder().decode([Contact.Draft].self, from: fileContent)) ?? []
+                let contacts = (try? BoundedJSON.decode([Contact.Draft].self, from: fileContent)) ?? []
                 
                 shared.append(contentsOf: contacts)
             }

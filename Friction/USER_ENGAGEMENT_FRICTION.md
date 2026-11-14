@@ -18,6 +18,14 @@ CONSUMER_OPENING_AND_CEREMONY.md — casual-ceremony concepts catalogued, a
 "Verified (casual)" rung proposed for the Sweep 4 ladder (commitment-based
 glance SAS; short-SAS-is-weak assumption corrected), SMS/web-view fallback
 rejected; two new open decisions (D3 badge rendering, D4 SAS format).
+Updated 2026-08-11: every **[code]** finding re-verified against current source.
+Line references corrected throughout; C2's silent-save and watchdog bullets,
+C3's shard-acknowledgement row, H1, M2's missing progress indicator, M3, and
+half the feature-flag item marked resolved with the commits that closed them.
+Two factual corrections beyond line drift: C1's "no single-player value" claim
+and its Vault note were wrong (the Vault holds personal notes/seed phrases and
+needs no contacts), and H5 cited the inbound decrypt path for an outbound
+encryption gate.
 
 ---
 
@@ -36,16 +44,26 @@ downstream is irrelevant until they are resolved.
 
 ### C1. Zero value at install [assessment]
 
-The first moment of value requires a second person, physically present, with an
-iPhone 11+ (U1 chip), the app already installed, two system permissions granted,
-standing within 25 cm, inside a 30-second watchdog window. Six multiplied
-conditional probabilities precede any experience of the product. There is no
-single-player value: an installed app with zero contacts can do nothing for its
-owner. No positioning or marketing survives this funnel shape.
+The first *messaging* moment of value requires a second person, physically
+present, with an iPhone 11+ (U1 chip), the app already installed, two system
+permissions granted, standing within 25 cm, inside a 30-second watchdog window.
+Six multiplied conditional probabilities precede any experience of the
+product's core promise. No positioning or marketing survives that funnel shape.
 
-Note: the existing `Occulta/Features/Vault/` directory is Shamir shard custody
-for backup keys — it is not a personal encrypt-to-self vault and does not
-provide single-player value.
+**Corrected 2026-08-11 — the original "no single-player value" claim was wrong,
+and so was the note that followed it.** `Occulta/Features/Vault/` is not only
+Shamir shard custody: `VaultEntryType` is `.seedPhrase`, `.note`, and
+`.keyToken` (`Vault+Model.swift:27–31`) — personal secrets sealed under the
+Secure Enclave key, requiring zero contacts. The Vault tab sits in the TabView
+behind no feature flag (`OccultaApp.swift:411`); shard custody is an optional
+recovery layer on top of those entries, not the whole feature. Onboarding
+screen 4 now signposts it — "A private vault, too / Not everything needs a
+contact." (`OnboardingView.swift:392–445`). That combination is what the
+summary table's ✅ for C1 records.
+
+What survives the correction: day-one value is a personal vault, not the
+product's stated promise. The messaging funnel above is still gated on a second
+person, which is why Sweep 4 (H5) matters independently of C1.
 
 ### C2. Key exchange failure modes [code]
 
@@ -53,57 +71,57 @@ The exchange is simultaneously the product demo, the onboarding, and the growth
 loop — and it is the highest drop-off point. A failed exchange loses two users
 at once, in person. Compounding gates:
 
-- **Silent key save failure on success.** The Confirm button's catch block is
-  empty (`ExchangeResult.swift:132–136`):
+- **Silent key save failure on success.** ✅ Resolved (`51e3554`, 2026-07-12).
+  The empty catch block quoted here lived in `ExchangeResult.swift`, a dead v1
+  view that commit deleted. The live save path is `KeyExchange.swift:269–299`,
+  whose catch sets `saveState = .failed`; the view renders a "Couldn't save
+  key" state with a Retry button at `KeyExchange.swift:206–223`. A save that
+  throws can no longer look like success.
 
-  ```swift
-  Button("Confirm") {
-      do {
-          try self.contactManager?.update(key: self.key, for: self.identifier)
-      } catch { }
-      self.exchangeManager?.confirm()
-  ```
-
-  If the update throws, the exchange appears to succeed but the contact has no
-  key. The one magic moment can invisibly produce a dead contact — fatal to
-  word of mouth for a product whose promise is reliability of identity.
-
-- **Hardware gate.** `isExchangePossible` checks
+- **Hardware gate.** Still holds. `isExchangePossible`
+  (`Exchange+Manager.swift:47–49`) checks
   `NISession.deviceCapabilities.supportsPreciseDistanceMeasurement`. Failure
-  renders red text — "Device must have UWB chip" — with no alternative path.
-  iPhone X and earlier (and non-U1 models) are permanently blocked.
+  renders red text — now "Key exchange requires a UWB chip (iPhone 11 or
+  later)." (`KeyExchange.swift:101–105`) — with no alternative path. iPhone X
+  and earlier (and non-U1 models) are permanently blocked.
 
-- **Watchdog with a 3-step hardware recovery.** A 30-second
-  `DispatchSourceTimer` fires `.timedOut` if no NI updates arrive
-  (`Exchange+Manager.swift:240–254`). The recovery flow requires both
-  participants, simultaneously, to: toggle Settings → Privacy → Location
-  Services → System Services → "Networking & Wireless" off/on, restart both
-  devices, and retry.
+- **Watchdog.** Timer still holds; the 3-step hardware recovery does not. A
+  30-second `DispatchSourceTimer` still fires `.timedOut` if no NI updates
+  arrive (`Exchange+Manager.swift:243–257`). ✅ Recovery resolved (`91f4355`,
+  2026-07-13): it is now an in-app banner (`KeyExchange.swift:46–51`, set at
+  `:113–117`) plus the existing "Exchange Keys" button as one-tap retry
+  (`:82–90`) — no Settings toggle, no device restart. See "Watchdog recovery"
+  under P0.
 
-- **Permission friction.** Two iOS system dialogs (Nearby Interaction, Local
-  Network) interrupt the flow before exchange can proceed.
+- **Permission friction.** Still holds. Two iOS system dialogs (Nearby
+  Interaction, Local Network — usage strings declared at
+  `Occulta.xcodeproj/project.pbxproj:792–793`) interrupt the flow before
+  exchange can proceed. The pre-exchange screen now warns about both up front
+  (`KeyExchange.swift:61–69`), but the dialogs themselves are unavoidable.
 
-- **Physical constraint.** Both devices must be ≤ 25 cm apart, enforced in the
-  NI update handler (`Exchange+Manager.swift:614`).
+- **Physical constraint.** Still holds. Both devices must be ≤ 25 cm apart,
+  enforced in the NI update handler (`Exchange+Manager.swift:638`).
 
-- **Required Diceware confirmation.** The key is only saved after a manual
-  verbal comparison and Confirm tap — no timeout, no skip. (Security-required,
-  but it sits inside the same fragile window.)
+- **Required Diceware confirmation.** Still holds. The key is only saved after
+  a manual verbal comparison (`KeyExchange.swift:231–247`) and Confirm tap
+  (`:176–191`) — no timeout, no skip. (Security-required, but it sits inside
+  the same fragile window.)
 
 ### C3. No retention trigger [code]
 
 Nothing brings a user back after install:
 
-| Missing capability | Evidence |
-|---|---|
-| Message history | `ComposableMessage` uses `@State var messages` — resets on every view appearance |
-| Inbox | No persisted inbound message store in any model |
-| Notifications | No `UNUserNotificationCenter` usage found |
-| Key rotation UI | Documented as unresolved in `OccultaApp.swift` |
-| SSS shard acknowledgement | `TODO Phase 2` in `ShardCustody+Manager.swift` — every `ShardRecord` stays `.sent` permanently |
+| Missing capability | Evidence | Status |
+|---|---|---|
+| Message history | Compose state moved to `ComposeViewModel.messages` (`ComposeViewModel.swift:36`) and drafts now persist (H1) — but sent/received history still has no store anywhere | ⬜ Open |
+| Inbox | `Contact.Message` is registered in the schema (`OccultaApp.swift:42`) with zero insert or query sites — dead scaffolding, not a store | ⬜ Open |
+| Notifications | No `UNUserNotificationCenter` usage found — re-confirmed, zero matches app-wide | ⬜ Open |
+| Key rotation UI | Still documented as unresolved (`OccultaApp.swift:16`); no rotate-key control in any view | ⬜ Open |
+| SSS shard acknowledgement | `.acknowledge` now confirms in-flight shards (`ShardCustody+Manager.swift:242–247`); `ShardStatus` is a validated `pending → confirmed → …` machine (`Vault+Model.swift:40–51`) and `.sent` no longer exists | ✅ Resolved (`599866d`, 2026-04-30; state machine `4add524`, 2026-05-01) |
 
-Every session is stateless from the user's perspective. Adoption is retention
-compounding; there is currently nothing to retain.
+Every session is still stateless from the user's perspective for anything
+received. Adoption is retention compounding; drafts are now the only thing the
+app retains.
 
 ---
 
@@ -111,18 +129,33 @@ compounding; there is currently nothing to retain.
 
 ### H1. Composition state loss [code]
 
-Messages are not persisted during composition (`@State private var messages`).
-A phone call, app switch, or screen timeout silently destroys all unsaved
-content. There are no drafts.
+✅ Resolved (`4f8f449` + `63ef3cb`, 2026-07-17/18). Composition is now backed by
+`Message.Draft`, an AES-GCM-sealed SwiftData row written through `DraftStore`
+(`DraftStore.swift`): loaded on `.task`, debounce-saved on every text or
+attachment change, and flushed immediately on `.onDisappear` *before*
+`composeVM.cleanup()` runs, plus on backgrounding under a background-task
+assertion (`ContactDetailV2.swift:130–156`, `:198–213`; same wiring in
+`ContactDetailV3.swift` and `GroupDetailV3.swift`). A phone call, app switch,
+or screen timeout no longer destroys unsaved content.
+
+Note: the original finding understated the bug — the pre-fix `cleanup()` also
+deleted unsent attachment files from disk outright, not merely failed to save
+them (`Docs/Features/Message Persistence/FINDINGS.md`, D-01). Drafts are the
+only part of Sweep 2 that shipped; sent/received history (C3, H2) was
+deliberately deferred, not resolved.
 
 ### H2. Inbound delivery can silently fail [code]
 
-Delivery routes through `ShareExtension → app group container → URL scheme
-occulta://inbound?session=<uuid>` (`ShareViewController.swift:486`). If the
-URL scheme fails, the file is written to the container with no fallback. The
-recipient must already have the sender as a contact with an active key; if
-not, `buildOwnedBasket` fails and there is no "sender not found" message in
-the inbound flow.
+Still holds. Delivery routes through `ShareExtension → app group container →
+URL scheme occulta://inbound?session=<uuid>` (`ShareViewController.swift:486`).
+Malformed-URL and write failures do clean up and cancel the request
+(`:475–490`), but the launch itself is a responder-chain walk that falls
+through silently: if no responder handles `open(_:options:)`, the extension
+still calls `completeRequest` (`:492–505`) and the `.occ` sits in the container
+with no fallback and no user-visible error.
+
+The finding's second half was already amended under Sweep 1 — a bundle from an
+unknown sender does surface a message, so only the landing place is missing.
 
 ### H3. Distribution channel mismatch [assessment]
 
@@ -145,11 +178,17 @@ do.
 ### H5. Encryption is hard-gated on physical verification [assessment]
 
 Messaging requires a completed key exchange — a contact without a stored key
-cannot be encrypted to at all (`buildOwnedBasket` throws
-`noPublicKeyToEncryptWith`, `Contact+Manager.swift:1414`). Every gate in
-C1/C2 is therefore multiplied into the messaging funnel: nobody can receive a
-first message until they have stood within 25 cm of the sender. Signal,
-WhatsApp, and Threema all encrypt fully for unverified contacts and treat
+cannot be encrypted to at all: `encryptBundle` resolves recipient material via
+`resolveKeyMaterial` (`Contact+Manager.swift:1009` → `:1370`), which throws
+`contactHasNoKeys` when the contact has no unexpired key record (`:1377`).
+(Corrected 2026-08-11: this previously cited `buildOwnedBasket` throwing
+`noPublicKeyToEncryptWith` at `Contact+Manager.swift:1414` — wrong error, wrong
+line, and wrong direction; that name belongs to the *inbound* decrypt path in
+`OccultaApp.swift:567`. The finding is unaffected — only the citation was.)
+
+Every gate in C1/C2 is therefore multiplied into the messaging funnel: nobody
+can receive a first message until they have stood within 25 cm of the sender.
+Signal, WhatsApp, and Threema all encrypt fully for unverified contacts and treat
 verification as an *authenticity upgrade*, not a gate on encryption — the
 gate is Occulta-specific friction, not an industry baseline.
 
@@ -182,32 +221,42 @@ The friction is real; the fix is Sweep 4 (trust ladder), not weakened crypto.
 
 ### M1. Silent contact save failure [code]
 
-Save errors in the contact form produce no user-facing feedback
-(`Contact+Form.swift:209` — `TODO: Display a warning that a contact could not
-be saved`). The contact appears unsaved with no explanation.
+✅ Resolved. The cited `TODO: Display a warning that a contact could not be
+saved` still exists, but in dead v1 code (`Contact+Form.swift:215` — the line
+moved from 209). The live form catches the throw into `showSaveError`
+(`ContactFormV2.swift:96–107`) and renders "Couldn't save contact" inline at
+`:76–83` with the form left open, so Save is the retry.
 
 ### M2. Encrypt-and-send friction [code]
 
-After composing, the user taps "Encrypt," waits on async processing with no
-progress indicator, then must manually route the `.occ` file to the recipient
-through a separate app via `UIActivityViewController`. Channel-agnostic
-delivery means every send costs an extra app hop. (The mechanism is the
-security model; the missing feedback is not.)
+Progress indicator ✅ resolved (`b0365af`, 2026-07-14): the Encrypt button
+swaps to a `ProgressView` and disables itself while `vm.isEncrypting` is set
+(`ContactDetailV2.swift:463–479`, `ComposableMessage.swift:122–129`; flag
+driven from `ComposeViewModel.swift:227` and cleared on every exit path).
+
+The app hop still holds: the user must manually route the `.occ` file to the
+recipient through a separate app via `UIActivityViewController`
+(`ActivityView.swift:18–19`, presented at `ContactDetailV2.swift:160–165`).
+Channel-agnostic delivery means every send costs an extra app hop — but that
+mechanism is the security model, and the feedback gap that wasn't is now
+closed.
 
 ### M3. Skippable onboarding hides the core requirement [code]
 
-Onboarding is 4 screens with a "Skip" button visible from screen 1
-(`OnboardingView.swift`). Screen 2 introduces the 25 cm UWB requirement —
-skip users never see it. First post-onboarding interaction is an empty
-contacts list with no guidance.
+✅ Resolved (`b8189ad`, 2026-07-12). Onboarding is now 5 screens with no Skip
+button anywhere (`OnboardingView.swift:17–36`); completion is gated on reaching
+the final `CommitmentScreen`. Screen 2 states the 25 cm UWB requirement
+(`OnboardingView.swift:217`) and every user now passes through it. First
+post-onboarding interaction is still an empty contacts list with no guidance.
 
 ---
 
 ## Low severity / contextual
 
-- **Hidden features via flags** [code]: `enableShamirShardSharing` and
-  `signature` are `false` in `features.plist` — SSS and the signing tab are
-  invisible to users.
+- **Hidden features via flags** [code]: half resolved.
+  `enableShamirShardSharing` is now `true` (`2b1c486`, 2026-07-24), so SSS is
+  visible. `signature` is still `false` in `features.plist` — the signing tab
+  remains invisible to users.
 - **No funnel measurement** [assessment]: no telemetry is a principled,
   correct choice for this product — but it means drop-off cannot be observed
   remotely. Requires a manual substitute (see Hallway testing, P3).
@@ -241,17 +290,17 @@ single pass instead of patching each independently:
 |---|---|---|
 | Key save on exchange confirm | `KeyExchange.swift`'s `ConfirmationView` — silent `try?`, unconditional dismiss | ✅ Fixed — explicit save state, retry on failure |
 | Contact form save | `ContactFormV2.swift` — silent `try?`, unconditional dismiss | ✅ Fixed — inline error, form stays open, retry via Save |
-| Encrypt/send | No progress indicator during async processing | ⬜ Open |
-| Inbound delivery | Already handled — `noPublicKeyToEncryptWith` surfaces "message was not addressed to you" (`OccultaApp.swift:487–489`, thrown from `Contact+Manager.swift:1414`) | ✅ Already existed — not a gap |
+| Encrypt/send | No progress indicator during async processing | ✅ Fixed — Encrypt button shows a `ProgressView` and disables while encrypting |
+| Inbound delivery | Already handled — `noPublicKeyToEncryptWith` surfaces "message was not addressed to you" (`OccultaApp.swift:546–547`, thrown from `Contact+Manager.swift:1469`) | ✅ Already existed — not a gap |
 
-Note: the two `ExchangeResult.swift` / `Contact+Form.swift:209` citations above were dead
+Note: the two `ExchangeResult.swift` / `Contact+Form.swift:215` citations above were dead
 v1 code by the time this was fixed — the live bugs were in `KeyExchange.swift` and
 `ContactFormV2.swift` respectively. Both files were confirmed via `OccultaApp.swift`'s
 tab wiring before fixing.
 
-Remaining Sweep 1 work: encrypt/send progress feedback only.
-Highest-ROI work available: every failed exchange loses two users in person,
-and every silent failure poisons word of mouth.
+Sweep 1 is complete. It was the highest-ROI work available: every failed
+exchange loses two users in person, and every silent failure poisons word of
+mouth.
 
 **Watchdog recovery.** ✅ Fixed.
 Replaced the exchange watchdog's silent teardown-and-dismiss (`KeyExchange.swift`
@@ -273,13 +322,19 @@ current view." One persisted store + one inbox UI + one notification hook
 covers drafts, message history, and inbound delivery together, rather than as
 three separate features.
 
-**Sweep 3: Onboarding redesign incorporating single-player value.**
+Drafts (H1) shipped separately once they were scoped apart from unbounded
+message history, which turned out to be a much smaller problem — see
+`Docs/Features/Message Persistence/FINDINGS.md`. Remaining Sweep 2 work:
+message history, inbox UI, and the notification hook.
+
+**Sweep 3: Onboarding redesign incorporating single-player value.** ✅ Done.
 M3 (Skip hides the 25 cm UWB requirement) and C1 (zero value at install)
-touch the same screens. Rework onboarding once: add an encrypt-to-self
-personal vault so the app has day-one value with zero contacts, and use the
-same redesign to stop Skip from hiding the hardware requirement it currently
-hides from screen 1. Doing these separately means reworking onboarding twice.
-(New feature — the existing Vault directory is shard custody, not this.)
+touched the same screens, and were reworked in one pass as intended: Skip is
+gone, the 25 cm requirement sits on screen 2, and screen 4 surfaces the Vault
+as day-one value with zero contacts. The encrypt-to-self vault this sweep
+originally scoped as a new feature did not need building — `VaultEntryType`
+already carried `.note`/`.seedPhrase`/`.keyToken` (see C1's correction). The
+work was signposting the capability, not writing it.
 
 **Sweep 4: Trust ladder — encryption before verification.** (H5; structural
 relief for C1/C2's funnel shape)
@@ -412,9 +467,10 @@ This report predicts what you will see; direct observation will confirm the
 priority order above without compromising the no-telemetry stance.
 
 **Trivial: flip feature flags.**
-`enableShamirShardSharing` and `signature` are `false` in `features.plist`,
-hiding SSS and the signing tab. One-line change whenever those features are
-ready to ship — unrelated to the sweeps above, doesn't need to wait on them.
+`enableShamirShardSharing` has since been flipped to `true`; `signature` is
+still `false` in `features.plist`, hiding the signing tab. One-line change
+whenever that feature is ready to ship — unrelated to the sweeps above,
+doesn't need to wait on them.
 
 ---
 
@@ -424,14 +480,14 @@ ready to ship — unrelated to the sweeps above, doesn't need to wait on them.
 |---|---------|----------|------|--------------|--------|
 | C1 | Zero value at install | Critical | assessment | Sweep 3 | ✅ Resolved — capability already existed (vault notes), onboarding now signposts it |
 | C2 | Exchange failure modes (silent save, watchdog, gates) | Critical | code | Sweep 1, Watchdog recovery | ✅ Fixed — silent save and watchdog recovery both resolved |
-| C3 | No retention trigger | Critical | code | Sweep 2 | ⬜ Open |
-| H1 | Composition state loss | High | code | Sweep 2 | ⬜ Open |
+| C3 | No retention trigger | Critical | code | Sweep 2 | 🟡 Shard acknowledgement resolved; history, inbox, notifications, rotation UI still open |
+| H1 | Composition state loss | High | code | Sweep 2 | ✅ Fixed — drafts persist via `DraftStore`, flushed on disappear and on background |
 | H2 | Inbound delivery silent failure | High | code | Sweep 1, Sweep 2 | 🟡 Messaging already existed; landing place (inbox) still open |
 | H3 | Distribution channel mismatch | High | assessment | Distribution to scrutiny, Seed adoption | ⬜ Open |
 | H4 | Competing with "good enough" (Signal) | High | assessment | Distribution to scrutiny, Sequence market honestly | ⬜ Open |
 | H5 | Encryption hard-gated on verification; no first-contact messaging | High | assessment | Sweep 4 | ⬜ Open — key-in-bundle rejected; two decisions pending (introductions; send-capable vs import-only) |
 | M1 | Silent contact save failure | Medium | code | Sweep 1 | ✅ Fixed |
-| M2 | Encrypt/send lacks feedback | Medium | code | Sweep 1 | ⬜ Open |
+| M2 | Encrypt/send lacks feedback | Medium | code | Sweep 1 | ✅ Fixed — progress indicator added; the app hop remains, by design |
 | M3 | Skippable onboarding hides UWB requirement | Medium | code | Sweep 3 | ✅ Fixed — Skip removed |
 
 Key exchange remains hardware-gated, proximity-gated, and permission-gated —
@@ -442,7 +498,7 @@ assurance tier. But the two failure modes
 that were silent (save failing invisibly on success, timeout dismissing with
 no explanation) are now loud instead: explicit save states with retry, and an
 in-app banner with one-tap retry on timeout. It was also the demo, the
-onboarding, and the growth loop, which is why this was P0. Next: encrypt/send
-progress feedback closes out Sweep 1; then day-one value and a reason to
-return (Sweep 2); then earn credibility in public rather than asserting it in
-broadcast.
+onboarding, and the growth loop, which is why this was P0. Sweep 1 is now
+closed out, and drafts survive backgrounding. Next: a reason to return —
+message history, an inbox, and a notification hook are what remain of Sweep 2;
+then earn credibility in public rather than asserting it in broadcast.

@@ -43,7 +43,6 @@ final class LegacyCryptoManager: LegacyCryptoProtocol {
     // All other methods delegate to Manager.Crypto (not used during migration).
     func encrypt(data: Data?) throws -> Data?                          { try Manager.Crypto().encrypt(data: data) }
     func decrypt(data: Data?) throws -> Data?                          { try Manager.Crypto().decrypt(data: data) }
-    func encrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().encrypt(message: message, using: material) }
     func decrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().decrypt(message: message, using: material) }
     func sign(data: Data?) throws -> String { try Manager.Crypto().sign(data: data) }
 }
@@ -118,17 +117,6 @@ extension Manager {
 
         // MARK: - Transport encryption (unchanged)
 
-        func encrypt(message: Data, using material: Data?) throws -> Data? {
-            guard
-                let key = self.keyManager.createSharedSecret(using: material)
-            else {
-                return nil
-            }
-
-            let sealed = try AES.GCM.seal(message, using: key, nonce: AES.GCM.Nonce())
-            return sealed.combined
-        }
-
         func decrypt(message: Data, using material: Data?) throws -> Data? {
             guard
                 let key = self.keyManager.createSharedSecret(using: material)
@@ -171,7 +159,6 @@ extension Manager {
 protocol CryptoProtocol {
     func encrypt(data: Data?) throws -> Data?
     func decrypt(data: Data?) throws -> Data?
-    func encrypt(message: Data, using material: Data?) throws -> Data?
     func decrypt(message: Data, using material: Data?) throws -> Data?
     func sign(data: Data?) throws -> String
 }

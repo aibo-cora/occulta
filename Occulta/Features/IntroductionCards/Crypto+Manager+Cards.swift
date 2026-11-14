@@ -181,15 +181,9 @@ extension Manager.Crypto {
     /// The long-term slot key between the two card agreement keys: the derivation of `createHybridSharedSecret`
     /// (SPEC §3), with the card keys in place of the identity keys.
     static func cardLongTermKey(ecdhOutput: Data, ownPublicKey: Data, peerPublicKey: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey? {
-        guard ownPublicKey.count == 65, peerPublicKey.count == 65, quantumMaterial.isValid else { return nil }
-        let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
-            .sorted { $0.lexicographicallyPrecedes($1) }
-        var ikm = ecdhOutput
-        ikm.append(contentsOf: sorted[0])
-        ikm.append(contentsOf: sorted[1])
-        let salt = Data(zip(peerPublicKey, ownPublicKey).map { $0 ^ $1 })
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm), salt: salt, info: SaltInfo.kHybridTransportKeyInfo, outputByteCount: 32
+        try? TransportKeyDerivation.sessionKey(
+            ecdhOutput: ecdhOutput, ownPublicKey: ownPublicKey, peerPublicKey: peerPublicKey,
+            postQuantumSecrets: quantumMaterial.sharedSecrets, info: SaltInfo.kHybridTransportKeyInfo
         )
     }
 }
@@ -445,7 +439,7 @@ extension Manager.Crypto {
         guard let innerKey else { throw CardSlotFailure.postQuantumSecretUnavailable }
         guard
             let plain = try? CardBootstrap.openInner(layer.inner, mlkemCiphertext: layer.mlkemCiphertext, innerKey: innerKey, blind: blind),
-            let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+            let payload = try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
         else { throw CardSlotFailure.innerLayerDidNotOpen }
         return (payload, true, derived)
     }
@@ -455,6 +449,6 @@ extension Manager.Crypto {
             let box = try? AES.GCM.SealedBox(combined: wrapped),
             let plain = try? AES.GCM.open(box, using: key, authenticating: blind)
         else { return nil }
-        return try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+        return try? BoundedJSON.decode(OccultaBundle.RecipientPayload.self, from: plain)
     }
 }

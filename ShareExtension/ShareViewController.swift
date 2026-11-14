@@ -25,6 +25,7 @@
 
 import UIKit
 import UniformTypeIdentifiers
+import os
 
 class ShareViewController: UIViewController {
 
@@ -215,8 +216,22 @@ class ShareViewController: UIViewController {
                     let encryptor = try StreamingEncryptor(
                         url: destination, contactKey: try self.shareKeyManager.deriveStreamSealingKey()
                     )
-                    try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
+                    #if DEBUG
+                    // Measures the 100 MB cap's replacement (STREAMING_SPEC §8.4). Numbers only, no name or type,
+                    // and compiled out of Release. Reads 0 on the Simulator; run it on a device.
+                    let availableAtStart = os_proc_available_memory()
+                    var availableLowest = availableAtStart
+                    #endif
+                    try source.forEachChunk(range: 0..<source.size, size: 65_536) {
+                        try encryptor.append($0)
+                        #if DEBUG
+                        availableLowest = min(availableLowest, os_proc_available_memory())
+                        #endif
+                    }
                     try encryptor.finalize()
+                    #if DEBUG
+                    print("[ShareExtension] sealed \(size / 1_048_576) MB; available memory \(availableAtStart / 1_048_576) MB at start, lowest \(availableLowest / 1_048_576) MB, drop \((availableAtStart - availableLowest) / 1_048_576) MB")
+                    #endif
                     continuation.resume(returning: true)
                 } catch {
                     continuation.resume(throwing: error)

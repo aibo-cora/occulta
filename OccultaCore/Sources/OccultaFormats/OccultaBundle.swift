@@ -862,7 +862,7 @@ public struct OccultaBundle: Codable {
             let parsed = try WireHandle.parse(data)
             return try OccultaBundle(wireBundle: parsed)
         }
-        return try JSONDecoder().decode(OccultaBundle.self, from: data)
+        return try BoundedJSON.decode(OccultaBundle.self, from: data)
     }
 
     // MARK: - AAD
@@ -980,6 +980,6 @@ extension OccultaBundle {
         self.ciphertext        = b.ciphertext
         self.fingerprintNonce  = b.fingerprintNonce
         self.senderFingerprint = b.senderFingerprint
-        self.group             = try b.groupEnvelope.map { try JSONDecoder().decode(GroupEnvelope.self, from: $0) }
+        self.group             = try b.groupEnvelope.map { try BoundedJSON.decode(GroupEnvelope.self, from: $0) }
     }
 }

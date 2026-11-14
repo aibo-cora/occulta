@@ -3981,6 +3981,34 @@ Any message sealed **before** the re-exchange was built against the old key. Aft
 re-exchange we resolve the new one, and every check that depends on the sender's identity
 compares against a key that did not exist when the message was made.
 
+### Correction 2026-11-07 — sender identification fails first
+
+Read from the code at `8bf6e6a6`, not reproduced by a test. The three consumers below are not the first
+failure. Before any of them runs, `identifyOwner` (`Contact+Manager.swift`, the `last(where: { $0.expiredOn == nil })`
+loop) matches the bundle's cleartext sender tag against each contact's newest unexpired key. A bundle from the old
+phone carries the old key's tag, so it matches no contact and throws `noPublicKeyToEncryptWith`, in every mode. The user
+sees the "Could not find this file's owner's public key…" alert (`OccultaApp.swift`, the `noPublicKeyToEncryptWith`
+catch), not a signature error, and the file is never shown as from the contact. Revoke gets the same result before the
+re-exchange: a revoked contact has no unexpired key at all.
+
+Two consequences:
+
+- **82a's remedy as written would not be reached.** A walk-back in `deriveInboundKey` runs after sender identification.
+  Any fix has to widen identification, which decides which contact a file belongs to and is where an old-key lookup would
+  become an oracle: a distinct message for "matches a contact's old key" tells whoever delivers a file that such a contact
+  exists at this depth. **Open, needs a decision:** whether identification may ever search superseded keys, and if so how
+  it stays one outcome for the caller. The "Remedy — 82a" section below is not to be implemented until then.
+- **The user-facing text had a false reason.** The alert said the file was corrupted or not addressed to the user. For a
+  file from a contact's previous phone neither is true. The Trust Check copy (design doc "Occulta Trust Check —
+  Top-Level Flow", approved 2026-11-07) adds a fourth reason to the one shared constant and tells users to open a contact's
+  files before revoking, since they stop opening at that point. A separate "old phone" message was rejected for the oracle
+  reason above.
+
+The copy does not depend on how 82a is decided: it promises nothing for a plain re-exchange (today the old phone's files
+fail there too; after an 82a that accepts superseded keys they might open), and says to revoke if the old phone could be in
+someone else's hands. Files that are gone stay gone: the app keeps no history, so "send again" only works if the sender
+still has the content.
+
 ### Why it costs more than a signature failure
 
 That single value feeds three separate consumers on the inbound path, and all three break:
@@ -4155,6 +4183,12 @@ Today `resolveSenderPublicKey` treats the two identically by looking at neither.
 revocation lever exists in the UI. What is not established is whether a user who rotates *because
 of* a compromise knows to reach for it rather than simply re-exchanging. That is a copy question,
 and it is what makes accepting superseded keys safe or unsafe in practice.
+
+**Copy written 2026-11-07.** The lost-phone and new-phone remedies of the Trust Check top-level flow (design doc
+"Occulta Trust Check — Top-Level Flow") say to open a contact's files before revoking, to revoke when the old phone could
+be in someone else's hands, and to send again what was sent before the exchange. The Revoke confirmation says what stops
+working. The wording is in that doc's remedy table. It does not settle whether 82a accepts superseded keys; see the
+2026-11-07 correction above.
 
 ---
 
@@ -5424,6 +5458,10 @@ Whatever it suggests, it suggests about rows `deletionToken` already flags. Set 
 declining to act leaves a 29-byte value that says a contact was classified as sensitive — a concrete
 inference about the feature, traded away for a hypothetical one with no channel.
 
+**Corrected 2026-10-31 (Bug 190):** the store does keep a time for every write. SwiftData's persistent history
+(`ATRANSACTION`, `ACHANGE`) records each insert, update and delete with the row's primary key, the columns it
+changed and a timestamp. The scrub itself is logged there as one transaction updating these rows.
+
 **Note the interaction with the 50-row cap.** Soft-deleted rows are capped at 50, with one
 hard-deleted to make room when full, so the affected population is bounded and churns. That limits
 the exposure but does not remove it: a device that classified contacts and then deleted some will
@@ -5744,7 +5782,7 @@ So `Draft`'s omissions are load-bearing. The first version of this entry recomme
 
 Checked 2026-08-20: **nothing in production writes a `.contacts` file.** `format: .contacts` is
 constructed only inside `#Preview` blocks. The app can receive shared-contacts files and never sends
-one — the read side, the `Format` case in `Transfers.swift` (now `OccultaCore`'s `Basket.swift`) and the whole import UI exist, but the
+one — the read side, the `Format` case in `Transfers.swift` (now `OccultaFormats`' `Basket.swift`) and the whole import UI exist, but the
 write side was never implemented.
 
 That is why this is filed rather than fixed, and why it is worth filing at all: the rule needs to be
@@ -10517,6 +10555,42 @@ document's "Finding, 2026-10-15".
 `Docs/v2.0.0` step 4 is marked not achievable as written, the assessment's repeated-images row is
 corrected, and step 16's guidance has to tell at-risk users.
 
+### Re-examined 2026-10-29: independent spaces change nothing about the second case
+
+The owner adopted independent spaces (`PASSPHRASE_ROLLOUT.md` §1.5), which drop the chain and the shared key.
+The finding above stands. It is slightly worse, since no space can reseal another's rows, and a decoy changes
+only when someone uses it (the "decoys go stale" cost, accepted).
+
+- **Fixed in one image, with no phrase:** per-type row counts (one sealed blob per contact in one table, spec §2
+  requirement 3), row sizes (a few fixed sizes, noise rows included), and no space tag on any row. ~~Every change
+  is written as "append a new row, shred the old", so an edit, an addition and a deletion look alike.~~ *Changed
+  2026-11-01 (§8, 22):* an edit rewrites the row in place, a deletion overwrites it with random bytes, and an
+  addition appends one. The old claim never held: an addition only appended and a deletion only shredded.
+- **Not fixed:** rows a surrendered space can't open changing between images. Noise rows don't help. A key that
+  recognises noise would let anyone holding it count the real unopenable rows, and without one a duress session
+  can't tell noise from real rows, so it can't safely rewrite either.
+- **Stated limit, owner 2026-10-29:** a duress space protects against one image, not a series, and the setup
+  guidance (step 16) says so. The append-only log stays a possible later release, not planned.
+- ~~**Also open, needs a decision (2026-10-30):** how many noise rows the migration writes, and a table that only
+  grows, since no space can remove a shredded row~~ (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 21 and 22).
+  **Decided 2026-11-01 (§8, 22):** an edit rewrites the row in place, so the table grows only with rows added,
+  plus noise. Across images an edit shows one changed row, within this limit.
+  **Decided 2026-11-01 for the contact table (§8, 21):** the noise count is drawn per install, uniformly from
+  50–1,000, and never stored, so up to 1,000 unopened rows say nothing; more than that right after migration proves
+  a hidden space. ~~Noise sizes and the other space-sealed tables stay open.~~ **Decided 2026-11-02:** every small
+  space-sealed record shares one table and one row size, about 8 KB, so the same noise covers them and no per-type
+  count shows. ~~Photos and vault entries stay open.~~ **Decided 2026-11-02:** vault entries get their own table of
+  4 KB rows with noise drawn from 10–200. Photos get one size and no noise rows, so right after migration a photo
+  row the open space can't read proves another space: open, needs a decision.
+- ~~**Also open, needs a decision (2026-10-31):**~~ a write that reseals all of one space's rows at once (a rekey,
+  removing a space, a migration batch) shows across images which rows make up that space, with no phrase
+  (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25). **Decided 2026-11-01 by the owner:** Erase All Data's group is a
+  space that no longer exists, so nothing to fix. A rekey after an exposed phrase and lock-on (7c) are part of the
+  stated limit above, which now also covers the space's size: a rekey must overwrite rows the exposed phrase still
+  opens, and while a lock was off anyone who could unlock the phone read the space. A space that migrates later
+  than the others (8a, 8b) appends a random number of noise rows with its batch, how many settled with §8, 21.
+- **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
+
 ---
 
 ## Bug 121 — Backup key rotation has no UX, and no caller at all — `Backup.rotate()` is unreachable dead code
@@ -13996,7 +14070,7 @@ xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
   - **Measured on the iPhone 17 Pro Simulator (iOS 26.1):** the Enclave ML-KEM-1024 `dataRepresentation` is 4,788 bytes, the same for 25 keys (it carries the 1,568-byte public key), which matches `Docs/Features/Introduction Cards/SPEC.md` §5. The public key and the ciphertext are 1,568 bytes and the shared secret 32. The padded size, 8,192, is 1.7 times the measurement: room for a different blob on a device (the Simulator's number is not a device's) or in a later OS without changing the record's size. A blob that still doesn't fit throws at creation and is never cut.
   - **The derivation.** `enclaveBoundKey(_:)` reads the secret, then the record, then touches an Enclave key. A classical record gives `HKDF(t ‖ r)` with the Stage 1 info strings. A hybrid one gives `HKDF(t ‖ ss ‖ r)` with `ss` the Enclave's decapsulation of c, the `-pq-2026` info strings and SHA-256(c) appended. A hybrid record that won't decapsulate gives nil, and share staging throws: never a classical key in its place. A missing record gives nil.
   - **Creation.** `createTierPQRecordIfAbsent` follows the rule for the tier secrets (only while the tier has never been resealed, or on a fresh install), except share staging's, which may be created if absent at any time because staging holds nothing for longer than an hour. A provider that exists but can't make the key throws and stores nothing.
-  - **Share staging** carries its own copy of the codec and its own CryptoKit `SecureEnclave.MLKEM1024` calls behind `#available(iOS 26, *)`, because the extension doesn't link `OccultaCore`.
+  - **Share staging** carries its own copy of the codec and its own CryptoKit `SecureEnclave.MLKEM1024` calls behind `#available(iOS 26, *)`, because the extension doesn't use `OccultaCore`'s `PostQuantumProvider` (it links `OccultaFormats` only, which pulls `OccultaCore` in as a dependency).
   - **Open, needs a device check before Stage 5:** a CryptoKit Enclave key is a blob with no access group, unlike the staging `SecKey`, which is created in the shared group so the app and the extension can both use it. The Simulator can't show whether a blob the extension made decapsulates in the app, and the reverse. If it doesn't, the hybrid staging key fails on iOS 26+ whichever process created the record.
 - **2:** the reseal of tier U data (local DB, custody, restore) at launch, before `Manager.Security`. **Built**, 2026-10-22. This is the first stage that changes behaviour: after it, an upgraded install's local DB, shard custody and restore buffer data are sealed under the Enclave-bound keys.
   - **Where.** `LaunchSequence.run` (`Occulta/App/LaunchSequence.swift`) is called in `OccultaApp.init()` after the pragmas and before `Manager.Security(...)`. It runs `KeyReseal.bootstrap`, then `KeyReseal.run` (`KeyReseal+Run.swift`), then decides the process's keys (below), then the old `migrate()` passes in their old order. Running before Security matters because its init reads `persistedDepth` and `pinEnabledPerDepth`, which have to open under the key they are sealed under; afterwards, a lowered gate would come back up on the upgrade launch.
@@ -14077,7 +14151,7 @@ xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
   - **Not carried over, by decision.** Dev-build files sealed under release's compose key, ECDH against G, are not resealed and have no fallback: they are unreadable in a build with Stage 8, and a plaintext group draft file from an earlier dev build is sealed in place by `adopt` as before.
   - **Open, needs a decision.** (a) The file reseal runs at launch, in `OccultaApp.init`, like the rest of the upgrade. A draft holding very large videos (up to gigabytes) on a device that reaches iOS 26 could keep the launch past the system's time limit. A killed launch loses nothing and the next one continues file by file, but a single file too big to reseal within one launch would keep failing. Nothing splits a file. (b) A draft file whose header authenticates under the classical key but whose chunks don't (disk corruption) stops the upgrade every launch, which leaves that device classical and its other data unchanged; skipping it would commit and leave the file unreadable, which is the loss the stage exists to prevent.
 
-**Decisions.** D1 is the user's, 2026-10-21: the tier Keychain secrets on every iOS version, plus an Enclave ML-KEM term on iOS 26+ for all three tiers, share staging included. Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer, stays open, needs a decision, until the device reaches 26 or the passphrase ships. D6 (accept the downgrade loss for TestFlight and sideload) and the `Contact.Profile.identifier` question (left byte-identical, with every reference to it) were decided by the user, 2026-10-21. D2 to D5 and D7 to D9 are recommended; open, needs a decision (`Docs/General/decisions.md`, "Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+").
+**Decisions.** D1 is the user's, 2026-10-21: the tier Keychain secrets on every iOS version, plus an Enclave ML-KEM term on iOS 26+ for all three tiers, share staging included. Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer, stays open, needs a decision, until the device reaches 26 or the passphrase ships. D6 (accept the downgrade loss for TestFlight and sideload) and the `Contact.Profile.identifier` question (left byte-identical, with every reference to it) were decided by the user, 2026-10-21; the address-book link that leaves readable to a holder of Q is open, needs a decision. D2 to D5 and D7 to D9 are recommended; open, needs a decision (`Docs/General/decisions.md`, "Fix Bug 171 on every iOS version, and add ML-KEM on iOS 26+").
 
 The fix is a derivation with a secret input that only the Enclave can supply, not a rewording of what the current one gives. Every option below changes every affected key, so each needs a one-way reseal of what's under it, with the migration plan and tests that stage requires. There is precedent: `kLocalDBHybridKeyInfo` keeps the old and new local DB keys from ever being equivalent. No option helps ciphertext already sealed under the old keys and copied: Q recomputes those.
 
@@ -14107,7 +14181,7 @@ Fixed means: every key the app derives today (the local DB, shard custody, resto
 1. **Data copied before the reseal, and images taken while a device was classical.** Ciphertext sealed under a legacy key, and anything sealed under the classical form on a device below iOS 26, stays readable to whoever holds Q (and, for the classical form, the tier secret). No reseal protects what is already copied. Stage 6 moves a device to hybrid when it reaches iOS 26.
 2. **Below iOS 26, a keychain dump that holds Q and the tier secret, analysed later with a quantum computer.** No primitive there closes it (D1, the user's, 2026-10-21). The passphrase release closes it for phrase-protected depths on every version, and Stage 6 when the device reaches 26.
 3. **Whether an image alone yields Q.** No cleartext column of the Simulator's keychain database does (it holds SHA-1(Q)); a device answer needs extraction tooling we don't have (D4).
-4. **`Contact.Profile.identifier` is left byte-identical** (the user's decision, 2026-10-21), so for contacts imported from the address book a holder of Q can link each one to its address-book entry until the passphrase migration reseals each contact as one record.
+4. **`Contact.Profile.identifier` is left byte-identical** (the user's decision, 2026-10-21), so for contacts imported from the address book a holder of Q can link each one to its address-book entry until the passphrase migration reseals each contact as one record. That migration's part, and what it leaves open, is in `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §4 (stages 4 and 5, decision 20). **Decided 2026-11-02:** every contact gets a random 16-byte ID, references hold only that inside rows sealed under the same space key, and the address-book ID is never stored.
 5. **The vault window (D8).** The per-entry keys stay under the legacy key until the first unlock after the upgrade, and the vault epoch shows anyone who holds the tier U key whether the vault has been opened since. A kill after the export file moved leaves the file under the new key and the rest under the old until the next unlock (nothing becomes unreadable except the backup staleness snapshot in that window).
 6. **A reseal or an upgrade that stopped partway, over a later launch that aborts before writing.** Stage 2c and Stage 6 block a launch that ended mixed; the report knows only its own launch, so a launch that aborts before writing over a store an earlier launch left mixed is not blocked. A marker written before the first batch would close it, and for the upgrade the pending record could serve, but an upgrade that fails for a lasting reason would then block every launch from the second on.
 7. **Share staging's legacy fallback.** While `decrypt` accepts the legacy key (one release), anyone holding Q who can write into the App Group container can plant a session the app opens. The fallbacks go one release after 2.0.0.
@@ -14822,11 +14896,598 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 
 ---
 
+## Bug 186 — Decoders that read a `Data` slice by absolute position or at an assumed alignment trap on one
+
+**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged. Found 2026-10-30 by the decoder fuzzer (hardening step 12,
+register D6): the first case it ran against `DepthCodec` crashed, and the first run of the app's targets crashed in
+the identity-challenge payload.
+
+**Target:** `v2.1.0`, and every build with these types.
+
+### Severity: Low (nothing reaches it today: every caller passes a `Data` that starts at index 0)
+
+### What happens
+
+A `Data` slice keeps its parent's indices: `buffer[14...]` starts at 14, and `slice[0]` is out of range. Three
+decoders read with literal positions:
+
+- `DepthCodec.decode(_:)` reads `plain[0]` and `plain[1]`.
+- `IdentityChallenge.ChallengePayload.init(from:)` reads `data[0..<32]`, `data[32..<40]`, `data[40..<72]`
+  (`IdentityChallenge+Payload.swift:85`).
+- `IdentityChallenge.ResponsePayload.init(from:)` reads `data[..<32]` and `data[32...]`.
+
+On a slice, each traps (`EXC_BREAKPOINT` in `Data._Representation.subscript.getter`), or reads bytes offset from where it
+meant to when the range happens to fall inside the slice.
+
+A fourth, `IdentityChallenge.decodeTimestamp(_:)`, takes no index but reads with `load(as: UInt64.self)`, which wants an
+address that is a multiple of 8 and traps otherwise (`Fatal error: load from misaligned raw pointer`). A slice starts
+wherever its parent's index puts it.
+
+Every caller today passes a buffer that starts at 0: `AES.GCM.open`'s result for the depth fields and
+`JSONDecoder`'s decoded `Data` for the two payloads (`IdentityChallenge+Manager.swift:282`, `:393`). So no file and no
+peer reaches the trap. It is a defect in the decoders' contract, and a refactor that hands one a `dropFirst(n)` or a
+sub-range of a decrypted body would meet it. The depth decoder is the one to fear: the depth fields are read on every
+launch and unlock, so a trap there is a crash on every start, with a crash report that names the app.
+
+### Verified, 2026-10-30
+
+- `DepthCodec.decode`: the standalone harness, seed 1, iteration 1 of the depth target. The input is the two bytes
+  `ff fe` as a slice starting at index 14. Exit 133 (`SIGTRAP`).
+- `ChallengePayload.init(from:)`: the same fuzzer in the Simulator, on the main-actor targets. The crash report names `ChallengePayload.init(from:)`
+  at line 85 under `IdentityChallengePayloadTarget.run`.
+- `decodeTimestamp`: the same fuzzer, after the fix above let it get that far. `Fatal error: load from misaligned raw
+  pointer`, from `IdentityChallengePayloadTarget`.
+- `ResponsePayload.init(from:)` has the same shape as the challenge payload and was fixed with it. The fuzzer never
+  reached it, because the process died first in the challenge decoder; `SliceIndexRegressionTests` covers it.
+
+### Fix
+
+`DepthCodec.decode` reads from `plain.startIndex`. The two payload initialisers rebase their input
+(`let data = Data(data)`) before indexing, which changes nothing for a `Data` that starts at 0. `decodeTimestamp` builds
+the number from its eight bytes instead of loading it, which gives the same value on every input it accepted. No
+accepted encoding changes, and no `InteropVectors.json` vector moves.
+
+### Guard
+
+`SliceIndexRegressionTests` (`OccultaTests/Fuzzing/DecoderRegressionTests.swift`): the exact two bytes above, as a slice
+at index 14; every depth value and the legacy JSON spelling as slices; both payloads as slices, with the fields and the
+re-encoded bytes checked against the unsliced result; a timestamp as a slice at 17 different offsets; a slice of the wrong
+length still refused. The fuzzer hands a
+slice to every target one case in four, so a fourth decoder with the same habit fails the suite.
+
+---
+
+## Bug 187 — A shared image can make ImageIO allocate gigabytes, by its declared size or by a chunk length
+
+**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged; four residuals open, needs a decision (below). The size
+mechanism was found 2026-10-30 from reading `ShareSession.stripEXIF` while listing the share extension's input path for
+hardening step 12; the chunk mechanism by the fuzzer the same day (seed 1, iteration 151 of the staged-file target).
+Both confirmed by standalone probes.
+
+**Target:** `v2.1.0`, and every build with EXIF stripping (1.x).
+
+### Severity: Medium (proposed; the app is killed by an image the user was sent, with no key or contact needed, and the kill leaves a record naming Occulta)
+
+### What happens
+
+`ShareSession.staged` strips every shared image by handing it to ImageIO, and ImageIO's cost is set by what the image
+*declares*, not by how many bytes it has. Two ways, measured with probes (`swiftc -O`):
+
+**1. Declared dimensions.** The strip decodes the image and encodes it again. A one-bit grayscale PNG of zeros, on a Mac:
+
+| Declared size | File | Time | Peak resident |
+|---|---|---|---|
+| 2,000 × 2,000 | 566 bytes | 0.06 s | 19 MiB |
+| 10,000 × 10,000 | 12,227 bytes | 0.34 s | 213 MiB |
+| 30,000 × 30,000 | 109,445 bytes | 4.2 s | 1,590 MiB |
+
+**2. A declared chunk length.** A PNG chunk header gives the chunk's length, and ImageIO allocates it when it reads the
+header, before it finds the file doesn't hold that many bytes. A 79-byte PNG (signature, a 2 × 2 IHDR, and an `iTXt`
+header declaring 2,000,000,000 bytes) makes `CGImageSourceCopyPropertiesAtIndex`, which decodes nothing:
+
+| Runtime | Result |
+|---|---|
+| macOS 26 | the process holds 1.9 GiB afterwards |
+| iOS 26.2 Simulator runtime | a transient peak of 2.0 GB resident, freed when the call returns |
+
+Of the chunk types tried, `iTXt`, `zTXt` and `sPLT` do it; `tEXt`, `iCCP`, `eXIf` and `tRNS` do not. The fuzzer's input
+was a 574-byte PNG whose `iTXt` length had been set to 1,676,476,820: the process grew by 1,032 MiB, and its watchdog
+ended the run.
+
+Either way a file of a few hundred bytes to a few hundred kilobytes costs more than a phone gives an app. The path: the
+user shares an image into Occulta from another app (one a contact sent them, say); the extension only seals the bytes;
+the app picks a recipient after the PIN and calls `ShareSession.staged`, which reads it. iOS ends the app for the memory.
+What is left is the system's jetsam record naming Occulta, a trace outside every depth, and the staged session in the App
+Group (sealed; the next sweep removes it).
+
+Not measured on a phone, and the limit varies by model.
+
+### Fix
+
+Two checks before ImageIO is given anything, both throwing, so `staged` deletes the session and zeroes what it decoded, as
+it does on any throw:
+
+- `ShareSession.pngChunkOverruns` walks a PNG's chunks by their length fields (a few comparisons, no decoding) and
+  refuses one with a chunk that runs past the end of the file, or that is longer than the format allows (2^31 - 1):
+  `Errors.imageMalformed`. A well-formed PNG, truncated or not, never does.
+- `stripEXIF` reads the declared size from the header (`CGImageSourceCopyPropertiesAtIndex`, which after the check above
+  is safe on a PNG) and refuses width × height over `ShareSession.maxImagePixels`, 100 million, about twice an iPhone's
+  48-megapixel photo: `Errors.imageTooLarge`.
+
+Both refuse rather than send the image as it is. A format ImageIO can't parse is passed through, with its metadata inside
+the sealed bundle; doing that here would send an oversized photo's location, which is what stripping is for, and would
+pass the weapon on to the recipient. The user sees "Failed to encrypt shared content. This image is too large to share."
+or "...is damaged and can't be shared."
+
+### Residuals — all open, needs a decision
+
+1. **The pixel limit.** 100 megapixels is a judgment. An image at the limit can still take several hundred megabytes to
+   decode (a 16-bit RGBA one 800 MB), and a lower limit would refuse photos from cameras above 64 or 100 megapixels,
+   which some Android phones take. The number needs an owner; the check does not depend on it.
+2. **Images from a contact are decoded unchecked, by both mechanisms.** A received attachment and a contact photo in an
+   imported draft are read with `UIImage(data:)` and SwiftUI's image views (`ComposableMessage.swift`,
+   `Contact+Photo.swift`, `Import+View.swift`), with no size check. The same file reaches them from a paired contact. Not
+   tested; the same two checks where a received file is written, or shown, would close it.
+3. **Only PNG's chunk layout is checked.** Other formats declare sizes too: a TIFF's tag counts and offsets, an
+   ISO-BMFF (HEIC) box's size, WebP's chunks. The fuzzer ran mutated JPEG, GIF and TIFF files through the same path and
+   found none over its limit, but a mutation of a two-by-two image rarely sets those fields to a hostile value. Not
+   examined by hand.
+4. **Only the first frame is checked.** A GIF or TIFF with more frames is read at frame 0 only, which is also all
+   `stripEXIF` encodes, so no later frame is decoded here.
+
+### Guard
+
+`ImageSizeRegressionTests` (`OccultaTests/Fuzzing/DecoderRegressionTests.swift`), on the Simulator: the exact 79-byte PNG
+and the fuzzer's 574-byte one are refused with `imageMalformed`, no session left, and `pngChunkOverruns` agrees; it passes
+a well-formed PNG, reads a slice, refuses a length of 2^31, and ignores what is not a PNG; a PNG of 400 million declared
+pixels (valid, about 300 KB, its IDAT written out in the test) and one of 100,001,000 pixels in a shape neither side of
+which is large are refused with `imageTooLarge`; an ordinary JPEG and the well-formed PNG are still stripped and returned. Each refusal comes before any
+decode, so a regression allocates what the probes did. The memory figures above are from the probes, not from a test.
+
+---
+
+## Bug 188 — The share extension reads a whole inbound `.occ` into memory
+
+**Status:** Open, needs a decision. Found 2026-10-30 by reading `ShareViewController` for hardening step 12. Not
+reproduced: the extension can't be driven from the test host, and no device was used.
+
+**Target:** `v2.1.0`, and every build with the inbound handoff (1.x).
+
+### Severity: Medium (proposed; a legitimate large bundle, or any large file named `.occ`, can't be handed over, and the failure is a crash)
+
+### What happens
+
+`handoffInboundOCC` loads the file with `provider.loadDataRepresentation`, which returns all of it as one `Data`, and
+writes that to the App Group. There is no size check on it. The outbound path next to it has both: a 100 MB cap
+(`maxFileBytes`) and a streamed copy (`copyFileRepresentation`, with the reason written beside it: bytes flow through the
+kernel, not app memory).
+
+A share extension has a small memory limit from iOS (roughly 120 MB, from Apple's documentation; not measured here).
+A bundle with a large attachment is a legitimate input and is what Bug 183 was about (about 800 MB). So tapping Occulta
+in a messaging app's share sheet on such a bundle should end the extension, and the file never reaches the app. The
+crash is the system's: a report that names the Occulta share extension, outside every depth. A hostile large file named
+`.occ` does the same to anyone who opens it through the share sheet.
+
+Opened through Files or "Open in", the file doesn't go through the extension and is mapped, not read
+(`InboundFile.open`), so only the share-sheet route is affected.
+
+### Candidate fix, not made
+
+Take a file representation instead (`loadFileRepresentation`) and copy it to `inbound/<uuid>.occ` with
+`FileManager.copyItem`, which clones on APFS and holds nothing in memory, as the outbound path already does. The app's
+`InboundFile.open` then maps or streams it like any other file. It isn't made here because the extension can't be run in
+a test, and a change there should be tried on a device. The alternative, a size cap, would refuse exactly the bundles
+Bug 183 made it possible to open.
+
+### Guard
+
+None yet. `Docs/Features/Bundle/STREAMING_SPEC.md` §8.4 already says the extension's peak memory has not been
+measured on a device; this would be the second thing to measure there.
+
+---
+
+## Bug 189 — 513 bytes of `[` end the app: a JSON document Foundation's scanner traps on
+
+**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged; two residuals open, needs a decision (below). Found 2026-10-30
+by the decoder fuzzer's standalone run: seed 12, iteration 98773 of the depth target, a 513-byte input, exit 133.
+
+**Target:** `v2.1.0`, and every build that decodes JSON from outside the device: the legacy bundle (1.x) and the
+exchange's messages.
+
+### Severity: High (proposed; before any authentication, no key, contact or depth needed, and it leaves a crash report outside every depth; the same class as Bug 174)
+
+### What happens
+
+`JSONDecoder` on a document that is exactly 513 `[` and nothing else traps inside Foundation, in
+`JSONScanner.scanArray()` (`EXC_BREAKPOINT`). Its limit is 512 levels and it should throw past it. Probes, `swiftc -O`,
+on macOS 26 and on the iOS 26.2 Simulator runtime (the same result on both):
+
+| Input | Result |
+|---|---|
+| 512 `[` | throws, exit 0 |
+| **513 `[`** | **exit 133** |
+| 514, 600, 1,000, 20,000 `[` | throws, exit 0 |
+| 513 `[` and any byte after them | throws, exit 0 |
+| 513 `{"a":` or `[{"a":` pairs; 513 `[` then `]` | throws, exit 0 |
+
+It is the same for `Int`, a struct, `[Data]` or `[[Int]]`: the scan comes before the type is looked at. A trap is not a
+throw, so no `try?` and no `catch` sees it.
+
+Where Occulta hands outside bytes to `JSONDecoder`, before anything is authenticated:
+
+- **Any file.** `OccultaBundle.decoded(from:)` sends a file without the `OCCB` magic to `JSONDecoder` (the legacy format),
+  from `buildOwnedBasket` inside a `try?`. A 513-byte file of `[` is enough.
+- **A binary bundle's group section.** It is a cleartext JSON block after the ciphertext, read by
+  `OccultaBundle(wireBundle:)`, for the inline layout and the streamed one (`StreamedBody.init`). The sections are not
+  authenticated.
+- **A nearby phone.** `ExchangeManager.handleReceivedData` decodes the message first and checks the peer after, and
+  `advertiser(_:didReceiveInvitationFromPeer:)` accepts every invitation, so a phone that sees the advertisement during
+  an exchange can send it. By code reading; not exercised over a radio.
+
+After authentication, so a contact's message or someone holding their keys: `WireHandle.decode(payload:)` and
+`decode(basket:)`, the recipient payload, the legacy sealed payload, an identity challenge's payload, imported contacts,
+a vault backup once its key opens it. Same trap.
+
+A file opened while the app is locked is queued and read after the PIN, so the crash follows a PIN entry at any depth. The
+queued bytes are cleared before the parse (Bug 174 notes the same), so there is no crash loop. The cost is a crash on
+each open of the file, and the crash report iOS writes.
+
+### Verified, 2026-10-30
+
+The standalone harness, real `OccultaFormats` sources: with the fix taken out of a copy, the fuzzer finds it at iteration
+3,202 of seed 1 on the bundle decoder and at iteration 244 on the recipient payload (`bareNesting`, the mutation added
+for this). The probes above are the table. Not reproduced by opening a file in the app or by a radio message: the
+trapping call is the `JSONDecoder` one each of those makes.
+
+### Fix
+
+`BoundedJSON.decode(_:from:)` (`OccultaFormats`) counts the nesting of `[` and `{` outside strings in one pass over the
+bytes and throws `DecodingError.dataCorrupted` past 64 levels, as it would for any malformed document. Anything within
+the limit is handed to `JSONDecoder` unchanged, so what decoded before decodes the same. It replaces `JSONDecoder` at
+every call that reads bytes from outside the device: the legacy bundle and the group section, the payload, basket and
+file entries, the exchange's message, the recipient payload (five call sites: group slots, card slots, a card's redemption), the
+legacy sealed payload, the identity challenge's payload, the legacy basket, imported contacts, the vault backup JSON, the
+share manifest and the legacy depth row. It is not applied to a field this device sealed under its own key and no one
+outside can write: stored contact key material, settings, drafts, custody and buffer rows.
+
+64 is far above anything Occulta writes: the deepest document in the tests, a basket with every kind of file, nests six
+levels, and every recorded JSON vector nests four or fewer. No wire format changes and no
+`InteropVectors.json` vector moves. A document nested between 65 and 512 levels, which decoded before, is now refused;
+no encoder in the app can produce one.
+
+### Residuals — open, needs a decision
+
+1. **The bug is Apple's, and is not reported from here.** Foundation should throw. Another JSON decoder, or another
+   entry in the app, that reaches the same scanner is not covered by anything but the check below.
+2. **Nothing stops a new `JSONDecoder` call on outside bytes.** `JSONDecoderUseTests` fails on a `JSONDecoder` in any file
+   not on its list of files that decode only what the device sealed. A listed file that gains an outside-facing decode
+   passes. Reviewing that list is the control.
+
+### Guard
+
+`NestingRegressionTests` (`OccultaTests/Fuzzing/DecoderRegressionTests.swift`), which only has to return, since a trap
+ends the test host: the 513-byte file; a binary bundle whose group section is 513 `[` (its sections still parse, so the
+refusal is `BoundedJSON`'s); a payload, a basket and a file entry whose JSON block is 513 `[`; a depth row; a message
+from a pinned peer, with a valid one after it to show the manager still reads messages. The guard itself: nesting counted
+outside strings and across escapes, 63 and 64 levels decode and 65 are refused, and what Occulta writes decodes to the
+same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of files described above.
+
+---
+
+## Bug 190 — SwiftData's persistent history logs every write to the store, with a timestamp, the row and the columns changed
+
+**Status:** Open, needs a decision. Found 2026-10-31 while describing the contact table after the passphrase
+rollout (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23). **For the passphrase rollout's new store, decided
+2026-11-01:** plain SQLite, so none of this applies there (`decisions.md`, 2026-11-01). The SwiftData store that
+remains, and every store today's app writes, are still open.
+
+**Target:** None yet. It is in every shipped build, and the passphrase rollout's storage relies on it being gone.
+
+### Severity: High (proposed; one image, no key, every install, and it is a log of the writes Bug 120 needs two images for)
+
+### What happens
+
+SwiftData turns on Core Data's persistent history tracking, and nothing in the app turns it off or prunes it: there is
+no `deleteHistory`, `HistoryDescriptor` or `NSPersistentHistory` anywhere in `Occulta/`. The store
+(`OccultaApp.swift:69`, `ModelConfiguration(… cloudKitDatabase: .none)`) therefore carries three tables of its own:
+
+- `ATRANSACTION`: one row per save, with a timestamp, and the bundle ID and process name through `ATRANSACTIONSTRING`.
+- `ACHANGE`: one row per inserted, updated or deleted object, with its entity, its `Z_PK`, the change type, the
+  transaction, and a bitmask of the columns an update changed.
+- `Z_PRIMARYKEY`'s `CHANGE` and `TRANSACTION` counters: how many of each were ever written.
+
+So one image holds, in the clear and from install onwards, when each row of each table was written and which of its
+columns changed. That includes:
+
+- **Secure Mode activation and classification**, as one transaction updating the depth columns of a set of rows;
+- **Bug 89's scrub**, which assumed no timestamp exists;
+- **every write made in a duress session and every write made outside it**, by time, for a coercer who knows when
+  the duress session was open.
+
+Two more per-row traces, outside the history tables:
+
+- `Z_OPT`, the optimistic-locking counter, goes up by one on every update of a row, so it counts how often each row
+  was rewritten in place.
+- `Z_PK` is assigned in insertion order, so a row's position says when it was inserted relative to the others.
+
+### Verified, 2026-10-31
+
+- **A test store** (`swiftc`, macOS 26.6.2, SwiftData, one model of a UUID and a `Data`): four inserts, one row
+  updated once, one updated twice, one deleted and replaced. `ACHANGE` lists all nine changes with their `Z_PK` and a
+  column bitmask on the updates; `ATRANSACTION` has five timestamps; `Z_OPT` reads 2 and 3 on the updated rows and 1
+  on the rest; the replacement row took a new, higher `Z_PK`.
+- **Two of the app's Simulator stores**, read-only. One holds 34 changes in 3 transactions, which are the store's
+  whole history (32 backup-key rows, the vault and `AppLayerConfig`, matching `Z_MAX`). The other logs two `Profile`
+  inserts and one `Profile` update with times four minutes apart, and the updated row has `Z_OPT` 2.
+- **Not checked:** a device store; whether iOS prunes history on its own over months; whether SwiftData can open a
+  store with history tracking off.
+
+### Why it matters to the passphrase rollout
+
+The independent-spaces design (`PASSPHRASE_ROLLOUT.md` §1.5) says a deleted row, another space's row and a noise row
+look the same. In a SwiftData table they don't:
+
+- **Shredding in place is an update.** The shredded row gets `Z_OPT` 2 and an `ACHANGE` update, while live rows of
+  every space and noise rows stay at 1. Deleted rows stand apart from the other two in one image, which breaks the
+  "I deleted everything" story.
+- **Noise rows written in one batch** at migration take one run of `Z_PK` values, before or after the real rows.
+- **The history tables** list every append and every shred with its time, which is the series Bug 120 says a duress
+  space can't survive, in one image.
+
+### Fix — open, needs a decision
+
+- **Drop the history** after each save, or open the store with history tracking off if SwiftData allows it (not
+  checked). After a deletion, the freed pages need `secure_delete` and a checkpoint, as purges do today. The
+  `CHANGE` and `TRANSACTION` counters in `Z_PRIMARYKEY` would still count every write ever made.
+- **Make the per-row columns uniform** in the new contact and photo tables. Shred by deleting and inserting a new
+  random row instead of updating in place, so `Z_OPT` stays 1, and insert the migration's real and noise rows in a
+  random order. `Z_PK` still orders rows by insertion.
+- **Leave SwiftData for these tables.** A plain SQLite table or a file of fixed-size records has no history, no
+  `Z_OPT` and no insertion counter.
+- **Decided 2026-11-01 for the new store:** the third option. Every table sealed under a space key goes into a
+  plain SQLite file, each `WITHOUT ROWID` with a random 16-byte key and the sealed record. The first option is still
+  needed for the SwiftData store that remains and for today's app.
+- **Images already taken** keep the history up to that point, whatever is chosen.
+
+### Guard
+
+None yet. A test that saves, updates and deletes, then reads the store file and finds no `ACHANGE` or `ATRANSACTION`
+rows, and the same `Z_OPT` on every row of the new tables.
+
+---
+
+## Bug 191 — `TransportKeyDerivation.sessionKey` takes an `ecdhOutput` of any length, and says nothing about which input was wrong
+
+**Status:** Fixed on `v2.1.0/transport-key-derivation-throws`, not merged. Filed as `OC-1` in `Docs/Features/OccultaCore/bugs.md`
+(found 2026-10-31 when the function was extracted); recorded here when it was fixed. Numbered 191 because 190 is taken on
+`v2.1.0/passphrase-independent-spaces`, not merged *(merged 2026-11-12; Bug 190 above)*.
+
+**Target:** `v2.1.0`, `OccultaCore`. No shipped build of Occulta is affected: every app caller passes 32 bytes.
+
+### Severity: Low (proposed; reachable only by a host app of the package, none yet, and not by any Occulta path)
+
+### What happens
+
+`sessionKey` checked both public keys (65 bytes) and, in the hybrid form, both ML-KEM secrets (32 bytes), and returned `nil`
+otherwise. It never looked at `ecdhOutput`. HKDF takes any input length, so an empty `ecdhOutput` in the classical form made
+the IKM empty and the key a function of the salt (the two public keys) and the label alone, which an observer can compute.
+In the hybrid form the key rested on the ML-KEM secrets alone. A host app is exposed if its ECDH call yields something other
+than the 32-byte X9.63 output: an error path that returns empty `Data`, the raw shared point, a different requested size.
+The README asked for exactly 32 bytes, a sentence standing in for a check. Separately, `nil` did not say which input was wrong.
+
+### Fix
+
+`sessionKey(...)` is now `throws(TransportKeyDerivation.Error) -> SymmetricKey`. `Error` has one case per check, none with an
+associated value, so no key bytes can reach an error: `invalidOwnPublicKeyLength`, `invalidPeerPublicKeyLength`,
+`invalidECDHOutputLength` (new: not 32 bytes) and `invalidPostQuantumSecretLength`. Checked in that order; the first
+failure is thrown. The derivation is unchanged: same IKM, salt, info and output, and no `InteropVectors.json` vector moves.
+
+The app's eleven call sites (`Key+Manager.swift` 4, `KeyManagerProtocol.swift` 3, `Crypto+Manager+Cards.swift` 1,
+`PQTestKeyPair.swift` 3) use `try?` and keep the `nil` they returned, so no new text reaches the UI or a log and nothing
+a coercer could read changes. This is a public API break, taken while no host app uses the package
+(`Docs/Features/OccultaCore/decisions.md`, 2026-11-01).
+
+### Guard
+
+`TransportKeyDerivationPublicAPITests` (`OccultaCore/Tests/OccultaCoreAPITests`): each wrong length throws the named case;
+`ecdhOutput` of 0, 16, 31, 33 and 64 bytes throws `invalidECDHOutputLength` in the classical and the hybrid form; with every
+input wrong, the own-key error comes first, and each later check is reached only once the earlier ones pass.
+`ReadmeExamplesTests` mirrors the README's now-throwing example. The interop vectors are unchanged.
+
+---
+
+## Bug 192 — A hosted test run on a device reads the real store under the legacy keys, and can purge every group
+
+*Numbered 191 until 2026-11-02, and still called that in PRs #152–#154 and this branch's commit messages.
+`release/v2.1.0` took Bug 191 for `TransportKeyDerivation.sessionKey` (PR #151), so this one is 192.*
+
+**Status:** Fixed in `release/v2.1.0` by [PR #154](https://github.com/aibo-cora/occulta/pull/154), merged
+2026-11-02 as `ac2a5a67` (it replaces PRs #152 and #153, both closed). It merged before its CI check finished; the
+full Simulator run passed with only the 6 expected skips. Found 2026-11-01, when two device runs of `ContactRecordCryptoMeasurementTests` on
+a phone with real data made its contacts and groups disappear from the app. The contacts came back after a normal
+launch; the groups were deleted for good.
+
+**Target:** `release/v2.1.0`. Debug builds hosting tests are where it was seen; the purge guard also covers any
+shipped path that reaches the purge with the wrong key.
+
+### Severity: Low for users, Critical for any development phone that holds data (proposed; it destroyed a phone's groups)
+
+### What happens
+
+- `OccultaTests` is hosted in Occulta.app, so a device run installs a Debug build over the app and launches it against
+  the real store.
+- In a test host, `OccultaApp.init` skips `LaunchSequence.run` (`OccultaApp.swift:96-104`, the same in `v2.0.0`). The
+  process's tier-U keys then stay `.legacy` (`Manager+Ambient.swift:70-79`).
+- A store the launch sequence has resealed (Bug 171, stage 2) does not decrypt under the legacy keys, so the app shows
+  no contacts and no groups. That is what was seen. Nothing was lost: the next normal launch ran the sequence and the
+  data reappeared.
+- **Every group was deleted (seen 2026-11-01, after a first note here said they survived).** The app body's `.task`
+  calls `purgeOrphanedGroupsIfAtRealDepth()` (`OccultaApp.swift:952`). On a phone with no Occulta PIN,
+  `requiresPIN` is false (`Manager+Security.swift:78`, a nil check that needs no key), so `evaluate(coldLaunch:)`
+  goes straight to `.unlocked` at depth 0 (`AppScreen.swift:171`), and the purge derives its key from
+  `Manager.Ambient`: the legacy key, which `legacyKey` creates if it is missing (`Key+Manager.swift:570`), so it is
+  never nil. `purgeUnreadableGroups` (`Contact+Manager+Groups.swift:108`) then finds no group that key opens and
+  deletes all of them, and the `checkpointStore()` right after flushes the deletion with `secure_delete` on, so the
+  rows are zeroed. Contacts survive only because nothing purges them. That the phone had no PIN is inferred, not
+  checked: the contact list showed during the run, which a PIN gate would have hidden. A phone with a PIN keeps the
+  phase at `.pinRequired` and the purge doesn't run.
+- **The purge is the only destructive step** (checked by the fix's session). The other launch-time sweeps and
+  migrations skip rows they can't read, which is why the contacts came back, and the legacy derivation reuses the
+  keychain and Enclave items that still exist on a resealed phone, so no fresh keys were created.
+- **No recovery from the app:** the vault backup doesn't hold groups, and the store is excluded from device backups.
+
+### Fix (PR #154, from PR #152's commit `261e6024` and PR #153)
+
+- **The test host gets an in-memory store.** `OccultaApp.init` builds an in-memory container in a test host, as a
+  blocked launch does, and its file-level calls point at a path that doesn't exist. A hosted run never opens the real
+  store, so no sweep, today's or a later one, can touch it.
+- **The purge refuses a key that doesn't open the store.** `purgeUnreadableGroups` first decrypts
+  `AppLayerConfig.persistedDepth` with the key it was given. If that fails, or the config row or `persistedDepth` is
+  missing, it throws `keyDoesNotOpenStore` and deletes nothing. With the right key, Bug 75's cleanup of genuinely
+  stranded groups still runs.
+- **Rejected:** skipping the sweeps in a test host (a guard at each call site, and the real store still open); a flag
+  set once the launch sequence has set up the keys (no unit test reaches it); refusing only when nothing decrypts (it
+  breaks Bug 75's all-stranded case and can't tell a wrong key from unreadable groups).
+- **Duress and forensics:** no change. With the right key the behaviour is the same, and the checkpoint still runs at
+  every depth.
+- **Tests use their own Application Support directory** (from PR #153). A source scan fails the run if anything
+  else names the system one.
+- **Still open, not in the PR:** a hosted test can still reach real Keychain and Enclave items (layer 3 of the
+  isolation plan, not started) and the App Group. `UserDefaults` is shared too; the PR leaves it, since
+  `OSTraceTests` bans a suite name and the one key tests touch is removed on every unlock. Device runs stay off
+  every phone with real data.
+
+### Guard
+
+`GroupOrphanPurgeTests`: a purge under a key that doesn't match the store, with no config row, and with no
+`persistedDepth` each delete nothing, and all three fail with the guard removed. A genuinely stranded group is still
+purged, and Bug 75's all-stranded case still clears. The in-memory test host has no test of its own:
+`OccultaApp.init` can't be unit-tested, so only a full hosted run covers it.
+
+---
+
+## Bug 193 — A contact photo picked from Photos is stored as the original file, metadata included
+
+**Status:** Open, needs a decision. Found 2026-11-02 while deciding the photo table (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`
+§1.5). Read from the code; what the stored bytes hold was not checked on a device.
+
+**Target:** None yet. The passphrase migration re-encodes every photo (§1.5, decided 2026-11-02); today's app could do
+the same at pick time.
+
+### Severity: Medium (proposed)
+
+### What happens
+
+- Both contact forms store the picker's bytes as they come: `loadTransferable(type: Data.self)` into
+  `contact.imageData` (`ContactFormV2.swift:111`, `Contact+Photo.swift:40`). For a photo from the library that is
+  the original asset at full resolution, possibly several MB, with whatever metadata it carries: typically the
+  capture time, the device and, when location was on, where it was taken.
+- It is sealed under the local DB key, so it takes the key to read. Anyone who does (a forensic examiner with the
+  key, or the space's owner under coercion once the passphrase ships) gets that metadata about a photo the app only
+  ever shows as an avatar.
+- Only the 120×120 thumbnail is re-encoded.
+
+### Fix (open, needs a decision)
+
+- Re-encode at pick time to the size the app shows, from pixels only, so no metadata is carried over; keep no
+  original. The new store does this with its 24 KB photo row (§1.5).
+- Existing photos stay as stored until a migration re-encodes them.
+
+### Guard
+
+None yet. A test that picks a photo with GPS metadata and finds none in what the contact stores.
+
+## Bug 194 — After a contact's identity key changes, our messages to them are sealed to their old phone's prekeys: the new phone can't open them, and without ML-KEM the old phone can
+
+**Status:** **Fixed 2026-11-03** on branch `claude/bug-194-stale-inbound-prekeys-ee7f61` ([aibo-cora/occulta#156](https://github.com/aibo-cora/occulta/pull/156), to `release/v2.1.0`). Filed 2026-11-03 from audit lead 13 (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md` §13), confirmed by a code trace at `cea3927b` (`release/v2.1.0`), then reproduced by `StaleInboundPrekeysConversationTests` on a real Enclave: with the fix removed, the new phone throws `recipientSlotNotFound` on every message sent after the key change. The trace widens the lead in two ways: it needs no introduction card and no revoke, only a contact whose identity key changes; and it finds a confidentiality case the lead ruled out.
+
+**Target:** `release/v2.1.0` only, decided 2026-11-03. No 2.0.x backport: a 2.0.x user who needs the exposure closed sooner can delete the contact and exchange again, which starts a fresh record.
+
+### Severity: High
+
+- **Availability, certain on a hardware cycle.** It hits every contact whose identity key changes, which Bug 82's table lists: a new iPhone, a restore to new hardware, Erase All Data, Erase All Content and Settings. From the re-exchange on, our messages don't open on their new phone. If their old phone ran 2.0.0 or later, it never recovers on its own.
+- **Confidentiality, when the contact's new key has no ML-KEM key** (their new phone is below iOS 26). The slots open on the *old* phone instead. In the case revoke exists for — a lost, stolen or seized phone — whoever holds that phone and can unlock Occulta on it reads what we send after the re-exchange. That is the coercer the app is built against.
+
+### What happens
+
+1. Our record for the contact (`prekeyRecordEncrypted`) holds their inbound one-time keys, at most `maxInboundBatches` (2) × `maxInboundKeysPerBatch` (15), and their last-resort key. The private halves live in the old phone's Enclave.
+2. Their identity key changes and we exchange again. `update(key:for:)` (`Contact+Manager.swift:605`) appends the new key. It computes `keyRotated`, but that only feeds `contactKeyRotated`, whose one listener reconciles backup pieces (`OccultaApp.swift:365`). `clearCard(afterMeetingOf:)` drops the record only when a card existed, and says so: "an ordinary re-exchange keeps its prekeys" (`ContactManager+Cards.swift:226-236`). The in-person exchange carries no prekeys, and the record isn't bound to any identity key. `reset(identity:)` (`Contact+Manager.swift:650`) only writes `expiredOn`.
+3. Our next send takes the oldest inbound key (`PrekeyBookkeeper.takeInboundPrekey`, `PrekeyBookkeeper.swift:65`, called from `Contact+Manager.swift:1190` and, for cards, `ContactManager+Cards.swift:461`). Once those run out, a group-format send uses `inboundLastResort` (`lastResortPrekey`, `PrekeyBookkeeper.swift:76`), which is never consumed.
+4. The new phone holds none of those keys. `privateKey(forPrekeyID:)` and `lastResortKey(forPrekeyID:)` return nil (`Contact+Manager+Prekeys.swift:234-249`), every slot is skipped, and `findAndOpenRecipientSlot` throws `recipientSlotNotFound` (`Crypto+Manager+GroupDecrypt.swift:201`).
+5. **Nothing replaces the old keys.** Only `accept` changes `inboundLastResort` (`PrekeyBookkeeper.swift:121-155`), and it needs a batch from the new phone. The new phone issues us a batch only in `replenish` (`Contact+Manager+Prekeys.swift:141`), after one of our bundles opens on it, and none does. Its own messages to us go in long-term fallback mode with no batch attached, since it has none pending for us. So once the stale one-time keys are used up, every send goes to the old last-resort key, indefinitely. An old phone from before 2.0.0 sent no last-resort key (prekey continuity, `faf44714` and earlier). There, sends fall back to the long-term key once the stale keys are gone, the new phone opens that and replenishes, and the conversation recovers after at most 30 lost messages.
+6. **Which phone can open them.** `deriveOutboundKey` (`Crypto+Manager+KeyDerivation.swift:25-55`) wraps with ECDH(ephemeral, prekey), plus ML-KEM to the `quantumMaterial` of the contact's *current* key (`resolveKeyMaterial`, `Contact+Manager.swift:1595`). In hybrid mode the old phone lacks the new key's ML-KEM private key, so it can't open the slot either. In `.forwardSecretNoPQ` the receiving side ignores quantum material (`Crypto+Manager+KeyDerivation.swift:122`). The wrapping key is then the old prekey alone, our signature checks against our own unchanged key, and the old phone's Occulta opens the message as it would any other.
+
+The lead's statement that the old phone "can open the classical outer layer, but not the ML-KEM-protected inner payload" holds only for hybrid mode. The card path the lead describes is one instance: `createCard` doesn't touch the record, and `importCard` only replaces our pending batches (`ContactManager+Cards.swift:310-313`).
+
+### Who sees what
+
+- **We** see nothing wrong: every send succeeds.
+- **The contact's new phone** shows an error for each of our files.
+- **Their old phone**, in `.forwardSecretNoPQ`, opens them.
+
+### Fix — decided and done
+
+Decided 2026-11-03: **inbound side only.** `PrekeyBookkeeper.dropInbound(from:)` clears `inboundBatches`, `inboundLastResort`, `acceptedBatchIDs` and `latestInboundGeneratedAt`. `ContactManager.dropInboundPrekeys(of:)` applies it to a contact's record and is called from:
+
+- `update(key:for:)`, when the incoming material differs from the contact's displayed key (`keyRotated`; the unexpired key before Bug 195's fix). The same material, such as a reinstall (Bug 82), keeps the record as before.
+- `reset(identity:)`, unconditionally. The next exchange compares against the unexpired key, and a revoked contact has none, so `keyRotated` stays false there whatever the new phone's key is. `reset` therefore drops the state itself, and doesn't rely on the next exchange to see the change. (That blind spot also hit backup pieces: Bug 195, fixed in 2.0.1. Since that fix the next exchange does see the change, and dropping here as well stays, so a revoke alone stops sends to the old phone's prekeys.)
+
+The next send then goes in long-term mode to the current key. The new phone opens it and issues a batch (`replenish`, `.longTerm`), and forward secrecy resumes. A save that dropped something flushes the write-ahead log, like the card paths do.
+
+`acceptedBatchIDs` and `latestInboundGeneratedAt` go too, not only the keys. A date left from the old phone can be ahead of the new phone's clock, and `accept` refuses a batch older than it on a reopenable slot, which long-term mode is. The new phone's first batch would be dropped.
+
+**Our own batches stay** (decided 2026-11-03). They don't cause this bug, and dropping them would make unreadable whatever the old phone sent before the change and we hadn't opened. Nothing leaks either way: a message from the old phone fails the signature check against the contact's current key. Clearing our own Enclave keys when a contact's key changes is hygiene, not a fix for this, and isn't done here.
+
+### Migration — done
+
+Decided 2026-11-03: a launch pass that keeps no state and runs at every launch and unlock (`ContactManager.sweepStaleInboundPrekeys()`, called from `sweepPrekeysIfUnlocked`), over every contact at every depth like `sweepCards`.
+
+Rule (`currentKeyAcquiredAt(of:)`, `PrekeyBookkeeper.inboundIsStale`): find when the contact's current key material first appeared, as the start of the run of identical material that ends their key list. A contact with no earlier different material is skipped without decrypting more. If what we hold from them has `latestInboundGeneratedAt` older than that moment, or none, it is dropped as above. This reaches contacts revoked and re-exchanged before the fix, and a contact exchanged twice with the new key, which "the last two records differ" would miss.
+
+It undoes its own trigger: a repaired contact has nothing inbound left, and once the new phone's batch is accepted its date is newer than its key. Nothing is recorded, so the pass leaves no trace of having run. A key whose date won't read leaves the record alone.
+
+**Open, needs a decision — a new phone whose clock is behind ours.** Kept open for `release/v2.1.0`, decided 2026-11-07; not fixed in PR #156. The batch date is the contact's clock; the key's date is ours. A new phone running behind by more than the time between the exchange and its first batch looks stale to the pass, so that contact goes back to long-term mode at every launch and unlock. Messages still open; forward secrecy for our sends to that contact is lost until the clock is fixed.
+
+The first batch is made when our first message after the exchange opens on the new phone (`replenish`, `.longTerm`), and is dated by its clock then, so the gap is our first send plus its delivery: seconds at best, usually minutes to days. The pass misjudges when the phone's clock is behind by more than that gap. Reproduced on the Simulator, no Enclave: a clock 10 minutes behind and a first batch 2 minutes after the exchange goes from forward secret to long-term after the pass; a batch dated at the exchange stays, one second earlier goes. After the drop the next batch is accepted again, so it repeats at every unlock until the phone's clock passes the key's date.
+
+Proposed fix, not decided: store the date we accepted the batch in `PrekeyRecord` (`latestInboundAcceptedAt`, our clock), set by `PrekeyBookkeeper.accept`, cleared by `dropInbound`, and compare it with the key's date in `inboundIsStale`, falling back to today's comparison for a record without one. The record is padded to a fixed 16 KB inside the encryption, so an optional date changes no length and needs no format bump or migration (`PrekeyRecordCodecTests` keeps its 256-byte headroom check). `InteropVectors.json` is unaffected: nothing on the wire changes. The pass would still keep no state of its own. A one-shot pass with a "done" flag was weighed and not recommended: it adds a persistent marker outside the sealed record, needs the pass to tell "examined" from "skipped", and still misjudges once. Still open within the proposal: our own clock stepping back after an exchange, and whether a record with no accepted date is trusted or dropped.
+
+**Open, needs a decision — two more clock cases, recorded 2026-11-09 from reading the code, not reproduced.** Neither is fixed by the proposal above.
+
+- **Our clock was ahead at the exchange and was then corrected.** The key's date, our clock at the exchange, is in the future, so every real batch is dated before it and the pass drops the inbound side at every launch and unlock until real time passes that date. The proposed `latestInboundAcceptedAt` doesn't help: it is our corrected clock, also before the key's date. This is the same shape as our own clock stepping back after an exchange, listed above. Cost: forward secrecy for our sends to that contact, as in the case above; messages still open.
+- **Our clock jumps forward.** `PrekeyBookkeeper.sweep(_:now:)` deletes a retired batch of ours, and retired legacy keychain keys, once `now` is 30 days past `retiredAt` (Bug 156). A forward jump after a batch retires brings the deletion forward, and a late message sealed to one of that batch's keys can't be opened. A clock set back does the opposite and keeps retired keys longer than 30 days; nothing is lost. Not checked whether Bug 156 meant the grace period to survive a clock change; Bug 156's entry doesn't mention one.
+
+Tests to confirm both, not written (Simulator, no Enclave, `.ambientTestKeyManager`, in the style of `StaleInboundPrekeysLaunchPassTests`):
+
+- A contact whose key is dated in the future (`appendKeyRecord`) with a record whose batch is dated now: `sweepStaleInboundPrekeys()` drops the inbound side, at every run, and keeps it once the key's date is in the past. It would also pin what the proposal leaves open.
+- The same with the accepted date earlier than the key's date, as after our clock stepping back (needs `latestInboundAcceptedAt`, so it waits for the decision above).
+- `PrekeyBookkeeper().sweep(_:now:)` on a batch retired a day ago, with `now` 31 days on: the batch is deleted. A batch whose `retiredAt` was stamped on a clock that was set back, and is later than `now`, stays past 30 days of real time.
+
+### Disclosure
+
+Releases from 2.0.0 (prekey continuity) up to this fix are affected: between a contact's key change and the first long-term send after it, what we sent could be opened on their old phone when their new key has no ML-KEM key. Recorded in `Docs/Audit/SECURITY_CHECKLIST.md` (post-sign-off, 2026-11-03).
+
+### Guard — tests
+
+- `StaleInboundPrekeysTests` (runs anywhere, `.ambientTestKeyManager`): new material empties the four fields and leaves our batches; the same material and a contact's first key keep the record; the first send after a change is `.longTerm`; a last-resort key alone is dropped; `reset(identity:)` empties them, and a revoke followed by a re-exchange finds nothing stale.
+- `StaleInboundPrekeysLaunchPassTests` (runs anywhere): a stale record is dropped and a fresh one kept; one key, the same material twice, an empty inbound side and an unreadable date are left alone; a repeated exchange with the new key and a revoke before the fix are repaired; a second run changes nothing.
+- `StaleInboundPrekeysConversationTests` (Enclave-gated, in the style of `PrekeyConversationTests`): after the change, what Alice sends opens on the new phone and not on the old one; the new phone answers with a batch and forward secrecy resumes; the same after a revoke and re-exchange; a contact stuck before the fix is repaired by the pass.
+- `CardMeetingSaveTests.secondMeetingKeepsRecord` made both meetings use the same key. It built fresh random material for each, so it had been changing the contact's key without meaning to.
+
+### Related
+
+- Bug 82 is the same event in the receiving direction; D-19 is its authenticity side.
+- `Docs/Features/Multi-Device Contacts/FINDINGS.md:37` already notes that "the old slot's prekey pool becomes orphaned" on re-pairing, as "the same shape of problem single-device key rotation already has". This is that problem, filed.
+- The Trust Check top-level flow design sends users here from its lost-phone and new-phone remedies.
+- Bug 195: the same `keyRotated` blind spot after `reset(identity:)`, seen from the backup-piece side. One comparison against the contact's most recent key record serves both.
+
+---
+
 ## Bug 195 — After a revoke (`reset(identity:)`), a re-exchange with a changed key never fires `contactKeyRotated`, so the backup-piece re-send for that trustee waits on a conversation
 
-**Status:** Fixed on `v2.0.1/bug-195-revoke-rekey-event`, not yet merged. Filed 2026-11-03 while triaging Bug 194 (on the `v2.1.0` line). Reproduced by a test 2026-11-07.
+**Status:** **Fixed 2026-11-09** ([aibo-cora/occulta#163](https://github.com/aibo-cora/occulta/pull/163), to `release/v2.0.1`). Shipped in 2.0.1 ([aibo-cora/occulta#169](https://github.com/aibo-cora/occulta/pull/169)) and in `release/v2.1.0` through the merge of `develop` ([aibo-cora/occulta#172](https://github.com/aibo-cora/occulta/pull/172)). Filed 2026-11-03 while triaging Bug 194 (on the `v2.1.0` line). Reproduced by a test 2026-11-07.
 
-**Target:** `v2.0.1`, then forward-merged into `release/v2.1.0`, where the Bug 195 filing (written before this fix) will conflict with this entry. Resolve in favour of this one.
+**Target:** `v2.0.1`, then forward-merged into `release/v2.1.0`. Both done; the merge kept this entry over the earlier filing.
 
 ### Severity: Medium
 
@@ -14890,7 +15551,8 @@ bundles for the swap; **the Multipeer/NearbyInteraction exchange itself has not 
 
 **Number:** filed as Bug 194 on `v2.1.0/passphrase-independent-spaces`, whose docs still say 194 (rollout §8 item 30
 and its Related table, `decisions.md`, the `PASSPHRASE_*` docs). `release/v2.1.0` already holds a different Bug 194
-(stale inbound prekeys, PR #156), so this is Bug 196 here. The references on that branch need renumbering there.
+(stale inbound prekeys, PR #156), so this is Bug 196 here. ~~The references on that branch need renumbering there.~~
+*Renumbered when that branch's commits were merged into `release/v2.1.0` (2026-11-12).*
 
 **Target:** release 2.0.1 (the owner chose it 2026-11-03), as its own stage (rollout §7.2, stage P). It must ship
 before the passphrase release, so pairings hold their secret before spaces exist.
@@ -14993,7 +15655,7 @@ bound to the pairing, and the capability on phones before 2.1.0.
   each. It must not be limited to contacts visible at the current depth: a known contact's file that routed at one depth
   and failed at another is the duress-detection oracle of `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
   What a depth changes is what is shown, later, in `buildOwnedBasket`. Pinned by `hiddenContactRoutesLikeAVisibleOne`.
-- **Open, needs a decision (Bug 190's, which lives on `v2.1.0/passphrase-independent-spaces`).** In the SwiftData store of
+- **Open, needs a decision (Bug 190's).** In the SwiftData store of
   2.0.1 every write to the column is logged with row, column and time by SwiftData's history; migrated rows carry a higher
   `Z_OPT` than rows created after, which separates pairings made before this release from after; free pages and the
   write-ahead log may keep older ciphertext of the column (sealed under the local DB key, like every sealed field). The
@@ -15294,6 +15956,13 @@ and signed attributes can still be checked with `K`; pairings without pair keys,
 described under "What happens" until re-made; a man in the middle who strips the `pairing` field in both directions yields a
 plain pairing, which the two people can notice from the confirmation note; a phone that cannot make Enclave keys pairs without
 them; a pairing without an ML-DSA key (iOS below 26 at the exchange, or stripped) cannot use ML-DSA later without a re-exchange.
+
+**The v2.0.1 key exchange audit (added 2026-11-12; Bugs 198 and 199, filed on `v2.1.0/v2.0.1-audit-docs`; rollout §8,
+item 31).** The safety invariant above rests on the words, and Bug 198 finds that a man in the middle pinned on both phones
+can make them match: nothing commits him to his own values before he sees the phones' values, so he can search for a pair that
+gives the same words. The routing key is derived from the same inputs, so he would hold both pairings' routing keys and pair
+keys. Derive both over the committed transcript Bug 198's fix proposes, once it lands. Bug 199 is this entry's accepted strip
+of the `pairing` field, applied to ML-KEM, with no note on screen; it leaves a classical pairing.
 
 **What is not verified.** The Multipeer/NearbyInteraction exchange has not been run: it needs two phones. Not checked: the real
 Enclave blob sizes of all three keys on a device (only the Simulator's are measured), the time three key creations add at connect,
