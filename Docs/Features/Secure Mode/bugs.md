@@ -15957,6 +15957,13 @@ described under "What happens" until re-made; a man in the middle who strips the
 plain pairing, which the two people can notice from the confirmation note; a phone that cannot make Enclave keys pairs without
 them; a pairing without an ML-DSA key (iOS below 26 at the exchange, or stripped) cannot use ML-DSA later without a re-exchange.
 
+**The v2.0.1 key exchange audit (added 2026-11-12; Bugs 198 and 199, filed on `v2.1.0/v2.0.1-audit-docs`; rollout §8,
+item 31).** The safety invariant above rests on the words, and Bug 198 finds that a man in the middle pinned on both phones
+can make them match: nothing commits him to his own values before he sees the phones' values, so he can search for a pair that
+gives the same words. The routing key is derived from the same inputs, so he would hold both pairings' routing keys and pair
+keys. Derive both over the committed transcript Bug 198's fix proposes, once it lands. Bug 199 is this entry's accepted strip
+of the `pairing` field, applied to ML-KEM, with no note on screen; it leaves a classical pairing.
+
 **What is not verified.** The Multipeer/NearbyInteraction exchange has not been run: it needs two phones. Not checked: the real
 Enclave blob sizes of all three keys on a device (only the Simulator's are measured), the time three key creations add at connect,
 that the roughly 10 KB identity message arrives intact on real phones, and the list glyph and detail rows on a device (the
