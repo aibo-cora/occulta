@@ -1266,6 +1266,9 @@ struct RootView: View {
             }
 
             self.shareResult = ShareResult(url: occURL)
+        } catch ContactManager.Errors.groupMembersWithoutKeys {
+            self.errorMessage = "A member of this group has a revoked key. Open the group in Occulta to send without them."
+            self.showError = true
         } catch {
             self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
             self.showError = true

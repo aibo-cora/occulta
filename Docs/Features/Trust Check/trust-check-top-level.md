@@ -23,8 +23,10 @@ Check — Top-Level Flow" and its mockup "Trust Check Top-Level Mockup"; this pa
 - The picker lists every visible contact and marks, rather than hides, the ones a scenario can't act on. Rows whose remedy
   acts (Challenge, Revoke) sort first, then a divider, then the rest. "A contact shows Not verified" is the one scenario
   that narrows its list, to Not verified contacts. Rows come from `ContactListFilter` and nothing else.
-- Revoke is reachable from here: the remedy screen shows the contact's avatar and name, the button names them, and so
-  does the confirmation. It calls `ContactManager.reset(identity:)` with the identifier.
+- Revoke is reachable from here: the remedy screen shows the contact's avatar and name, and the button names them. It
+  pushes `RevokeKeyV2`, the one Revoke Key screen (also used by the contact form), which names the contact, says what
+  a revoke does, lists the groups they are in at the current depth, and calls `ContactManager.reset(identity:)`
+  with the identifier. Its first line is the approved confirmation wording (`RevokeConfirmationCopy`).
 - The scenario and contact live in the navigation stack only. Never persisted, logged or donated.
 - Each body pass derives the local DB key once and opens every field under it (`ContactListFilter.listing`,
   `statusAndCard(using:ourHash:)`, `decrypt(using:)`), as the Contacts list does since

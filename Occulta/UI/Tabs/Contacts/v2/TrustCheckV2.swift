@@ -321,10 +321,6 @@ private struct TrustCheckRemedyV2: View {
     /// Closes the whole sheet. This view is pushed, so its own `dismiss` would only pop it.
     let onFinished: () -> Void
 
-    @Environment(ContactManager.self) private var contactManager
-
-    @State private var showRevokeConfirm = false
-
     var body: some View {
         // One derivation of the local DB key for this pass, as in the sheet.
         let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
@@ -410,8 +406,8 @@ private struct TrustCheckRemedyV2: View {
     private func action(for remedy: TrustRemedy, profile: Contact.Profile, name: String) -> some View {
         switch remedy {
         case .revoke:
-            Button(role: .destructive) {
-                self.showRevokeConfirm = true
+            NavigationLink {
+                RevokeKeyV2(identifier: profile.identifier, displayName: name, onRevoked: self.onFinished)
             } label: {
                 Label(RevokeConfirmationCopy.button(name: name), systemImage: "key.horizontal.fill")
                     .font(.system(size: 17, weight: .semibold))
@@ -421,14 +417,6 @@ private struct TrustCheckRemedyV2: View {
             }
             .buttonStyle(.plain)
             .padding(.top, 8)
-            .confirmationDialog(RevokeConfirmationCopy.title(name: name), isPresented: self.$showRevokeConfirm, titleVisibility: .visible) {
-                Button("Revoke", role: .destructive) {
-                    try? self.contactManager.reset(identity: profile.identifier)
-                    self.onFinished()
-                }
-            } message: {
-                Text(RevokeConfirmationCopy.message)
-            }
 
         case .challenge:
             NavigationLink {

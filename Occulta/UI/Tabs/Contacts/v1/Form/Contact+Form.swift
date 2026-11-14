@@ -47,7 +47,6 @@ extension Contact {
             self.onDismiss = onDismiss
         }
 
-        @State private var displayingRevokeKeyWarning: Bool = false
         @State private var displayingDeleteWarning: Bool = false
         
         var keyIsRevocable: Bool {
@@ -155,15 +154,14 @@ extension Contact {
                         }
 
                         if self.keyIsRevocable {
-                            Button("Revoke Key", systemImage: "key.horizontal.fill", role: .destructive) {
-                                self.displayingRevokeKeyWarning.toggle()
-                            }
-                            .confirmationDialog("Warning", isPresented: self.$displayingRevokeKeyWarning) {
-                                Button("Revoke", role: .destructive) {
-                                    try? self.contactManager.reset(identity: identifier)
-                                }
-                            } message: {
-                                Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
+                            NavigationLink {
+                                RevokeKeyV2(
+                                    identifier: identifier,
+                                    displayName: self.profiles.first.map { $0.givenName.decrypt() }.flatMap { $0.isEmpty ? nil : $0 } ?? "this contact"
+                                ) {}
+                            } label: {
+                                Label("Revoke Key", systemImage: "key.horizontal.fill")
+                                    .foregroundStyle(.red)
                             }
                         }
                         

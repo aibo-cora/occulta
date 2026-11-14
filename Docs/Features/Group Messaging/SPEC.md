@@ -239,6 +239,7 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 
 - **No delivery confirmation.** The sender cannot know if any recipient imported and decrypted the bundle. Recipients on older builds receive the bundle but see "requires a newer version" — the sender is not informed.
 - **Duress layer group setup requires user initiative.** No in-app prompting or setup flow. Future work: secure mode setup wizard.
+- **A member whose key was revoked stays in the group with no warning, and the next send to the group fails** (found 2026-11-14, fixed in code the same day, device check pending: the group screens show a notice and a chip, and a send leaves them out only when the screen named them). `Docs/Bugs/v2.1.0/Revoked-Contact-Stays-In-Group-With-No-Warning-And-Group-Send-Fails-Opaquely.md`.
 - **A member could rewrite the body behind another member's slot** (found 2026-10-12, `Secure Mode/bugs.md` Bug 165). Step 8's `senderProof` is computable by every recipient, and no slot committed to the ciphertext. Fixed for v2.0.0 by `RecipientPayload.bodyDigest` (steps 4 and 8). Bundles from senders before v2.0.0 carry no digest and stay open to it until they update, and receivers before v2.0.0 ignore it.
 
 ---
