@@ -27,11 +27,11 @@ struct RevokeKeyV2: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Revoke \(self.displayName)'s key?")
+                Text(RevokeConfirmationCopy.title(name: self.displayName))
                     .font(.system(size: 22, weight: .bold))
 
                 self.card(title: "What happens") {
-                    self.line("key.horizontal.fill", "\(self.displayName)'s key stops being trusted. You can't encrypt anything for them until you exchange keys again, in person.")
+                    self.line("key.horizontal.fill", RevokeConfirmationCopy.message)
                     self.line("trash", "The one-time keys they gave you are deleted from this phone.")
                 }
 
