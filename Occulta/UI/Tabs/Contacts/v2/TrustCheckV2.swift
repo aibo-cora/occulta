@@ -2,9 +2,11 @@
 //  TrustCheckV2.swift
 //  Occulta
 //
-//  "Trust Check" — a scenario-first entry point at the bottom of Contact.DetailsV2
-//  that routes a plain-language event about a contact to whichever existing
-//  security/identity action already addresses it. No new cryptography: every
+//  "Trust Check" — a scenario-first entry point, opened from the Contacts tab
+//  ("Something happened?") and from the bottom of Contact.DetailsV2, that routes a
+//  plain-language event to whichever existing security/identity action already
+//  addresses it. What it says lives in TrustCheckPlaybook.swift; the contact
+//  picker is TrustCheckPicker.swift. No new cryptography: every
 //  destination here (Revoke Key, Identity Challenge, the Visibility toggle)
 //  reuses the app's existing security primitives directly — this is now the
 //  sole surface for Revoke Key and the Visibility toggle, not a duplicate of
@@ -13,6 +15,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 // MARK: - Eligibility
 
@@ -97,24 +100,46 @@ extension Contact {
 
 // MARK: - Sheet
 
-private struct TrustCheckSheetV2: View {
-    let profile: Contact.Profile
+/// Where the sheet can go from its scenario list. Only identifiers and enum cases: the chosen scenario and contact
+/// live in the navigation stack's state, never anywhere that outlives the sheet.
+enum TrustCheckRoute: Hashable {
+    case picker(TrustScenario)
+    case remedy(TrustScenario, identifier: String?)
+}
+
+/// The one Trust Check sheet. From the Contacts tab it has no contact (`profile` nil) and asks which, when the
+/// scenario is about one; from contact detail it has one and skips the picker.
+struct TrustCheckSheetV2: View {
+    let profile: Contact.Profile?
 
     @Environment(\.dismiss) private var dismissSheet
     @Environment(ContactManager.self) private var contactManager
+    @Environment(Manager.Security.self) private var security
 
-    @State private var showRevokeConfirm = false
+    @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
-    private var canRevokeKey: Bool { self.profile.trustCheckCanRevokeKey }
-    private var canChallenge: Bool { self.profile.trustCheckCanChallenge }
+    private var scenarios: [TrustScenario] {
+        if let profile = self.profile {
+            return TrustScenario.allCases.filter { $0.needsContact && $0.lists(profile) }
+        }
 
-    private var isSensitive: Bool {
-        self.contactManager.isSensitive(self.profile.identifier)
+        return TrustScenario.allCases.filter(\.isOffered)
     }
 
-    private var displayName: String {
-        let name = self.profile.givenName.decrypt()
-        return name.isEmpty ? "this contact" : name
+    private var isSensitive: Bool {
+        guard let profile = self.profile else { return false }
+
+        return self.contactManager.isSensitive(profile.identifier)
+    }
+
+    /// A contact the picker or the detail screen named, among the ones visible at this depth.
+    private func resolve(_ identifier: String?) -> Contact.Profile? {
+        guard let identifier else { return nil }
+
+        if let profile = self.profile, profile.identifier == identifier { return profile }
+
+        return ContactListFilter.visibleContacts(self.contacts, atDepth: self.security.currentDepth)
+            .first { $0.identifier == identifier }
     }
 
     var body: some View {
@@ -124,9 +149,21 @@ private struct TrustCheckSheetV2: View {
                     self.header
 
                     VStack(spacing: 10) {
-                        if self.canRevokeKey { self.revokeCard }
-                        if self.canChallenge { self.challengeCard }
-                        self.hideCard
+                        ForEach(self.scenarios, id: \.self) { scenario in
+                            NavigationLink(value: self.route(for: scenario)) {
+                                self.scenarioCard(
+                                    icon: scenario.icon,
+                                    tint: scenario.tint,
+                                    title: scenario.title(name: self.profile.map(TrustCheckNames.firstName(of:))),
+                                    subtitle: scenario.subtitle
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if let profile = self.profile {
+                            self.hideCard(for: profile)
+                        }
                     }
                 }
                 .padding(16)
@@ -139,82 +176,69 @@ private struct TrustCheckSheetV2: View {
                     Button("Close") { self.dismissSheet() }
                 }
             }
+            .navigationDestination(for: TrustCheckRoute.self) { route in
+                switch route {
+                case .picker(let scenario):
+                    TrustCheckPickerV2(scenario: scenario)
+                case .remedy(let scenario, let identifier):
+                    TrustCheckRemedyV2(scenario: scenario, profile: self.resolve(identifier)) { self.dismissSheet() }
+                }
+            }
         }
         .presentationDetents([.medium, .large])
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                avatarGradientV2(for: self.profile.identifier)
-                Text(self.displayName.initials)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 44, height: 44)
-            .clipShape(Circle())
+    private func route(for scenario: TrustScenario) -> TrustCheckRoute {
+        if let profile = self.profile { return .remedy(scenario, identifier: profile.identifier) }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("What happened with \(self.displayName)?")
-                    .font(.system(size: 16, weight: .bold))
+        return scenario.needsContact ? .picker(scenario) : .remedy(scenario, identifier: nil)
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        if let profile = self.profile {
+            let name = TrustCheckNames.firstName(of: profile)
+
+            HStack(spacing: 12) {
+                TrustCheckAvatar(profile: profile, size: 44)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("What happened with \(name)?")
+                        .font(.system(size: 16, weight: .bold))
+                    Text("Pick what's going on — you'll land on the right action")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("What happened?")
+                    .font(.system(size: 26, weight: .bold))
                 Text("Pick what's going on — you'll land on the right action")
-                    .font(.system(size: 12))
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private var revokeCard: some View {
-        Button(role: .destructive) {
-            self.showRevokeConfirm = true
-        } label: {
-            self.scenarioCard(
-                icon: "key.horizontal.fill",
-                tint: Color.occultaDanger,
-                title: "\(self.displayName)'s phone was lost or stolen",
-                subtitle: "Revoke the key so it's no longer trusted"
-            )
-        }
-        .buttonStyle(.plain)
-        .confirmationDialog("Warning", isPresented: self.$showRevokeConfirm) {
-            Button("Revoke", role: .destructive) {
-                try? self.contactManager.reset(identity: self.profile.identifier)
-                self.dismissSheet()
-            }
-        } message: {
-            Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
-        }
-    }
+    private func hideCard(for profile: Contact.Profile) -> some View {
+        let name = TrustCheckNames.firstName(of: profile)
 
-    private var challengeCard: some View {
-        NavigationLink {
-            ChallengeDestinationV2(profile: self.profile)
-        } label: {
-            self.scenarioCard(
-                icon: "checkmark.shield",
-                tint: Color.occultaAccent,
-                title: "I got a suspicious call or message from \(self.displayName)",
-                subtitle: "Confirm the key still answers"
-            )
-        }
-    }
-
-    private var hideCard: some View {
-        NavigationLink {
-            HideDestinationV2(profile: self.profile)
+        return NavigationLink {
+            HideDestinationV2(profile: profile)
         } label: {
             if self.isSensitive {
                 self.scenarioCard(
                     icon: "eye",
                     tint: Color.occultaVerified,
-                    title: "Mark \(self.displayName) safe again",
+                    title: "Mark \(name) safe again",
                     subtitle: "Remove Secure Mode protection"
                 )
             } else {
                 self.scenarioCard(
                     icon: "eye.slash",
                     tint: Color.occultaVerified,
-                    title: "Hide \(self.displayName) if my phone is forced open",
+                    title: "Hide \(name) if my phone is forced open",
                     subtitle: "Move into Secure Mode protection"
                 )
             }
@@ -252,6 +276,164 @@ private struct TrustCheckSheetV2: View {
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.10), radius: 10, y: 5)
+    }
+}
+
+private extension TrustScenario {
+    var icon: String {
+        switch self {
+        case .suspiciousMessage: "checkmark.shield"
+        case .lostPhone:         "key.horizontal.fill"
+        case .newPhone:          "iphone"
+        case .notVerified:       "exclamationmark.circle"
+        case .strangerCard:      "person.crop.rectangle"
+        case .fileWontOpen:      "doc.text.magnifyingglass"
+        case .signedText:        "signature"
+        case .other:             "questionmark.circle"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .suspiciousMessage: Color.occultaAccent
+        case .lostPhone:         Color.occultaDanger
+        case .newPhone:          Color.blue
+        case .notVerified:       Color.occultaWarn
+        case .strangerCard, .fileWontOpen, .signedText, .other: Color.gray
+        }
+    }
+}
+
+// MARK: - Remedy
+
+/// What to do, for this scenario and this contact's state: the contact's avatar and name, numbered steps, and the
+/// action when there is one. Revoke is here so it is reachable from the top level; the confirmation names the contact.
+private struct TrustCheckRemedyV2: View {
+    let scenario: TrustScenario
+    let profile: Contact.Profile?
+    /// Closes the whole sheet. This view is pushed, so its own `dismiss` would only pop it.
+    let onFinished: () -> Void
+
+    @Environment(ContactManager.self) private var contactManager
+
+    @State private var showRevokeConfirm = false
+
+    var body: some View {
+        ScrollView {
+            if self.scenario.needsContact && self.profile == nil {
+                Text("This contact is no longer available.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+            } else {
+                self.remedyBody
+            }
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Trust Check")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var remedyBody: some View {
+        let status = self.profile?.verificationStatus ?? .pending
+        let name = self.profile.map(TrustCheckNames.firstName(of:))
+        let remedy = TrustRemedy.make(for: self.scenario, profile: self.profile)
+        let content = remedy.content(for: self.scenario, status: status, name: name)
+
+        return VStack(alignment: .leading, spacing: 14) {
+            if let profile = self.profile {
+                HStack(spacing: 12) {
+                    TrustCheckAvatar(profile: profile, size: 44)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(TrustCheckNames.fullName(of: profile))
+                            .font(.system(size: 16, weight: .bold))
+                        Text(status.trustCheckLabel)
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(status.color)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(status.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
+            }
+
+            Text(content.heading)
+                .font(.system(size: 22, weight: .bold))
+
+            VStack(spacing: 10) {
+                ForEach(Array(content.steps.enumerated()), id: \.offset) { index, step in
+                    HStack(alignment: .top, spacing: 12) {
+                        if content.steps.count > 1 {
+                            Text("\(index + 1)")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.occultaAccent)
+                                .frame(width: 26, height: 26)
+                                .background(Color.occultaAccent.opacity(0.14), in: Circle())
+                        }
+
+                        Text(step)
+                            .font(.system(size: 14.5))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(14)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+            }
+
+            if let footnote = content.footnote {
+                Text(footnote)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let profile = self.profile {
+                self.action(for: remedy, profile: profile, name: TrustCheckNames.firstName(of: profile))
+            }
+        }
+        .padding(16)
+    }
+
+    @ViewBuilder
+    private func action(for remedy: TrustRemedy, profile: Contact.Profile, name: String) -> some View {
+        switch remedy {
+        case .revoke:
+            Button(role: .destructive) {
+                self.showRevokeConfirm = true
+            } label: {
+                Label(RevokeConfirmationCopy.button(name: name), systemImage: "key.horizontal.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background(Color.occultaDanger, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8)
+            .confirmationDialog(RevokeConfirmationCopy.title(name: name), isPresented: self.$showRevokeConfirm, titleVisibility: .visible) {
+                Button("Revoke", role: .destructive) {
+                    try? self.contactManager.reset(identity: profile.identifier)
+                    self.onFinished()
+                }
+            } message: {
+                Text(RevokeConfirmationCopy.message)
+            }
+
+        case .challenge:
+            NavigationLink {
+                ChallengeDestinationV2(profile: profile)
+            } label: {
+                Label("Send \(name) a Challenge", systemImage: "checkmark.shield")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background(Color.occultaAccent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .padding(.top, 8)
+
+        case .meetInPerson, .alreadyVerified, .explain:
+            EmptyView()
+        }
     }
 }
 

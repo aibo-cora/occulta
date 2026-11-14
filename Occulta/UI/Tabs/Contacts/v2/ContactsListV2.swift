@@ -42,6 +42,7 @@ struct ContactsV2: View {
     @State private var searchText        = ""
     @State private var showGroups         = false
     @State private var creatingNewContact = false
+    @State private var showingTrustCheck  = false
     @State private var creatingNewGroup   = false
 
     @AppStorage("showFingerprints")  private var showFingerprints  = false
@@ -209,6 +210,12 @@ struct ContactsV2: View {
             .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: self.showGroups ? "Find a group…" : "Find a contact…")
             .autocorrectionDisabled()
             .toolbar {
+                // The same button at every depth: it reads no state, and the picker behind it filters like this list.
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { self.showingTrustCheck = true } label: {
+                        Label("Something happened?", systemImage: "checkmark.shield")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     if self.showGroups {
                         Button { self.creatingNewGroup = true } label: {
@@ -227,6 +234,9 @@ struct ContactsV2: View {
                         }
                     }
                 }
+            }
+            .sheet(isPresented: self.$showingTrustCheck) {
+                TrustCheckSheetV2(profile: nil)
             }
             .sheet(isPresented: self.$creatingNewContact) {
                 Contact.FormV2()
