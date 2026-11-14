@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CryptoKit
 
 // MARK: - Color Tokens
 
@@ -86,16 +87,32 @@ extension Contact.Profile {
     /// screen that wants both decrypts the card field once. Opens the key owner hash too: a list reads this once
     /// per contact per pass, not in each row and filter.
     var statusAndCard: (status: VerificationStatus, card: CardState?) {
+        self.statusAndCard(card: { self.cardState }, hasInPersonKeys: { self.hasInPersonKeys })
+    }
+
+    /// Same as `statusAndCard`, under a local DB key the list already derived and our own identity hash it
+    /// already read, for a pass over many contacts.
+    func statusAndCard(using key: SymmetricKey, ourHash: Data?) -> (status: VerificationStatus, card: CardState?) {
+        self.statusAndCard(
+            card: { self.cardState(using: key) },
+            hasInPersonKeys: { self.hasInPersonKeys(using: key, ourHash: ourHash) }
+        )
+    }
+
+    private func statusAndCard(
+        card read: () -> CardState,
+        hasInPersonKeys: () -> Bool
+    ) -> (status: VerificationStatus, card: CardState?) {
         let keys = self.contactPublicKeys
 
         // No usable key: only a card can make the contact Not verified (Q-14). It's read here and not before,
         // so a contact with keys never pays for the card field's decryption.
         guard keys?.isEmpty == false, self.currentKey != nil else {
-            let card = self.cardState
+            let card = read()
             return (CardRules.tier(card, hasInPersonKeys: false) == .notVerified ? .unverified : .pending, card)
         }
 
-        return (self.hasInPersonKeys ? .verified : .unverified, nil)
+        return (hasInPersonKeys() ? .verified : .unverified, nil)
     }
 
     var fingerprintPreview: String? {
@@ -148,12 +165,24 @@ extension Contact.Profile {
 
     @MainActor
     var encryptionSchemeLabel: String {
+        self.encryptionSchemeLabel(opening: { $0.decrypt() })
+    }
+
+    /// Same as `encryptionSchemeLabel`, under a local DB key the caller already derived. Without one the field
+    /// can't be opened, which reads as it does when it won't decrypt.
+    @MainActor
+    func encryptionSchemeLabel(using key: SymmetricKey?) -> String {
+        self.encryptionSchemeLabel(opening: { data in key.flatMap { data.decrypt(using: $0) } })
+    }
+
+    @MainActor
+    private func encryptionSchemeLabel(opening open: (Data) -> Data?) -> String {
         let activeKey = self.currentKey
         
         guard let enc = activeKey?.quantumKeyMaterialEncrypted else {
             return "Classical (v1) · exchange for full protection if the contact's device has iOS 26+"
         }
-        guard let dec = enc.decrypt(),
+        guard let dec = open(enc),
               (try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)) != nil
         else {
             return "Classical (v1) · exchange again to restore full protection"
