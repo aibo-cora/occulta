@@ -16,6 +16,7 @@
 
 import SwiftUI
 import SwiftData
+import CryptoKit
 
 // MARK: - Eligibility
 
@@ -118,9 +119,10 @@ struct TrustCheckSheetV2: View {
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
-    private var scenarios: [TrustScenario] {
-        if let profile = self.profile {
-            return TrustScenario.allCases.filter { $0.needsContact && $0.lists(profile) }
+    /// What the sheet offers: with a contact, the scenarios about one that list a contact in `status`.
+    private func scenarios(status: VerificationStatus?) -> [TrustScenario] {
+        if let status {
+            return TrustScenario.allCases.filter { $0.needsContact && $0.lists(status: status) }
         }
 
         return TrustScenario.allCases.filter(\.isOffered)
@@ -143,26 +145,33 @@ struct TrustCheckSheetV2: View {
     }
 
     var body: some View {
+        // The one derivation of the local DB key for this pass: every field it opens is opened under it, since each
+        // `decrypt()` would derive afresh and this body runs on every push and pop.
+        let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+        let names = self.profile.map { TrustCheckNames.names(of: $0, key: key) }
+        let name = names.map { TrustCheckNames.firstName(given: $0.given) }
+        let scenarios = self.scenarios(status: self.profile.map { TrustCheckNames.status(of: $0, key: key) })
+
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    self.header
+                    self.header(names: names)
 
                     VStack(spacing: 10) {
-                        ForEach(self.scenarios, id: \.self) { scenario in
+                        ForEach(scenarios, id: \.self) { scenario in
                             NavigationLink(value: self.route(for: scenario)) {
                                 self.scenarioCard(
                                     icon: scenario.icon,
                                     tint: scenario.tint,
-                                    title: scenario.title(name: self.profile.map { TrustCheckNames.firstName(of: $0) }),
+                                    title: scenario.title(name: name),
                                     subtitle: scenario.subtitle
                                 )
                             }
                             .buttonStyle(.plain)
                         }
 
-                        if let profile = self.profile {
-                            self.hideCard(for: profile)
+                        if let profile = self.profile, let name {
+                            self.hideCard(for: profile, name: name)
                         }
                     }
                 }
@@ -195,12 +204,12 @@ struct TrustCheckSheetV2: View {
     }
 
     @ViewBuilder
-    private var header: some View {
-        if let profile = self.profile {
-            let name = TrustCheckNames.firstName(of: profile)
+    private func header(names: (given: String, family: String)?) -> some View {
+        if let profile = self.profile, let names {
+            let name = TrustCheckNames.firstName(given: names.given)
 
             HStack(spacing: 12) {
-                TrustCheckAvatar(profile: profile, size: 44)
+                TrustCheckAvatar(identifier: profile.identifier, givenName: names.given, familyName: names.family, size: 44)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("What happened with \(name)?")
@@ -221,10 +230,8 @@ struct TrustCheckSheetV2: View {
         }
     }
 
-    private func hideCard(for profile: Contact.Profile) -> some View {
-        let name = TrustCheckNames.firstName(of: profile)
-
-        return NavigationLink {
+    private func hideCard(for profile: Contact.Profile, name: String) -> some View {
+        NavigationLink {
             HideDestinationV2(profile: profile)
         } label: {
             if self.isSensitive {
@@ -319,6 +326,9 @@ private struct TrustCheckRemedyV2: View {
     @State private var showRevokeConfirm = false
 
     var body: some View {
+        // One derivation of the local DB key for this pass, as in the sheet.
+        let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+
         ScrollView {
             if self.scenario.needsContact && self.profile == nil {
                 Text("This contact is no longer available.")
@@ -326,7 +336,7 @@ private struct TrustCheckRemedyV2: View {
                     .foregroundStyle(.secondary)
                     .padding(16)
             } else {
-                self.remedyBody
+                self.remedyBody(key: key)
             }
         }
         .background(Color(.systemGroupedBackground))
@@ -334,19 +344,20 @@ private struct TrustCheckRemedyV2: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var remedyBody: some View {
-        let status = self.profile?.verificationStatus ?? .pending
-        let name = self.profile.map { TrustCheckNames.firstName(of: $0) }
-        let remedy = TrustRemedy.make(for: self.scenario, profile: self.profile)
+    private func remedyBody(key: SymmetricKey?) -> some View {
+        let names = self.profile.map { TrustCheckNames.names(of: $0, key: key) }
+        let status = self.profile.map { TrustCheckNames.status(of: $0, key: key) } ?? .pending
+        let name = names.map { TrustCheckNames.firstName(given: $0.given) }
+        let remedy = TrustRemedy.make(for: self.scenario, status: status, canRevoke: self.profile?.trustCheckCanRevokeKey ?? false)
         let content = remedy.content(for: self.scenario, status: status, name: name)
 
         return VStack(alignment: .leading, spacing: 14) {
-            if let profile = self.profile {
+            if let profile = self.profile, let names {
                 HStack(spacing: 12) {
-                    TrustCheckAvatar(profile: profile, size: 44)
+                    TrustCheckAvatar(identifier: profile.identifier, givenName: names.given, familyName: names.family, size: 44)
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(TrustCheckNames.fullName(of: profile))
+                        Text(TrustCheckNames.fullName(given: names.given, family: names.family))
                             .font(.system(size: 16, weight: .bold))
                         Text(status.trustCheckLabel)
                             .font(.system(size: 11.5, weight: .semibold))
@@ -388,8 +399,8 @@ private struct TrustCheckRemedyV2: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let profile = self.profile {
-                self.action(for: remedy, profile: profile, name: TrustCheckNames.firstName(of: profile))
+            if let profile = self.profile, let name {
+                self.action(for: remedy, profile: profile, name: name)
             }
         }
         .padding(16)

@@ -70,6 +70,12 @@ struct TrustCheckPickerDepthTests {
         return profile
     }
 
+    /// What the picker's body does: one derivation of the local DB key for the pass.
+    private func rows(for scenario: TrustScenario, contacts: [Contact.Profile], atDepth depth: Int, matching searchText: String) throws -> TrustCheckPicker.Rows {
+        let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+        return TrustCheckPicker.rows(for: scenario, contacts: contacts, atDepth: depth, matching: searchText, usingKey: key)
+    }
+
     private func identifiers(_ rows: TrustCheckPicker.Rows) -> [String] {
         (rows.acting + rows.rest).map(\.identifier)
     }
@@ -83,7 +89,7 @@ struct TrustCheckPickerDepthTests {
         let hiddenNotVerified = try self.contact("Quiet", .notVerified, hiddenAtDuress: true)
         let all = [verified, hiddenVerified, hiddenNotVerified]
 
-        let atDuress = self.identifiers(TrustCheckPicker.rows(for: scenario, contacts: all, atDepth: 1, matching: ""))
+        let atDuress = try self.identifiers(self.rows(for: scenario, contacts: all, atDepth: 1, matching: ""))
 
         #expect(!atDuress.contains(hiddenVerified.identifier))
         #expect(!atDuress.contains(hiddenNotVerified.identifier))
@@ -97,7 +103,7 @@ struct TrustCheckPickerDepthTests {
     func hiddenContactAppearsAtTheRealDepth() throws {
         let hidden = try self.contact("Secret", .verified, hiddenAtDuress: true)
 
-        let rows = TrustCheckPicker.rows(for: .lostPhone, contacts: [hidden], atDepth: 0, matching: "")
+        let rows = try self.rows(for: .lostPhone, contacts: [hidden], atDepth: 0, matching: "")
 
         #expect(self.identifiers(rows) == [hidden.identifier])
     }
@@ -110,7 +116,7 @@ struct TrustCheckPickerDepthTests {
         let notVerified = try self.contact("Shared", .notVerified)
         let pending = try self.contact("Pending", .pending)
 
-        let rows = TrustCheckPicker.rows(for: .notVerified, contacts: [verified, notVerified, pending], atDepth: 0, matching: "")
+        let rows = try self.rows(for: .notVerified, contacts: [verified, notVerified, pending], atDepth: 0, matching: "")
 
         #expect(self.identifiers(rows) == [notVerified.identifier])
     }
@@ -122,7 +128,7 @@ struct TrustCheckPickerDepthTests {
             try self.contact("Pending", .pending), try self.contact("Revoked", .revoked),
         ]
 
-        let rows = TrustCheckPicker.rows(for: scenario, contacts: all, atDepth: 0, matching: "")
+        let rows = try self.rows(for: scenario, contacts: all, atDepth: 0, matching: "")
 
         #expect(Set(self.identifiers(rows)) == Set(all.map(\.identifier)))
     }
@@ -136,7 +142,7 @@ struct TrustCheckPickerDepthTests {
             try self.contact("Pending", .pending), try self.contact("Revoked", .revoked),
         ]
 
-        let rows = TrustCheckPicker.rows(for: scenario, contacts: all, atDepth: 0, matching: "")
+        let rows = try self.rows(for: scenario, contacts: all, atDepth: 0, matching: "")
 
         for row in rows.acting + rows.rest {
             let profile = try #require(all.first { $0.identifier == row.identifier })
@@ -153,7 +159,7 @@ struct TrustCheckPickerDepthTests {
     func revokedContactIsPending() throws {
         let revoked = try self.contact("Revoked", .revoked)
 
-        let rows = TrustCheckPicker.rows(for: .lostPhone, contacts: [revoked], atDepth: 0, matching: "")
+        let rows = try self.rows(for: .lostPhone, contacts: [revoked], atDepth: 0, matching: "")
         let row = try #require(rows.rest.first)
 
         #expect(row.status == .pending)
@@ -166,7 +172,7 @@ struct TrustCheckPickerDepthTests {
         let verified = try self.contact("Zed", .verified)
         let notVerified = try self.contact("Mia", .notVerified)
 
-        let rows = TrustCheckPicker.rows(for: .lostPhone, contacts: [pending, verified, notVerified], atDepth: 0, matching: "")
+        let rows = try self.rows(for: .lostPhone, contacts: [pending, verified, notVerified], atDepth: 0, matching: "")
 
         #expect(Set(rows.acting.map(\.identifier)) == [verified.identifier, notVerified.identifier])
         #expect(rows.rest.map(\.identifier) == [pending.identifier])
@@ -179,7 +185,7 @@ struct TrustCheckPickerDepthTests {
         let alex = try self.contact("Alex", .verified)
         let blake = try self.contact("Blake", .verified)
 
-        let rows = TrustCheckPicker.rows(for: .suspiciousMessage, contacts: [alex, blake], atDepth: 0, matching: "Blak")
+        let rows = try self.rows(for: .suspiciousMessage, contacts: [alex, blake], atDepth: 0, matching: "Blak")
 
         #expect(self.identifiers(rows) == [blake.identifier])
         #expect(!rows.isEmpty)
@@ -191,8 +197,8 @@ struct TrustCheckPickerDepthTests {
     func everyContactHiddenIsEmpty(_ scenario: TrustScenario) throws {
         let all = [try self.contact("A", .verified, hiddenAtDuress: true), try self.contact("B", .notVerified, hiddenAtDuress: true)]
 
-        #expect(TrustCheckPicker.rows(for: scenario, contacts: all, atDepth: 1, matching: "").isEmpty)
-        #expect(!TrustCheckPicker.rows(for: scenario, contacts: all, atDepth: 0, matching: "").isEmpty)
+        #expect(try self.rows(for: scenario, contacts: all, atDepth: 1, matching: "").isEmpty)
+        #expect(try !self.rows(for: scenario, contacts: all, atDepth: 0, matching: "").isEmpty)
     }
 
     @Test("Not verified contacts that are all hidden look like none at all")
@@ -201,13 +207,13 @@ struct TrustCheckPickerDepthTests {
         let hiddenNotVerified = try self.contact("Quiet", .notVerified, hiddenAtDuress: true)
         let all = [visibleVerified, hiddenNotVerified]
 
-        let atDuress = TrustCheckPicker.rows(for: .notVerified, contacts: all, atDepth: 1, matching: "")
-        let genuinelyNone = TrustCheckPicker.rows(for: .notVerified, contacts: [visibleVerified], atDepth: 1, matching: "")
+        let atDuress = try self.rows(for: .notVerified, contacts: all, atDepth: 1, matching: "")
+        let genuinelyNone = try self.rows(for: .notVerified, contacts: [visibleVerified], atDepth: 1, matching: "")
 
         #expect(atDuress.isEmpty)
         #expect(atDuress.isEmpty == genuinelyNone.isEmpty)
         #expect(self.identifiers(atDuress) == self.identifiers(genuinelyNone))
-        #expect(!TrustCheckPicker.rows(for: .notVerified, contacts: all, atDepth: 0, matching: "").isEmpty)
+        #expect(try !self.rows(for: .notVerified, contacts: all, atDepth: 0, matching: "").isEmpty)
         #expect(TrustScenario.notVerified.emptyListText == "No Not verified contacts")
     }
 
@@ -215,9 +221,29 @@ struct TrustCheckPickerDepthTests {
     func searchWithNoMatchIsNotEmpty() throws {
         let alex = try self.contact("Alex", .verified)
 
-        let rows = TrustCheckPicker.rows(for: .lostPhone, contacts: [alex], atDepth: 0, matching: "zzz")
+        let rows = try self.rows(for: .lostPhone, contacts: [alex], atDepth: 0, matching: "zzz")
 
         #expect(self.identifiers(rows).isEmpty)
         #expect(!rows.isEmpty)
+    }
+
+    @Test("A row carries its contact's names, opened under the pass's key")
+    func rowsCarryNames() throws {
+        let alex = try self.contact("Alex", .verified)
+
+        let row = try #require(try self.rows(for: .suspiciousMessage, contacts: [alex], atDepth: 0, matching: "").acting.first)
+
+        #expect(row.givenName == "Alex")
+        #expect(row.familyName == "Test")
+    }
+
+    @Test("With no key nothing is listed, as in the Contacts list")
+    func noKeyListsNothing() throws {
+        let alex = try self.contact("Alex", .verified)
+
+        let rows = TrustCheckPicker.rows(for: .lostPhone, contacts: [alex], atDepth: 0, matching: "", usingKey: nil)
+
+        #expect(rows.isEmpty)
+        #expect(self.identifiers(rows).isEmpty)
     }
 }

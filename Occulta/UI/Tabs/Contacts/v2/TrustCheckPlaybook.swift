@@ -41,10 +41,6 @@ enum TrustScenario: CaseIterable, Hashable {
         self != .notVerified || status == .unverified
     }
 
-    func lists(_ profile: Contact.Profile) -> Bool {
-        self.lists(status: profile.verificationStatus)
-    }
-
     /// `name` is the contact's name when the scenario is shown for one contact (contact detail, the remedy screen).
     func title(name: String? = nil) -> String {
         switch (self, name) {

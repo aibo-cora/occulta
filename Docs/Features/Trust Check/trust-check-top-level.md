@@ -26,6 +26,11 @@ Check — Top-Level Flow" and its mockup "Trust Check Top-Level Mockup"; this pa
 - Revoke is reachable from here: the remedy screen shows the contact's avatar and name, the button names them, and so
   does the confirmation. It calls `ContactManager.reset(identity:)` with the identifier.
 - The scenario and contact live in the navigation stack only. Never persisted, logged or donated.
+- Each body pass derives the local DB key once and opens every field under it (`ContactListFilter.listing`,
+  `statusAndCard(using:ourHash:)`, `decrypt(using:)`), as the Contacts list does since
+  `Docs/Bugs/v2.1.0/Contact-List-Hangs-From-Uncached-Key-Derivation-In-Body.md`: the picker's body runs on every
+  keystroke, and each `decrypt()` derives afresh. `TrustScenario.lists` takes a status for that reason, and the
+  picker rows carry their names so no row decrypts.
 
 ## Depth
 

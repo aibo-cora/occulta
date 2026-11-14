@@ -10,14 +10,21 @@
 //  Bug 28). The list and its empty state are built from the contacts visible at the current depth, so a
 //  contact hidden at this depth never appears and nothing here is counted or marked over all stored contacts.
 //
+//  Like the Contacts list, a pass derives the local DB key once and opens every field under it: the body runs
+//  on every keystroke in the search field, and each `decrypt()` would derive afresh
+//  (`Docs/Bugs/v2.1.0/Contact-List-Hangs-From-Uncached-Key-Derivation-In-Body.md`).
+//
 
 import SwiftUI
 import SwiftData
+import CryptoKit
 
 enum TrustCheckPicker {
 
     struct Row: Equatable {
         let identifier: String
+        let givenName: String
+        let familyName: String
         let status: VerificationStatus
         let remedy: TrustRemedy
         let line: String
@@ -30,32 +37,46 @@ enum TrustCheckPicker {
         let rest: [Row]
         /// Whether no contact is listed for the scenario at `depth`, before any search text narrows it.
         let isEmpty: Bool
+
+        static let empty = Rows(acting: [], rest: [], isEmpty: true)
     }
 
+    /// `key` is the local DB key the caller derived for this pass. Without one nothing is listed, as in the
+    /// Contacts list.
     static func rows(
         for scenario: TrustScenario,
         contacts: [Contact.Profile],
         atDepth depth: Int,
-        matching searchText: String
+        matching searchText: String,
+        usingKey key: SymmetricKey?
     ) -> Rows {
-        let visible = ContactListFilter.visibleContacts(contacts, atDepth: depth)
-        // The status is read once per contact: it decrypts, and the rest follows from it.
-        let listed = visible.map { (profile: $0, status: $0.verificationStatus) }.filter { scenario.lists(status: $0.status) }
-        let statuses = Dictionary(listed.map { ($0.profile.identifier, $0.status) }, uniquingKeysWith: { first, _ in first })
+        guard let key else { return .empty }
 
-        let sorted = ContactListFilter.sortedContacts(listed.map(\.profile), matching: searchText)
+        // Visibility, names, search and sort are the shared filter's, in its one-pass form.
+        let listing = ContactListFilter.listing(contacts, atDepth: depth, matching: searchText, usingKey: key)
 
-        let rows = sorted.map { profile -> Row in
-            let status = statuses[profile.identifier] ?? .pending
-            let remedy = TrustRemedy.make(for: scenario, status: status, canRevoke: profile.trustCheckCanRevokeKey)
+        // The status opens the key owner hash and, with no keys, the card field: once per contact.
+        let ourHash = (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256
+        let statuses = Dictionary(
+            listing.visible.map { ($0.contact.identifier, $0.contact.statusAndCard(using: key, ourHash: ourHash).status) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
-            return Row(identifier: profile.identifier, status: status, remedy: remedy, line: remedy.line(for: scenario, status: status))
+        let rows = listing.shown.compactMap { entry -> Row? in
+            guard let status = statuses[entry.contact.identifier], scenario.lists(status: status) else { return nil }
+
+            let remedy = TrustRemedy.make(for: scenario, status: status, canRevoke: entry.contact.trustCheckCanRevokeKey)
+
+            return Row(
+                identifier: entry.contact.identifier, givenName: entry.givenName, familyName: entry.familyName,
+                status: status, remedy: remedy, line: remedy.line(for: scenario, status: status)
+            )
         }
 
         return Rows(
             acting: rows.filter { $0.remedy.actsOnContact },
             rest: rows.filter { !$0.remedy.actsOnContact },
-            isEmpty: ContactListFilter.isEmptyList(listed.map(\.profile), atDepth: depth)
+            isEmpty: !statuses.values.contains { scenario.lists(status: $0) }
         )
     }
 }
@@ -71,12 +92,9 @@ struct TrustCheckPickerV2: View {
 
     @State private var searchText = ""
 
-    private var rows: TrustCheckPicker.Rows {
-        TrustCheckPicker.rows(for: self.scenario, contacts: self.contacts, atDepth: self.security.currentDepth, matching: self.searchText)
-    }
-
     var body: some View {
-        let rows = self.rows
+        let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+        let rows = TrustCheckPicker.rows(for: self.scenario, contacts: self.contacts, atDepth: self.security.currentDepth, matching: self.searchText, usingKey: key)
 
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -111,15 +129,13 @@ struct TrustCheckPickerV2: View {
         if !rows.isEmpty {
             VStack(spacing: 0) {
                 ForEach(rows, id: \.identifier) { row in
-                    if let profile = self.contacts.first(where: { $0.identifier == row.identifier }) {
-                        NavigationLink(value: TrustCheckRoute.remedy(self.scenario, identifier: row.identifier)) {
-                            TrustCheckPickerRow(profile: profile, row: row)
-                        }
-                        .buttonStyle(.plain)
+                    NavigationLink(value: TrustCheckRoute.remedy(self.scenario, identifier: row.identifier)) {
+                        TrustCheckPickerRow(row: row)
+                    }
+                    .buttonStyle(.plain)
 
-                        if row.identifier != rows.last?.identifier {
-                            Divider().padding(.leading, 66)
-                        }
+                    if row.identifier != rows.last?.identifier {
+                        Divider().padding(.leading, 66)
                     }
                 }
             }
@@ -130,20 +146,15 @@ struct TrustCheckPickerV2: View {
 }
 
 private struct TrustCheckPickerRow: View {
-    let profile: Contact.Profile
     let row: TrustCheckPicker.Row
-
-    private var name: String {
-        TrustCheckNames.fullName(of: self.profile)
-    }
 
     var body: some View {
         HStack(spacing: 12) {
-            TrustCheckAvatar(profile: self.profile, size: 40)
+            TrustCheckAvatar(identifier: self.row.identifier, givenName: self.row.givenName, familyName: self.row.familyName, size: 40)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
-                    Text(self.name)
+                    Text(TrustCheckNames.fullName(given: self.row.givenName, family: self.row.familyName))
                         .font(.system(size: 16, weight: .semibold))
                         .lineLimit(1)
 
@@ -188,25 +199,40 @@ extension VerificationStatus {
 
 enum TrustCheckNames {
     /// "this contact" where there's no name to say, as the sheet has always done.
-    static func firstName(of profile: Contact.Profile) -> String {
-        let name = profile.givenName.decrypt()
+    static func firstName(given: String) -> String {
+        given.isEmpty ? "this contact" : given
+    }
+
+    static func fullName(given: String, family: String) -> String {
+        let name = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
         return name.isEmpty ? "this contact" : name
     }
 
-    static func fullName(of profile: Contact.Profile) -> String {
-        let name = [profile.givenName.decrypt(), profile.familyName.decrypt()].filter { !$0.isEmpty }.joined(separator: " ")
-        return name.isEmpty ? "this contact" : name
+    /// A contact's names under the pass's key. Nothing opens without one.
+    static func names(of profile: Contact.Profile, key: SymmetricKey?) -> (given: String, family: String) {
+        guard let key else { return ("", "") }
+
+        return (profile.givenName.decrypt(using: key), profile.familyName.decrypt(using: key))
+    }
+
+    /// A contact's status under the pass's key. Pending without one, the status of a contact nothing is known about.
+    static func status(of profile: Contact.Profile, key: SymmetricKey?) -> VerificationStatus {
+        guard let key else { return .pending }
+
+        return profile.statusAndCard(using: key, ourHash: (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256).status
     }
 }
 
 struct TrustCheckAvatar: View {
-    let profile: Contact.Profile
+    let identifier: String
+    let givenName: String
+    let familyName: String
     let size: CGFloat
 
     var body: some View {
         ZStack {
-            avatarGradientV2(for: self.profile.identifier)
-            Text([self.profile.givenName.decrypt(), self.profile.familyName.decrypt()].filter { !$0.isEmpty }.joined(separator: " ").initials)
+            avatarGradientV2(for: self.identifier)
+            Text([self.givenName, self.familyName].filter { !$0.isEmpty }.joined(separator: " ").initials)
                 .font(.system(size: self.size * 0.35, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
         }
