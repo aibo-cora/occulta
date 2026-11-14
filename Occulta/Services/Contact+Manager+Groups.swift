@@ -68,6 +68,23 @@ extension ContactManager {
         try self.modelContext.save()
     }
 
+    /// Names of the groups whose members at `depth` include `identifier`, sorted.
+    ///
+    /// Reads one depth only: a group the contact belongs to at another depth is not listed, so a screen built on
+    /// this shows nothing the group screens don't already show at that depth. One key derivation for every slot
+    /// and name, not one per read — see `Group.members(atDepth:usingKey:)`.
+    func groupNames(containing identifier: String, atDepth depth: Int) throws -> [String] {
+        guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else {
+            throw GroupError.keyUnavailable
+        }
+        return try self.modelContext.fetch(FetchDescriptor<Group>())
+            .filter { $0.members(atDepth: depth, usingKey: key).contains(identifier) }
+            .compactMap { group in
+                group.encryptedName?.decrypt(using: key).flatMap { String(data: $0, encoding: .utf8) }
+            }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     // MARK: Orphan repair
 
     /// Deletes `Group` rows whose identifier no longer decrypts under the canonical local DB

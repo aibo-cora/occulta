@@ -42,9 +42,19 @@ struct GroupDetailV3: View {
         return self.contacts.filter { identifiers.contains($0.identifier) && $0.isVisible(atDepth: self.security.currentDepth) }
     }
 
+    /// Members at this depth with no current key. They stay in the group; a send leaves them out.
+    private func membersWithoutKeys(in members: [Contact.Profile]) -> [MemberWithoutKey] {
+        members.filter { !$0.hasCurrentKey }.map { member in
+            let name = [member.givenName.decrypt(), member.familyName.decrypt()].filter { !$0.isEmpty }.joined(separator: " ")
+            return MemberWithoutKey(identifier: member.identifier, name: name.isEmpty ? "A contact" : name)
+        }
+    }
+
     var body: some View {
-        let members = self.resolvedMembers
-        let count   = members.count
+        let members  = self.resolvedMembers
+        let count    = members.count
+        let unkeyed  = self.membersWithoutKeys(in: members)
+        let sendable = count - unkeyed.count
 
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -56,7 +66,11 @@ struct GroupDetailV3: View {
                     thumbnail: nil
                 )
 
-                if count > 0 {
+                if !unkeyed.isEmpty {
+                    GroupRevokedNoticeV3(names: unkeyed.map(\.name), everyoneRevoked: sendable == 0)
+                }
+
+                if sendable > 0 {
                     ComposeToggleV3(useThread: Binding(
                         get: { self.useThreadCompose },
                         set: { newValue in
@@ -90,8 +104,10 @@ struct GroupDetailV3: View {
                         let scm = self.shardCustodyManager
                         ComposeHeroV3(
                             vm:           self.composeVM,
-                            headerRight:  "→ \(count) RECIPIENT\(count == 1 ? "" : "S")",
-                            encryptLabel: "Encrypt for \(count)",
+                            headerRight:  unkeyed.isEmpty
+                                ? "→ \(count) RECIPIENT\(count == 1 ? "" : "S")"
+                                : "→ \(sendable) OF \(count) RECIPIENTS",
+                            encryptLabel: "Encrypt for \(sendable)",
                             onEncrypt:    { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm) }
                         )
                     }
@@ -128,6 +144,8 @@ struct GroupDetailV3: View {
                 self.useThreadCompose    = loaded.wasThreadMode
             }
         }
+        .onChange(of: unkeyed, initial: true) { _, now in self.composeVM.membersWithoutKeys = now }
+        .onAppear { self.composeVM.membersWithoutKeys = unkeyed }
         .onChange(of: self.composeVM.draftText) { _, _ in self.scheduleDraftSave() }
         .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
         .onDisappear {
@@ -280,7 +298,15 @@ private struct MemberRowV3: View {
                     Text(self.familyName)
                         .font(.body.weight(.semibold))
                 }
-                if let fp = self.profile.fingerprintPreview {
+                if !self.profile.hasCurrentKey {
+                    Text("KEY REVOKED")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.occultaWarn))
+                } else if let fp = self.profile.fingerprintPreview {
                     HStack(spacing: 5) {
                         Circle().fill(Color.occultaVerified).frame(width: 6, height: 6)
                         Text(fp)
