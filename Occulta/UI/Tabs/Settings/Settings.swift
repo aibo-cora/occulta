@@ -155,6 +155,7 @@ struct Settings: View {
     private struct ManageContacts: View {
         @Environment(Manager.App.self) private var appManager: Manager.App
         @State private var showingConfirmation = false
+        @State private var showingEraseFailure = false
 
         var body: some View {
             VStack(spacing: 20) {
@@ -173,11 +174,21 @@ struct Settings: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete Everything", role: .destructive) {
-                    try? self.appManager.eraseAllData()
+                    // The keys are deleted even when some data could not be (Bug 209); say so rather than nothing.
+                    do {
+                        try self.appManager.eraseAllData()
+                    } catch {
+                        self.showingEraseFailure = true
+                    }
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
                 Text("This permanently deletes every contact, the vault, and all encryption keys. This cannot be undone.")
+            }
+            .alert("Erase All Data Didn't Finish", isPresented: self.$showingEraseFailure) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Some data couldn't be deleted. Run Erase All Data again to remove it.")
             }
         }
     }
