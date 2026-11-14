@@ -140,17 +140,24 @@ struct SecurityStateTests {
         #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
-    @Test(.ambientTestKeyManager) func deactivateSecureMode_fromDepth1_transitionsToPinOnly() async throws {
-        // Coercer at depth 1 (decoy view, via routing alias) deactivates using duress PIN.
+    /// Bug 220: deactivating at depth 1 removes only what is below depth 1. The session
+    /// stays at depth 1 and the depth 0→1 layer the owner made stays.
+    @Test(.ambientTestKeyManager) func deactivateSecureMode_fromDepth1_staysAtDepth1() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
-        // Route to depth 1 via routing alias.
         s.applyVerifyState(for: try s.verify("999999"))
         #expect(s.currentDepth == 1)
-        // Confirmation PIN at depth 1 is the routing alias = duress PIN.
+        let session = s.sessionID
+
         try s.deactivateSecureMode(confirmingEntryPIN: "999999")
-        #expect(s.requiresPIN && !s.isSecureModeActive)
+
+        #expect(s.currentDepth == 1)
+        #expect(s.sessionID == session, "the depth did not change, so the session must not end")
+        #expect(s.isSecureModeActive, "the owner's depth 0→1 layer must survive")
+        #expect(s.state == .duress, "Settings shows \"Learn more\" again, as on a PIN-only install")
+        #expect(try s.verify("999999") == .normal(depth: 1))
+        #expect(try s.verify("123456") == .normal(depth: 0))
     }
 
     @Test(.ambientTestKeyManager) func deactivateSecureMode_fromPinOnly_throwsInvalidStateTransition() async throws {
@@ -420,7 +427,9 @@ struct SecurityMultiLayerTests {
         #expect(s.isRestricted)
     }
 
-    @Test(.ambientTestKeyManager) func deactivation_fromDepth2_popsOneLevelToDepth1() async throws {
+    /// Bug 220: at the deepest layer there is nothing below to remove. The session stays,
+    /// and every layer, this one included, keeps routing.
+    @Test(.ambientTestKeyManager) func deactivation_fromDeepestDepth_changesNothing() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -429,41 +438,17 @@ struct SecurityMultiLayerTests {
         s.applyVerifyState(for: try s.verify("777777"))
         #expect(s.currentDepth == 2)
 
-        // LIFO pop: deactivating from depth 2 removes only that layer, landing
-        // exactly one depth shallower — depth 1, coincidentally the same number a
-        // 2-layer stack would produce either way, but for the LIFO reason, not
-        // because deactivation always targets depth 1 specifically.
         try s.deactivateSecureMode(confirmingEntryPIN: "777777")
-        #expect(s.currentDepth == 1)
-        // coercerBaseDepth becomes the landed-on depth (1), so state reads .normal —
-        // "Deactivate Protection" is reachable immediately, without a separate
-        // re-verify, to pop the remaining depth 0→1 layer too.
-        #expect(s.state == .normal)
-        #expect(s.isSecureModeActive, "depth 0→1 layer must still be active")
+
+        #expect(s.currentDepth == 2, "a depth's own PIN must never move the session shallower")
+        #expect(s.isSecureModeActive)
+        #expect(try s.verify("777777") == .normal(depth: 2))
+        #expect(try s.verify("999999") == .normal(depth: 1))
+        #expect(try s.verify("111111") == .normal(depth: 0))
     }
 
-    @Test(.ambientTestKeyManager) func deactivation_depth2_thenDepth1_reachesPinOnly() async throws {
-        let (s, _, _, _) = try makeSecurityAndManagers()
-        try s.configurePIN("111111")
-        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
-        s.applyVerifyState(for: try s.verify("999999"))
-        try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
-        s.applyVerifyState(for: try s.verify("777777"))
-
-        // Two-step deactivation chain, one LIFO pop per call.
-        try s.deactivateSecureMode(confirmingEntryPIN: "777777")  // depth 2 → depth 1
-        #expect(s.currentDepth == 1)
-
-        try s.deactivateSecureMode(confirmingEntryPIN: "999999")  // depth 1 → pinOnly
-        #expect(s.currentDepth == 0)
-        #expect(s.requiresPIN && !s.isSecureModeActive)
-    }
-
-    /// The case a 2-layer stack can't distinguish: `depth - 1 == 1` either way there,
-    /// so nothing before this test could tell "always land at depth 1" apart from a
-    /// genuine LIFO pop. A 3-layer stack can — deactivating from depth 3 must land at
-    /// depth 2, not jump straight to depth 1.
-    @Test(.ambientTestKeyManager) func deactivation_fromDepth3_popsOneLevelToDepth2() async throws {
+    /// Bug 220: deactivating at depth 1 removes depths 2 and 3 and keeps depth 1 and 0.
+    @Test(.ambientTestKeyManager) func deactivation_fromDepth1_removesEveryDeeperLayer() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -471,26 +456,22 @@ struct SecurityMultiLayerTests {
         try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
         s.applyVerifyState(for: try s.verify("777777"))
         try s.activateSecureMode(confirmingEntryPIN: "777777", duressPIN: "444444")
-        s.applyVerifyState(for: try s.verify("444444"))
-        #expect(s.currentDepth == 3)
+        s.applyVerifyState(for: try s.verify("999999"))
+        #expect(s.currentDepth == 1)
 
-        try s.deactivateSecureMode(confirmingEntryPIN: "444444")
+        try s.deactivateSecureMode(confirmingEntryPIN: "999999")
 
-        #expect(s.currentDepth == 2, "must pop exactly one level, not cascade past depth 1")
-        #expect(s.state == .normal, "Deactivate Protection must be reachable at the new depth")
-        #expect(s.isSecureModeActive, "depths 0→1 and 1→2 must both still be active")
-
-        // The popped-to layer's own shallower verifier chain must still be fully
-        // intact and reachable — cold-start routing for "999999" still resolves to
-        // depth 1, and "777777" (the layer that was NOT popped) still resolves to
-        // depth 2, exactly as before the pop.
-        let depth1Result = try s.verify("999999")
-        #expect(depth1Result == .normal(depth: 1))
+        #expect(s.currentDepth == 1)
+        #expect(s.isSecureModeActive, "the depth 0→1 layer must still be active")
+        #expect(try s.verify("777777") == .wrong, "depth 2's layer must be gone")
+        #expect(try s.verify("444444") == .wrong, "depth 3's layer must be gone")
+        #expect(try s.verify("999999") == .normal(depth: 1))
+        #expect(try s.verify("111111") == .normal(depth: 0))
     }
 
-    /// Full LIFO teardown: three activations, three deactivations, one level at a
-    /// time, verifying `currentDepth` and `isSecureModeActive` after every step.
-    @Test(.ambientTestKeyManager) func deactivation_threeLayerStack_popsOneLevelPerCall() async throws {
+    /// The owner's teardown under the new rule: each layer is removed from the depth
+    /// above it, reached through the lock screen with that depth's PIN.
+    @Test(.ambientTestKeyManager) func deactivation_threeLayerStack_removedFromAbove() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -498,20 +479,23 @@ struct SecurityMultiLayerTests {
         try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
         s.applyVerifyState(for: try s.verify("777777"))
         try s.activateSecureMode(confirmingEntryPIN: "777777", duressPIN: "444444")
-        s.applyVerifyState(for: try s.verify("444444"))
-        #expect(s.currentDepth == 3)
 
-        try s.deactivateSecureMode(confirmingEntryPIN: "444444")  // depth 3 → depth 2
+        s.applyVerifyState(for: try s.verify("777777"))
+        try s.deactivateSecureMode(confirmingEntryPIN: "777777")   // at depth 2: removes depth 3
         #expect(s.currentDepth == 2)
-        #expect(s.isSecureModeActive)
+        #expect(try s.verify("444444") == .wrong)
 
-        try s.deactivateSecureMode(confirmingEntryPIN: "777777")  // depth 2 → depth 1
+        s.applyVerifyState(for: try s.verify("999999"))
+        try s.deactivateSecureMode(confirmingEntryPIN: "999999")   // at depth 1: removes depth 2
         #expect(s.currentDepth == 1)
+        #expect(try s.verify("777777") == .wrong)
         #expect(s.isSecureModeActive)
 
-        try s.deactivateSecureMode(confirmingEntryPIN: "999999")  // depth 1 → pinOnly
+        s.applyVerifyState(for: try s.verify("111111"))
+        try s.deactivateSecureMode(confirmingEntryPIN: "111111")   // at depth 0: removes all
         #expect(s.currentDepth == 0)
         #expect(s.requiresPIN && !s.isSecureModeActive)
+        #expect(try s.verify("999999") == .wrong)
     }
 
     @Test(.ambientTestKeyManager) func allThreePINs_routeToCorrectDepths() async throws {
