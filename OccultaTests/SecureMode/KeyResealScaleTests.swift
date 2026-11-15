@@ -287,7 +287,8 @@ struct KeyResealEraseTests {
             contacts: ContactManager(modelContainer: store.container, security: security),
             vault: VaultManager(modelContainer: store.container, keyManager: keys)
         )
-        try app.eraseAllData(erasePrekeys: {}, stagingContainer: nil, staging: items.staging, keys: items.erasing)
+        let drafts = FileManager.default.temporaryDirectory.appendingPathComponent("drafts-\(UUID().uuidString)", isDirectory: true)
+        try app.eraseAllData(erasePrekeys: {}, draftsRoot: drafts, stagingContainer: nil, staging: items.staging, keys: items.erasing)
     }
 
     @Test("Erase All Data leaves no r_U, r_B, r_S, tier PQ record or epoch (passes today: Stage 1 made deleteAllKeys and deleteKey remove them)", .enabled(if: keychainAvailable() && sharedKeychainAvailable()))

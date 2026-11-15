@@ -88,10 +88,15 @@ extension ContactManager {
     /// failed and this treated a nil key as "inspect anyway", every group would look stranded
     /// and the whole table would be deleted. Requiring the key makes that state
     /// unrepresentable rather than merely guarded: there is no way to run this without one.
-    /// The caller is responsible for supplying a genuinely derived canonical key — pass
-    /// anything else and every row will be judged stranded, which is the honest consequence
-    /// of the key being wrong. Once a real key is in hand, AES-GCM does not fail transiently,
-    /// so a decryption failure under it means the row genuinely is stranded.
+    ///
+    /// **A key that doesn't match the store is refused (Bug 191).** A process on keys the store
+    /// isn't sealed under, such as a test host that skips the launch sequence over a resealed
+    /// store, would judge every group stranded. So the key must first open
+    /// `AppLayerConfig.persistedDepth`, which the config row always holds and which a rotation
+    /// moved to the new key along with the rest of the store, while it left the groups behind.
+    /// A key that opens it is the store's key, and a decryption failure under it means the row
+    /// genuinely is stranded. No config row, or no `persistedDepth` on it, is refused too: the
+    /// key can't be shown to match, and a store with no config row has had no rotation to repair.
     ///
     /// Costs one decrypt per group, not one per slot: nothing here touches member slots, so
     /// Bug 74's Secure Enclave round-trip ceiling is nowhere near.
@@ -106,6 +111,10 @@ extension ContactManager {
     /// unconditionally instead, so the two decisions stay independent and both stay visible at
     /// the call site.
     func purgeUnreadableGroups(using key: SymmetricKey) throws {
+        guard let canary = try self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first?.persistedDepth,
+              canary.decrypt(using: key) != nil
+        else { throw Errors.keyDoesNotOpenStore }
+
         var removed = false
         for group in try self.modelContext.fetch(FetchDescriptor<Group>())
         where group.encryptedID?.decrypt(using: key) == nil {

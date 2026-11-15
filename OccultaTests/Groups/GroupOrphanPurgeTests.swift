@@ -10,11 +10,12 @@
 //  the store forever showing up only as an inflated count. This pass removes them.
 //
 //  The dangerous failure mode is over-deletion: judged against the wrong key — or against no
-//  key at all — every group looks stranded and the whole table goes. That is handled by
-//  making the key a required parameter rather than something the sweep derives internally,
-//  so "no key" cannot reach the row loop at all; the call site in `OccultaApp` is where a
-//  failed derivation stops the sweep. `removesAllWhenAllStranded` documents the honest
-//  consequence of supplying a key that does not match the rows.
+//  key at all — every group looks stranded and the whole table goes. "No key" cannot reach
+//  the row loop, because the key is a required parameter rather than something the sweep
+//  derives internally; the call site in `OccultaApp` is where a failed derivation stops the
+//  sweep. A key that is there but doesn't open the store is refused by the sweep itself
+//  (Bug 191, a test host on legacy keys over a resealed store): it must first open the
+//  config row's `persistedDepth`.
 //
 
 import Testing
@@ -30,8 +31,9 @@ private func canonicalKey() -> SymmetricKey? {
     try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
 }
 
+/// - Parameter seedingConfig: Whether the store holds the config row a real one always does, sealed under the ambient key.
 @MainActor
-private func makeManager() throws -> ContactManager {
+private func makeManager(seedingConfig: Bool = true) throws -> ContactManager {
     let schema = Schema([
         Group.self,
         Contact.Profile.self,
@@ -47,7 +49,12 @@ private func makeManager() throws -> ContactManager {
         configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
     )
     let security = Manager.Security(modelContainer: container, enabled: false)
-    return ContactManager(modelContainer: container, security: security)
+    let manager  = ContactManager(modelContainer: container, security: security)
+    if seedingConfig {
+        manager.modelContext.insert(AppLayerConfig.seeded())
+        try manager.modelContext.save()
+    }
+    return manager
 }
 
 /// Strands a group by overwriting its ID with ciphertext nobody holds the key for — the same
@@ -87,10 +94,8 @@ struct GroupOrphanPurgeTests {
         #expect(survivors.first?.readName() == "Healthy")
     }
 
-    /// Documents the consequence of a mismatched key rather than asserting a guard: judged
-    /// against a key that encrypted none of them, every row is stranded and every row goes.
-    /// This is why the key is a required parameter and why the call site refuses to run the
-    /// sweep at all when derivation fails — there is no in-function guard to test.
+    /// Every group stranded, under a key that does open the store: they all go. This is the Bug 75
+    /// repair for a store whose groups were all left behind by a rotation.
     @Test("All groups stranded — every row goes, none left behind", .ambientTestKeyManager)
     func removesAllWhenAllStranded() throws {
         let key     = try #require(canonicalKey())
@@ -103,6 +108,53 @@ struct GroupOrphanPurgeTests {
         try manager.purgeUnreadableGroups(using: key)
 
         #expect(try manager.allGroups().isEmpty)
+    }
+
+    /// Bug 191. A test host that skips the launch sequence derives keys the resealed store isn't sealed under,
+    /// so judged against them every group looks stranded. The purge must delete nothing.
+    @Test("A key that doesn't open the store deletes nothing", .ambientTestKeyManager)
+    func mismatchedKeyDeletesNothing() throws {
+        let manager = try makeManager()
+        for name in ["One", "Two", "Three"] {
+            _ = try manager.createGroup(name: name)
+        }
+        let wrongKey = SymmetricKey(size: .bits256)
+
+        #expect(throws: ContactManager.Errors.keyDoesNotOpenStore) {
+            try manager.purgeUnreadableGroups(using: wrongKey)
+        }
+
+        #expect(try manager.allGroups().count == 3)
+    }
+
+    @Test("A store with no config row deletes nothing", .ambientTestKeyManager)
+    func noConfigRowDeletesNothing() throws {
+        let key     = try #require(canonicalKey())
+        let manager = try makeManager(seedingConfig: false)
+        let group   = try manager.createGroup(name: "One")
+        strand(group)
+
+        #expect(throws: ContactManager.Errors.keyDoesNotOpenStore) {
+            try manager.purgeUnreadableGroups(using: key)
+        }
+
+        #expect(try manager.allGroups().count == 1)
+    }
+
+    @Test("A config row with no persisted depth deletes nothing", .ambientTestKeyManager)
+    func noPersistedDepthDeletesNothing() throws {
+        let key     = try #require(canonicalKey())
+        let manager = try makeManager()
+        let config  = try #require(try manager.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        config.persistedDepth = nil
+        let group   = try manager.createGroup(name: "One")
+        strand(group)
+
+        #expect(throws: ContactManager.Errors.keyDoesNotOpenStore) {
+            try manager.purgeUnreadableGroups(using: key)
+        }
+
+        #expect(try manager.allGroups().count == 1)
     }
 
     @Test("An empty store is a no-op", .ambientTestKeyManager)

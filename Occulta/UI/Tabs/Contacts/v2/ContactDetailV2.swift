@@ -8,6 +8,7 @@ import SwiftData
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
+import CryptoKit
 import OccultaFormats
 
 extension Contact {
@@ -41,26 +42,55 @@ extension Contact {
 
         private var profile: Contact.Profile? { self.contacts.first }
 
-        private var givenName:  String { self.profile?.givenName.decrypt() ?? "" }
-        private var familyName: String { self.profile?.familyName.decrypt() ?? "" }
-        private var fullName:   String { [self.givenName, self.familyName].filter { !$0.isEmpty }.joined(separator: " ") }
-        private var org:        String { self.profile?.organizationName.decrypt() ?? "" }
-        private var jobTitle:   String { self.profile?.jobTitle.decrypt() ?? "" }
-        private var subtitle:   String { [self.jobTitle, self.org].filter { !$0.isEmpty }.joined(separator: " · ") }
+        /// What the header and compose say about the contact, opened once per pass under the pass's key. These were
+        /// computed properties, so each read re-derived the key for every field in them: `firstName` alone opened
+        /// the given and family name three times over.
+        private struct HeaderText {
+            let fullName: String
+            let subtitle: String
+            let firstName: String
+        }
+
+        private func headerText(key: SymmetricKey?) -> HeaderText {
+            func open(_ sealed: String?) -> String {
+                guard let key, let sealed else { return "" }
+                return sealed.decrypt(using: key)
+            }
+
+            let fullName = [open(self.profile?.givenName), open(self.profile?.familyName)]
+                .filter { !$0.isEmpty }.joined(separator: " ")
+            let subtitle = [open(self.profile?.jobTitle), open(self.profile?.organizationName)]
+                .filter { !$0.isEmpty }.joined(separator: " · ")
+
+            return HeaderText(fullName: fullName, subtitle: subtitle, firstName: IntroCardCopy.firstName(of: fullName))
+        }
 
         private var needsExchange: Bool {
             self.profile?.currentKey == nil
         }
 
-        private var status: VerificationStatus { self.cachedStatus ?? self.profile?.verificationStatus ?? .pending }
+        typealias Shown = (status: VerificationStatus, card: CardState)
 
-        /// The card field. A verified contact has none that matters: in-person keys win the tier.
-        private var cardState: CardState {
-            guard self.status != .verified else { return .empty }
-            return self.cachedCard ?? self.profile?.cardState ?? .empty
+        /// The status and card the screen shows: the caches once `onChange` has filled them, a direct read before. They
+        /// were computed properties, and the direct read ran in each of the dozen reads of one body on the first
+        /// pass, each deriving the key afresh. Now it is read once, under the pass's key. A verified contact has no
+        /// card that matters: in-person keys win the tier.
+        private func shown(key: SymmetricKey?) -> Shown {
+            var read: (status: VerificationStatus, card: CardState?)?
+
+            if self.cachedStatus == nil, let profile = self.profile {
+                read = key.map { profile.statusAndCard(using: $0, ourHash: (try? Manager.Ambient.keyManager.retrieveIdentity())?.sha256) }
+                    ?? profile.statusAndCard
+            }
+
+            let status = self.cachedStatus ?? read?.status ?? .pending
+
+            guard status != .verified else { return (status, .empty) }
+
+            let card = self.cachedCard ?? read?.card ?? key.flatMap { self.profile?.cardState(using: $0) } ?? self.profile?.cardState ?? .empty
+
+            return (status, card)
         }
-
-        private var firstName: String { IntroCardCopy.firstName(of: self.fullName) }
 
         /// What `verificationStatus` reads, in a form `onChange` can compare.
         private struct StatusInputs: Equatable {
@@ -81,27 +111,36 @@ extension Contact {
         }
 
         var body: some View {
+            // The one derivation of the local DB key for this pass: this body runs on every keystroke in compose
+            // (`onChange` reads the draft), and each `decrypt()` would derive afresh. Held in this function only,
+            // and not handed to a child view, whose stored properties would keep it past the pass.
+            let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+            let header = self.headerText(key: key)
+            let shown = self.shown(key: key)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     IdentityStripV2(
                         identifier: self.identifier,
-                        fullName: self.fullName,
-                        subtitle: self.subtitle,
-                        status: self.status,
-                        thumbnail: self.profile?.imageData?.decrypt() ?? self.profile?.thumbnailImageData?.decrypt()
+                        fullName: header.fullName,
+                        subtitle: header.subtitle,
+                        status: shown.status,
+                        thumbnail: key.flatMap { key in
+                            self.profile?.imageData?.decrypt(using: key) ?? self.profile?.thumbnailImageData?.decrypt(using: key)
+                        }
                     )
 
-                    if self.cardState.isCardContact, let p = self.profile {
+                    if shown.card.isCardContact, let p = self.profile {
                         // Not verified through a card: the card section comes right under the name, then compose,
                         // and the way to verify goes last (FINDINGS §3).
-                        ContactCardSection(profile: p, state: self.cardState, name: self.firstName)
+                        ContactCardSection(profile: p, state: shown.card, name: header.firstName)
 
-                        self.composeBlock
+                        self.composeBlock(key: key, firstName: header.firstName, shown: shown)
 
                         if self.needsExchange {
                             ExchangeHeroV2(
                                 identifier: self.identifier,
-                                title:      IntroCardCopy.meetToVerifyTitle(name: self.firstName),
+                                title:      IntroCardCopy.meetToVerifyTitle(name: header.firstName),
                                 subtitle:   IntroCardCopy.meetToVerifySubtitle
                             )
                         }
@@ -110,15 +149,15 @@ extension Contact {
 
                         // A pending contact: the card is the alternative to meeting (E3).
                         if let p = self.profile {
-                            ContactCardSection(profile: p, state: self.cardState, name: self.firstName)
+                            ContactCardSection(profile: p, state: shown.card, name: header.firstName)
                         }
                     } else {
                         // W-06 for keys that came from another identity (Q-14): always visible, above compose.
-                        if self.status == .unverified {
+                        if shown.status == .unverified {
                             CardNotice(tone: .warn, IntroCardCopy.trustLine)
                         }
 
-                        self.composeBlock
+                        self.composeBlock(key: key, firstName: header.firstName, shown: shown)
                     }
 
                     ContactInfoSectionV2(profile: self.profile)
@@ -191,7 +230,7 @@ extension Contact {
 
         /// Compose, and the key details under it once there are keys.
         @ViewBuilder
-        private var composeBlock: some View {
+        private func composeBlock(key: SymmetricKey?, firstName: String, shown: Shown) -> some View {
             ComposeStyleToggle(useThread: Binding(
                 get: { self.useThreadCompose },
                 set: { newValue in
@@ -223,13 +262,13 @@ extension Contact {
             } else {
                 ComposeHeroV2(
                     vm: self.composeVM, identifier: self.identifier, focusOnAppear: self.focusCompose,
-                    isNotVerified: self.status == .unverified, card: self.cardState
+                    isNotVerified: shown.status == .unverified, card: shown.card, firstName: firstName
                 )
             }
 
             // Not for a card contact: it has no key to describe, and the secrecy line under compose says how it is sealed.
-            if !self.cardState.isCardContact {
-                Text(self.profile?.encryptionSchemeLabel ?? "")
+            if !shown.card.isCardContact {
+                Text(self.profile?.encryptionSchemeLabel(using: key) ?? "")
                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -237,7 +276,7 @@ extension Contact {
             }
 
             // The glyph in the list leads here: said once, where it can be acted on, without opening the key details (Bug 196).
-            if let p = self.profile, !self.needsExchange, !self.cardState.isCardContact, p.pairingCapabilities.upgradeAvailable {
+            if let p = self.profile, !self.needsExchange, !shown.card.isCardContact, let key, p.pairingCapabilities(using: key).upgradeAvailable {
                 NavigationLink {
                     KeyExchange(identifier: self.identifier)
                 } label: {
@@ -427,6 +466,9 @@ private struct ComposeHeroV2: View {
     /// The contact's card field, from the details screen's cache. A card contact's compose differs: Standard
     /// Encryption while its slots go to the card key, and no sending past Carol's deadline.
     var card: CardState = .empty
+    /// The contact's first name, from the details screen, which opens it once per pass. Opened here it would cost a
+    /// key derivation on every keystroke, since this body reads the draft.
+    let firstName: String
 
     @Environment(ContactManager.self) private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
@@ -440,17 +482,16 @@ private struct ComposeHeroV2: View {
     @State private var cardIsStandard = false
     @State private var cardCanSend    = true
 
-    init(vm: ComposeViewModel, identifier: String, focusOnAppear: Bool = false, isNotVerified: Bool = false, card: CardState = .empty) {
+    init(vm: ComposeViewModel, identifier: String, focusOnAppear: Bool = false, isNotVerified: Bool = false, card: CardState = .empty, firstName: String) {
         self.vm = vm
         self.identifier = identifier
         self.focusOnAppear = focusOnAppear
         self.isNotVerified = isNotVerified
         self.card = card
+        self.firstName = firstName
         let id = identifier
         self._contacts = Query(filter: #Predicate { $0.identifier == id })
     }
-
-    private var firstName: String { self.contacts.first?.givenName.decrypt() ?? "" }
 
     /// A card contact has no recorded bundle version yet, but its messages are the group format.
     private var isV4: Bool { self.contacts.first?.maxBundleVersion != nil || self.card.isCardContact }
@@ -874,26 +915,37 @@ private struct KeyDetailRow: View {
 private struct ContactInfoSectionV2: View {
     let profile: Contact.Profile?
 
-    private var phones: [(label: String, value: String)] {
-        (self.profile?.phoneNumbers ?? []).compactMap {
-            let v = $0.value.decrypt()
+    /// Without a key nothing opens, so nothing is listed, as when every value fails to decrypt.
+    private func phones(key: SymmetricKey?) -> [(label: String, value: String)] {
+        guard let key else { return [] }
+
+        return (self.profile?.phoneNumbers ?? []).compactMap {
+            let v = $0.value.decrypt(using: key)
             
             if v.contains("+") == false { return nil }
             
-            return v.isEmpty ? nil : ($0.label.decrypt().uppercased().filter { $0.isLetter }, v)
+            return v.isEmpty ? nil : ($0.label.decrypt(using: key).uppercased().filter { $0.isLetter }, v)
         }
     }
 
-    private var emails: [(label: String, value: String)] {
-        (self.profile?.emailAddresses ?? []).compactMap {
-            let v = $0.value.decrypt()
+    private func emails(key: SymmetricKey?) -> [(label: String, value: String)] {
+        guard let key else { return [] }
+
+        return (self.profile?.emailAddresses ?? []).compactMap {
+            let v = $0.value.decrypt(using: key)
             
-            return v.isEmpty ? nil : ($0.label.decrypt().uppercased(), v)
+            return v.isEmpty ? nil : ($0.label.decrypt(using: key).uppercased(), v)
         }
     }
 
     var body: some View {
-        if !self.phones.isEmpty || !self.emails.isEmpty {
+        // These were computed properties read a dozen times a pass, including once per row and field, so a contact
+        // with a few numbers derived the key dozens of times. Once here; the key is not kept past this function.
+        let key = try? Manager.Ambient.keyManager.createHybridLocalEncryptionKey()
+        let phones = self.phones(key: key)
+        let emails = self.emails(key: key)
+
+        if !phones.isEmpty || !emails.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("CONTACT")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
@@ -902,23 +954,23 @@ private struct ContactInfoSectionV2: View {
                     .padding(.leading, 4)
 
                 VStack(spacing: 0) {
-                    ForEach(self.phones.indices, id: \.self) { i in
+                    ForEach(phones.indices, id: \.self) { i in
                         if i > 0 { Divider().padding(.leading, 76) }
                         ContactInfoRowV2(
-                            label: self.phones[i].label,
-                            value: self.phones[i].value,
-                            url: URL(string: "tel:\(self.phones[i].value.filter { !$0.isWhitespace })")
+                            label: phones[i].label,
+                            value: phones[i].value,
+                            url: URL(string: "tel:\(phones[i].value.filter { !$0.isWhitespace })")
                         )
                     }
-                    if !self.phones.isEmpty && !self.emails.isEmpty {
+                    if !phones.isEmpty && !emails.isEmpty {
                         Divider().padding(.leading, 76)
                     }
-                    ForEach(self.emails.indices, id: \.self) { i in
+                    ForEach(emails.indices, id: \.self) { i in
                         if i > 0 { Divider().padding(.leading, 76) }
                         ContactInfoRowV2(
-                            label: self.emails[i].label,
-                            value: self.emails[i].value,
-                            url: URL(string: "mailto:\(self.emails[i].value)")
+                            label: emails[i].label,
+                            value: emails[i].value,
+                            url: URL(string: "mailto:\(emails[i].value)")
                         )
                     }
                 }
