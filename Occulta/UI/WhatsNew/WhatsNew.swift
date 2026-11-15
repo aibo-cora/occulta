@@ -143,6 +143,18 @@ enum WhatsNew {
                     "Data left on your phone by older versions of Occulta is now removed, and Erase All Data removes it too.",
                     "A progress screen in Settings no longer shows the page behind it."
                 ]
+            ),
+            Release(
+                version: "2.0.3",
+                features: [],
+                fixes: [
+                    "Occulta no longer closes unexpectedly when it opens a damaged file or message.",
+                    "Oversized or damaged images shared into Occulta are now refused instead of slowing the app down.",
+                    "Messages to a contact who switched to a new phone now work once you've exchanged keys again.",
+                    "Erase All Data now removes your keys even if another step fails, and tells you when it didn't finish.",
+                    "Your groups are no longer removed by mistake.",
+                    "The contact list and contact details no longer freeze while they load."
+                ]
             )
         ]
 

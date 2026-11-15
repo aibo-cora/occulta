@@ -837,7 +837,7 @@ struct HybridUpgradeBackupTests {
         let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
         keys.become(.classical)
 
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupport = Manager.Paths.applicationSupport
         try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
         // Two phones, each launched below iOS 26: the pass has run in the classical form on both.

@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import CryptoKit
 import OccultaFormats
 
 nonisolated
@@ -38,13 +39,32 @@ extension Contact.Profile {
     /// The capabilities of the current pairing, or `.none` for a contact with no current key (a card contact or one still
     /// waiting for an exchange), which has nothing to upgrade.
     var pairingCapabilities: PairingCapabilities {
+        self.pairingCapabilities(
+            opening: { $0.decrypt() },
+            bundleVersion: { ContactManager.bundleVersionState(for: self, using: Manager.Crypto()) }
+        )
+    }
+
+    /// Same as `pairingCapabilities`, under a local DB key the caller already derived, for a screen that reads
+    /// several fields in one pass.
+    func pairingCapabilities(using key: SymmetricKey) -> PairingCapabilities {
+        self.pairingCapabilities(
+            opening: { $0.decrypt(using: key) },
+            bundleVersion: { ContactManager.bundleVersionState(for: self, using: key) }
+        )
+    }
+
+    private func pairingCapabilities(
+        opening open: (Data) -> Data?,
+        bundleVersion: () -> ContactManager.BundleVersionState
+    ) -> PairingCapabilities {
         guard let key = self.currentKey else { return .none }
 
         let state: PairingState = key.pairingEncrypted
-            .flatMap { $0.decrypt() }
+            .flatMap { open($0) }
             .flatMap { try? PairingCodec().decode($0) } ?? .empty
         let peerCanPair: Bool = {
-            guard case .readable(let version) = ContactManager.bundleVersionState(for: self, using: Manager.Crypto()) else { return false }
+            guard case .readable(let version) = bundleVersion() else { return false }
             return version.isAtLeast(.pairingCapable)
         }()
 
