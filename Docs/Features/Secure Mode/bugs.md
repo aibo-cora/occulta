@@ -13349,8 +13349,14 @@ row's field matches a real one's length.
 ## Bug 162 — A trustee's piece count for an owner tells how many of the owner's depths have a backup
 
 **Status:** Open. The on-screen count and the custody manifest's size are fixed (2026-10-16, below); the stored
-rows and the pieces' dates still carry it: open, needs a decision. Found 2026-10-12 reviewing custody for depth
-leaks.
+rows and the pieces' dates still carry it: ~~open, needs a decision~~. Found 2026-10-12 reviewing custody for depth
+leaks. **Decided 2026-11-15 by the owner, for the passphrase release (stage 5):** a trustee keeps every piece from
+one owner in that contact's custody record, one row at the store's one size, so row counts say nothing. The pieces'
+dates are in the owner's signature and can't be dropped, and only the owner's key could make filler that verifies,
+so a holder of the trustee's phrase can still count an owner's pieces and read their dates: a stated limit. After
+2.1.0, a piece from another of the owner's spaces arrives over a separate pairing and so to a separate contact;
+what piles up under one contact is mostly pieces received before migration (`PASSPHRASE_ROLLOUT.md`, Related
+tracked items; `decisions.md`, 2026-11-15).
 
 **Target:** `v2.0.0`. Present since per-entry splitting was retired (`decisions.md`, 2026-09-26/27), which left
 the backup key as the only split secret, one per depth.
@@ -13895,6 +13901,11 @@ None automated: the folder is decided by iOS from `Info.plist`. Checked in the S
 
 **Status:** Open in part. Found 2026-10-19 while checking whether Prekey Continuity D9's blobs suit the app's
 other keys (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`, decision 15). Not verified on a device in this pass.
+- **Decided 2026-11-15 by the owner, for the passphrase release:** stage 4 deletes every legacy keychain prekey in
+  the step that moves a contact's prekeys into blobs in its sealed record, once those blobs are verified to open;
+  stage 5 derives the shard custody key from the space key and deletes its keychain item. What then outlives an
+  app deletion is only decision 15's install-wide keys, which every install has (`PASSPHRASE_ROLLOUT.md` §6;
+  `decisions.md`, 2026-11-15).
 - **Decided 2026-10-19 by the owner (decision 15):** per-install keys stay in the keychain, the new phrase key
   included. Erase All Data deletes the share staging key, built and merged 2026-10-19 (PR #118, with #119's
   sweep of unread `inbound/` handoffs).
@@ -15178,8 +15189,13 @@ same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of fil
 
 **Status:** Open, needs a decision. Found 2026-10-31 while describing the contact table after the passphrase
 rollout (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 23). **For the passphrase rollout's new store, decided
-2026-11-01:** plain SQLite, so none of this applies there (`decisions.md`, 2026-11-01). The SwiftData store that
-remains, and every store today's app writes, are still open.
+2026-11-01:** plain SQLite, so none of this applies there (`decisions.md`, 2026-11-01). ~~The SwiftData store that
+remains, and every store today's app writes, are still open.~~ **Decided 2026-11-15 by the owner:** no SwiftData
+after migration. Install-wide state moves to its own table in the plain SQLite file, sealed under the device-only
+key, and the SwiftData store is deleted with the old store once the reseal is verified, so this closes for 2.1.0.
+No stopgap for 2.0.x: purging the history leaves its freed pages, since `secure_delete` doesn't reach SwiftData's
+connection (Bugs 210 and 229). Images taken before the migration keep the log (`PASSPHRASE_ROLLOUT.md` §8, 23;
+`decisions.md`, 2026-11-15).
 
 **Target:** None yet. It is in every shipped build, and the passphrase rollout's storage relies on it being gone.
 

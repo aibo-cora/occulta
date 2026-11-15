@@ -1746,3 +1746,22 @@ back to the old key, touches every attachment open and keeps the old key in use 
 **Not chosen:** (1) opening waits for the reseal task; (2) a fall-back open under the old key for one release.
 
 **Full reasoning:** `bugs.md` Bug 196 addendum ("Cost") and the code review, round 1 (#4).
+
+## The passphrase design's open items, 2026-11-15
+
+**Status:** Decided 2026-11-15 by the owner, one at a time. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, items 28 and 29, §1.1's derivation change, §1.3's re-enable marker, item 26's remainder, item 23's SwiftData remainder (Bug 190), item 31's last two findings, the photo table's noise, and the open parts of Bugs 162 and 170. Still open: the write-order measurement (item 23), the row size and the retired-key cap (set when built), the unlock cost on a device, and spec §2's rewrite.
+
+**Decisions:**
+- *Where a contact goes (29):* only to the space it was created in (`originDepth`), with its pairing and prekeys; no copies. Copies would share prekey blobs (D9), so a prekey used in one space would still open the message in another, two spaces would send to the same one-time keys, and each would replace the other's batch. A keyless copy for decoys only kept a decoy looking full, which register §I already doesn't require.
+- *Row size (29):* since 2.0.1 a contact carries 44 KB of fixed-size fields (pairing 16 KB, card 12 KB, prekeys 16 KB), so 8 KB can't hold one. One larger fixed size for every small record, from the largest contact or photo with headroom; no per-field padding inside a sealed record; limits on every growing field and a cap on retired keys, so no record can outgrow it. Not adopted: continuation rows, two tables.
+- *Photos:* ordinary records in that table, so its noise covers them and the photo table goes; unlock now opens them too. Vault entries keep their own table and noise.
+- *Rollback (28):* a manifest row per space, an ordinary sealed row holding a hash over every row the space opens, rewritten with each write in the same transaction and checked at unlock; rolled-back or unlisted rows are not used, with a warning. §1.5's rule is against recognisable, countable records, which this isn't. A whole-space rollback stays undetected.
+- *A later derivation change (§1.1):* nothing built now; such a release derives both ways on every entry, on every install, for a stated window, and reseals a space the old way opens, so unlock time never shows whether a space was opened since the update.
+- *Re-enabling the lock (§1.3):* settled by 7c; lock-on always makes a new phrase and reseals.
+- *Stale pages outside the file (26):* a stated limit, said in step 16's guidance; file rotation stays not adopted.
+- *SwiftData (23, Bug 190):* none after migration; install-wide state goes to its own table in the plain SQLite file, sealed under the device-only key. No 2.0.x stopgap, since purged history leaves its pages (Bugs 210, 229).
+- *Item 31:* Bugs 227, 222, 223 and 211 were fixed in 2.0.2 and the design keeps those fixes; Bug 234's record becomes a space row in stage 5; Bug 214's entitlement lands in stage 0, checked on the spare phone.
+- *Keychain leftovers (Bug 170):* stage 4 deletes the legacy keychain prekeys once their blobs verify; stage 5 derives the custody key from the space key and deletes its item.
+- *A trustee's pieces (Bug 162):* one padded custody record per owner contact; a holder of the trustee's phrase can still count the owner's signed pieces and their dates, which only the owner's key could disguise. A stated limit.
+
+**Full reasoning:** `PASSPHRASE_ROLLOUT.md` at each item.
