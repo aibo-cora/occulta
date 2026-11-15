@@ -77,6 +77,33 @@ struct PrekeyBookkeeper {
         record.inboundLastResort.map { Prekey(id: $0.id, contactID: contactID, publicKey: $0.publicKey) }
     }
 
+    /// Forgets everything the contact's old phone gave us, because their identity key changed (Bug 194): the one-time
+    /// keys and last-resort key we'd seal to, which only that phone can open, and the batch IDs and date that decide
+    /// which batch to accept next. A date left from the old phone could be ahead of the new phone's clock and make
+    /// `accept` refuse its first batch. Our own batches stay: the old phone sealed them, and nothing in them is
+    /// wrong.
+    ///
+    /// - Returns: whether the record changed.
+    @discardableResult
+    func dropInbound(from record: inout PrekeyRecord) -> Bool {
+        let before = record
+        record.inboundBatches = []
+        record.inboundLastResort = nil
+        record.acceptedBatchIDs = []
+        record.latestInboundGeneratedAt = nil
+        return record != before
+    }
+
+    /// Whether what we hold from the contact was given to us before their current key arrived at `acquiredAt`, so it
+    /// belongs to a phone that no longer is theirs. A record with nothing inbound isn't stale. One with inbound state
+    /// and no date predates the date being kept, and is.
+    func inboundIsStale(_ record: PrekeyRecord, since acquiredAt: Date) -> Bool {
+        guard !record.inboundBatches.isEmpty || record.inboundLastResort != nil
+                || !record.acceptedBatchIDs.isEmpty || record.latestInboundGeneratedAt != nil
+        else { return false }
+        return record.latestInboundGeneratedAt.map { $0 < acquiredAt } ?? true
+    }
+
     /// The batch we're still waiting to deliver, to attach to every message to this contact.
     ///
     /// The record doesn't store the public keys of keys it holds a blob for; `publicKeyOfBlob` derives them, which

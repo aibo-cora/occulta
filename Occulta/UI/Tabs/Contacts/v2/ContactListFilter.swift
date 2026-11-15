@@ -10,8 +10,59 @@
 //
 
 import Foundation
+import CryptoKit
 
 enum ContactListFilter {
+
+    /// A contact with the names the list sorts and searches by, opened once.
+    struct Entry {
+        let contact: Contact.Profile
+        let givenName: String
+        let familyName: String
+    }
+
+    /// What the contacts list draws. `visible` is everyone at the depth, whatever the search says: the empty
+    /// state and the count are decided on it. `shown` is `visible` after search and sort.
+    struct Listing {
+        let visible: [Entry]
+        let shown: [Entry]
+
+        static let empty = Listing(visible: [], shown: [])
+    }
+
+    /// `visibleContacts`, `isEmptyList` and `sortedContacts` for one pass of the list, under a key the caller
+    /// derived once. Those three open the same fields again on every call, and each open derives the key afresh
+    /// (the Enclave-bound derivation: hangs of 0.7 to 2 s a pass on an iPhone 15 Pro, `Docs/Bugs/v2.1.0/`), so the
+    /// list's body paid for them several times over, and the sort paid for them on every comparison.
+    ///
+    /// No key gives an empty listing, as `Group.FormV3.computeEligibility` does: without one `isVisible` treats
+    /// every classified contact as hidden, and every contact is classified once it has been created.
+    static func listing(
+        _ contacts: [Contact.Profile],
+        atDepth depth: Int,
+        matching searchText: String,
+        usingKey key: SymmetricKey?
+    ) -> Listing {
+        guard let key else { return .empty }
+
+        let visible = contacts
+            .filter { $0.isVisible(atDepth: depth, usingKey: key) }
+            .map { Entry(contact: $0, givenName: $0.givenName.decrypt(using: key), familyName: $0.familyName.decrypt(using: key)) }
+
+        let matching = searchText.isEmpty ? visible : visible.filter {
+            $0.givenName.localizedStandardContains(searchText)
+            || $0.familyName.localizedStandardContains(searchText)
+            || $0.contact.organizationName.decrypt(using: key).localizedStandardContains(searchText)
+        }
+
+        let shown = matching.sorted {
+            if !$0.familyName.isEmpty || !$1.familyName.isEmpty { return $0.familyName < $1.familyName }
+
+            return $0.givenName < $1.givenName
+        }
+
+        return Listing(visible: visible, shown: shown)
+    }
 
     /// Contacts visible at `depth`. Everything classified deeper is absent from this list,
     /// which is what keeps sensitive contacts out of a duress-depth view.
