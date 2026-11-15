@@ -14902,6 +14902,8 @@ How the rows came to be under the new key with the epoch at 1 is **not establish
 register D6): the first case it ran against `DepthCodec` crashed, and the first run of the app's targets crashed in
 the identity-challenge payload.
 
+**Update 2026-11-15:** in `release/v2.1.0` and shipped in 2.0.3 ([aibo-cora/occulta#191](https://github.com/aibo-cora/occulta/pull/191), tag `v2.0.3`, backported from the 2.1.0 commits). Anything above that says "not merged" is as of filing.
+
 **Target:** `v2.1.0`, and every build with these types.
 
 ### Severity: Low (nothing reaches it today: every caller passes a `Data` that starts at index 0)
@@ -14963,6 +14965,8 @@ slice to every target one case in four, so a fourth decoder with the same habit 
 mechanism was found 2026-10-30 from reading `ShareSession.stripEXIF` while listing the share extension's input path for
 hardening step 12; the chunk mechanism by the fuzzer the same day (seed 1, iteration 151 of the staged-file target).
 Both confirmed by standalone probes.
+
+**Update 2026-11-15:** in `release/v2.1.0` and shipped in 2.0.3 ([aibo-cora/occulta#191](https://github.com/aibo-cora/occulta/pull/191), tag `v2.0.3`, backported from the 2.1.0 commits). Anything above that says "not merged" is as of filing.
 
 **Target:** `v2.1.0`, and every build with EXIF stripping (1.x).
 
@@ -15090,6 +15094,8 @@ measured on a device; this would be the second thing to measure there.
 
 **Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged; two residuals open, needs a decision (below). Found 2026-10-30
 by the decoder fuzzer's standalone run: seed 12, iteration 98773 of the depth target, a 513-byte input, exit 133.
+
+**Update 2026-11-15:** in `release/v2.1.0` and shipped in 2.0.3 ([aibo-cora/occulta#191](https://github.com/aibo-cora/occulta/pull/191), tag `v2.0.3`, backported from the 2.1.0 commits). Anything above that says "not merged" is as of filing.
 
 **Target:** `v2.1.0`, and every build that decodes JSON from outside the device: the legacy bundle (1.x) and the
 exchange's messages.
@@ -15307,6 +15313,8 @@ full Simulator run passed with only the 6 expected skips. Found 2026-11-01, when
 a phone with real data made its contacts and groups disappear from the app. The contacts came back after a normal
 launch; the groups were deleted for good.
 
+**Update 2026-11-15:** in `release/v2.1.0` and shipped in 2.0.3 ([aibo-cora/occulta#191](https://github.com/aibo-cora/occulta/pull/191), tag `v2.0.3`, backported from the 2.1.0 commits). Anything above that says "not merged" is as of filing. The two commits that fixed it are titled "Bug 191", a mislabel: this is Bug 192, and Bug 191 (`TransportKeyDerivation`) was not backported.
+
 **Target:** `release/v2.1.0`. Debug builds hosting tests are where it was seen; the purge guard also covers any
 shipped path that reaches the purge with the wrong key.
 
@@ -15400,6 +15408,8 @@ None yet. A test that picks a photo with GPS metadata and finds none in what the
 ## Bug 194 — After a contact's identity key changes, our messages to them are sealed to their old phone's prekeys: the new phone can't open them, and without ML-KEM the old phone can
 
 **Status:** **Fixed 2026-11-03** on branch `claude/bug-194-stale-inbound-prekeys-ee7f61` ([aibo-cora/occulta#156](https://github.com/aibo-cora/occulta/pull/156), to `release/v2.1.0`). Filed 2026-11-03 from audit lead 13 (`Docs/Audit/SkillTrial2026-10-20/NEEDS-VALIDATION.md` §13), confirmed by a code trace at `cea3927b` (`release/v2.1.0`), then reproduced by `StaleInboundPrekeysConversationTests` on a real Enclave: with the fix removed, the new phone throws `recipientSlotNotFound` on every message sent after the key change. The trace widens the lead in two ways: it needs no introduction card and no revoke, only a contact whose identity key changes; and it finds a confidentiality case the lead ruled out.
+
+**Update 2026-11-15:** in `release/v2.1.0` and shipped in 2.0.3 ([aibo-cora/occulta#191](https://github.com/aibo-cora/occulta/pull/191), tag `v2.0.3`, backported from the 2.1.0 commits). Anything above that says "not merged" is as of filing.
 
 **Target:** `release/v2.1.0` only, decided 2026-11-03. No 2.0.x backport: a 2.0.x user who needs the exposure closed sooner can delete the contact and exchange again, which starts a fresh record.
 
