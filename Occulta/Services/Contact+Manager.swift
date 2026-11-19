@@ -1307,17 +1307,28 @@ extension ContactManager {
         // Message sends always attempt FS; shard sends on the group path require it.
         // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
         let needsPrekey = !isCarryingShard || targetVersion.supportsGroups
+        // The record as it is sealed now. Taking a key writes the shortened one onto the contact before the steps that can
+        // still throw, and a throw leaves it there for whatever saves next: put the sealed one back, unless the send gets
+        // as far as its own save (Bug 205).
+        let sealedRecordBefore = contact.prekeyRecordEncrypted
+        var recordChanged = false
+        var sendCompleted = false
+        defer { if !sendCompleted, contact.prekeyRecordEncrypted != sealedRecordBefore { contact.prekeyRecordEncrypted = sealedRecordBefore } }
         if needsPrekey {
             var record = try self.prekeyRecord(for: contact)
+            let recordBefore = record
 
             #if DEBUG
             debugPrint("Encrypting \(isCarryingShard ? "shard" : "message") bundle for contact. Inbound prekeys: \(record.inboundBatches.reduce(0) { $0 + $1.keys.count }), pending batch: \(PrekeyBookkeeper().hasPendingBatch(record))")
             #endif
 
             contactPrekey = PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: contact.identifier)
-            if contactPrekey != nil {
+            // Changed by a key taken, or by keys that couldn't be sealed to and were dropped (Bug 204).
+            if record != recordBefore {
                 try self.store(record, for: contact)
-            } else if targetVersion.supportsGroups {
+                recordChanged = true
+            }
+            if contactPrekey == nil, targetVersion.supportsGroups {
                 // Group format only: there the sender's ephemeral signature authenticates the slot.
                 lastResortPrekey = PrekeyBookkeeper().lastResortPrekey(in: record, contactID: contact.identifier)
             }
@@ -1399,7 +1410,8 @@ extension ContactManager {
                 let bundle = try Manager.Crypto().seal(sealedPayload: sealedPayload, groupID: UUID(), recipients: recipients)
                 sent = try output.deliver(try bundle.encoded(version: .v4))
             }
-            if contactPrekey != nil { try self.modelContext.save() }
+            if recordChanged { try self.modelContext.save() }
+            sendCompleted = true
             return sent
         }
 
@@ -1429,11 +1441,12 @@ extension ContactManager {
         )
         let sent = try output.deliver(try bundle.encoded(version: wireVersion))
         
-        if contactPrekey != nil {
+        if recordChanged {
             // Persist prekey state only when it was mutated (message mode).
             try self.modelContext.save()
         }
 
+        sendCompleted = true
         return sent
     }
 }
@@ -1513,14 +1526,26 @@ extension ContactManager {
         // and `seal`/`WireHandle.encode`/`bundle.encoded` in pass 2. If any of that
         // throws, the explicit `self.modelContext.save()` near the bottom of this
         // function is never reached, but the in-memory pop is still live on
-        // `self.modelContext` — SwiftData's autosave (backgrounding, or any other
-        // incidental `.save()` on this same shared context) could flush it to disk
-        // regardless, silently burning a contact's forward-secrecy prekey stock for a
-        // message that was never actually sent. Disabling autosave for the duration of
-        // this function closes that window; only the explicit save below can persist
-        // the pop, and that only runs after the send has fully succeeded.
+        // `self.modelContext`. Autosave being off for the duration holds it back only
+        // until this function returns: the `defer` below turns autosave back on with the
+        // changed objects still in the context, and the next autosave (backgrounding, or
+        // any other incidental `.save()` on this same shared context) writes them,
+        // silently burning a contact's forward-secrecy prekey stock for a message that
+        // was never sent, on every attempt (Bug 205). So a send that does not complete
+        // puts each member's sealed record back first.
         self.modelContext.autosaveEnabled = false
         defer { self.modelContext.autosaveEnabled = true }
+
+        var sealedRecordsBefore: [(contact: Contact.Profile, sealed: Data?)] = []
+        var sendCompleted = false
+        // Declared after the one above, so it runs first: the records are back before autosave is.
+        defer {
+            if !sendCompleted {
+                for entry in sealedRecordsBefore where entry.contact.prekeyRecordEncrypted != entry.sealed {
+                    entry.contact.prekeyRecordEncrypted = entry.sealed
+                }
+            }
+        }
 
         guard let grp = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
 
@@ -1559,8 +1584,11 @@ extension ContactManager {
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
 
             var record = try self.prekeyRecord(for: contact)
+            let recordBefore = record
+            sealedRecordsBefore.append((contact, contact.prekeyRecordEncrypted))
             let contactPrekey = PrekeyBookkeeper().takeInboundPrekey(from: &record, contactID: contact.identifier)
-            if contactPrekey != nil {
+            // Changed by a key taken, or by keys that couldn't be sealed to and were dropped (Bug 204).
+            if record != recordBefore {
                 try self.store(record, for: contact)
                 prekeyConsumed = true
             }
@@ -1641,6 +1669,7 @@ extension ContactManager {
             try self.modelContext.save()
         }
 
+        sendCompleted = true
         return sent
     }
 

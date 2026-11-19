@@ -118,7 +118,8 @@ private struct Conversation {
         case .longTerm:                 due = !self.bookkeeper.hasPendingBatch(record)
         }
         if due {
-            let blob = { Data((0..<143).map { _ in UInt8.random(in: .min ... .max) }) }
+            // The first 65 bytes are what `pendingBatch` reads as the key's public key, so they are a real point (Bug 204).
+            let blob = { randomPoint() + Data((0..<78).map { _ in UInt8.random(in: .min ... .max) }) }
             self.bookkeeper.install((0..<15).map { _ in blob() }, lastResort: blob(), into: &record, now: self.now)
         }
 
