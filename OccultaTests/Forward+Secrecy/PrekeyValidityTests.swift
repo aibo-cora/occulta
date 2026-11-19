@@ -99,9 +99,11 @@ struct PrekeyPointTests {
 @MainActor
 struct PrekeySendTests {
 
-    private func fixture(inbound keys: [PrekeyRecord.InboundKey], lastResort: PrekeyRecord.InboundKey? = nil) throws -> (ContactManager, Contact.Profile) {
+    private func fixture(
+        inbound keys: [PrekeyRecord.InboundKey], lastResort: PrekeyRecord.InboundKey? = nil, marker: OccultaBundle.Version? = nil
+    ) throws -> (ContactManager, Contact.Profile) {
         let cm = try TestSupport.makeContactManager()
-        try insertStreamedSender(identifier: "bob", publicKey: try TestKeyManager().retrieveIdentity(), in: cm)
+        try insertStreamedSender(identifier: "bob", publicKey: try TestKeyManager().retrieveIdentity(), marker: marker, in: cm)
         let bob = try #require(try cm.fetchContact(by: "bob"))
 
         var record = try cm.prekeyRecord(for: bob)
@@ -152,6 +154,26 @@ struct PrekeySendTests {
         let bundle = try cm.encryptGroupBundle(basket: Basket(files: []), groupID: try #require(group.readID()))
 
         #expect(!bundle.isEmpty)
+    }
+
+    // MARK: The compose indicator
+
+    @Test("The indicator says forward-secret only for a one-time key a send can use", .ambientTestKeyManager)
+    func indicatorCountsUsableKeys() throws {
+        let (onlyBad, _) = try self.fixture(inbound: [inbound(badKey())])
+        #expect(onlyBad.nextSendSecrecy(for: "bob") == .longTerm, "a key that is dropped at send time is not forward secrecy")
+
+        let (oneGood, _) = try self.fixture(inbound: [inbound(badKey()), inbound(randomPoint())])
+        #expect(oneGood.nextSendSecrecy(for: "bob") == .forwardSecret)
+    }
+
+    @Test("The indicator says temporary key only for a last-resort key a send can use", .ambientTestKeyManager)
+    func indicatorChecksLastResort() throws {
+        let (bad, _) = try self.fixture(inbound: [], lastResort: inbound(badKey()), marker: .streamedBodyCapable)
+        #expect(bad.nextSendSecrecy(for: "bob") == .longTerm)
+
+        let (good, _) = try self.fixture(inbound: [], lastResort: inbound(randomPoint()), marker: .streamedBodyCapable)
+        #expect(good.nextSendSecrecy(for: "bob") == .temporaryKey)
     }
 
     // MARK: Bug 205
