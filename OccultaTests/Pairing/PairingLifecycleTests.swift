@@ -402,4 +402,58 @@ struct PairingLifecycleTests {
         #expect(revokedRow.pairingEncrypted == once, "a cleared row is not sealed again")
         #expect(cm.pairingState(of: revokedRow) == .empty)
     }
+
+    @Test("The revoked-row pass runs until it has completed once, and not at every launch after", .ambientTestKeyManager)
+    func revokedPassRunsOnlyUntilCompleted() throws {
+        let cm = try makeContactManager()
+        let defaults = freshDefaults()
+        let first = try self.pairedContact(cm)
+        first.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        let firstRow = try #require(first.currentKey)
+        firstRow.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+
+        try DatabaseMigration.migrateRevokedPairingsOnce(modelContext: cm.modelContext, defaults: defaults)
+        #expect(cm.pairingState(of: firstRow) == .empty)
+
+        // No revoke leaves one after the fix, so a completed pass is not repeated: this row is left.
+        let later = try self.pairedContact(cm)
+        later.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        let laterRow = try #require(later.currentKey)
+        laterRow.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+        try DatabaseMigration.migrateRevokedPairingsOnce(modelContext: cm.modelContext, defaults: defaults)
+
+        #expect(cm.pairingState(of: laterRow) != .empty)
+    }
+
+    @Test("A pass that met a column it could not read is not marked, and runs again", .ambientTestKeyManager)
+    func unreadableColumnRunsAgain() throws {
+        let cm = try makeContactManager()
+        let defaults = freshDefaults()
+        let contact = try insert(cm, rawColumn: try Data(repeating: 0xAB, count: 4_000).encrypt())
+        contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        let row = try #require(contact.currentKey)
+        row.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+
+        try DatabaseMigration.migrateRevokedPairingsOnce(modelContext: cm.modelContext, defaults: defaults)
+        #expect(!defaults.bool(forKey: DatabaseMigration.revokedPairingsMarker))
+
+        // Readable now: the next launch clears it.
+        row.pairingEncrypted = try cm.sealedPairing(.paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))
+        try DatabaseMigration.migrateRevokedPairingsOnce(modelContext: cm.modelContext, defaults: defaults)
+
+        #expect(cm.pairingState(of: row) == .empty)
+        #expect(defaults.bool(forKey: DatabaseMigration.revokedPairingsMarker))
+    }
+
+    @Test("A v1 contact's expired row, which the pass skips, keeps it from being marked", .ambientTestKeyManager)
+    func v1RowKeepsItOpen() throws {
+        let cm = try makeContactManager()
+        let defaults = freshDefaults()
+        let contact = try self.pairedContact(cm)   // still at the v1 scheme
+        try #require(contact.currentKey).expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+
+        try DatabaseMigration.migrateRevokedPairingsOnce(modelContext: cm.modelContext, defaults: defaults)
+
+        #expect(!defaults.bool(forKey: DatabaseMigration.revokedPairingsMarker))
+    }
 }

@@ -494,10 +494,14 @@ struct DatabaseMigration {
     ///   - modelContext: The context to fetch and save postal addresses.
     ///   - legacyCrypto: Opens values sealed under the v1 key.
     ///   - newCrypto: The current key, as `Manager.Crypto()` derives it.
-    static func migrateCountryOrphans(modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol) throws {
+    /// - Returns: Whether every candidate was resealed or already current. `false` if a value opened under neither key, which a
+    ///   later launch may be able to read (see `runOnce`).
+    @discardableResult
+    static func migrateCountryOrphans(modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol) throws -> Bool {
         let v1 = EncryptionScheme.v1_identityDerived.rawValue
         let addresses = try modelContext.fetch(FetchDescriptor<Contact.Profile.PostalAddress>())
         var didChange = false
+        var completed = true
 
         for address in addresses {
             guard let profile = address.profile, profile.encryptionScheme != v1, profile.deletionToken == nil,
@@ -510,13 +514,14 @@ struct DatabaseMigration {
             guard let plaintext = try? legacyCrypto.decryptLegacy(data: sealed),
                   let resealed = try newCrypto.encrypt(data: plaintext),
                   try newCrypto.decrypt(data: resealed) == plaintext
-            else { continue }
+            else { completed = false; continue }
 
             address.country = resealed.base64EncodedString()
             didChange = true
         }
 
         if didChange { try modelContext.save() }
+        return completed
     }
 
     /// Clears the routing key and pair keys from key rows that were revoked before `ContactManager.reset(identity:)` did it
@@ -537,23 +542,67 @@ struct DatabaseMigration {
     /// is skipped, so a store with nothing to clear is not written.
     ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
-    static func migrateRevokedPairings(modelContext: ModelContext) throws {
+    /// - Returns: Whether every expired row was read: `false` if a column could not be, or if a contact still at the v1
+    ///   scheme holds an expired row, which this pass does not reach until `migrateToV2` has converted it (see `runOnce`).
+    @discardableResult
+    static func migrateRevokedPairings(modelContext: ModelContext) throws -> Bool {
         let v1 = EncryptionScheme.v1_identityDerived.rawValue
-        let contacts = try modelContext.fetch(
-            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.encryptionScheme != v1 })
-        )
+        let all = try modelContext.fetch(FetchDescriptor<Contact.Profile>())
+        let contacts = all.filter { $0.encryptionScheme != v1 }
         var didChange = false
+        var completed = !all.contains { $0.encryptionScheme == v1 && ($0.contactPublicKeys ?? []).contains { $0.expiredOn != nil } }
 
         for key in contacts.flatMap({ $0.contactPublicKeys ?? [] }) where key.expiredOn != nil {
             guard let sealed = key.pairingEncrypted, let plaintext = sealed.decrypt(),
-                  let state = try? PairingCodec().decode(plaintext), state != .empty
-            else { continue }
+                  let state = try? PairingCodec().decode(plaintext)
+            else { completed = false; continue }
+            guard state != .empty else { continue }
             guard let empty = try PairingCodec().encode(.empty).encrypt() else { throw MigrationError.hybridKeyUnavailable }
             key.pairingEncrypted = empty
             didChange = true
         }
 
         if didChange { try modelContext.save() }
+        return completed
+    }
+
+    // MARK: - Passes that run until completed once
+
+    /// The markers of the two passes below, in `UserDefaults`. Plain names on purpose: a key that named its purpose would say
+    /// more about the app than the flag is worth.
+    nonisolated static let countryOrphansMarker = "dbPass.1"
+    nonisolated static let revokedPairingsMarker = "dbPass.2"
+
+    /// Runs `pass`, unless an earlier launch completed it, and records that it completed when it returns `true`.
+    ///
+    /// For a repair of rows an older build left behind, which nothing makes any more: scanning every row of every contact at every
+    /// launch to find none costs a decrypt of each, for as long as the app is installed. The marker is one global flag, set from a
+    /// scan of every row at every depth, so it is the same whichever depth the app is unlocked at and says nothing about any
+    /// contact; it holds nothing a build's version does not already show. A pass that throws, or returns `false` because a
+    /// value could not be read yet, leaves it unset and runs again at the next launch.
+    ///
+    /// Migration plan, nothing is lost: the flag only decides whether a pass that changes nothing on a clean store runs; the
+    /// passes are unchanged and idempotent, so removing it (a reinstall, a restore without it) runs them once more and writes
+    /// nothing.
+    nonisolated static func runOnce(_ marker: String, defaults: UserDefaults = .standard, _ pass: () throws -> Bool) throws {
+        guard !defaults.bool(forKey: marker) else { return }
+        if try pass() { defaults.set(true, forKey: marker) }
+    }
+
+    /// `migrateCountryOrphans`, until it has completed once (Bug 216).
+    static func migrateCountryOrphansOnce(
+        modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol, defaults: UserDefaults = .standard
+    ) throws {
+        try self.runOnce(Self.countryOrphansMarker, defaults: defaults) {
+            try self.migrateCountryOrphans(modelContext: modelContext, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+        }
+    }
+
+    /// `migrateRevokedPairings`, until it has completed once (Bug 201).
+    static func migrateRevokedPairingsOnce(modelContext: ModelContext, defaults: UserDefaults = .standard) throws {
+        try self.runOnce(Self.revokedPairingsMarker, defaults: defaults) {
+            try self.migrateRevokedPairings(modelContext: modelContext)
+        }
     }
 
     /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
