@@ -366,14 +366,11 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       the bytes are queued in memory and the function returns early.
 - [x] No sensitive material written to `UserDefaults`, `NSCache`, or temp files without
       protection class
-      — `UserDefaults`/`@AppStorage` holds six booleans and one version string: `showFingerprints`,
-      `showTrustSummary`, `hasCompletedOnboarding`, `vault.postRestoreActionNeeded`, `dbPass.1` and
-      `dbPass.2`, and `whatsNewLastSeenVersion` (the marketing version, which `Info.plist` already
-      carries). The two `dbPass` flags say that a launch repair of rows an older build left behind
-      completed once (`DatabaseMigration.runOnce`): one global flag each, set from a scan of every row at
-      every depth, so the same at every depth, naming nothing of what the pass repairs. No key
+      — `UserDefaults`/`@AppStorage` holds four booleans and one version string: `showFingerprints`,
+      `showTrustSummary`, `hasCompletedOnboarding`, `vault.postRestoreActionNeeded`, and
+      `whatsNewLastSeenVersion` (the marketing version, which `Info.plist` already carries). No key
       material, no identifiers, and no key whose name discloses Secure Mode. `OSTraceTests` fails
-      on any key outside these seven, so adding one means updating this list and that test together.
+      on any key outside these five, so adding one means updating this list and that test together.
       The What's New copy
       (`WhatsNew.releases`) is compiled into the binary and shown on an unlocked phone, so each
       release's entry is read against the same rule before tagging.

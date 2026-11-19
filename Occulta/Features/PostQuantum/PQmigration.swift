@@ -568,22 +568,10 @@ struct DatabaseMigration {
 
     // MARK: - Passes that run until completed once
 
-    /// Whether a one-time pass has completed, kept where the launch can read it before the store is opened at any depth.
-    struct Marker {
-        let isSet: () -> Bool
-        let set: () -> Void
-
-        /// Plain names on purpose: a key that named its purpose would say more about the app than the flag is worth. Each key
-        /// is on the allowlist of `OSTraceTests` and in `SECURITY_CHECKLIST.md`, which a new one must be added to.
-        static let countryOrphans = Marker(
-            isSet: { UserDefaults.standard.bool(forKey: "dbPass.1") },
-            set: { UserDefaults.standard.set(true, forKey: "dbPass.1") }
-        )
-        static let revokedPairings = Marker(
-            isSet: { UserDefaults.standard.bool(forKey: "dbPass.2") },
-            set: { UserDefaults.standard.set(true, forKey: "dbPass.2") }
-        )
-    }
+    /// The markers of the two passes below, in `UserDefaults`. Plain names on purpose: a key that named its purpose would say
+    /// more about the app than the flag is worth.
+    nonisolated static let countryOrphansMarker = "dbPass.1"
+    nonisolated static let revokedPairingsMarker = "dbPass.2"
 
     /// Runs `pass`, unless an earlier launch completed it, and records that it completed when it returns `true`.
     ///
@@ -596,23 +584,23 @@ struct DatabaseMigration {
     /// Migration plan, nothing is lost: the flag only decides whether a pass that changes nothing on a clean store runs; the
     /// passes are unchanged and idempotent, so removing it (a reinstall, a restore without it) runs them once more and writes
     /// nothing.
-    nonisolated static func runOnce(_ marker: Marker, _ pass: () throws -> Bool) throws {
-        guard !marker.isSet() else { return }
-        if try pass() { marker.set() }
+    nonisolated static func runOnce(_ marker: String, defaults: UserDefaults = .standard, _ pass: () throws -> Bool) throws {
+        guard !defaults.bool(forKey: marker) else { return }
+        if try pass() { defaults.set(true, forKey: marker) }
     }
 
     /// `migrateCountryOrphans`, until it has completed once (Bug 216).
     static func migrateCountryOrphansOnce(
-        modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol, marker: Marker = .countryOrphans
+        modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol, defaults: UserDefaults = .standard
     ) throws {
-        try self.runOnce(marker) {
+        try self.runOnce(Self.countryOrphansMarker, defaults: defaults) {
             try self.migrateCountryOrphans(modelContext: modelContext, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
         }
     }
 
     /// `migrateRevokedPairings`, until it has completed once (Bug 201).
-    static func migrateRevokedPairingsOnce(modelContext: ModelContext, marker: Marker = .revokedPairings) throws {
-        try self.runOnce(marker) {
+    static func migrateRevokedPairingsOnce(modelContext: ModelContext, defaults: UserDefaults = .standard) throws {
+        try self.runOnce(Self.revokedPairingsMarker, defaults: defaults) {
             try self.migrateRevokedPairings(modelContext: modelContext)
         }
     }
