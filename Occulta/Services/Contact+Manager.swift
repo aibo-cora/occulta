@@ -27,7 +27,7 @@ class ContactManager {
     private let cryptoManager: CryptoProtocol = Manager.Crypto()
 
     #if DEBUG
-    /// A test sets this to make the next `update(key:for:pairing:)` fail at its `save()`, after the card state, the tier, the
+    /// A test sets this to make the next `update(key:for:pairing:)` or `reset(identity:)` fail at its `save()`, after the card state, the tier, the
     /// challenge, the retired rows and the new row have all changed: no other failure comes that late. Reset by that use.
     @ObservationIgnored var failNextKeySave = false
 
@@ -767,23 +767,45 @@ extension ContactManager {
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
         // Before anything changes, so a failure to seal leaves the contact as it was.
         let sealedEmpty = try self.sealedPairing(PairingState.empty)
-        let droppedInbound = try self.dropInboundPrekeys(of: contact)
 
-        // A challenge outstanding to the pairing being revoked can't be answered: what was verified before stays true.
-        var challenges = contact.challengeState
-        if challenges.removeOutstandingChallenges() { try self.store(challenges, for: contact) }
+        // What the steps below change, as it was: a failure puts it back, so the next unrelated save does not write a revoke that
+        // reported failure (as `update(key:for:)` does).
+        let before = (
+            record: contact.prekeyRecordEncrypted, challenges: contact.challengeStateEncrypted,
+            current: contact.currentKey.map { (row: $0, expiredOn: $0.expiredOn, pairing: $0.pairingEncrypted) }
+        )
+        var droppedInbound = false
+        do {
+            droppedInbound = try self.dropInboundPrekeys(of: contact)
 
-        // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
-        // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
-        //
-        // The row's pairing column is overwritten with the sealed empty state, as a re-pair does to the rows it retires: what
-        // an expired row held, the routing key and the Enclave blobs of the pair keys, is of no use to it and must not stay.
-        if let current = contact.currentKey {
-            current.expiredOn = encrypted
-            current.pairingEncrypted = sealedEmpty
+            // A challenge outstanding to the pairing being revoked can't be answered: what was verified before stays true.
+            var challenges = contact.challengeState
+            if challenges.removeOutstandingChallenges() { try self.store(challenges, for: contact) }
+
+            // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
+            // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
+            //
+            // The row's pairing column is overwritten with the sealed empty state, as a re-pair does to the rows it retires: what
+            // an expired row held, the routing key and the Enclave blobs of the pair keys, is of no use to it and must not stay.
+            if let current = contact.currentKey {
+                current.expiredOn = encrypted
+                current.pairingEncrypted = sealedEmpty
+            }
+
+            #if DEBUG
+            if self.failNextKeySave { self.failNextKeySave = false; throw InjectedKeySaveFault() }
+            #endif
+            try self.modelContext.save()
+        } catch {
+            contact.prekeyRecordEncrypted = before.record
+            self.restore(sealedChallengeState: before.challenges, for: contact)
+            if let held = before.current {
+                held.row.expiredOn = held.expiredOn
+                held.row.pairingEncrypted = held.pairing
+            }
+            self.modelContext.rollback()
+            throw error
         }
-
-        try self.modelContext.save()
         if droppedInbound { self.security.checkpointStore() }
     }
     
