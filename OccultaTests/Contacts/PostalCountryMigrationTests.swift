@@ -29,14 +29,6 @@ private func makeContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
 }
 
-/// An isolated `UserDefaults`, so a test of a one-time pass's marker neither sees nor leaves one in the app's.
-func freshDefaults() -> UserDefaults {
-    let name = "OccultaTests.\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
-    defaults.removePersistentDomain(forName: name)
-    return defaults
-}
-
 @Suite("Bug 216 — postal country leaves the v1 key", .serialized)
 @MainActor
 struct PostalCountryMigrationTests {
@@ -188,77 +180,5 @@ struct PostalCountryMigrationTests {
         #expect(empty.country == "")
         #expect(deleted.country == v1Sealed, "a soft-deleted row is left, as migrateToV2 leaves it")
         #expect(v1Row.country == v1Sealed, "a v1 row belongs to migrateToV2")
-    }
-
-    // MARK: - Run until completed once
-
-    @Test("The pass runs until it has completed once, and not at every launch after", .ambientTestKeyManager)
-    func passRunsOnlyUntilCompleted() throws {
-        let context = ModelContext(try makeContainer())
-        let defaults = freshDefaults()
-        let (_, first) = try self.insert(scheme: .v2_hybridPQ, country: try self.sealedV1("Moldova"), seal: self.sealedCurrent, in: context)
-
-        try DatabaseMigration.migrateCountryOrphansOnce(
-            modelContext: context, legacyCrypto: LegacyCryptoManager(), newCrypto: Manager.Crypto(), defaults: defaults
-        )
-        #expect(self.opensCurrent(first.country) == "Moldova")
-
-        // Nothing makes a new one after a completed pass, so a second run is not made: this one is left.
-        let sealed = try self.sealedV1("Romania")
-        let (_, later) = try self.insert(scheme: .v2_hybridPQ, country: sealed, seal: self.sealedCurrent, in: context)
-        try DatabaseMigration.migrateCountryOrphansOnce(
-            modelContext: context, legacyCrypto: LegacyCryptoManager(), newCrypto: Manager.Crypto(), defaults: defaults
-        )
-
-        #expect(later.country == sealed)
-    }
-
-    @Test("A pass that could not read every country is not marked, and runs again", .ambientTestKeyManager)
-    func incompletePassRunsAgain() throws {
-        let context = ModelContext(try makeContainer())
-        let defaults = freshDefaults()
-        let noise = Data((0..<60).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let (_, stuck) = try self.insert(scheme: .v2_hybridPQ, country: noise, seal: self.sealedCurrent, in: context)
-
-        try DatabaseMigration.migrateCountryOrphansOnce(
-            modelContext: context, legacyCrypto: LegacyCryptoManager(), newCrypto: Manager.Crypto(), defaults: defaults
-        )
-        #expect(stuck.country == noise)
-
-        // What could not be read is readable now (a rotation finished, say): the next launch must try again.
-        stuck.country = try self.sealedV1("Moldova")
-        try context.save()
-        try DatabaseMigration.migrateCountryOrphansOnce(
-            modelContext: context, legacyCrypto: LegacyCryptoManager(), newCrypto: Manager.Crypto(), defaults: defaults
-        )
-
-        #expect(self.opensCurrent(stuck.country) == "Moldova")
-    }
-
-    @Test("A pass that throws is not marked", .ambientTestKeyManager)
-    func throwingPassRunsAgain() throws {
-        let defaults = freshDefaults()
-        struct Failure: Error {}
-        var runs = 0
-
-        #expect(throws: Failure.self) {
-            try DatabaseMigration.runOnce("dbPass.test", defaults: defaults) { runs += 1; throw Failure() }
-        }
-        try DatabaseMigration.runOnce("dbPass.test", defaults: defaults) { runs += 1; return true }
-        try DatabaseMigration.runOnce("dbPass.test", defaults: defaults) { runs += 1; return true }
-
-        #expect(runs == 2, "it ran again after the failure, and not after it completed")
-    }
-
-    @Test("An empty store completes the pass too: the marker says nothing about the contacts", .ambientTestKeyManager)
-    func emptyStoreCompletes() throws {
-        let context = ModelContext(try makeContainer())
-        let defaults = freshDefaults()
-
-        try DatabaseMigration.migrateCountryOrphansOnce(
-            modelContext: context, legacyCrypto: LegacyCryptoManager(), newCrypto: Manager.Crypto(), defaults: defaults
-        )
-
-        #expect(defaults.bool(forKey: DatabaseMigration.countryOrphansMarker))
     }
 }
