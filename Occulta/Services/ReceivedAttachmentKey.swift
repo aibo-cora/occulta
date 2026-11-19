@@ -42,7 +42,8 @@ extension ContactManager {
         of basket: Basket,
         owner: String,
         stagingKeyProvider: (any ComposeStagingKeyProviding)? = nil,
-        in directory: URL = FileManager.default.temporaryDirectory
+        in directory: URL = FileManager.default.temporaryDirectory,
+        write: @escaping @Sendable (AttachmentManager, Data, URL) throws -> Void = { try $0.encrypt($1, to: $2) }
     ) async throws -> OwnedBasket {
         let attachmentManager = self.receivedAttachmentKey(for: owner, stagingKeyProvider: stagingKeyProvider ?? TierUComposeStagingKey())
             .map { AttachmentManager(contactKey: $0) }
@@ -52,7 +53,12 @@ extension ContactManager {
             throw ImportError.stagingKeyUnavailable
         }
 
-        return try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
+        // Every file this call may write. A throw part-way removes them all, those the other tasks wrote included: the
+        // group has finished by then, and a file never written is simply not there (Bug 217).
+        var planned: [URL] = []
+
+        do {
+            return try await withThrowingTaskGroup(of: OccultaFormats.File.self) { group in
             var processed: [OccultaFormats.File] = []
 
             for file in basket.files {
@@ -71,10 +77,11 @@ extension ContactManager {
                         .appendingPathComponent(UUID().uuidString)
                         .appendingPathExtension(OccultaFormats.File.Metadata.sanitizedFilesystemExtension(metadata.extension))
                     let content = file.content ?? Data()
+                    planned.append(fileURL)
 
                     group.addTask {
                         guard let manager = attachmentManager else { throw ImportError.stagingKeyUnavailable }
-                        try manager.encrypt(content, to: fileURL)
+                        try write(manager, content, fileURL)
                         return OccultaFormats.File(url: fileURL, format: file.format, date: file.date)
                     }
 
@@ -96,6 +103,10 @@ extension ContactManager {
             )
 
             return OwnedBasket(basket: modifiedBasket, owner: owner)
+            }
+        } catch {
+            for url in planned { try? FileManager.default.removeItem(at: url) }
+            throw error
         }
     }
 }
