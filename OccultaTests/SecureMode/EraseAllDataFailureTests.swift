@@ -104,3 +104,59 @@ struct EraseAllDataFailureTests {
         #expect(!FileManager.default.fileExists(atPath: drafts.path), "the row steps after the one that failed did not run")
     }
 }
+
+// MARK: - A key deletion that reports failure
+
+@Suite("Erase All Data — a key that could not be deleted (Bug 209 follow-up)", .ambientFrozenTestKeyManager)
+@MainActor
+struct EraseAllDataKeyResultTests {
+
+    private func makeApp() throws -> Manager.App {
+        let keys = try #require(Manager.Ambient.keyManager as? TestKeyManager)
+        let store = try LegacyStore(keys: keys)
+        let security = Manager.Security(modelContainer: store.container, keyManager: keys)
+        return Manager.App(
+            contacts: ContactManager(modelContainer: store.container, security: security),
+            vault: VaultManager(modelContainer: store.container, keyManager: keys)
+        )
+    }
+
+    private func erase(
+        _ app: Manager.App, staging: Bool, keys: Bool, ran: Ran
+    ) throws {
+        let drafts = FileManager.default.temporaryDirectory.appendingPathComponent("erasekeys-drafts-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: drafts) }
+        // Items of the test's own, and closures that stand in for the deletions: nothing here touches the Keychain.
+        let suffix = UUID().uuidString
+        let items = Manager.Key.Items(
+            enclaveTags: [], tierSecretU: "test.erasekeys.ru.\(suffix)", tierSecretB: "test.erasekeys.rb.\(suffix)",
+            recordU: "test.erasekeys.pqu.\(suffix)", recordB: "test.erasekeys.pqb.\(suffix)"
+        )
+        try app.eraseAllData(
+            erasePrekeys: {}, draftsRoot: drafts, stagingContainer: nil, keys: Manager.Key(items: items),
+            deleteStagingKey: { _ in ran.staging = true; return staging },
+            deleteKeys: { _ in ran.keys = true; return keys }
+        )
+    }
+
+    final class Ran { var staging = false; var keys = false }
+
+    @Test("A key deletion that returns false is a failure, so the Settings alert covers it")
+    func keysReturnedFalse() throws {
+        let ran = Ran()
+        #expect(throws: Manager.App.EraseError.self) { try self.erase(try self.makeApp(), staging: true, keys: false, ran: ran) }
+        #expect(ran.staging && ran.keys, "both deletions ran: one failing must not skip the other")
+    }
+
+    @Test("A share-staging key deletion that returns false is a failure too")
+    func stagingReturnedFalse() throws {
+        let ran = Ran()
+        #expect(throws: Manager.App.EraseError.self) { try self.erase(try self.makeApp(), staging: false, keys: true, ran: ran) }
+        #expect(ran.staging && ran.keys)
+    }
+
+    @Test("When both deletions succeed nothing is thrown")
+    func bothSucceed() throws {
+        try self.erase(try self.makeApp(), staging: true, keys: true, ran: Ran())
+    }
+}
