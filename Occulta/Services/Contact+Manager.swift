@@ -748,8 +748,9 @@ extension ContactManager {
     
     /// Remove all keys of a contact.
     ///
-    /// Their prekeys go with them (Bug 194). The next exchange compares the new key with the unexpired one, and a
-    /// revoked contact has none, so it can't be relied on to see the change.
+    /// Their prekeys go with them (Bug 194), and so do the routing key and pair keys of the row it expires and any
+    /// challenge outstanding to that pairing (Bug 201). The next exchange compares the new key with the unexpired one, and
+    /// a revoked contact has none, so it can't be relied on to see the change.
     /// - Parameter identifier: Contact's ID.
     func reset(identity identifier: String) throws {
         guard
@@ -760,12 +761,24 @@ extension ContactManager {
 
         let expiration = String(Date.now.timeIntervalSince1970).data(using: .utf8)
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
+        // Before anything changes, so a failure to seal leaves the contact as it was.
+        let sealedEmpty = try self.sealedPairing(PairingState.empty)
         let droppedInbound = try self.dropInboundPrekeys(of: contact)
+
+        // A challenge outstanding to the pairing being revoked can't be answered: what was verified before stays true.
+        var challenges = contact.challengeState
+        if challenges.removeOutstandingChallenges() { try self.store(challenges, for: contact) }
 
         // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
         // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
-        contact.currentKey?.expiredOn = encrypted
-        
+        //
+        // The row's pairing column is overwritten with the sealed empty state, as a re-pair does to the rows it retires: what
+        // an expired row held, the routing key and the Enclave blobs of the pair keys, is of no use to it and must not stay.
+        if let current = contact.currentKey {
+            current.expiredOn = encrypted
+            current.pairingEncrypted = sealedEmpty
+        }
+
         try self.modelContext.save()
         if droppedInbound { self.security.checkpointStore() }
     }
