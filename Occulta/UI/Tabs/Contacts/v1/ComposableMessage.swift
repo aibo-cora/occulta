@@ -293,6 +293,8 @@ extension ComposableMessage {
         @State private var videoPlayer:    AVPlayer? = nil
         @State private var isPlaying:      Bool      = false
         @State private var decryptedImage: UIImage?  = nil
+        /// The file is too large to decrypt for a thumbnail on this device (Bug 219): it is shown as any other file.
+        @State private var imageTooLarge = false
         @State private var showingShare = false
         @Environment(\.colorScheme) private var colorScheme
 
@@ -357,7 +359,7 @@ extension ComposableMessage {
 
             case .file(let metadata):
                 let name = metadata.name ?? "file"
-                if FileExtensions.Image(rawValue: metadata.extension ?? "") != nil {
+                if FileExtensions.Image(rawValue: metadata.extension ?? "") != nil, !self.imageTooLarge {
                     self.imageBubble(name: name, metadata: metadata)
                 } else if FileExtensions.Video(rawValue: metadata.extension ?? "") != nil,
                           let url = self.file.url {
@@ -389,7 +391,13 @@ extension ComposableMessage {
                 .onTapGesture { guard self.decryptedImage != nil else { return }; self.showingFullScreen = true }
                 .task(id: "\(self.file.url?.path ?? "")|\(self.attachmentManager != nil)") {
                     guard let manager = self.attachmentManager, let url = self.file.url else { return }
-                    self.decryptedImage = try? await manager.image(at: url)
+                    do {
+                        self.decryptedImage = try await manager.displayImage(at: url)
+                    } catch OccultaBundle.BundleError.tooLargeForDevice {
+                        self.imageTooLarge = true
+                    } catch {
+                        self.decryptedImage = nil
+                    }
                 }
                 .contextMenu {
                     if case .read = self.mode {

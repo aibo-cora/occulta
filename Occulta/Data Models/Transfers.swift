@@ -26,6 +26,14 @@ struct OwnedBasket: Identifiable, Equatable, Codable {
     var receive: StreamedReceive? = nil
 
     private enum CodingKeys: String, CodingKey { case id, basket, owner }
+
+    /// Deletes the sealed attachment files of `basket`: the message sheet's `onDisappear`, and a result that is dropped
+    /// because the session ended while the file was being opened, which nothing will ever show (Bug 217).
+    func removeSealedFiles() {
+        for file in self.basket.files {
+            if let url = file.url { try? FileManager.default.removeItem(at: url) }
+        }
+    }
 }
 
 struct FileURL: Transferable {
