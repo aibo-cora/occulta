@@ -62,7 +62,7 @@ struct OSTraceScanner {
         var description: String { "\(self.path):\(self.line) — \(self.rule.message)" }
     }
 
-    /// Key expressions allowed as a `UserDefaults`/`@AppStorage` key. The same five keys
+    /// Key expressions allowed as a `UserDefaults`/`@AppStorage` key. The same seven keys
     /// `SECURITY_CHECKLIST.md` lists under "No sensitive material written to `UserDefaults`". Adding
     /// one means reviewing it against that item first: no key material, no identifiers, and no name
     /// that discloses Secure Mode.
@@ -72,6 +72,8 @@ struct OSTraceScanner {
         "\"hasCompletedOnboarding\"",
         "\"vault.postRestoreActionNeeded\"",
         "WhatsNew.lastSeenKey",
+        "\"dbPass.1\"",
+        "\"dbPass.2\"",
     ]
 
     /// The one file allowed to touch `UIPasteboard` directly.
