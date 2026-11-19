@@ -435,10 +435,8 @@ class ContactManager {
             // And the identity challenge state: empty, one slot per depth, the same size as any other (Bug 180).
             try self.store(ChallengeState.empty, for: newContact)
             self.modelContext.insert(newContact)
-
-            for key in contact.contactPublicKeys {
-                try? self.update(key: key, for: newContact.identifier)
-            }
+            // A draft's keys are not installed (Bug 202): a key comes only from an in-person exchange, through
+            // `update(key:for:)`, and a draft can come from a file.
 
             #if DEBUG
             debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
