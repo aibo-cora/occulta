@@ -44,6 +44,13 @@ struct PendingImport: Identifiable {
     }
 }
 
+// MARK: - MemberWithoutKey
+
+struct MemberWithoutKey: Equatable {
+    let identifier: String
+    let name: String
+}
+
 // MARK: - ComposeViewModel
 
 @Observable
@@ -63,6 +70,11 @@ final class ComposeViewModel {
     var isShowingError  = false
     var errorMessage    = ""
     var isEncrypting    = false
+
+    /// A group's members, at the current depth, with no current key: set by the screen that shows the notice, and
+    /// what the send leaves out. The send stops if a member is without a key and isn't in this list, so nobody is
+    /// left out that the notice didn't name.
+    var membersWithoutKeys: [MemberWithoutKey] = []
 
     private(set) var attachmentManager: AttachmentManager? = nil
 
@@ -342,12 +354,19 @@ final class ComposeViewModel {
             let output = self.bundleOutput()
             try contactManager.encryptGroupBundle(
                 basket: self.outgoingBasket(), groupID: groupID,
-                shardCustodyManager: shardCustodyManager, output: output
+                shardCustodyManager: shardCustodyManager,
+                skipping: Set(self.membersWithoutKeys.map(\.identifier)), output: output
             )
 
             await MainActor.run {
                 self.isEncrypting = false
                 self.encryptedURL = output.destination
+            }
+        } catch ContactManager.Errors.groupMembersWithoutKeys {
+            // A key was revoked after the notice was built. Nothing was sent; the screen shows it again on reopening.
+            await MainActor.run {
+                self.isEncrypting = false
+                self.showError("A member's key was revoked after this screen opened. Go back and open the group again.")
             }
         } catch {
             await MainActor.run {

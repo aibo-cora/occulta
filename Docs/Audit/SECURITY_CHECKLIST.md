@@ -586,7 +586,10 @@ sign-off block, not against project settings alone.
       returns nothing; the only `XCLocalSwiftPackageReference` is `relativePath = OccultaCore`;
       `OccultaCore/Package.swift` declares no `dependencies`; and no `Package.resolved` exists.
       The archive re-check below (zero bundles, CryptoKit the only crypto link) still applies —
-      a static Swift package with no resources adds neither.
+      a static Swift package with no resources adds neither. `Package.swift` declares no
+      `resources`, and `OccultaCore/README.md` and `Docs/` sit outside every folder the project
+      synchronizes into a target ([`Docs/Features/OccultaCore/SPEC.md`](../Features/OccultaCore/SPEC.md),
+      "Not in the bundle").
 - [x] All crypto uses Apple frameworks only (`CryptoKit`, `Security.framework`) — no vendored
       crypto code
       — **was FAIL for 1.10.2, fixed on `release/v1.10.3` (2026-08-14).** 1.10.2 shipped five
@@ -972,3 +975,15 @@ Three conditions of the gate are **not** met, knowingly:
 Also relevant to how much the green test number is worth: **260 of 738 tests are Enclave-gated**
 and skip on CI, and ~113 more still use the legacy `print("⚠︎ Skipping"); return` form, which
 reports as *passed*. See CLAUDE.md.
+
+**Post-sign-off, 2026-11-03 (`release/v2.1.0`): Bug 194, found and fixed after the 1.10.2 sign-off.** Between
+2.0.0 (prekey continuity) and this fix, a contact whose identity key changed, such as a new phone or a restore to
+new hardware, kept our record of their old phone's prekeys. Our sends went to them until the contact's new phone
+issued a batch, which it can't do while our messages don't open on it. Where the contact's new key has no ML-KEM key
+(their new phone is below iOS 26), those messages were in `.forwardSecretNoPQ` and could be opened on the old phone:
+in the case revoke exists for, a lost or seized phone that someone can unlock Occulta on. Where it does have one, the
+old phone could not open them, and the new phone couldn't either. Fixed in `release/v2.1.0`: `update(key:for:)` and
+`reset(identity:)` drop the contact's inbound prekeys, and a launch pass repairs contacts already in this state. No
+earlier release is patched. Full entry: Bug 194 in `Docs/Features/Secure Mode/bugs.md`; the two-phone test is
+`StaleInboundPrekeysConversationTests`, Enclave-gated, so it runs in the §8 gate and skips on CI. This is outside the
+signed-off item list and doesn't change the counts above.

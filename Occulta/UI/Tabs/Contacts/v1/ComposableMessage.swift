@@ -48,6 +48,12 @@ struct ComposableMessage: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if !self.vm.membersWithoutKeys.isEmpty {
+                GroupRevokedNoticeV3(names: self.vm.membersWithoutKeys.map(\.name), everyoneRevoked: false)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+            }
+
             if self.vm.messages.isEmpty && self.vm.pendingImports.isEmpty {
                 ContentUnavailableView {
                     Label("Add content", systemImage: "plus.circle")

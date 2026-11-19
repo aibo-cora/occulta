@@ -406,6 +406,17 @@ relationship graph. The receiver supplies its own. `OccultaTests/Interop/Interop
 
 ---
 
+## Known bugs
+
+Full entries in [`bugs.md`](../../../Docs/Features/Secure%20Mode/bugs.md). Earlier forward-secrecy bugs
+(82b, 152, 156, 158, 159, 165, 181) are there too and not yet listed here.
+
+| # | Summary | Status |
+|---|---|---|
+| 194 | After a contact's identity key changes, our sends go to their old phone's prekeys: the new phone can't open them, and in `.forwardSecretNoPQ` the old phone can | Fixed 2026-11-03 (`release/v2.1.0`): `update(key:for:)` and `reset(identity:)` drop the contact's inbound prekeys, and a launch pass repairs contacts already stuck |
+
+---
+
 ## Protocol review checklist
 
 Before implementing any cryptographic feature, complete every item in `CRYPTO_REVIEW_CHECKLIST.md`.

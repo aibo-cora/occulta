@@ -41,7 +41,6 @@ private struct StubCrypto: LegacyCryptoProtocol {
     }
 
     func decryptLegacy(data: Data?) throws -> Data? { try self.decrypt(data: data) }
-    func encrypt(message: Data, using material: Data?) throws -> Data? { nil }
     func decrypt(message: Data, using material: Data?) throws -> Data? { nil }
     func sign(data: Data?) throws -> String { "" }
 }

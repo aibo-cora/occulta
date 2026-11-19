@@ -12,6 +12,7 @@
 
 import Foundation
 import CryptoKit
+import OccultaCore
 
 /// Carol's card keys, bound to the card she imported.
 public struct CardIntroduction: Codable, Equatable, Sendable {

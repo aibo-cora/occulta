@@ -1,6 +1,6 @@
 # Contacts list hangs 0.7–2 s on every redraw: uncached key derivation inside `ContactsV2.body`
 
-**Status: fixed on `v2.1.0/contact-list-performance` (uncommitted when this was written), measured on device: 23 hangs and 23.6 s down to none.** The fourth instance of the pattern in `Vault-Shard-Setup-Severe-Hang-From-Uncached-Per-Row-Vault-Key-Derivation.md` and `Vault-Backup-And-Shard-Recovery-Uncached-Key-Derivation.md`: each `String.decrypt()` / `Data.decrypt()` builds a `Manager.Crypto()` and derives the local DB key afresh, and the contact screens call it per contact, per field, per `body` pass.
+**Status: fixed on `v2.1.0/contact-list-performance` (uncommitted when this was written), measured on device: 23 hangs and 23.6 s down to none.** The fourth instance of the pattern in `Vault-Shard-Setup-Severe-Hang-From-Uncached-Per-Row-Vault-Key-Derivation.md` and `Vault-Backup-And-Shard-Recovery-Uncached-Key-Derivation.md`: each `String.decrypt()` / `Data.decrypt()` builds a `Manager.Crypto()` and derives the local DB key afresh, and the contact screens call it per contact, per field, per `body` pass. **Shipped in 2.0.3** ([aibo-cora/occulta#191](https://github.com/aibo-cora/occulta/pull/191), tag `v2.0.3`, 2026-11-15); merged into `release/v2.1.0` with the `develop` merge.
 
 ## Symptom
 

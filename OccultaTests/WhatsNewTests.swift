@@ -104,18 +104,12 @@ struct WhatsNewTests {
     /// compiled into the binary and shown on an unlocked phone, so it must not name hidden state.
     @Test("No shipped entry names a hidden-state mechanism")
     func shippedCatalogNamesNoMechanism() {
-        let forbidden = [
-            "secure mode", "duress", "depth", "decoy", "hidden", "coerc",
-            "trustee", "shard", "panic", "plausible", "deniab"
-        ]
-
         for release in WhatsNew.releases {
             let text = (release.features.flatMap { [$0.title, $0.detail] } + release.fixes)
                 .joined(separator: "\n")
-                .lowercased()
 
-            for word in forbidden {
-                #expect(!text.contains(word), "\(release.version) mentions “\(word)”")
+            for word in HiddenStateWordList.violations(in: text) {
+                Issue.record("\(release.version) mentions “\(word)”")
             }
         }
     }
