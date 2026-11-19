@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CryptoKit
 import OccultaCore
 import OccultaFormats
 
@@ -61,20 +62,30 @@ struct PrekeyBookkeeper {
 
     // MARK: - Sending to the contact
 
-    /// The oldest key this contact gave us, removed so it's used once. `nil` when there's none left.
+    /// The oldest key this contact gave us that can be sealed to, removed so it's used once. `nil` when there's none
+    /// left.
+    ///
+    /// A key that doesn't load as a P-256 point (`loads`) is dropped on the way and the next is tried: sealing to it
+    /// would throw, and the same key would be next every time (Bug 204). `accept` no longer lets one in; this is for a
+    /// record that holds one from before.
     func takeInboundPrekey(from record: inout PrekeyRecord, contactID: String) -> Prekey? {
-        guard let first = record.inboundBatches.first, let key = first.keys.first else { return nil }
-        record.inboundBatches[0].keys.removeFirst()
-        if record.inboundBatches[0].keys.isEmpty {
-            record.inboundBatches.removeFirst()
+        while let first = record.inboundBatches.first, let key = first.keys.first {
+            record.inboundBatches[0].keys.removeFirst()
+            if record.inboundBatches[0].keys.isEmpty {
+                record.inboundBatches.removeFirst()
+            }
+            guard Self.loads(key.publicKey) else { continue }
+            return Prekey(id: key.id, contactID: contactID, publicKey: key.publicKey)
         }
-        return Prekey(id: key.id, contactID: contactID, publicKey: key.publicKey)
+        return nil
     }
 
     /// The contact's last-resort key, for when `takeInboundPrekey` finds none left. Not removed: it may be sealed
-    /// to again until their next batch replaces it (§3.1).
+    /// to again until their next batch replaces it (§3.1). `nil` if it doesn't load as a point, which sends in the
+    /// long-term mode (Bug 204).
     func lastResortPrekey(in record: PrekeyRecord, contactID: String) -> Prekey? {
-        record.inboundLastResort.map { Prekey(id: $0.id, contactID: contactID, publicKey: $0.publicKey) }
+        record.inboundLastResort.flatMap { Self.loads($0.publicKey) ? $0 : nil }
+            .map { Prekey(id: $0.id, contactID: contactID, publicKey: $0.publicKey) }
     }
 
     /// Forgets everything the contact's old phone gave us, because their identity key changed (Bug 194): the one-time
@@ -144,7 +155,8 @@ struct PrekeyBookkeeper {
     /// today's rule: accepted only if newer than the last one accepted.
     ///
     /// - Returns: whether the batch was accepted.
-    /// - Throws: `malformedBatch` for a batch outside the record's limits, which no build of ours produces.
+    /// - Throws: `malformedBatch` for a batch outside the record's limits, or with a key that is not a point on the curve,
+    ///   which no build of ours produces.
     func accept(
         id: Data?, generatedAt: Date, prekeys: [OccultaBundle.WirePrekey], lastResort: OccultaBundle.WirePrekey?,
         onReopenableSlot: Bool, into record: inout PrekeyRecord
@@ -152,8 +164,10 @@ struct PrekeyBookkeeper {
         let keys = prekeys.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
         let lastResortKey = lastResort.map { PrekeyRecord.InboundKey(id: $0.id, publicKey: $0.publicKey) }
         // A last-resort key's ID keys the prekey IDs derived from it, which need it to be a UUID.
-        guard id == nil || id?.count == Self.batchIDBytes, Self.fitsLimits(keys),
-              lastResortKey.map({ Self.fitsLimits([$0]) && UUID(uuidString: $0.id) != nil }) ?? true
+        // Every key has to load as a P-256 point, as sealing to it will need: one that doesn't would stop every send to
+        // the contact, and to a group they are in (Bug 204).
+        guard id == nil || id?.count == Self.batchIDBytes, Self.fitsLimits(keys), keys.allSatisfy({ Self.loads($0.publicKey) }),
+              lastResortKey.map({ Self.fitsLimits([$0]) && Self.loads($0.publicKey) && UUID(uuidString: $0.id) != nil }) ?? true
         else { throw BookkeeperError.malformedBatch }
 
         if let id {
@@ -178,6 +192,11 @@ struct PrekeyBookkeeper {
         }
         record.inboundLastResort = lastResortKey
         return true
+    }
+
+    /// Whether `key` is a 65-byte X9.63 point on P-256, which is what a send derives from.
+    static func loads(_ key: Data) -> Bool {
+        key.count == 65 && (try? P256.KeyAgreement.PublicKey(x963Representation: key)) != nil
     }
 
     /// Whether one batch of the contact's keys is within the record's limits. `accept` holds every new batch to it;

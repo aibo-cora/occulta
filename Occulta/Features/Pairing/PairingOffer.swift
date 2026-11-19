@@ -155,7 +155,7 @@ extension PairingOffer {
 
     /// What the peer's `pairing` field comes to, or `nil` if it is not one we can use, in which case the pairing is made
     /// without pair keys and the two phones' words differ, which is on the screen. Refused: a key that is the wrong size
-    /// or not a point on the curve, two keys that are the same, a key equal to either phone's identity key, and a key
+    /// or not a point on the curve (the batch's prekeys included), two keys that are the same, a key equal to either phone's identity key, and a key
     /// equal to one of ours (a reflection). A malformed ML-DSA key alone is dropped and the P-256 pair stays.
     ///
     /// Never checked against other contacts' keys: a refusal that depended on a hidden contact would reveal it.
@@ -165,6 +165,10 @@ extension PairingOffer {
     ) -> (batch: Batch, keys: PeerPairKeys)? {
         let agreement = field.agreementKey, signing = field.signingKey
         guard isPoint(agreement), isPoint(signing) else { return nil }
+        // The batch's keys too: one that isn't a point would stop every send to this contact (Bug 204).
+        guard field.prekeyBatch.prekeys.allSatisfy({ isPoint($0.publicKey) }),
+              field.prekeyBatch.lastResort.map({ isPoint($0.publicKey) }) ?? true
+        else { return nil }
 
         var forbidden: Set<Data> = [peerIdentity, ours.agreementKey, ours.signingKey]
         if let ourIdentity { forbidden.insert(ourIdentity) }
