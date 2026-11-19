@@ -472,6 +472,43 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
+    /// Clears the routing key and pair keys from key rows that were revoked before `ContactManager.reset(identity:)` did it
+    /// (`bugs.md` Bug 201).
+    ///
+    /// A revoke only stamped `expiredOn`, so the expired row kept its pairing column: the routing key and the Enclave
+    /// blobs of the pair keys. A re-pair clears the rows it retires; this does the same for the rows a revoke expired, by
+    /// writing the sealed empty state over any whose column reads as a pairing that holds something.
+    ///
+    /// One pass over every row of every contact that is no longer at the v1 scheme, live, hidden and soft-deleted, so the
+    /// pass reaches the same rows at every depth. A row that is not expired is the current pairing and is never touched. A
+    /// column that can't be read is left as it is: it may be mid-reseal, and an unreadable value isn't one this can judge.
+    ///
+    /// Migration plan, nothing is lost: only a row that is already expired is changed, and nothing reads an expired row's
+    /// pairing (`ContactManager.pairingState(for:)` looks at the current key). The empty state is sealed at the same size as
+    /// the state it replaces, so the column's length doesn't change. Every change is committed by one `save()` at the end,
+    /// so a failure leaves every row as it was and the next launch tries again. Idempotent: a cleared row reads as empty and
+    /// is skipped, so a store with nothing to clear is not written.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateRevokedPairings(modelContext: ModelContext) throws {
+        let v1 = EncryptionScheme.v1_identityDerived.rawValue
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.encryptionScheme != v1 })
+        )
+        var didChange = false
+
+        for key in contacts.flatMap({ $0.contactPublicKeys ?? [] }) where key.expiredOn != nil {
+            guard let sealed = key.pairingEncrypted, let plaintext = sealed.decrypt(),
+                  let state = try? PairingCodec().decode(plaintext), state != .empty
+            else { continue }
+            guard let empty = try PairingCodec().encode(.empty).encrypt() else { throw MigrationError.hybridKeyUnavailable }
+            key.pairingEncrypted = empty
+            didChange = true
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
     /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
     /// list. It used to stamp `globalTrusteeDepth = encrypt(0)` on those contacts first (the
     /// shard-custody bug doc, item 3); with Global Trustees retired it stamps nothing, which

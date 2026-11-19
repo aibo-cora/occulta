@@ -250,4 +250,123 @@ struct PairingLifecycleTests {
         #expect(cm.challenge(for: id) == nil, "its fingerprint was made for a pairing that is gone")
         #expect(cm.verifiedAt(for: id) != nil, "what was verified before is still true")
     }
+
+    // MARK: Revoke (Bug 201)
+
+    private func pairedContact(_ cm: ContactManager, peer: TestKeyManager? = nil) throws -> Contact.Profile {
+        try insert(cm, peer: peer, state: .paired(routingKey: Data(repeating: 1, count: 32), keys: samplePairKeys()))
+    }
+
+    @Test("Revoking clears the routing key and the pair keys from the row it expires", .ambientTestKeyManager)
+    func revokeClearsTheExpiredRow() throws {
+        let cm = try makeContactManager()
+        let contact = try self.pairedContact(cm)
+        let row = try #require(contact.currentKey)
+        let sealedEmpty = try cm.sealedPairing(.empty)
+
+        try cm.reset(identity: contact.identifier)
+
+        #expect(row.expiredOn != nil)
+        #expect(cm.pairingState(of: row) == .empty, "an expired row must not keep the Enclave blobs and the routing key")
+        #expect(row.pairingEncrypted?.count == sealedEmpty.count, "the column is the same size as any other")
+        #expect(contact.currentKey == nil, "nothing is current after a revoke")
+    }
+
+    @Test("Revoking drops an outstanding challenge, and keeps what was verified", .ambientTestKeyManager)
+    func revokeDropsTheChallenge() throws {
+        let cm = try makeContactManager()
+        let contact = try self.pairedContact(cm)
+        let id = contact.identifier
+        let first = IdentityChallenge.OutstandingChallenge(nonce: Data(repeating: 1, count: 32), issuedAt: UInt64(Date().timeIntervalSince1970))
+        try cm.record(first, for: id, now: Date())
+        cm.settle(nonce: first.nonce, for: id, passedAt: Date())
+        try cm.record(
+            IdentityChallenge.OutstandingChallenge(nonce: Data(repeating: 2, count: 32), issuedAt: UInt64(Date().timeIntervalSince1970)),
+            for: id, now: Date()
+        )
+        #expect(cm.challenge(for: id) != nil && cm.verifiedAt(for: id) != nil)
+
+        try cm.reset(identity: id)
+
+        #expect(cm.challenge(for: id) == nil, "a revoke followed by a plain exchange would have kept it")
+        #expect(cm.verifiedAt(for: id) != nil, "what was verified before is still true")
+    }
+
+    @Test("A re-exchange after a revoke leaves the revoked row empty and gives the contact a fresh pairing", .ambientTestKeyManager)
+    func rePairAfterRevoke() throws {
+        let cm = try makeContactManager()
+        let peer = TestKeyManager()
+        let contact = try self.pairedContact(cm, peer: peer)
+        let revoked = try #require(contact.currentKey)
+
+        try cm.reset(identity: contact.identifier)
+        let draft = try #require(Contact.Draft.Key(material: try peer.retrieveIdentity(), owner: Data(repeating: 1, count: 65), date: "2"))
+        try cm.update(key: draft, for: contact.identifier)
+
+        #expect(cm.pairingState(of: revoked) == .empty)
+        #expect(contact.contactPublicKeys?.count == 2)
+        #expect(contact.currentKey !== revoked)
+    }
+
+    // MARK: Rows revoked before the fix (the one-time pass)
+
+    private func sealedColumn(_ row: Contact.Profile.Key) -> Data? { row.pairingEncrypted }
+
+    @Test("The pass clears an expired row that still holds pair keys, at the same length, and leaves every other row alone", .ambientTestKeyManager)
+    func passClearsRevokedRows() throws {
+        let cm = try makeContactManager()
+        let peer = TestKeyManager()
+        let revoked = try self.pairedContact(cm, peer: peer)
+        let live = try self.pairedContact(cm, peer: peer)
+        let plain = try insert(cm, peer: peer, state: .empty)
+        // A row still at the v1 scheme is `migrateToV2`'s, and the pass skips it until it has converted it.
+        let notYetConverted = try self.pairedContact(cm, peer: peer)
+        let v2 = EncryptionScheme.v2_hybridPQ.rawValue
+        for contact in [revoked, live, plain] { contact.encryptionScheme = v2 }
+        let v1Row = try #require(notYetConverted.currentKey)
+        v1Row.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+        let v1Before = v1Row.pairingEncrypted
+
+        // What a revoke left before the fix: the row expired, its column as it was.
+        let revokedRow = try #require(revoked.currentKey)
+        revokedRow.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+        let plainRow = try #require(plain.currentKey)
+        plainRow.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+        try cm.modelContext.save()
+
+        let revokedBefore = try #require(revokedRow.pairingEncrypted)
+        let liveBefore = self.sealedColumn(try #require(live.currentKey))
+        let plainBefore = self.sealedColumn(plainRow)
+        #expect(cm.pairingState(of: revokedRow) != .empty, "precondition")
+
+        try DatabaseMigration.migrateRevokedPairings(modelContext: cm.modelContext)
+
+        #expect(cm.pairingState(of: revokedRow) == .empty)
+        #expect(revokedRow.pairingEncrypted?.count == revokedBefore.count, "the column's size does not change")
+        #expect(self.sealedColumn(try #require(live.currentKey)) == liveBefore, "an unexpired row is not touched")
+        #expect(self.sealedColumn(plainRow) == plainBefore, "an expired row that holds nothing is left byte for byte")
+        #expect(v1Row.pairingEncrypted == v1Before, "a v1 row is skipped")
+    }
+
+    @Test("The pass leaves an expired row whose column can't be read, and a second run changes nothing", .ambientTestKeyManager)
+    func passLeavesUnreadableAndIsIdempotent() throws {
+        let cm = try makeContactManager()
+        let revoked = try self.pairedContact(cm)
+        let unreadable = try insert(cm, rawColumn: try Data(repeating: 0xAB, count: 4_000).encrypt())
+        let revokedRow = try #require(revoked.currentKey)
+        let unreadableRow = try #require(unreadable.currentKey)
+        revoked.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        unreadable.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+        revokedRow.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+        unreadableRow.expiredOn = try Manager.Crypto().encrypt(data: Data("1".utf8))
+        let unreadableBefore = unreadableRow.pairingEncrypted
+
+        try DatabaseMigration.migrateRevokedPairings(modelContext: cm.modelContext)
+        let once = revokedRow.pairingEncrypted
+        try DatabaseMigration.migrateRevokedPairings(modelContext: cm.modelContext)
+
+        #expect(unreadableRow.pairingEncrypted == unreadableBefore, "a column that can't be read is not overwritten")
+        #expect(revokedRow.pairingEncrypted == once, "a cleared row is not sealed again")
+        #expect(cm.pairingState(of: revokedRow) == .empty)
+    }
 }
