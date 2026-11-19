@@ -472,6 +472,53 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
+    /// Moves a postal `country` that is still under the v1 key onto the current one (`bugs.md` Bug 216).
+    ///
+    /// `migrateContact` left `country` out of its field list, so a v1 contact's value stayed sealed under the v1 key, a
+    /// function of the identity public key, while the row was marked v2 and nothing retried it. The list is fixed; this
+    /// pass repairs the rows that were converted before it was.
+    ///
+    /// A value is touched only if it does not open under the current key and does open under the v1 key. One that opens
+    /// under the current key is left byte-identical, and one that opens under neither (a row stranded by a rotation, or
+    /// noise) is left as it is, which is what the key reseal does with a value it can't open. Empty values are skipped. Rows still at the v1 scheme are `migrateToV2`'s,
+    /// and soft-deleted rows are skipped as there: their content is erased.
+    ///
+    /// Migration plan, nothing is lost: the plaintext is read before anything is written, the new ciphertext is opened and
+    /// compared with it before it replaces the old, and every change is committed by one `save()` at the end, so a failure
+    /// leaves every row as it was and the next launch tries again. Idempotent: once a row is resealed it opens under the
+    /// current key and is skipped, so the pass writes nothing on a store without such rows. The column is a sealed string
+    /// either way, so its size does not change. The passphrase release reads every field: after this pass no `country` is
+    /// left that only the v1 key opens.
+    ///
+    /// - Parameters:
+    ///   - modelContext: The context to fetch and save postal addresses.
+    ///   - legacyCrypto: Opens values sealed under the v1 key.
+    ///   - newCrypto: The current key, as `Manager.Crypto()` derives it.
+    static func migrateCountryOrphans(modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol) throws {
+        let v1 = EncryptionScheme.v1_identityDerived.rawValue
+        let addresses = try modelContext.fetch(FetchDescriptor<Contact.Profile.PostalAddress>())
+        var didChange = false
+
+        for address in addresses {
+            guard let profile = address.profile, profile.encryptionScheme != v1, profile.deletionToken == nil,
+                  !address.country.isEmpty, let sealed = Data(base64Encoded: address.country), !sealed.isEmpty
+            else { continue }
+
+            // Under the current key already: nothing to do, and nothing to write.
+            if (try? newCrypto.decrypt(data: sealed)) != nil { continue }
+
+            guard let plaintext = try? legacyCrypto.decryptLegacy(data: sealed),
+                  let resealed = try newCrypto.encrypt(data: plaintext),
+                  try newCrypto.decrypt(data: resealed) == plaintext
+            else { continue }
+
+            address.country = resealed.base64EncodedString()
+            didChange = true
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
     /// Clears the routing key and pair keys from key rows that were revoked before `ContactManager.reset(identity:)` did it
     /// (`bugs.md` Bug 201).
     ///
@@ -600,7 +647,8 @@ struct DatabaseMigration {
             postal.city           = try reencryptString(postal.city,           field: "postal.city",    id: id, legacy: legacyCrypto, new: newCrypto)
             postal.state          = try reencryptString(postal.state,          field: "postal.state",   id: id, legacy: legacyCrypto, new: newCrypto)
             postal.postalCode     = try reencryptString(postal.postalCode,     field: "postal.zip",     id: id, legacy: legacyCrypto, new: newCrypto)
-            postal.isoCountryCode = try reencryptString(postal.isoCountryCode, field: "postal.country", id: id, legacy: legacyCrypto, new: newCrypto)
+            postal.country        = try reencryptString(postal.country,        field: "postal.country", id: id, legacy: legacyCrypto, new: newCrypto)
+            postal.isoCountryCode = try reencryptString(postal.isoCountryCode, field: "postal.isoCountryCode", id: id, legacy: legacyCrypto, new: newCrypto)
         }
 
         try contact.urlAddresses?.forEach { url in
