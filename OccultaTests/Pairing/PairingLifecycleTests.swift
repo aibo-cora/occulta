@@ -292,6 +292,39 @@ struct PairingLifecycleTests {
         #expect(cm.verifiedAt(for: id) != nil, "what was verified before is still true")
     }
 
+    @Test("A revoke whose save fails leaves the contact as it was, and a later save does not commit it", .ambientTestKeyManager)
+    func failedRevokeChangesNothing() throws {
+        let cm = try makeContactManager()
+        let contact = try self.pairedContact(cm)
+        let id = contact.identifier
+        let row = try #require(contact.currentKey)
+
+        var record = try cm.prekeyRecord(for: contact)
+        record.inboundBatches = [PrekeyRecord.InboundBatch(id: nil, keys: [PrekeyRecord.InboundKey(id: UUID().uuidString, publicKey: randomPoint())])]
+        try cm.store(record, for: contact)
+        try cm.record(
+            IdentityChallenge.OutstandingChallenge(nonce: Data(repeating: 1, count: 32), issuedAt: UInt64(Date().timeIntervalSince1970)),
+            for: id, now: Date()
+        )
+        try cm.modelContext.save()
+        let before = (record: contact.prekeyRecordEncrypted, challenges: contact.challengeStateEncrypted, pairing: row.pairingEncrypted)
+
+        cm.failNextKeySave = true
+        #expect(throws: ContactManager.InjectedKeySaveFault.self) { try cm.reset(identity: id) }
+
+        #expect(row.expiredOn == nil, "the key was not revoked")
+        #expect(row.pairingEncrypted == before.pairing)
+        #expect(contact.prekeyRecordEncrypted == before.record)
+        #expect(contact.challengeStateEncrypted == before.challenges)
+        #expect(cm.challenge(for: id) != nil)
+
+        // The next unrelated save must not write a revoke that reported failure.
+        try cm.modelContext.save()
+        let fresh = try #require(try cm.fetchContact(by: id))
+        #expect(fresh.currentKey != nil)
+        #expect(try cm.prekeyRecord(for: fresh).inboundBatches.count == 1)
+    }
+
     @Test("A re-exchange after a revoke leaves the revoked row empty and gives the contact a fresh pairing", .ambientTestKeyManager)
     func rePairAfterRevoke() throws {
         let cm = try makeContactManager()

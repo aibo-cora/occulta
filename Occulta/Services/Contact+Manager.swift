@@ -27,11 +27,15 @@ class ContactManager {
     private let cryptoManager: CryptoProtocol = Manager.Crypto()
 
     #if DEBUG
-    /// A test sets this to make the next `update(key:for:pairing:)` fail at its `save()`, after the card state, the tier, the
+    /// A test sets this to make the next `update(key:for:pairing:)` or `reset(identity:)` fail at its `save()`, after the card state, the tier, the
     /// challenge, the retired rows and the new row have all changed: no other failure comes that late. Reset by that use.
     @ObservationIgnored var failNextKeySave = false
 
     struct InjectedKeySaveFault: Error, Equatable {}
+
+    /// A test sets this to make the save at the end of a send (`sendBundle`, `encryptGroupBundle`) fail once the bundle is
+    /// already delivered. Reset by that use.
+    @ObservationIgnored var failNextSendSave = false
     #endif
 
     /// Prepare the Contacts system to return the names of matching people
@@ -763,23 +767,45 @@ extension ContactManager {
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
         // Before anything changes, so a failure to seal leaves the contact as it was.
         let sealedEmpty = try self.sealedPairing(PairingState.empty)
-        let droppedInbound = try self.dropInboundPrekeys(of: contact)
 
-        // A challenge outstanding to the pairing being revoked can't be answered: what was verified before stays true.
-        var challenges = contact.challengeState
-        if challenges.removeOutstandingChallenges() { try self.store(challenges, for: contact) }
+        // What the steps below change, as it was: a failure puts it back, so the next unrelated save does not write a revoke that
+        // reported failure (as `update(key:for:)` does).
+        let before = (
+            record: contact.prekeyRecordEncrypted, challenges: contact.challengeStateEncrypted,
+            current: contact.currentKey.map { (row: $0, expiredOn: $0.expiredOn, pairing: $0.pairingEncrypted) }
+        )
+        var droppedInbound = false
+        do {
+            droppedInbound = try self.dropInboundPrekeys(of: contact)
 
-        // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
-        // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
-        //
-        // The row's pairing column is overwritten with the sealed empty state, as a re-pair does to the rows it retires: what
-        // an expired row held, the routing key and the Enclave blobs of the pair keys, is of no use to it and must not stay.
-        if let current = contact.currentKey {
-            current.expiredOn = encrypted
-            current.pairingEncrypted = sealedEmpty
+            // A challenge outstanding to the pairing being revoked can't be answered: what was verified before stays true.
+            var challenges = contact.challengeState
+            if challenges.removeOutstandingChallenges() { try self.store(challenges, for: contact) }
+
+            // The current key, not "the last": a re-pair leaves a retired row beside it, and a to-many relationship has no order,
+            // so "the last" can be the retired one and Revoke would stamp it again and leave the current key in use (Bug 196).
+            //
+            // The row's pairing column is overwritten with the sealed empty state, as a re-pair does to the rows it retires: what
+            // an expired row held, the routing key and the Enclave blobs of the pair keys, is of no use to it and must not stay.
+            if let current = contact.currentKey {
+                current.expiredOn = encrypted
+                current.pairingEncrypted = sealedEmpty
+            }
+
+            #if DEBUG
+            if self.failNextKeySave { self.failNextKeySave = false; throw InjectedKeySaveFault() }
+            #endif
+            try self.modelContext.save()
+        } catch {
+            contact.prekeyRecordEncrypted = before.record
+            self.restore(sealedChallengeState: before.challenges, for: contact)
+            if let held = before.current {
+                held.row.expiredOn = held.expiredOn
+                held.row.pairingEncrypted = held.pairing
+            }
+            self.modelContext.rollback()
+            throw error
         }
-
-        try self.modelContext.save()
         if droppedInbound { self.security.checkpointStore() }
     }
     
@@ -1319,8 +1345,8 @@ extension ContactManager {
         // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
         let needsPrekey = !isCarryingShard || targetVersion.supportsGroups
         // The record as it is sealed now. Taking a key writes the shortened one onto the contact before the steps that can
-        // still throw, and a throw leaves it there for whatever saves next: put the sealed one back, unless the send gets
-        // as far as its own save (Bug 205).
+        // still throw, and a throw leaves it there for whatever saves next: put the sealed one back, unless the bundle
+        // was delivered: its key is spent then, and the record that still holds it must not stay (Bug 205).
         let sealedRecordBefore = contact.prekeyRecordEncrypted
         var recordChanged = false
         var sendCompleted = false
@@ -1421,8 +1447,9 @@ extension ContactManager {
                 let bundle = try Manager.Crypto().seal(sealedPayload: sealedPayload, groupID: UUID(), recipients: recipients)
                 sent = try output.deliver(try bundle.encoded(version: .v4))
             }
-            if recordChanged { try self.modelContext.save() }
+            // Delivered: the key it used is spent whether or not the save below succeeds (Bug 205).
             sendCompleted = true
+            if recordChanged { try self.saveSend() }
             return sent
         }
 
@@ -1451,14 +1478,25 @@ extension ContactManager {
             version:           wireVersion
         )
         let sent = try output.deliver(try bundle.encoded(version: wireVersion))
-        
+        // Delivered: the key it used is spent whether or not the save below succeeds (Bug 205).
+        sendCompleted = true
+
         if recordChanged {
             // Persist prekey state only when it was mutated (message mode).
-            try self.modelContext.save()
+            try self.saveSend()
         }
 
-        sendCompleted = true
         return sent
+    }
+}
+
+extension ContactManager {
+    /// The save at the end of a send.
+    fileprivate func saveSend() throws {
+        #if DEBUG
+        if self.failNextSendSave { self.failNextSendSave = false; throw InjectedKeySaveFault() }
+        #endif
+        try self.modelContext.save()
     }
 }
 
@@ -1543,7 +1581,7 @@ extension ContactManager {
         // any other incidental `.save()` on this same shared context) writes them,
         // silently burning a contact's forward-secrecy prekey stock for a message that
         // was never sent, on every attempt (Bug 205). So a send that does not complete
-        // puts each member's sealed record back first.
+        // puts each member's sealed record back first, unless the bundle was delivered.
         self.modelContext.autosaveEnabled = false
         defer { self.modelContext.autosaveEnabled = true }
 
@@ -1676,11 +1714,13 @@ extension ContactManager {
             sent = try output.deliver(try bundle.encoded(version: .v4))
         }
 
+        // Delivered: the keys it used are spent whether or not the save below succeeds (Bug 205).
+        sendCompleted = true
+
         if prekeyConsumed {
-            try self.modelContext.save()
+            try self.saveSend()
         }
 
-        sendCompleted = true
         return sent
     }
 

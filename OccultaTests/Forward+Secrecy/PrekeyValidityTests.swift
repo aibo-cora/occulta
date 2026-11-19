@@ -99,9 +99,11 @@ struct PrekeyPointTests {
 @MainActor
 struct PrekeySendTests {
 
-    private func fixture(inbound keys: [PrekeyRecord.InboundKey], lastResort: PrekeyRecord.InboundKey? = nil) throws -> (ContactManager, Contact.Profile) {
+    private func fixture(
+        inbound keys: [PrekeyRecord.InboundKey], lastResort: PrekeyRecord.InboundKey? = nil, marker: OccultaBundle.Version? = nil
+    ) throws -> (ContactManager, Contact.Profile) {
         let cm = try TestSupport.makeContactManager()
-        try insertStreamedSender(identifier: "bob", publicKey: try TestKeyManager().retrieveIdentity(), in: cm)
+        try insertStreamedSender(identifier: "bob", publicKey: try TestKeyManager().retrieveIdentity(), marker: marker, in: cm)
         let bob = try #require(try cm.fetchContact(by: "bob"))
 
         var record = try cm.prekeyRecord(for: bob)
@@ -154,6 +156,26 @@ struct PrekeySendTests {
         #expect(!bundle.isEmpty)
     }
 
+    // MARK: The compose indicator
+
+    @Test("The indicator says forward-secret only for a one-time key a send can use", .ambientTestKeyManager)
+    func indicatorCountsUsableKeys() throws {
+        let (onlyBad, _) = try self.fixture(inbound: [inbound(badKey())])
+        #expect(onlyBad.nextSendSecrecy(for: "bob") == .longTerm, "a key that is dropped at send time is not forward secrecy")
+
+        let (oneGood, _) = try self.fixture(inbound: [inbound(badKey()), inbound(randomPoint())])
+        #expect(oneGood.nextSendSecrecy(for: "bob") == .forwardSecret)
+    }
+
+    @Test("The indicator says temporary key only for a last-resort key a send can use", .ambientTestKeyManager)
+    func indicatorChecksLastResort() throws {
+        let (bad, _) = try self.fixture(inbound: [], lastResort: inbound(badKey()), marker: .streamedBodyCapable)
+        #expect(bad.nextSendSecrecy(for: "bob") == .longTerm)
+
+        let (good, _) = try self.fixture(inbound: [], lastResort: inbound(randomPoint()), marker: .streamedBodyCapable)
+        #expect(good.nextSendSecrecy(for: "bob") == .temporaryKey)
+    }
+
     // MARK: Bug 205
 
     @Test("A one-to-one send that throws after taking a key leaves the contact's record as it was", .ambientTestKeyManager)
@@ -186,6 +208,33 @@ struct PrekeySendTests {
         try cm.modelContext.save()
         let fresh = try #require(try cm.fetchContact(by: "bob"))
         #expect(try cm.prekeyRecord(for: fresh).inboundBatches.first?.keys.count == 2)
+    }
+
+    @Test("A one-to-one send whose save fails after the bundle was delivered still uses the key up", .ambientTestKeyManager)
+    func deliveredSendKeepsTheKeyUsed() throws {
+        let (cm, bob) = try self.fixture(inbound: [inbound(randomPoint()), inbound(randomPoint())])
+        cm.failNextSendSave = true
+
+        #expect(throws: ContactManager.InjectedKeySaveFault.self) {
+            try cm.encryptBundle(basket: Basket(files: []), for: "bob")
+        }
+
+        // The bundle went out under the first key; the record must not offer it to the next send.
+        #expect(try cm.prekeyRecord(for: bob).inboundBatches.first?.keys.count == 1)
+    }
+
+    @Test("A group send whose save fails after the bundle was delivered still uses the key up", .ambientTestKeyManager)
+    func deliveredGroupSendKeepsTheKeyUsed() throws {
+        let (cm, bob) = try self.fixture(inbound: [inbound(randomPoint()), inbound(randomPoint())])
+        let group = try cm.createGroup(name: "G")
+        try group.addMember("bob", atDepth: 0)
+        cm.failNextSendSave = true
+
+        #expect(throws: ContactManager.InjectedKeySaveFault.self) {
+            try cm.encryptGroupBundle(basket: Basket(files: []), groupID: try #require(group.readID()))
+        }
+
+        #expect(try cm.prekeyRecord(for: bob).inboundBatches.first?.keys.count == 1)
     }
 
     @Test("A send that succeeds still uses the key up", .ambientTestKeyManager)

@@ -163,4 +163,41 @@ struct StreamedReceiveCancelRaceTests {
 
         #expect(image.size.width > 0)
     }
+
+    @Test("Images opened together decrypt one at a time")
+    func imagesTakeTurns() async throws {
+        let dir = try scratch(); defer { try? FileManager.default.removeItem(at: dir) }
+        let key = SymmetricKey(size: .bits256)
+        let manager = AttachmentManager(contactKey: key)
+        let urls = try (0..<5).map { _ in try self.sealed(try self.jpeg(), in: dir, key: key) }
+        let gate = ImageDecryptionGate()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for url in urls {
+                group.addTask { _ = try await manager.displayImage(at: url, memoryGuard: MemoryGuard { Int.max }, gate: gate) }
+            }
+            try await group.waitForAll()
+        }
+
+        #expect(await gate.peakInFlight == 1, "every image went through the gate, and never two at once")
+    }
+
+    @Test("The gate hands over to each waiter in turn, and a refused image gives its turn back")
+    func gateTakesTurns() async throws {
+        let dir = try scratch(); defer { try? FileManager.default.removeItem(at: dir) }
+        let key = SymmetricKey(size: .bits256)
+        let manager = AttachmentManager(contactKey: key)
+        let big = try self.sealed(Data(repeating: 9, count: 2_000_000), in: dir, key: key)
+        let small = try self.sealed(try self.jpeg(), in: dir, key: key)
+        let gate = ImageDecryptionGate()
+        let tight = MemoryGuard { MemoryGuard.headroom + 1_000_000 }
+
+        await #expect(throws: OccultaBundle.BundleError.tooLargeForDevice) {
+            _ = try await manager.displayImage(at: big, memoryGuard: tight, gate: gate)
+        }
+        // Had the refusal kept the turn, this would wait forever.
+        let image = try await manager.displayImage(at: small, memoryGuard: tight, gate: gate)
+
+        #expect(image.size.width > 0)
+    }
 }

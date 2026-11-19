@@ -66,8 +66,9 @@ extension ContactManager {
     func nextSendSecrecy(for identifier: String) -> NextSendSecrecy {
         guard let contact = try? self.fetchContact(by: identifier),
               let record = try? self.prekeyRecord(for: contact) else { return .longTerm }
-        if !record.inboundBatches.isEmpty { return .forwardSecret }
-        if record.inboundLastResort != nil,
+        // Keys a send would drop (not points on the curve) don't count: it would not use them (Bug 204).
+        if record.inboundBatches.contains(where: { $0.keys.contains { PrekeyBookkeeper.loads($0.publicKey) } }) { return .forwardSecret }
+        if let lastResort = record.inboundLastResort, PrekeyBookkeeper.loads(lastResort.publicKey),
            Self.resolveTargetVersion(for: contact, using: Manager.Crypto()).supportsGroups {
             return .temporaryKey
         }

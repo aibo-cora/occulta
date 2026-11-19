@@ -161,7 +161,7 @@ extension PairingOffer {
     /// Never checked against other contacts' keys: a refusal that depended on a hidden contact would reveal it.
     static func accepted(
         _ field: Exchange.PairingField, ours: OwnPairKeys, ourIdentity: Data?, peerIdentity: Data,
-        isPoint: (Data) -> Bool = PairingOffer.isP256Point
+        isPoint: (Data) -> Bool = PrekeyBookkeeper.loads
     ) -> (batch: Batch, keys: PeerPairKeys)? {
         let agreement = field.agreementKey, signing = field.signingKey
         guard isPoint(agreement), isPoint(signing) else { return nil }
@@ -182,11 +182,6 @@ extension PairingOffer {
             RoutingKey.PairBlock(agreementKey: agreement, signingKey: signing, mldsaKey: $0, batchDigest: digest) == nil ? nil : $0
         }
         return (Batch(field.prekeyBatch), PeerPairKeys(agreementKey: agreement, signingKey: signing, mldsaKey: mldsa))
-    }
-
-    /// Whether `key` is a 65-byte X9.63 point on P-256.
-    nonisolated static func isP256Point(_ key: Data) -> Bool {
-        key.count == 65 && (try? P256.KeyAgreement.PublicKey(x963Representation: key)) != nil
     }
 }
 
