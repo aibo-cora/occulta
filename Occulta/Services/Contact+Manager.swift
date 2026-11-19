@@ -32,6 +32,10 @@ class ContactManager {
     @ObservationIgnored var failNextKeySave = false
 
     struct InjectedKeySaveFault: Error, Equatable {}
+
+    /// A test sets this to make the save at the end of a send (`sendBundle`, `encryptGroupBundle`) fail once the bundle is
+    /// already delivered. Reset by that use.
+    @ObservationIgnored var failNextSendSave = false
     #endif
 
     /// Prepare the Contacts system to return the names of matching people
@@ -1319,8 +1323,8 @@ extension ContactManager {
         // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
         let needsPrekey = !isCarryingShard || targetVersion.supportsGroups
         // The record as it is sealed now. Taking a key writes the shortened one onto the contact before the steps that can
-        // still throw, and a throw leaves it there for whatever saves next: put the sealed one back, unless the send gets
-        // as far as its own save (Bug 205).
+        // still throw, and a throw leaves it there for whatever saves next: put the sealed one back, unless the bundle
+        // was delivered: its key is spent then, and the record that still holds it must not stay (Bug 205).
         let sealedRecordBefore = contact.prekeyRecordEncrypted
         var recordChanged = false
         var sendCompleted = false
@@ -1421,8 +1425,9 @@ extension ContactManager {
                 let bundle = try Manager.Crypto().seal(sealedPayload: sealedPayload, groupID: UUID(), recipients: recipients)
                 sent = try output.deliver(try bundle.encoded(version: .v4))
             }
-            if recordChanged { try self.modelContext.save() }
+            // Delivered: the key it used is spent whether or not the save below succeeds (Bug 205).
             sendCompleted = true
+            if recordChanged { try self.saveSend() }
             return sent
         }
 
@@ -1451,14 +1456,25 @@ extension ContactManager {
             version:           wireVersion
         )
         let sent = try output.deliver(try bundle.encoded(version: wireVersion))
-        
+        // Delivered: the key it used is spent whether or not the save below succeeds (Bug 205).
+        sendCompleted = true
+
         if recordChanged {
             // Persist prekey state only when it was mutated (message mode).
-            try self.modelContext.save()
+            try self.saveSend()
         }
 
-        sendCompleted = true
         return sent
+    }
+}
+
+extension ContactManager {
+    /// The save at the end of a send.
+    fileprivate func saveSend() throws {
+        #if DEBUG
+        if self.failNextSendSave { self.failNextSendSave = false; throw InjectedKeySaveFault() }
+        #endif
+        try self.modelContext.save()
     }
 }
 
@@ -1543,7 +1559,7 @@ extension ContactManager {
         // any other incidental `.save()` on this same shared context) writes them,
         // silently burning a contact's forward-secrecy prekey stock for a message that
         // was never sent, on every attempt (Bug 205). So a send that does not complete
-        // puts each member's sealed record back first.
+        // puts each member's sealed record back first, unless the bundle was delivered.
         self.modelContext.autosaveEnabled = false
         defer { self.modelContext.autosaveEnabled = true }
 
@@ -1676,11 +1692,13 @@ extension ContactManager {
             sent = try output.deliver(try bundle.encoded(version: .v4))
         }
 
+        // Delivered: the keys it used are spent whether or not the save below succeeds (Bug 205).
+        sendCompleted = true
+
         if prekeyConsumed {
-            try self.modelContext.save()
+            try self.saveSend()
         }
 
-        sendCompleted = true
         return sent
     }
 

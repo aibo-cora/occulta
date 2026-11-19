@@ -188,6 +188,33 @@ struct PrekeySendTests {
         #expect(try cm.prekeyRecord(for: fresh).inboundBatches.first?.keys.count == 2)
     }
 
+    @Test("A one-to-one send whose save fails after the bundle was delivered still uses the key up", .ambientTestKeyManager)
+    func deliveredSendKeepsTheKeyUsed() throws {
+        let (cm, bob) = try self.fixture(inbound: [inbound(randomPoint()), inbound(randomPoint())])
+        cm.failNextSendSave = true
+
+        #expect(throws: ContactManager.InjectedKeySaveFault.self) {
+            try cm.encryptBundle(basket: Basket(files: []), for: "bob")
+        }
+
+        // The bundle went out under the first key; the record must not offer it to the next send.
+        #expect(try cm.prekeyRecord(for: bob).inboundBatches.first?.keys.count == 1)
+    }
+
+    @Test("A group send whose save fails after the bundle was delivered still uses the key up", .ambientTestKeyManager)
+    func deliveredGroupSendKeepsTheKeyUsed() throws {
+        let (cm, bob) = try self.fixture(inbound: [inbound(randomPoint()), inbound(randomPoint())])
+        let group = try cm.createGroup(name: "G")
+        try group.addMember("bob", atDepth: 0)
+        cm.failNextSendSave = true
+
+        #expect(throws: ContactManager.InjectedKeySaveFault.self) {
+            try cm.encryptGroupBundle(basket: Basket(files: []), groupID: try #require(group.readID()))
+        }
+
+        #expect(try cm.prekeyRecord(for: bob).inboundBatches.first?.keys.count == 1)
+    }
+
     @Test("A send that succeeds still uses the key up", .ambientTestKeyManager)
     func successfulSendConsumesTheKey() throws {
         let (cm, bob) = try self.fixture(inbound: [inbound(randomPoint()), inbound(randomPoint())])
