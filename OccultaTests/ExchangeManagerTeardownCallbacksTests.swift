@@ -13,6 +13,7 @@
 import Testing
 import MultipeerConnectivity
 import NearbyInteraction
+import OccultaCore
 @testable import Occulta
 
 @MainActor
@@ -101,5 +102,45 @@ struct ExchangeManagerTeardownCallbacksTests {
         manager.finish()
 
         #expect(manager.receivedDiscoveryTokens.isEmpty)
+    }
+
+    @Test("The initiator's queued ciphertext send does not fire for an exchange that was ended")
+    func initiatorCiphertextAfterFinish() async throws {
+        let provider = try #require(PostQuantumProviderFactory.create(), "ML-KEM unavailable on this OS")
+        let peerKey = try #require(provider.generateKeyPair()?.publicKeyData)
+        let peerName = "zpeer-\(UUID().uuidString)"   // sorts after the manager's own name, so the manager is the initiator
+        let peer = MCPeerID(displayName: peerName)
+        let identity = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1,
+                                identity: Data(repeating: 4, count: 65), encapsulationKey: peerKey)
+        let message = try JSONEncoder().encode(identity)
+
+        let manager = ExchangeManager()
+
+        // First exchange: reaches the point where the ciphertext send is queued, three seconds out.
+        manager.multipeerSession = MCSession(peer: MCPeerID(displayName: "self-a"))
+        manager.session(manager.multipeerSession!, peer: peer, didChange: .connected)
+        await self.settle()
+        try #require(manager.connectedPeerID == peer)
+        manager.preparePostQuantumForTesting()
+        manager.waitForPeerIdentityForTesting()
+        manager.handleReceivedData(message, from: peer)
+        try #require(manager.isSendingMyQuantum)
+
+        manager.finish()
+
+        // Second exchange, started a second and a half later and in the same state.
+        try? await Task.sleep(for: .milliseconds(1_200))
+        manager.multipeerSession = MCSession(peer: MCPeerID(displayName: "self-a"))
+        manager.session(manager.multipeerSession!, peer: peer, didChange: .connected)
+        await self.settle()
+        manager.preparePostQuantumForTesting()
+        manager.waitForPeerIdentityForTesting()
+        manager.handleReceivedData(message, from: peer)
+        try #require(manager.isSendingMyQuantum)
+
+        // The first exchange's task wakes here, about two seconds before the second's own.
+        try? await Task.sleep(for: .milliseconds(2_000))
+
+        #expect(manager.isSendingMyQuantum, "a task queued by the ended exchange must not act on the new one")
     }
 }

@@ -249,6 +249,19 @@ class ExchangeManager: NSObject {
 
     /// For tests: whether the 30-second watchdog is armed.
     var isWatchdogArmed: Bool { self.watchdog != nil }
+
+    /// For tests: the ML-KEM key pair `start()` makes, without the radios.
+    func preparePostQuantumForTesting() {
+        guard let keyPair = self.postQuantumProvider?.generateKeyPair() else { return }
+        self.privateKeyHandle = keyPair.privateKeyHandle
+        self.encapsulationKeyData = keyPair.publicKeyData
+    }
+
+    /// For tests: whether the initiator holds its ciphertext, about to send it.
+    var isSendingMyQuantum: Bool {
+        if case .sendingMyQuantum = self.exchangeStatus { return true }
+        return false
+    }
     #endif
 
     private func teardownSessions() {
@@ -654,6 +667,7 @@ class ExchangeManager: NSObject {
                     } else if self.isInitiator {
                         // Received responder's identity → send our ciphertext.
                         self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
+                        let generation = self.generation
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
                             guard let self, self.generation == generation,
@@ -843,7 +857,6 @@ class ExchangeManager: NSObject {
                         // Backward compat: old peer sent identity in parallel, quantum already computed.
                         // Chain ciphertext send directly — skip waitingForPeerIdentity.
                         self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
-                        let generation = self.generation
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
                             guard let self, self.generation == generation,
