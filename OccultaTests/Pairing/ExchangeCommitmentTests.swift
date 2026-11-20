@@ -279,7 +279,7 @@ struct ExchangeWordsTests {
     private let bob = TestKeyManager()
 
     private func payload(
-        peer: TestKeyManager, committed: ExchangeManager.ExchangePhase.Payload.Committed?, hybrid: ExchangeManager.HybridExchangeResult? = nil
+        peer: TestKeyManager, committed: ExchangeManager.ExchangePhase.Payload.Committed, hybrid: ExchangeManager.HybridExchangeResult? = nil
     ) throws -> ExchangeManager.ExchangePhase.Payload {
         .init(
             fingerprint: Data(count: 32), classicalKey: try peer.retrieveIdentity(), hybridResult: hybrid, committed: committed
@@ -296,15 +296,9 @@ struct ExchangeWordsTests {
         let b = KeyExchange.words(for: try self.payload(peer: self.alice, committed: self.committed(2, 1)), using: self.bob)
         #expect(a == b && a.count == 5)
 
-        let legacy = KeyExchange.words(for: try self.payload(peer: self.bob, committed: nil), using: self.alice)
-        #expect(legacy != a)
-    }
-
-    @Test("Without a commitment the classical words are what an older build derives: the transport key's")
-    func legacyClassicalUnchanged() throws {
-        let words = KeyExchange.words(for: try self.payload(peer: self.bob, committed: nil), using: self.alice)
-        let key = try #require(self.alice.createSharedSecret(using: self.bob.retrieveIdentity()))
-        #expect(words == Manager.PassphraseGenerator().generate(separator: "-", sharedKey: key.withUnsafeBytes { Data($0) }).components(separatedBy: "-"))
+        let transport = try #require(self.alice.createSharedSecret(using: self.bob.retrieveIdentity()))
+        let transportWords = Manager.PassphraseGenerator().generate(separator: "-", sharedKey: transport.withUnsafeBytes { Data($0) })
+        #expect(a != transportWords.components(separatedBy: "-"), "no path derives the words an older build shows")
     }
 
     @Test("Bug 199: a payload that holds an ML-KEM result and one that holds none show different words, other inputs equal")

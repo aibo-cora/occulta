@@ -16,8 +16,8 @@
 //
 //  Commit, then reveal (Bug 198): each phone's discovery message carries a hash of its nonce; the nonce goes out last,
 //  initiator first, after every other message, and the words and the routing key are derived over both nonces and a hash
-//  of every message of the exchange (`ExchangeCommitment`). A peer on an older build sends its nonce in the clear and
-//  no commitment: that exchange keeps the old derivations, and the confirmation screen says so.
+//  of every message of the exchange (`ExchangeCommitment`). A peer whose discovery message carries no commitment, a build
+//  older than 2.0.5 or a relay that removed it, is refused before any key is exchanged: there is no uncommitted derivation.
 //
 //  ⚠️ Thread safety:
 //  MC and NI delegate callbacks arrive on arbitrary background threads.
@@ -81,8 +81,7 @@ class ExchangeManager: NSObject {
     private let postQuantumProvider: PostQuantumProvider? = PostQuantumProviderFactory.create()
     /// Our 16-byte nonce, generated at session start. Its commitment goes out in discovery and the nonce itself last (Bug 198).
     private var ourNonce: Data?
-    /// Peer's nonce: from its discovery message if it is on an older build, else from its reveal once that has been checked
-    /// against its commitment. Nil if the peer is v1 or has not revealed yet.
+    /// Peer's nonce, from its reveal once that has been checked against its commitment. Nil until then.
     private var peerNonce: Data?
     /// Opaque handle to our SE-backed ML-KEM-1024 private key.
     private var privateKeyHandle: Any?
@@ -93,13 +92,11 @@ class ExchangeManager: NSObject {
 
     // MARK: - Commit, then reveal (Bug 198)
 
-    /// What the peer committed to in its discovery message. Nil for a peer on an older build, which sent its nonce in the
-    /// clear: the exchange is then not committed, keeps the old derivations, and says so on the confirmation screen.
+    /// What the peer committed to in its discovery message. An exchange goes no further without one: a peer that sends none,
+    /// an older build or a relay that removed it, is refused (`ExchangePhase.peerNeedsUpdate`).
     private var peerCommitment: Data?
     /// Whether this exchange has had its one discovery message. A second never replaces the first one's nonce or commitment.
     private var peerDiscoveryAccepted = false
-    /// Sent once to a peer on an older build, which needs our nonce in the clear to derive anything.
-    private var legacyDiscoverySent = false
     /// Every message of the exchange before the reveal, as sent and as received: what the words and the routing key cover.
     private var transcriptMessages: [ExchangeCommitment.Message] = []
     /// Both nonces and the transcript, once the peer's reveal has been checked.
@@ -128,7 +125,6 @@ class ExchangeManager: NSObject {
     var sendInterceptorForTesting: ((Data) -> Void)?
     #endif
 
-    var isCommittedExchange: Bool { self.peerCommitment != nil }
     private var ourRole: ExchangeCommitment.Role { self.isInitiator ? .initiator : .responder }
     private var peerRole: ExchangeCommitment.Role { self.isInitiator ? .responder : .initiator }
 
@@ -215,6 +211,10 @@ class ExchangeManager: NSObject {
         case complete
         case timedOut
         case failed
+        /// The peer's discovery message carried no commitment to its nonce: a phone on a version older than 2.0.5, or a relay
+        /// that removed it. Nothing was saved. The screen says the other phone needs to update, whatever the cause, since a
+        /// phone cannot tell the two apart.
+        case peerNeedsUpdate
 
         struct Payload: Equatable {
             let fingerprint: Data
@@ -225,9 +225,9 @@ class ExchangeManager: NSObject {
             /// Whether we sent one ourselves. With `pairing` nil it means the peer sent none we could use, which the
             /// confirmation screen says.
             var offeredPairing: Bool = false
-            /// Set when both phones committed to their nonces and revealed them, and the words and the routing key cover
-            /// every message of the exchange (Bug 198). Nil for a peer on an older build, which the screen says.
-            var committed: Committed? = nil
+            /// Both phones committed to their nonces and revealed them, and the words and the routing key cover every message
+            /// of the exchange (Bug 198). An exchange with no commitment from the peer never gets this far.
+            let committed: Committed
             /// Whether we sent an ML-KEM key ourselves. With `hybridResult` nil it means none came back, which the screen
             /// says (Bug 199).
             var offeredQuantum: Bool = false
@@ -388,7 +388,6 @@ class ExchangeManager: NSObject {
         self.peerNonce = nil
         self.peerCommitment = nil
         self.peerDiscoveryAccepted = false
-        self.legacyDiscoverySent = false
         self.transcriptMessages = []
         self.committedExchange = nil
         self.peerIdentity = nil
@@ -545,8 +544,7 @@ class ExchangeManager: NSObject {
         }
     }
 
-    /// Our nonce, the last thing we send (Bug 198). Only to a peer that committed to its own: an older build would read it
-    /// as a discovery message.
+    /// Our nonce, the last thing we send (Bug 198).
     private func sendReveal(to peerID: MCPeerID) {
         guard let ourNonce else { return }
         do {
@@ -555,20 +553,6 @@ class ExchangeManager: NSObject {
         } catch {
             #if DEBUG
             debugPrint("[KE] Reveal send failed: \(error)")
-            #endif
-        }
-    }
-
-    /// For a peer on an older build, which reads its peer's nonce from the discovery message and does nothing without it.
-    private func sendLegacyDiscovery(to peerID: MCPeerID) {
-        guard !self.legacyDiscoverySent, let ourNonce else { return }
-        do {
-            guard let archivedToken = try self.archivedDiscoveryToken() else { return }
-            try self.transmit(Exchange(id: UUID().uuidString, token: archivedToken, version: .v1, nonce: ourNonce), to: peerID)
-            self.legacyDiscoverySent = true
-        } catch {
-            #if DEBUG
-            debugPrint("[KE] Legacy discovery send failed: \(error)")
             #endif
         }
     }
@@ -643,56 +627,22 @@ class ExchangeManager: NSObject {
     /// The pairing offer for a payload built now: only when both phones sent a `pairing` field and both nonces are known.
     /// Anything missing means the peer can't hold a routing key, and the pairing is made without one.
     private func pairingOffer() -> PairingOffer? {
-        guard let ourNonce, let peerNonce, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing else { return nil }
+        guard
+            let ourNonce, let peerNonce, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing,
+            let exchangeTranscript = self.committedExchange?.transcript
+        else { return nil }
         return PairingOffer(
             ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys,
             ownBatchDigest: PairingOffer.Batch(ownPairingField.prekeyBatch).digest, peerBatch: peerPairing.batch,
             ours: ownPairKeys, theirs: peerPairing.keys, pairwiseECDH: peerPairing.ecdh,
-            exchangeTranscript: self.committedExchange?.transcript
+            exchangeTranscript: exchangeTranscript
         )
     }
 
+    /// Both ciphertexts are in: every message but the nonces has been exchanged, and the reveal comes next.
     private func assembleHybridResult(ours: QuantumPayload, theirs: QuantumPayload) {
-        // Committed: the nonces are still to be revealed. The result is assembled once they have been.
-        if self.isCommittedExchange, let peerID = self.connectedPeerID {
-            self.startReveal(to: peerID, hybrid: (ours, theirs))
-            return
-        }
-        guard let peerIdentity, let ourNonce, let peerNonce else { return }
-        self.endProtocolSteps()
-
-        let result = HybridExchangeResult(
-            peerP256PublicKey: peerIdentity,
-            mlkemSecret1: ours.secret,
-            mlkemSecret2: theirs.secret,
-            ourNonce: ourNonce,
-            peerNonce: peerNonce,
-            ourCiphertext: ours.ciphertext,
-            peerCiphertext: theirs.ciphertext
-        )
-
-        self.sendCardProof(for: result)
-
-        #if DEBUG
-        debugPrint("[KE] Hybrid exchange complete")
-        #endif
-
-        let payload = ExchangePhase.Payload(
-            fingerprint: peerIdentity.sha256,
-            classicalKey: peerIdentity,
-            hybridResult: result,
-            pairing: self.pairingOffer(),
-            offeredPairing: self.ownPairKeys != nil,
-            offeredQuantum: self.encapsulationKeyData != nil
-        )
-        self.phase = .mlKemExchanged(payload)
-        let generation = self.generation
-        let delay = self.stepDelay
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: delay)
-            guard let self, self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
-            self.phase = .confirming(p)
-        }
+        guard let peerID = self.connectedPeerID else { return }
+        self.startReveal(to: peerID, hybrid: (ours, theirs))
     }
 
     // MARK: - Reveal (Bug 198)
@@ -800,25 +750,31 @@ class ExchangeManager: NSObject {
         }
     }
 
-    /// The peer's one discovery message of this exchange: its commitment to its nonce, or, from an older build, the nonce in
-    /// the clear. A second discovery message changes nothing, so a man in the middle can neither swap a nonce after seeing our
-    /// messages nor change what the commitment bound (Bug 198). Not `private`: tests drive it without a NearbyInteraction token.
+    /// The peer's one discovery message of this exchange, which has to carry its commitment to its nonce. A second discovery
+    /// message changes nothing, so a man in the middle can neither swap a nonce after seeing our messages nor change what the
+    /// commitment bound (Bug 198).
     ///
-    /// - Returns: whether this was the exchange's discovery message.
+    /// A discovery message without a commitment ends the exchange before any key is exchanged or saved: it is from a phone on
+    /// a version older than 2.0.5, or a relay removed the commitment, and a phone cannot tell which. Either way the words would
+    /// not protect the exchange, so there is no derivation to fall back to. The phase is the same whatever the cause, and
+    /// nothing here reads a depth. Not `private`: tests drive it without a NearbyInteraction token.
+    ///
+    /// - Returns: whether this was the exchange's discovery message and it committed.
     @discardableResult
     func handleDiscovery(_ decoded: Exchange, data: Data, from peerID: MCPeerID) -> Bool {
         guard peerID == self.connectedPeerID, !self.peerDiscoveryAccepted else { return false }
         self.peerDiscoveryAccepted = true
 
-        if let commitment = decoded.nonceCommitment, commitment.count == ExchangeCommitment.commitmentSize {
-            self.peerCommitment = commitment
-            self.record(.discovery, by: self.peerRole, data)
-        } else if let nonce = decoded.nonce, nonce.count == ExchangeCommitment.nonceSize {
-            // An older build: its nonce is in the clear, nothing commits it, and it needs ours in the clear to derive
-            // anything. The exchange goes on as it always has and the screen says what is missing.
-            self.peerNonce = nonce
-            self.sendLegacyDiscovery(to: peerID)
+        guard let commitment = decoded.nonceCommitment, commitment.count == ExchangeCommitment.commitmentSize else {
+            #if DEBUG
+            debugPrint("[KE] Discovery without a commitment — exchange refused")
+            #endif
+            self.phase = .peerNeedsUpdate
+            self.teardownSessions()
+            return false
         }
+        self.peerCommitment = commitment
+        self.record(.discovery, by: self.peerRole, data)
         return true
     }
 
@@ -862,7 +818,7 @@ class ExchangeManager: NSObject {
                 return
             }
 
-            // MARK: Phase 1 — Discovery (token + commitment, or an older build's nonce)
+            // MARK: Phase 1 — Discovery (token + commitment to the nonce)
 
             if decoded.isDiscovery {
                 guard peerID == self.connectedPeerID else {
@@ -889,7 +845,8 @@ class ExchangeManager: NSObject {
                     return
                 }
 
-                // One discovery message per exchange: a second one neither replaces the nonce or commitment nor re-points ranging.
+                // One discovery message per exchange, and it has to carry a commitment: a second one neither replaces the
+                // commitment nor re-points ranging, and one without a commitment ends the exchange.
                 guard self.handleDiscovery(decoded, data: data, from: peerID) else { return }
 
                 self.receivedDiscoveryTokens[token] = peerID
@@ -914,7 +871,7 @@ class ExchangeManager: NSObject {
                     return
                 }
                 switch self.exchangeStatus {
-                case .waitingForPeerIdentity, .sendingMyIdentity:
+                case .waitingForPeerIdentity:
                     break
                 case nil:
                     // NI hasn't confirmed proximity yet — buffer and replay when it does.
@@ -928,11 +885,9 @@ class ExchangeManager: NSObject {
                 }
                 guard let peersP256Key = decoded.identity, peersP256Key.count == 65 else { return }
 
-                // Committed: one identity message per exchange, and only while waiting for it. Nothing replaces it, so
-                // the transcript holds the one the words were derived from (Bug 198).
-                if self.isCommittedExchange {
-                    guard self.peerIdentity == nil, case .waitingForPeerIdentity = self.exchangeStatus else { return }
-                }
+                // One identity message per exchange, only once the peer has committed to its nonce, and only while waiting for
+                // it. Nothing replaces it, so the transcript holds the one the words were derived from (Bug 198).
+                guard self.peerCommitment != nil, self.peerIdentity == nil else { return }
 
                 #if DEBUG
                 debugPrint("[KE] Identity received from \(peerID.displayName) — encapsulationKey: \(decoded.encapsulationKey != nil)")
@@ -954,11 +909,7 @@ class ExchangeManager: NSObject {
                     guard let result = provider.encapsulate(peerPublicKeyData: peerEncapKey) else { return }
                     let ours = QuantumPayload(secret: result.sharedSecret, ciphertext: result.ciphertext)
 
-                    if case .sendingMyIdentity = self.exchangeStatus {
-                        // Backward compat: old peer sent identity in parallel before our send Task fired.
-                        // Store quantum now; the existing Task will chain the ciphertext send after identity.
-                        self.exchangeStatus = .sendingMyIdentity(ours: ours)
-                    } else if self.isInitiator {
+                    if self.isInitiator {
                         // Received responder's identity → send our ciphertext.
                         self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
                         let generation = self.generation
@@ -987,67 +938,17 @@ class ExchangeManager: NSObject {
                     debugPrint("[KE] Classical path — provider: \(self.postQuantumProvider != nil), privateKey: \(self.privateKeyHandle != nil), peerKey: \(decoded.encapsulationKey != nil)")
                     #endif
 
-                    if self.isCommittedExchange {
-                        // The classical exchange of a committed pair: this identity message is the last before the reveal.
-                        if self.isInitiator {
-                            self.startReveal(to: peerID, hybrid: nil)
-                        } else {
-                            self.exchangeStatus = .sendingMyIdentity(ours: nil)
-                            let generation = self.generation
-                            Task { @MainActor [weak self] in
-                                try? await Task.sleep(for: delay)
-                                guard let self, self.generation == generation, case .sendingMyIdentity = self.exchangeStatus else { return }
-                                self.sendIdentity(to: peerID)
-                                self.startReveal(to: peerID, hybrid: nil)
-                            }
-                        }
-                    } else if case .sendingMyIdentity = self.exchangeStatus {
-                        // Backward compat: old peer sent identity in parallel.
-                        // peerIdentity is stored; the existing Task will confirm after sending.
-                    } else if self.isInitiator {
-                        // Already sent identity at NI fire — just confirm on receiving peer's.
-                        self.exchangeStatus = .done
-                        self.endProtocolSteps()
-                        let payload = ExchangePhase.Payload(
-                            fingerprint: peersP256Key.sha256,
-                            classicalKey: peersP256Key,
-                            hybridResult: nil,
-                            pairing: self.pairingOffer(),
-                            offeredPairing: self.ownPairKeys != nil,
-                            offeredQuantum: self.encapsulationKeyData != nil
-                        )
-                        let generation = self.generation
-                        Task { @MainActor [weak self] in
-                            try? await Task.sleep(for: delay)
-                            guard let self, self.generation == generation else { return }
-                            self.phase = .mlKemExchanged(payload)
-                            try? await Task.sleep(for: delay)
-                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
-                            self.phase = .confirming(p)
-                        }
+                    // The classical exchange: this identity message is the last before the reveal.
+                    if self.isInitiator {
+                        self.startReveal(to: peerID, hybrid: nil)
                     } else {
-                        // Send our identity in response, then confirm.
-                        self.exchangeStatus = .done
-                        self.endProtocolSteps()
-                        let payload = ExchangePhase.Payload(
-                            fingerprint: peersP256Key.sha256,
-                            classicalKey: peersP256Key,
-                            hybridResult: nil,
-                            pairing: self.pairingOffer(),
-                            offeredPairing: self.ownPairKeys != nil,
-                            offeredQuantum: self.encapsulationKeyData != nil
-                        )
+                        self.exchangeStatus = .sendingMyIdentity(ours: nil)
                         let generation = self.generation
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: delay)
-                            guard let self, self.generation == generation else { return }
+                            guard let self, self.generation == generation, case .sendingMyIdentity = self.exchangeStatus else { return }
                             self.sendIdentity(to: peerID)
-                            try? await Task.sleep(for: delay)
-                            guard self.generation == generation else { return }
-                            self.phase = .mlKemExchanged(payload)
-                            try? await Task.sleep(for: delay)
-                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
-                            self.phase = .confirming(p)
+                            self.startReveal(to: peerID, hybrid: nil)
                         }
                     }
                 }
@@ -1063,13 +964,7 @@ class ExchangeManager: NSObject {
                     #endif
                     return
                 }
-                let ours: QuantumPayload
-                if case .waitingForPeerQuantum(let o) = self.exchangeStatus {
-                    ours = o
-                } else if !self.isCommittedExchange, case .sendingMyQuantum(let o, nil) = self.exchangeStatus {
-                    // Backward compat: old peer sent ciphertext before our send Task fired.
-                    ours = o
-                } else {
+                guard self.peerCommitment != nil, case .waitingForPeerQuantum(let ours) = self.exchangeStatus else {
                     #if DEBUG
                     debugPrint("[KE] Ciphertext received but not waiting — ignoring")
                     #endif
@@ -1101,14 +996,8 @@ class ExchangeManager: NSObject {
                 #endif
 
                 if self.isInitiator {
-                    if case .sendingMyQuantum = self.exchangeStatus {
-                        // Backward compat: arrived before our send Task fired.
-                        // Store theirs now; the Task will assemble after sending.
-                        self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: theirs)
-                    } else {
-                        self.exchangeStatus = .complete(ours: ours, theirs: theirs)
-                        self.assembleHybridResult(ours: ours, theirs: theirs)
-                    }
+                    self.exchangeStatus = .complete(ours: ours, theirs: theirs)
+                    self.assembleHybridResult(ours: ours, theirs: theirs)
                 } else {
                     // Received initiator's ciphertext → send ours.
                     self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: theirs)
@@ -1162,10 +1051,10 @@ class ExchangeManager: NSObject {
         }
     }
 
-    /// Proximity is confirmed and the peer is the one we are pinned to: the exchange's steps begin. Not `private`, so tests
-    /// can start an exchange without NearbyInteraction.
+    /// Proximity is confirmed and the peer is the one we are pinned to, and has committed to its nonce: the exchange's steps
+    /// begin. Not `private`, so tests can start an exchange without NearbyInteraction.
     func startProtocol(with peer: MCPeerID) {
-        guard self.exchangeStatus == nil else { return }
+        guard self.exchangeStatus == nil, self.peerCommitment != nil, peer == self.connectedPeerID else { return }
         self.protocolInProgress = true
         self.armStepDeadline()
         let delay = self.stepDelay
@@ -1178,48 +1067,9 @@ class ExchangeManager: NSObject {
             let generation = self.generation
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: delay)
-                guard let self, self.generation == generation, case .sendingMyIdentity(let ours) = self.exchangeStatus else { return }
+                guard let self, self.generation == generation, case .sendingMyIdentity = self.exchangeStatus else { return }
                 self.sendIdentity(to: peer)
-                if let ours {
-                    // Backward compat: old peer sent identity in parallel, quantum already computed.
-                    // Chain ciphertext send directly — skip waitingForPeerIdentity.
-                    self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: delay)
-                        guard let self, self.generation == generation,
-                              case .sendingMyQuantum(let ours, let theirs) = self.exchangeStatus else { return }
-                        self.sendCiphertext(ours.ciphertext, to: peer)
-                        if let theirs {
-                            // Peer's ciphertext arrived before we sent ours — assemble now.
-                            self.exchangeStatus = .complete(ours: ours, theirs: theirs)
-                            self.assembleHybridResult(ours: ours, theirs: theirs)
-                        } else {
-                            self.exchangeStatus = .waitingForPeerQuantum(ours: ours)
-                        }
-                    }
-                } else if let peerIdentity = self.peerIdentity {
-                    // Backward compat: classical path, old peer sent identity in parallel.
-                    self.exchangeStatus = .done
-                    self.endProtocolSteps()
-                    let payload = ExchangePhase.Payload(
-                        fingerprint: peerIdentity.sha256,
-                        classicalKey: peerIdentity,
-                        hybridResult: nil,
-                        pairing: self.pairingOffer(),
-                        offeredPairing: self.ownPairKeys != nil,
-                        offeredQuantum: self.encapsulationKeyData != nil
-                    )
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: delay)
-                        guard let self, self.generation == generation else { return }
-                        self.phase = .mlKemExchanged(payload)
-                        try? await Task.sleep(for: delay)
-                        guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
-                        self.phase = .confirming(p)
-                    }
-                } else {
-                    self.exchangeStatus = .waitingForPeerIdentity
-                }
+                self.exchangeStatus = .waitingForPeerIdentity
             }
         } else {
             self.exchangeStatus = .waitingForPeerIdentity

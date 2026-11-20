@@ -184,8 +184,8 @@ struct CommittedExchangeTests {
         await loop.run()
 
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
-        let committed = try #require(a.committed)
-        #expect(committed.transcript == b.committed?.transcript, "both hold the same messages")
+        let committed = a.committed
+        #expect(committed.transcript == b.committed.transcript, "both hold the same messages")
         #expect(committed.ourNonce == loop.a.nonce && committed.peerNonce == loop.b.nonce)
         #expect(a.hybridResult == nil && a.pairing == nil)
         #expect(loop.a.words == loop.b.words && loop.a.words?.count == 5)
@@ -246,7 +246,7 @@ struct CommittedExchangeTests {
 
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
         let offerA = try #require(a.pairing), offerB = try #require(b.pairing)
-        #expect(offerA.exchangeTranscript == a.committed?.transcript && offerA.exchangeTranscript != nil)
+        #expect(offerA.exchangeTranscript == a.committed.transcript)
         let routingA = try #require(offerA.routingKey(withPeer: a.classicalKey, quantum: nil, using: loop.a.key))
         let routingB = try #require(offerB.routingKey(withPeer: b.classicalKey, quantum: nil, using: loop.b.key))
         #expect(routingA == routingB)
@@ -262,7 +262,7 @@ struct CommittedExchangeTests {
 
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
         #expect(a.hybridResult != nil && b.hybridResult != nil)
-        #expect(a.committed?.transcript == b.committed?.transcript && a.committed != nil)
+        #expect(a.committed.transcript == b.committed.transcript)
         #expect(loop.a.words == loop.b.words)
         let tail = loop.kinds.filter { $0 != "discovery" && $0 != "proof" }
         #expect(tail == ["identity", "identity", "ciphertext", "ciphertext", "reveal", "reveal"], "\(tail)")
@@ -297,7 +297,6 @@ struct RelayTests {
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
         #expect(a.hybridResult == nil && b.hybridResult == nil, "both fell back to the classical branch")
         #expect(a.offeredQuantum && b.offeredQuantum, "each phone knows it sent a key and got none")
-        #expect(a.committed != nil && b.committed != nil)
         #expect(loop.a.words != loop.b.words, "the people comparing the words find they differ")
     }
 
@@ -435,20 +434,6 @@ struct DiscoveryOnceTests {
         #expect(manager.peerCommitmentForTesting == first)
     }
 
-    @Test("A second discovery message does not replace the nonce of an older build's")
-    func nonceKept() async throws {
-        let (manager, peer) = try await self.connected()
-        defer { manager.finish() }
-        let first = randomBytes(16), second = randomBytes(16)
-
-        let one = try self.discovery(nonce: first), two = try self.discovery(nonce: second)
-        manager.handleDiscovery(one.exchange, data: one.data, from: peer)
-        manager.handleDiscovery(two.exchange, data: two.data, from: peer)
-
-        #expect(manager.peerNonceForTesting == first)
-        #expect(manager.peerCommitmentForTesting == nil && !manager.isCommittedExchange)
-    }
-
     @Test("A nonce in the clear cannot follow a commitment to turn the exchange into an uncommitted one")
     func clearNonceAfterCommitment() async throws {
         let (manager, peer) = try await self.connected()
@@ -459,8 +444,9 @@ struct DiscoveryOnceTests {
         manager.handleDiscovery(one.exchange, data: one.data, from: peer)
         manager.handleDiscovery(two.exchange, data: two.data, from: peer)
 
-        #expect(manager.isCommittedExchange)
+        #expect(manager.peerCommitmentForTesting == commitment)
         #expect(manager.peerNonceForTesting == nil)
+        #expect(manager.phase != .peerNeedsUpdate, "the second message is ignored, it does not end the exchange")
     }
 
     @Test("A discovery message from a peer that is not the pinned one changes nothing")
@@ -471,73 +457,175 @@ struct DiscoveryOnceTests {
 
         #expect(!manager.handleDiscovery(one.exchange, data: one.data, from: MCPeerID(displayName: "intruder")))
         #expect(manager.peerNonceForTesting == nil)
-    }
-
-    @Test("A commitment of the wrong size is not one, and the nonce beside it is not taken as the peer's")
-    func malformedCommitment() async throws {
-        let (manager, peer) = try await self.connected()
-        defer { manager.finish() }
-        let one = try self.discovery(commitment: Data(count: 31))
-        manager.handleDiscovery(one.exchange, data: one.data, from: peer)
-
-        #expect(!manager.isCommittedExchange)
+        #expect(manager.phase != .peerNeedsUpdate, "a message from another peer neither ends the exchange nor counts")
     }
 }
 
-// MARK: - A peer on an older build
+// MARK: - A peer that does not commit is refused
+
+/// Counts calls, for a closure the manager holds.
+private final class Counter { var count = 0 }
 
 @MainActor
-@Suite("Bug 198 — an older build as the peer", .serialized)
-struct OlderPeerTests {
+@Suite("Bug 198 — a peer whose discovery message carries no commitment is refused", .serialized)
+struct UncommittedPeerTests {
 
-    /// A manager that is the initiator (its name sorts below the peer's), connected to a scripted older peer.
-    private func connected() async throws -> (phone: Phone, peer: MCPeerID) {
-        let phone = Phone(name: "a-\(UUID().uuidString)", pairing: false, quantum: false)
+    /// A phone with pair keys, connected to a scripted peer. `initiator` sets which role it has: the lower name initiates.
+    private func connected(initiator: Bool) async throws -> (phone: Phone, peer: MCPeerID, prekeysMade: Counter) {
+        let phone = Phone(name: "\(initiator ? "a" : "b")-\(UUID().uuidString)", pairing: true, quantum: false)
+        let made = Counter()
+        phone.manager.prekeyMaker = { made.count += 1; return softwareRecord() }
         phone.manager.sendInterceptorForTesting = { [weak phone] in phone?.record($0) }
-        let peer = MCPeerID(displayName: "b-\(UUID().uuidString)")
+        let peer = MCPeerID(displayName: "\(initiator ? "b" : "a")-\(UUID().uuidString)")
         phone.manager.session(phone.manager.multipeerSession!, peer: peer, didChange: .connected)
         try await Task.sleep(for: .milliseconds(100))
         try #require(phone.manager.connectedPeerID == peer)
-        return (phone, peer)
+        return (phone, peer, made)
     }
 
-    @Test("An older build's discovery, with its nonce in the clear, is answered with ours in the clear, once")
-    func answeredInTheClear() async throws {
-        let (phone, peer) = try await self.connected()
-        defer { phone.manager.finish() }
-        let older = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, nonce: randomBytes(16))
-        let data = try JSONEncoder().encode(older)
-
-        phone.manager.handleDiscovery(older, data: data, from: peer)
-        phone.manager.handleDiscovery(older, data: data, from: peer)
-
-        let legacy = phone.sentExchanges.filter { $0.isDiscovery && $0.nonce != nil }
-        #expect(legacy.count == 1 && legacy.first?.nonce == phone.nonce)
-        #expect(!phone.manager.isCommittedExchange)
+    /// A discovery message of a build older than 2.0.5: its nonce in the clear, and no commitment.
+    private func olderDiscovery() throws -> (exchange: Exchange, data: Data) {
+        let exchange = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, nonce: randomBytes(16))
+        return (exchange, try JSONEncoder().encode(exchange))
     }
 
-    @Test("The exchange with an older build still completes, uncommitted, and sends no reveal")
-    func stillCompletes() async throws {
-        let (phone, peer) = try await self.connected()
+    @Test("An older build's discovery ends the exchange in either role, sends nothing, and keeps nothing", arguments: [true, false])
+    func olderBuildRefused(initiator: Bool) async throws {
+        let (phone, peer, made) = try await self.connected(initiator: initiator)
         defer { phone.manager.finish() }
-        let olderNonce = randomBytes(16)
-        let older = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, nonce: olderNonce)
-        phone.manager.handleDiscovery(older, data: try JSONEncoder().encode(older), from: peer)
+        try #require(made.count == 1, "the first prekeys are made when the peer connects")
+        try #require(phone.manager.ownPrekeys != nil)
+        let sentBefore = phone.sent.count
+
+        let older = try self.olderDiscovery()
+        phone.manager.handleDiscovery(older.exchange, data: older.data, from: peer)
+
+        #expect(phone.manager.phase == .peerNeedsUpdate)
+        #expect(phone.sent.count == sentBefore, "nothing goes out in answer: no nonce, no identity")
+        #expect(phone.manager.ownPrekeys == nil && phone.manager.ownPairKeys == nil && phone.manager.ownPairingField == nil,
+                "the prekeys and pair keys made for this peer are discarded")
+        #expect(phone.manager.connectedPeerID == nil && phone.manager.peerCommitmentForTesting == nil && phone.manager.peerNonceForTesting == nil)
+        #expect(!phone.manager.isStepDeadlineArmed && !phone.manager.isWatchdogArmed, "nothing is left running")
+        #expect(phone.payload == nil, "there is nothing to confirm and nothing to save")
+    }
+
+    @Test("The exchange cannot be started, and a later message from that peer is not taken", arguments: [true, false])
+    func nothingFollows(initiator: Bool) async throws {
+        let (phone, peer, _) = try await self.connected(initiator: initiator)
+        defer { phone.manager.finish() }
+        let older = try self.olderDiscovery()
+        phone.manager.handleDiscovery(older.exchange, data: older.data, from: peer)
+        try #require(phone.manager.phase == .peerNeedsUpdate)
+
         phone.manager.startProtocol(with: peer)
-
-        // The older peer answers the initiator's identity with its own, classical.
+        #expect(!phone.manager.isStepDeadlineArmed)
         try await Task.sleep(for: .milliseconds(100))
-        let identity = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, identity: randomPoint())
-        phone.manager.handleReceivedData(try JSONEncoder().encode(identity), from: peer)
+        #expect(!phone.sentExchanges.contains { $0.isIdentity }, "no identity goes to a refused peer")
 
-        for _ in 0..<100 where phone.payload == nil { try await Task.sleep(for: .milliseconds(20)) }
-        let payload = try #require(phone.payload)
-        #expect(payload.committed == nil, "the screen says the peer did not commit")
-        #expect(payload.hybridResult == nil)
-        #expect(!phone.sentExchanges.contains { $0.isNonceReveal }, "an older build would read a reveal as a discovery message")
-        // And the words are the ones the older build derives: the transport key's.
-        let key = try #require(phone.key.createSharedSecret(using: payload.classicalKey))
-        #expect(phone.words == Manager.PassphraseGenerator().generate(separator: "-", sharedKey: key.withUnsafeBytes { Data($0) }).components(separatedBy: "-"))
+        // The peer follows with a discovery message that does commit, and with its identity.
+        let commitment = try #require(ExchangeCommitment.commitment(to: randomBytes(16)))
+        let late = Exchange(id: "x", token: Data([1]), version: .v1, nonceCommitment: commitment)
+        #expect(!phone.manager.handleDiscovery(late, data: try JSONEncoder().encode(late), from: peer))
+        phone.manager.handleReceivedData(try JSONEncoder().encode(Exchange(id: "y", token: Data([1]), version: .v1, identity: randomPoint())), from: peer)
+        #expect(phone.manager.peerCommitmentForTesting == nil)
+        #expect(phone.manager.phase == .peerNeedsUpdate && phone.payload == nil)
+    }
+
+    @Test("A discovery message with a malformed commitment is no commitment", arguments: [0, 31, 33])
+    func malformedCommitment(size: Int) async throws {
+        let (phone, peer, _) = try await self.connected(initiator: true)
+        defer { phone.manager.finish() }
+        let exchange = Exchange(id: "x", token: Data([1]), version: .v1, nonce: randomBytes(16), nonceCommitment: Data(count: size))
+
+        phone.manager.handleDiscovery(exchange, data: try JSONEncoder().encode(exchange), from: peer)
+
+        #expect(phone.manager.phase == .peerNeedsUpdate)
+    }
+
+    @Test("An identity or ciphertext message before the peer has committed is not taken")
+    func identityBeforeCommitment() async throws {
+        let (phone, peer, _) = try await self.connected(initiator: false)
+        defer { phone.manager.finish() }
+        // The exchange is somehow running, as a stale NearbyInteraction update could start it, with no commitment held.
+        phone.manager.waitForPeerIdentityForTesting()
+
+        let identity = Exchange(id: "x", token: Data([1]), version: .v1, identity: randomPoint())
+        phone.manager.handleReceivedData(try JSONEncoder().encode(identity), from: peer)
+        let ciphertext = Exchange(id: "y", token: Data([1]), version: .v1, ciphertext: randomBytes(64))
+        phone.manager.handleReceivedData(try JSONEncoder().encode(ciphertext), from: peer)
+
+        #expect(phone.manager.phase == .found, "nothing moved")
+        #expect(phone.payload == nil)
+    }
+
+    // MARK: Between two phones
+
+    /// A relay that passes everything on but rewrites the discovery message of `sender`.
+    private func rewriting(_ sender: KeyPath<Loopback, Phone>, in loop: Loopback, to rewrite: @escaping (Exchange) -> Exchange) {
+        loop.tamper = { [unowned loop] from, data in
+            guard from === loop[keyPath: sender], let exchange = try? JSONDecoder().decode(Exchange.self, from: data), exchange.isDiscovery else {
+                return data
+            }
+            return try? JSONEncoder().encode(rewrite(exchange))
+        }
+    }
+
+    @Test("A relay that removes the commitment from one side's discovery: the receiving phone refuses, the other times out", arguments: [true, false])
+    func removedFromOneSide(fromInitiator: Bool) async throws {
+        let loop = Loopback(pairing: true)
+        defer { loop.end() }
+        let (sender, receiver) = fromInitiator ? (loop.a, loop.b) : (loop.b, loop.a)
+        for phone in [loop.a, loop.b] { phone.manager.stepTimeout = 0.3 }
+        self.rewriting(fromInitiator ? \.a : \.b, in: loop) { Exchange(id: $0.id, token: $0.token, version: $0.version) }
+        await loop.start()
+        await loop.run(until: { receiver.manager.phase == .peerNeedsUpdate && sender.manager.phase == .timedOut })
+
+        #expect(receiver.manager.phase == .peerNeedsUpdate)
+        #expect(receiver.manager.ownPrekeys == nil && receiver.manager.ownPairKeys == nil, "nothing made for the refused peer is kept")
+        #expect(!receiver.sentExchanges.contains { $0.isIdentity || $0.isNonceReveal }, "it sent no identity and no nonce")
+        #expect(sender.manager.phase == .timedOut, "the phone that was not refused waits out its deadline")
+        #expect(loop.a.payload == nil && loop.b.payload == nil)
+    }
+
+    @Test("A relay that swaps the commitment for a nonce in the clear is refused the same way")
+    func swappedForANonce() async throws {
+        let loop = Loopback(pairing: true)
+        defer { loop.end() }
+        self.rewriting(\.a, in: loop) { Exchange(id: $0.id, token: $0.token, version: $0.version, nonce: randomBytes(16)) }
+        await loop.start()
+        await loop.run(until: { loop.b.manager.phase == .peerNeedsUpdate })
+
+        #expect(loop.b.manager.phase == .peerNeedsUpdate)
+        #expect(loop.b.payload == nil)
+    }
+
+    @Test("A relay that removes both commitments: both phones refuse")
+    func removedFromBoth() async throws {
+        let loop = Loopback(pairing: true)
+        defer { loop.end() }
+        loop.tamper = { _, data in
+            guard let exchange = try? JSONDecoder().decode(Exchange.self, from: data), exchange.isDiscovery else { return data }
+            return try? JSONEncoder().encode(Exchange(id: exchange.id, token: exchange.token, version: exchange.version))
+        }
+        await loop.start()
+        await loop.run(until: { loop.a.manager.phase == .peerNeedsUpdate && loop.b.manager.phase == .peerNeedsUpdate })
+
+        #expect(loop.a.manager.phase == .peerNeedsUpdate && loop.b.manager.phase == .peerNeedsUpdate)
+        #expect(loop.kinds.filter { $0 != "discovery" }.isEmpty, "no message but the two discoveries was sent")
+        #expect(loop.a.payload == nil && loop.b.payload == nil)
+        for phone in [loop.a, loop.b] { #expect(phone.manager.ownPrekeys == nil && phone.manager.ownPairKeys == nil) }
+    }
+
+    @Test("Two phones that both commit still pair, with and without pair keys", arguments: [true, false])
+    func committedPhonesPair(pairing: Bool) async throws {
+        let loop = Loopback(pairing: pairing)
+        defer { loop.end() }
+        await loop.start()
+        await loop.run()
+
+        #expect(loop.a.manager.phase != .peerNeedsUpdate && loop.b.manager.phase != .peerNeedsUpdate)
+        #expect(loop.a.payload != nil && loop.b.payload != nil)
+        #expect(loop.a.words == loop.b.words && loop.a.words != nil)
     }
 
     @Test("A message of an older build's kind, with no new field, is byte-identical to what it was")
@@ -565,8 +653,18 @@ struct StepDeadlineTests {
     func rangingDoesNotResetIt() async throws {
         let manager = ExchangeManager()
         manager.multipeerSession = MCSession(peer: MCPeerID(displayName: "a-\(UUID().uuidString)"))
+        manager.sendInterceptorForTesting = { _ in }
+        manager.prekeyMaker = { softwareRecord() }
+        manager.pairKeyProvider = { let keys = SoftwareCardKeys(); keys.failing = true; return keys }()
+        manager.prepareNonceForTesting(randomBytes(16))
         manager.stepTimeout = 0.4
-        manager.startProtocol(with: MCPeerID(displayName: "b-peer"))
+        let peer = MCPeerID(displayName: "b-peer")
+        manager.session(manager.multipeerSession!, peer: peer, didChange: .connected)
+        try await Task.sleep(for: .milliseconds(100))
+        let commitment = try #require(ExchangeCommitment.commitment(to: randomBytes(16)))
+        let discovery = Exchange(id: "x", token: Data([1]), version: .v1, nonceCommitment: commitment)
+        try #require(manager.handleDiscovery(discovery, data: try JSONEncoder().encode(discovery), from: peer))
+        manager.startProtocol(with: peer)
         #expect(manager.isStepDeadlineArmed)
 
         let session = NISession()
@@ -611,7 +709,8 @@ struct StepDeadlineTests {
         let loop = Loopback()
         defer { loop.end() }
         for phone in [loop.a, loop.b] { phone.manager.stepTimeout = 0.3 }
-        loop.tamper = { _, _ in nil }   // nothing gets through
+        // The discovery messages cross, so ranging starts the exchange; nothing after them does.
+        loop.tamper = { _, data in Loopback.kind(of: data) == "discovery" ? data : nil }
         await loop.start()
         await loop.run(until: { loop.a.manager.phase == .timedOut && loop.b.manager.phase == .timedOut })
 

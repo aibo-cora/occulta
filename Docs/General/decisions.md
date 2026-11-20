@@ -1409,7 +1409,7 @@ back to the old key, touches every attachment open and keeps the old key in use 
 
 **Full reasoning:** `bugs.md` Bug 196 addendum ("Cost") and the code review, round 1 (#4).
 
-## The in-person key exchange commits to its nonces; an older build's exchange keeps working and says so
+## The in-person key exchange commits to its nonces; a phone that does not is refused
 
 **Status:** Decided 2026-11-20 by the owner (Bugs 198 and 199, shipped in 2.0.5, before the passphrase release).
 
@@ -1420,15 +1420,20 @@ covered.
 
 **Decision:** commit, then reveal. The discovery message carries a hash of the nonce; the nonce is sent last, initiator first; the words
 and the routing key are derived over both nonces and a hash of every message of the exchange, in every shape of exchange, under labels of
-their own. One discovery and one identity message per exchange; a deadline per step that ranging does not reset. A peer on an older build
-sends no commitment: the exchange keeps working with the older derivations, and the confirmation screen says the peer is on an older
-version and asks the two people to compare the key rows. The screen also says when this phone sent an ML-KEM key and got none.
+their own. One discovery and one identity message per exchange; a deadline per step that ranging does not reset. The screen also says
+when this phone sent an ML-KEM key and got none. A peer whose discovery message carries no commitment is refused before any key is
+exchanged or saved, in both roles, and the screen says the other phone needs to update Occulta. There is no uncommitted derivation to
+fall back to. Decided 2026-11-20 by the owner ("refuse from 2.0.5"), after a first version that kept working with older builds and asked
+the two people to compare key rows.
 
 **Why:** a short comparison string is only as strong as its length when everything the other side contributes is fixed before it sees
-yours. Dropping support for older builds would stop every pairing with a contact who has not updated.
+yours. An exchange that falls back when the commitment is missing is one a man in the middle can steer into the fallback by removing
+it, and a phone cannot tell that from a peer on an older build, so one message covers both. The cost is that 2.0.5 cannot pair or
+re-exchange with a phone below 2.0.5 until that phone updates; existing pairings are untouched.
 
-**Consequences:** a new wire field in the discovery message and a new message, both ignored harmlessly by older builds; new interop
-vectors (`exchange.*`); nothing stored changes, so existing pairings are untouched. The per-pairing secret of 2.1.0 ("A secret per pairing
+**Consequences:** a new wire field in the discovery message and a new message, both ignored harmlessly by older builds, which cannot
+complete an exchange with 2.0.5 (What's New says so); new interop vectors (`exchange.*`); nothing stored changes, so existing pairings
+are untouched. The per-pairing secret of 2.1.0 ("A secret per pairing
 routes and binds every bundle") should derive from the committed exchange's input, so the words authenticate it. Bug 199's third part,
 decided 2026-11-20 by the owner: a re-exchange that would replace a hybrid pairing with a classical one is refused, and the person
 who wants a classical pairing revokes the contact's key and exchanges again (`bugs.md` Bug 196, "A hybrid pairing is not replaced").

@@ -14,6 +14,7 @@ struct KeyExchange: View {
     @State private var displayingInfo: Bool = true
     @State private var confirmingPayload: ExchangeManager.ExchangePhase.Payload?
     @State private var showTimeoutBanner: Bool = false
+    @State private var showUpdateBanner: Bool = false
 
     @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
 
@@ -50,6 +51,15 @@ struct KeyExchange: View {
             } else {
                 if self.exchangeManager.isExchangePossible {
                     VStack(spacing: 24) {
+                        if self.showUpdateBanner {
+                            // The same words whatever the cause: a phone on an older version, or a message that was
+                            // interfered with, look the same to this one. Shown on this screen only; nothing is stored.
+                            Label("The other phone needs to update Occulta to exchange keys with this one.", systemImage: "exclamationmark.triangle.fill")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.occultaWarn)
+                                .padding(.horizontal)
+                        }
+
                         if self.showTimeoutBanner {
                             Label("Didn't connect — make sure both devices are within 25 cm and try again.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.subheadline)
@@ -88,6 +98,7 @@ struct KeyExchange: View {
                         HStack(spacing: 16) {
                             Button {
                                 self.showTimeoutBanner = false
+                                self.showUpdateBanner = false
                                 // The meeting check (SPEC §7) runs against this contact's card field, if it holds one.
                                 let cardMeeting = self.contacts.first.flatMap { self.contactManager?.cardMeetingContext(for: $0) } ?? .none
                                 self.exchangeManager.start(cardMeeting: cardMeeting)
@@ -122,6 +133,11 @@ struct KeyExchange: View {
             if newPhase == .timedOut || newPhase == .failed {
                 self.confirmingPayload = nil
                 self.showTimeoutBanner = true
+                self.exchangeManager.finish()
+            }
+            if newPhase == .peerNeedsUpdate {
+                self.confirmingPayload = nil
+                self.showUpdateBanner = true
                 self.exchangeManager.finish()
             }
         }
@@ -197,16 +213,6 @@ struct KeyExchange: View {
                         Text("Quantum-resistant keys weren't exchanged. The other phone may be on an older version of iOS or Occulta. If you expected it to be up to date, cancel and try again.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-
-                    // The other phone sent its nonce in the clear, with no commitment: an older version of Occulta, or a
-                    // message that was interfered with. The words then protect less, and comparing the two key rows above
-                    // covers what they don't (Bug 198).
-                    if self.payload.committed == nil {
-                        Text("The other phone is on an older version, so these words protect less. Also compare the two key rows above: MY IDENTITY KEY here must equal PEER IDENTITY KEY on their screen, and the other way round. If they differ, cancel.")
-                            .font(.caption2)
-                            .foregroundStyle(Color.occultaWarn)
                             .multilineTextAlignment(.center)
                     }
 
@@ -356,36 +362,22 @@ struct KeyExchange: View {
 
 extension KeyExchange {
 
-    /// The key the verification words come from, for each shape an exchange can have. A committed exchange (both phones
-    /// committed to their nonces, Bug 198) has one derivation for all of them, over both nonces and every message of the
-    /// exchange, so what was added, removed or changed in transit changes the words, ML-KEM included (Bug 199). An exchange
-    /// with a peer on an older build keeps the three derivations that peer makes. Nil when the key manager can't derive it.
+    /// The key the verification words come from. Every shape of exchange has one derivation, over both nonces and every
+    /// message of the exchange, so what was added, removed or changed in transit changes the words, ML-KEM included
+    /// (Bugs 198 and 199). An exchange whose peer did not commit to its nonce never reaches this screen. Nil when the key
+    /// manager can't derive it.
     @MainActor
     static func wordsKey(for payload: ExchangeManager.ExchangePhase.Payload, using keyManager: any KeyManagerProtocol) -> Data? {
         let quantum = payload.hybridResult.map(QuantumKeyMaterial.init(from:))
 
-        if let committed = payload.committed {
-            if let pairing = payload.pairing {
-                return pairing.wordsKey(withPeer: payload.classicalKey, quantum: quantum, using: keyManager)
-            }
-            return keyManager.createCommittedDicewareKey(
-                peerP256Material: payload.classicalKey, pairwiseECDH: nil, quantumMaterial: quantum,
-                ourNonce: committed.ourNonce, peerNonce: committed.peerNonce, exchangeTranscript: committed.transcript
-            )?.withUnsafeBytes { Data($0) }
-        }
         if let pairing = payload.pairing {
-            // A pair-key exchange: the words cover both phones' pair keys and the identity ECDH (Bug 196, stage 2), so a
-            // key a man in the middle added, removed or swapped changes them. A failure to derive shows words that
-            // cannot match, and `save()` refuses the pairing.
             return pairing.wordsKey(withPeer: payload.classicalKey, quantum: quantum, using: keyManager)
         }
-        if let result = payload.hybridResult {
-            return keyManager.createDicewareKey(
-                peerP256Material: result.peerP256PublicKey, quantumMaterial: QuantumKeyMaterial(from: result),
-                ourNonce: result.ourNonce, peerNonce: result.peerNonce
-            )?.withUnsafeBytes { Data($0) }
-        }
-        return keyManager.createSharedSecret(using: payload.classicalKey)?.withUnsafeBytes { Data($0) }
+        return keyManager.createCommittedDicewareKey(
+            peerP256Material: payload.classicalKey, pairwiseECDH: nil, quantumMaterial: quantum,
+            ourNonce: payload.committed.ourNonce, peerNonce: payload.committed.peerNonce,
+            exchangeTranscript: payload.committed.transcript
+        )?.withUnsafeBytes { Data($0) }
     }
 
     @MainActor

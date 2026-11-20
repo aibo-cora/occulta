@@ -15275,11 +15275,14 @@ against the commitment and ends the exchange on a mismatch or a reflection of it
 message are accepted per exchange. The words (`wordsKeyCommitted`, every shape: with or without pair keys, with or without ML-KEM,
 classical included) and the routing key (`deriveCommitted`) are derived over both nonces and the exchange transcript, a hash of
 every message before the reveal as it was sent and as it was received, so a message changed in any byte, an ML-KEM key removed
-included, makes the two phones' words differ. Both derivations have domains of their own. A peer on an older build sends its nonce in
-the clear and no commitment: that exchange keeps the derivations the older build makes, and the confirmation screen says so and asks
-the two people to compare the key rows. Each step has a deadline (`stepTimeout`, 15 s) that ranging updates do not reset. The screen
-also says when this phone sent an ML-KEM key and got none. Nothing of this is stored: the commitment, the transcript and the notes
-live in the exchange and on the confirmation screen only, and no part depends on a depth.
+included, makes the two phones' words differ. Both derivations have domains of their own. A discovery message with no commitment (a
+build older than 2.0.5, or a relay that removed it) ends the exchange before any key is exchanged: `ExchangePhase.peerNeedsUpdate`, in
+both roles, with the same screen text whatever the cause ("The other phone needs to update Occulta to exchange keys with this one."),
+the first prekeys and pair keys made at connect discarded by the teardown, nothing sent in answer and nothing saved. No derivation
+exists for an exchange without a commitment: `Payload.committed` and `PairingOffer.exchangeTranscript` are not optional. Each step has
+a deadline (`stepTimeout`, 15 s) that ranging updates do not reset. The screen also says when this phone sent an ML-KEM key and got
+none. Nothing of this is stored: the commitment, the transcript and the notes live in the exchange and on the confirmation screen
+only, and no part depends on a depth. 2.0.5 does not pair or re-exchange with a phone below 2.0.5.
 
 **Send and receive.** A pair-key pairing's long-term slots use the pair-key ECDH; its forward-secret slots are signed by the pair
 signing key (prefixed form only) and checked against the one the peer sent. A slot made the old way, a pair-key slot to a pairing
