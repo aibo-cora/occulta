@@ -48,6 +48,8 @@ private final class Phone {
         self.manager.prekeyMaker = { softwareRecord() }
         self.manager.identityProvider = { [key = self.key] in try key.retrieveIdentity() }
         self.manager.stepDelay = .milliseconds(5)
+        // Other suites keep the main thread busy for seconds at a time in a full run; a test that is about the deadline sets its own.
+        self.manager.stepTimeout = 600
         self.manager.prepareNonceForTesting(self.nonce)
         if quantum { self.manager.preparePostQuantumForTesting() }
     }
@@ -80,7 +82,9 @@ private final class Loopback {
         self.a = Phone(name: "a-\(UUID().uuidString)", pairing: pairing, quantum: quantum)
         self.b = Phone(name: "b-\(UUID().uuidString)", pairing: pairing, quantum: quantum)
         for (me, peer) in [(self.a, self.b), (self.b, self.a)] {
-            me.manager.sendInterceptorForTesting = { [unowned self] data in
+            // Weak: a task the manager queued can send after the test is over.
+            me.manager.sendInterceptorForTesting = { [weak self, weak me] data in
+                guard let self, let me else { return }
                 me.record(data)
                 self.log.append((me, Loopback.kind(of: data)))
                 let delivered = self.tamper?(me, data) ?? (self.tamper == nil ? data : nil)
@@ -108,6 +112,12 @@ private final class Loopback {
         for (me, peer) in [(self.a, self.b), (self.b, self.a)] { me.manager.startProtocol(with: peer.id) }
     }
 
+    /// Ends both exchanges, so nothing a manager queued acts after the test.
+    func end() {
+        self.a.manager.finish()
+        self.b.manager.finish()
+    }
+
     func settle() async { try? await Task.sleep(for: .milliseconds(100)) }
 
     /// Hands every queued message to its receiver, in the order they were sent. A discovery message goes to the receiver's
@@ -125,7 +135,7 @@ private final class Loopback {
     }
 
     /// Runs until both phones hold a payload, or `timeout` passes.
-    func run(timeout: Duration = .seconds(10)) async {
+    func run(timeout: Duration = .seconds(30)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             self.deliver()
@@ -135,7 +145,7 @@ private final class Loopback {
     }
 
     /// Runs until `condition` holds, or `timeout` passes.
-    func run(until condition: () -> Bool, timeout: Duration = .seconds(5)) async {
+    func run(until condition: () -> Bool, timeout: Duration = .seconds(30)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if condition() { return }
@@ -168,6 +178,7 @@ struct CommittedExchangeTests {
     @Test("Classical, no pair keys: both phones reach the confirmation with the same words, committed")
     func classical() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         await loop.start()
         await loop.run()
 
@@ -182,6 +193,7 @@ struct CommittedExchangeTests {
     @Test("The reveals are the last messages, the initiator's first, after every identity message")
     func revealIsLast() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         await loop.start()
         await loop.run()
 
@@ -194,6 +206,7 @@ struct CommittedExchangeTests {
     @Test("No nonce is on the wire before its reveal: discovery carries a commitment and nothing else of it")
     func nonceStaysSecret() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         await loop.start()
         await loop.run()
 
@@ -211,6 +224,7 @@ struct CommittedExchangeTests {
     @Test("A phone reveals only after it holds every message of the peer's that comes before the reveal")
     func revealFollowsEveryOtherMessage() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         await loop.start()
         await loop.run()
 
@@ -225,6 +239,7 @@ struct CommittedExchangeTests {
     @Test("With pair keys: the offer carries the exchange transcript, and both phones derive the same routing key")
     func withPairKeys() async throws {
         let loop = Loopback(pairing: true)
+        defer { loop.end() }
         await loop.start()
         await loop.run()
 
@@ -240,6 +255,7 @@ struct CommittedExchangeTests {
     @Test("Hybrid: both phones reach the confirmation with the same words and a hybrid result, committed", .enabled(if: enclave))
     func hybrid() async throws {
         let loop = Loopback(pairing: true, quantum: true)
+        defer { loop.end() }
         await loop.start()
         await loop.run()
 
@@ -272,6 +288,7 @@ struct RelayTests {
           .enabled(if: enclave))
     func strippedMLKEMChangesTheWords() async throws {
         let loop = Loopback(pairing: true, quantum: true)
+        defer { loop.end() }
         loop.tamper = { _, data in Self.strippingKey(data) }
         await loop.start()
         await loop.run()
@@ -286,6 +303,7 @@ struct RelayTests {
     @Test("A relay that changes a prekey batch's generatedAt on one leg makes the words differ")
     func changedBatchChangesTheWords() async throws {
         let loop = Loopback(pairing: true)
+        defer { loop.end() }
         loop.tamper = { [unowned loop] from, data in
             guard from === loop.a, let exchange = try? JSONDecoder().decode(Exchange.self, from: data), exchange.isIdentity,
                   let pairing = exchange.pairing else { return data }
@@ -312,12 +330,13 @@ struct RelayTests {
     @Test("A revealed nonce that does not open its commitment ends the exchange")
     func wrongNonceFails() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         loop.tamper = { from, data in
             guard let exchange = try? JSONDecoder().decode(Exchange.self, from: data), exchange.isNonceReveal else { return data }
             return try? JSONEncoder().encode(Exchange(id: exchange.id, token: Data(), version: .v1, revealedNonce: randomBytes(16)))
         }
         await loop.start()
-        await loop.runFor(.milliseconds(800))
+        await loop.run(until: { loop.b.manager.phase == .failed })
 
         #expect(loop.a.payload == nil && loop.b.payload == nil)
         #expect(loop.b.manager.phase == .failed, "the responder got the initiator's altered reveal")
@@ -326,12 +345,13 @@ struct RelayTests {
     @Test("A reveal that reflects the receiver's own nonce ends the exchange")
     func reflectedNonceFails() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         loop.tamper = { [unowned loop] from, data in
             guard let exchange = try? JSONDecoder().decode(Exchange.self, from: data), exchange.isNonceReveal, from === loop.a else { return data }
             return try? JSONEncoder().encode(Exchange(id: exchange.id, token: Data(), version: .v1, revealedNonce: loop.b.nonce))
         }
         await loop.start()
-        await loop.runFor(.milliseconds(800))
+        await loop.run(until: { loop.b.manager.phase == .failed })
 
         #expect(loop.b.manager.phase == .failed)
     }
@@ -339,6 +359,7 @@ struct RelayTests {
     @Test("A reveal that arrives before the exchange is ready for it is ignored")
     func earlyRevealIgnored() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         await loop.start()
         // The initiator's first message is not out yet: the responder is waiting for an identity, not a reveal.
         let early = try JSONEncoder().encode(Exchange(id: "x", token: Data(), version: .v1, revealedNonce: loop.a.nonce))
@@ -353,6 +374,7 @@ struct RelayTests {
     @Test("A second identity message, sent while the responder is about to answer, does not replace the first")
     func secondIdentityIgnored() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         loop.b.manager.stepDelay = .milliseconds(400)
         await loop.start()
         func holdsIdentity() -> Bool {
@@ -401,6 +423,7 @@ struct DiscoveryOnceTests {
     @Test("A second discovery message does not replace the commitment")
     func commitmentKept() async throws {
         let (manager, peer) = try await self.connected()
+        defer { manager.finish() }
         let first = try #require(ExchangeCommitment.commitment(to: randomBytes(16)))
         let second = try #require(ExchangeCommitment.commitment(to: randomBytes(16)))
 
@@ -414,6 +437,7 @@ struct DiscoveryOnceTests {
     @Test("A second discovery message does not replace the nonce of an older build's")
     func nonceKept() async throws {
         let (manager, peer) = try await self.connected()
+        defer { manager.finish() }
         let first = randomBytes(16), second = randomBytes(16)
 
         let one = try self.discovery(nonce: first), two = try self.discovery(nonce: second)
@@ -427,6 +451,7 @@ struct DiscoveryOnceTests {
     @Test("A nonce in the clear cannot follow a commitment to turn the exchange into an uncommitted one")
     func clearNonceAfterCommitment() async throws {
         let (manager, peer) = try await self.connected()
+        defer { manager.finish() }
         let commitment = try #require(ExchangeCommitment.commitment(to: randomBytes(16)))
 
         let one = try self.discovery(commitment: commitment), two = try self.discovery(nonce: randomBytes(16))
@@ -440,6 +465,7 @@ struct DiscoveryOnceTests {
     @Test("A discovery message from a peer that is not the pinned one changes nothing")
     func otherPeerIgnored() async throws {
         let (manager, _) = try await self.connected()
+        defer { manager.finish() }
         let one = try self.discovery(nonce: randomBytes(16))
 
         #expect(!manager.handleDiscovery(one.exchange, data: one.data, from: MCPeerID(displayName: "intruder")))
@@ -449,6 +475,7 @@ struct DiscoveryOnceTests {
     @Test("A commitment of the wrong size is not one, and the nonce beside it is not taken as the peer's")
     func malformedCommitment() async throws {
         let (manager, peer) = try await self.connected()
+        defer { manager.finish() }
         let one = try self.discovery(commitment: Data(count: 31))
         manager.handleDiscovery(one.exchange, data: one.data, from: peer)
 
@@ -465,7 +492,7 @@ struct OlderPeerTests {
     /// A manager that is the initiator (its name sorts below the peer's), connected to a scripted older peer.
     private func connected() async throws -> (phone: Phone, peer: MCPeerID) {
         let phone = Phone(name: "a-\(UUID().uuidString)", pairing: false, quantum: false)
-        phone.manager.sendInterceptorForTesting = { [unowned phone] in phone.record($0) }
+        phone.manager.sendInterceptorForTesting = { [weak phone] in phone?.record($0) }
         let peer = MCPeerID(displayName: "b-\(UUID().uuidString)")
         phone.manager.session(phone.manager.multipeerSession!, peer: peer, didChange: .connected)
         try await Task.sleep(for: .milliseconds(100))
@@ -476,6 +503,7 @@ struct OlderPeerTests {
     @Test("An older build's discovery, with its nonce in the clear, is answered with ours in the clear, once")
     func answeredInTheClear() async throws {
         let (phone, peer) = try await self.connected()
+        defer { phone.manager.finish() }
         let older = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, nonce: randomBytes(16))
         let data = try JSONEncoder().encode(older)
 
@@ -490,6 +518,7 @@ struct OlderPeerTests {
     @Test("The exchange with an older build still completes, uncommitted, and sends no reveal")
     func stillCompletes() async throws {
         let (phone, peer) = try await self.connected()
+        defer { phone.manager.finish() }
         let olderNonce = randomBytes(16)
         let older = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, nonce: olderNonce)
         phone.manager.handleDiscovery(older, data: try JSONEncoder().encode(older), from: peer)
@@ -564,23 +593,25 @@ struct StepDeadlineTests {
     @Test("A message that arrives in time moves the deadline: an exchange that takes longer than one deadline in all still completes")
     func progressMovesTheDeadline() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         for phone in [loop.a, loop.b] {
-            phone.manager.stepTimeout = 0.35
-            phone.manager.stepDelay = .milliseconds(200)
+            phone.manager.stepTimeout = 1.5
+            phone.manager.stepDelay = .milliseconds(800)
         }
         await loop.start()
         await loop.run(timeout: .seconds(10))
 
-        #expect(loop.a.payload != nil && loop.b.payload != nil, "0.2 s between steps, 0.6 s in all, against a 0.35 s deadline")
+        #expect(loop.a.payload != nil && loop.b.payload != nil, "0.8 s between steps, 1.6 s in all, against a 1.5 s deadline")
     }
 
     @Test("A deadline passing ends the exchange and nothing is left armed")
     func endsTheExchange() async throws {
         let loop = Loopback()
+        defer { loop.end() }
         for phone in [loop.a, loop.b] { phone.manager.stepTimeout = 0.3 }
         loop.tamper = { _, _ in nil }   // nothing gets through
         await loop.start()
-        await loop.runFor(.milliseconds(800))
+        await loop.run(until: { loop.a.manager.phase == .timedOut && loop.b.manager.phase == .timedOut })
 
         #expect(loop.a.manager.phase == .timedOut && loop.b.manager.phase == .timedOut)
         #expect(loop.a.payload == nil && loop.b.payload == nil)
