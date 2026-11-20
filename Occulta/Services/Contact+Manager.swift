@@ -666,6 +666,15 @@ extension ContactManager {
             throw ContactManager.Errors.pairingWouldBeWeaker
         }
 
+        // The same for ML-KEM (Bug 199): an exchange that gives none to a contact whose current pairing has it would replace a
+        // hybrid pairing with a classical one, which a message that went missing or one that was interfered with does as well as
+        // a phone that can't do ML-KEM. Refused here; to save a classical pairing on purpose the person revokes the contact's key
+        // first, which leaves no current key to compare with, and exchanges again. Compared with the current key only: another
+        // contact record, or none, is not looked at, so nothing here depends on what other depths hold.
+        if let current = contact.currentKey, key.quantumKeyMaterial == nil, current.quantumKeyMaterialEncrypted != nil {
+            throw ContactManager.Errors.pairingWouldLoseQuantum
+        }
+
         // What the block below can change, as it was. `rollback()` forgets the unsaved changes but does not put the values back
         // on objects already in memory, and the next save of the same object would commit them, so a failure restores them
         // itself first.
@@ -939,6 +948,9 @@ extension ContactManager {
         /// A re-exchange gave no pair keys to a contact whose current pairing has them. Saving it would overwrite the Enclave
         /// blobs of the better pairing with a plainer one.
         case pairingWouldBeWeaker
+        /// A re-exchange gave no ML-KEM key to a contact whose current pairing has one. Nothing is saved; revoking the contact's
+        /// key and exchanging again saves a classical pairing (Bug 199).
+        case pairingWouldLoseQuantum
         /// `purgeUnreadableGroups` was given a key that doesn't open the rest of the store (Bug 191).
         case keyDoesNotOpenStore
     }

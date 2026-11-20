@@ -1873,6 +1873,41 @@ extension Manager.Key {
         ).map { SymmetricKey(data: $0) }
     }
 
+    /// The routing key of a pair-key pairing made in a committed exchange (Bug 198): `RoutingKey.deriveCommitted`.
+    ///
+    /// SE operations: one ECDH via SE identity key.
+    func createCommittedRoutingKey(
+        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data, exchangeTranscript: Data
+    ) -> Data? {
+        guard let ecdhAndSalt = self.ecdhWithSalt(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        return RoutingKey.deriveCommitted(
+            pairwiseECDH: pairwiseECDH, identityECDH: ecdhAndSalt.rawECDH, ourAgreementKey: ourAgreementKey,
+            peerAgreementKey: peerAgreementKey,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce, exchangeTranscript: exchangeTranscript
+        )
+    }
+
+    /// The key the verification words come from in a committed exchange, whatever its shape: `RoutingKey.wordsKeyCommitted`.
+    ///
+    /// SE operations: one ECDH via SE identity key.
+    func createCommittedDicewareKey(
+        peerP256Material: Data, pairwiseECDH: Data?, quantumMaterial: QuantumKeyMaterial?,
+        ourNonce: Data, peerNonce: Data, exchangeTranscript: Data
+    ) -> SymmetricKey? {
+        guard let ecdhAndSalt = self.ecdhWithSalt(peerP256Material: peerP256Material) else { return nil }
+        if let quantumMaterial, !quantumMaterial.isValid { return nil }
+
+        return RoutingKey.wordsKeyCommitted(
+            pairwiseECDH: pairwiseECDH, identityECDH: ecdhAndSalt.rawECDH, identitySalt: ecdhAndSalt.salt,
+            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
+            ourNonce: ourNonce, peerNonce: peerNonce, exchangeTranscript: exchangeTranscript
+        ).map { SymmetricKey(data: $0) }
+    }
+
     // MARK: - 16-byte exchange nonce
  
     /// Generate a 16-byte cryptographic nonce for an exchange session.

@@ -169,6 +169,16 @@ enum WhatsNew {
                     "Occulta's files are now protected whenever your phone is locked.",
                     "Erase All Data now tells you if your keys couldn't be removed."
                 ]
+            ),
+            Release(
+                version: "2.0.5",
+                features: [],
+                fixes: [
+                    "Exchanging keys in person now checks more of what was sent, so the five words you compare catch more kinds of tampering.",
+                    "Both phones now need Occulta 2.0.5 or later to exchange keys. If the other phone is on an older version, you'll be asked to have them update first.",
+                    "Exchanging keys again with a contact who has quantum-resistant keys no longer replaces them with ordinary ones. To do that on purpose, revoke their key first.",
+                    "Meeting someone through an introduction card now warns you when the key exchange wasn't quantum-resistant."
+                ]
             )
         ]
 
