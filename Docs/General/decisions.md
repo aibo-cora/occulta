@@ -1429,6 +1429,7 @@ yours. Dropping support for older builds would stop every pairing with a contact
 
 **Consequences:** a new wire field in the discovery message and a new message, both ignored harmlessly by older builds; new interop
 vectors (`exchange.*`); nothing stored changes, so existing pairings are untouched. The per-pairing secret of 2.1.0 ("A secret per pairing
-routes and binds every bundle") should derive from the committed exchange's input, so the words authenticate it. Not decided here:
-refusing a re-exchange that would replace a hybrid pairing with a classical one (Bug 199's third part).
+routes and binds every bundle") should derive from the committed exchange's input, so the words authenticate it. Bug 199's third part,
+decided 2026-11-20 by the owner: a re-exchange that would replace a hybrid pairing with a classical one is refused, and the person
+who wants a classical pairing revokes the contact's key and exchanges again (`bugs.md` Bug 196, "A hybrid pairing is not replaced").
 
