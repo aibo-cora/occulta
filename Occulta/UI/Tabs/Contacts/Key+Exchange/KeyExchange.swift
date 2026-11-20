@@ -191,6 +191,25 @@ struct KeyExchange: View {
                             .foregroundStyle(Color.occultaVerified)
                     }
 
+                    // This phone sent a quantum-resistant key and none came back: an older phone, or a message that was
+                    // interfered with, look the same here (Bug 199). Shown on this screen only; nothing about it is stored.
+                    if self.payload.offeredQuantum && self.payload.hybridResult == nil {
+                        Text("Quantum-resistant keys weren't exchanged. The other phone may be on an older version of iOS or Occulta. If you expected it to be up to date, cancel and try again.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    // The other phone sent its nonce in the clear, with no commitment: an older version of Occulta, or a
+                    // message that was interfered with. The words then protect less, and comparing the two key rows above
+                    // covers what they don't (Bug 198).
+                    if self.payload.committed == nil {
+                        Text("The other phone is on an older version, so these words protect less. Also compare the two key rows above: MY IDENTITY KEY here must equal PEER IDENTITY KEY on their screen, and the other way round. If they differ, cancel.")
+                            .font(.caption2)
+                            .foregroundStyle(Color.occultaWarn)
+                            .multilineTextAlignment(.center)
+                    }
+
                     // We sent pair keys and the other phone sent none we could use: the pairing is made as before, and
                     // both people can see it here, where a phone on an older version looks the same as one whose message
                     // was interfered with. Shown on this screen only; nothing about it is stored.
@@ -283,29 +302,7 @@ struct KeyExchange: View {
         }
 
         private var words: [String] {
-            let sharedKey: Data?
-            
-            if let pairing = self.payload.pairing {
-                // A pair-key exchange: the words cover both phones' pair keys and the identity ECDH (Bug 196, stage 2), so a
-                // key a man in the middle added, removed or swapped changes them. A failure to derive shows words that
-                // cannot match, and `save()` refuses the pairing.
-                sharedKey = pairing.wordsKey(
-                    withPeer: self.payload.classicalKey, quantum: self.payload.hybridResult.map(QuantumKeyMaterial.init(from:)),
-                    using: self.keyManager
-                )
-            } else if let result = self.payload.hybridResult {
-                let material = QuantumKeyMaterial(from: result)
-                sharedKey = self.keyManager.createDicewareKey(
-                    peerP256Material: result.peerP256PublicKey,
-                    quantumMaterial: material,
-                    ourNonce: result.ourNonce,
-                    peerNonce: result.peerNonce
-                )?.withUnsafeBytes { Data($0) }
-            } else {
-                sharedKey = self.keyManager.createSharedSecret(using: self.payload.classicalKey)?.withUnsafeBytes { Data($0) }
-            }
-            return self.passphraseGenerator.generate(separator: "-", sharedKey: sharedKey)
-                .components(separatedBy: "-")
+            KeyExchange.words(for: self.payload, using: self.keyManager, generator: self.passphraseGenerator)
         }
 
         private func keyRow(label: String, hex: String, color: Color) -> some View {
@@ -358,6 +355,47 @@ struct KeyExchange: View {
 }
 
 extension KeyExchange {
+
+    /// The key the verification words come from, for each shape an exchange can have. A committed exchange (both phones
+    /// committed to their nonces, Bug 198) has one derivation for all of them, over both nonces and every message of the
+    /// exchange, so what was added, removed or changed in transit changes the words, ML-KEM included (Bug 199). An exchange
+    /// with a peer on an older build keeps the three derivations that peer makes. Nil when the key manager can't derive it.
+    @MainActor
+    static func wordsKey(for payload: ExchangeManager.ExchangePhase.Payload, using keyManager: any KeyManagerProtocol) -> Data? {
+        let quantum = payload.hybridResult.map(QuantumKeyMaterial.init(from:))
+
+        if let committed = payload.committed {
+            if let pairing = payload.pairing {
+                return pairing.wordsKey(withPeer: payload.classicalKey, quantum: quantum, using: keyManager)
+            }
+            return keyManager.createCommittedDicewareKey(
+                peerP256Material: payload.classicalKey, pairwiseECDH: nil, quantumMaterial: quantum,
+                ourNonce: committed.ourNonce, peerNonce: committed.peerNonce, exchangeTranscript: committed.transcript
+            )?.withUnsafeBytes { Data($0) }
+        }
+        if let pairing = payload.pairing {
+            // A pair-key exchange: the words cover both phones' pair keys and the identity ECDH (Bug 196, stage 2), so a
+            // key a man in the middle added, removed or swapped changes them. A failure to derive shows words that
+            // cannot match, and `save()` refuses the pairing.
+            return pairing.wordsKey(withPeer: payload.classicalKey, quantum: quantum, using: keyManager)
+        }
+        if let result = payload.hybridResult {
+            return keyManager.createDicewareKey(
+                peerP256Material: result.peerP256PublicKey, quantumMaterial: QuantumKeyMaterial(from: result),
+                ourNonce: result.ourNonce, peerNonce: result.peerNonce
+            )?.withUnsafeBytes { Data($0) }
+        }
+        return keyManager.createSharedSecret(using: payload.classicalKey)?.withUnsafeBytes { Data($0) }
+    }
+
+    @MainActor
+    static func words(
+        for payload: ExchangeManager.ExchangePhase.Payload, using keyManager: any KeyManagerProtocol,
+        generator: Manager.PassphraseGenerator = Manager.PassphraseGenerator()
+    ) -> [String] {
+        generator.generate(separator: "-", sharedKey: self.wordsKey(for: payload, using: keyManager))
+            .components(separatedBy: "-")
+    }
 
     /// What Save did, for the confirmation screen to show.
     enum SaveOutcome: Equatable {

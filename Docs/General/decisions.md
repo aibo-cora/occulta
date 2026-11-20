@@ -1408,3 +1408,27 @@ back to the old key, touches every attachment open and keeps the old key in use 
 **Not chosen:** (1) opening waits for the reseal task; (2) a fall-back open under the old key for one release.
 
 **Full reasoning:** `bugs.md` Bug 196 addendum ("Cost") and the code review, round 1 (#4).
+
+## The in-person key exchange commits to its nonces; an older build's exchange keeps working and says so
+
+**Status:** Decided 2026-11-20 by the owner (Bugs 198 and 199, shipped in 2.0.5, before the passphrase release).
+
+**Context:** the verification words were derived from values a man in the middle could still change after seeing both phones' messages
+(the discovery message sent the nonce, and a later one replaced it), so five words gave about 32 bits, not 64. The classical path's words
+were the transport key's output, the same at every exchange. An ML-KEM key removed from both identity messages changed nothing the words
+covered.
+
+**Decision:** commit, then reveal. The discovery message carries a hash of the nonce; the nonce is sent last, initiator first; the words
+and the routing key are derived over both nonces and a hash of every message of the exchange, in every shape of exchange, under labels of
+their own. One discovery and one identity message per exchange; a deadline per step that ranging does not reset. A peer on an older build
+sends no commitment: the exchange keeps working with the older derivations, and the confirmation screen says the peer is on an older
+version and asks the two people to compare the key rows. The screen also says when this phone sent an ML-KEM key and got none.
+
+**Why:** a short comparison string is only as strong as its length when everything the other side contributes is fixed before it sees
+yours. Dropping support for older builds would stop every pairing with a contact who has not updated.
+
+**Consequences:** a new wire field in the discovery message and a new message, both ignored harmlessly by older builds; new interop
+vectors (`exchange.*`); nothing stored changes, so existing pairings are untouched. The per-pairing secret of 2.1.0 ("A secret per pairing
+routes and binds every bundle") should derive from the committed exchange's input, so the words authenticate it. Not decided here:
+refusing a re-exchange that would replace a hybrid pairing with a classical one (Bug 199's third part).
+
