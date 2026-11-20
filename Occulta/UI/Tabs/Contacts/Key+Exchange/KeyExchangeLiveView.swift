@@ -34,7 +34,7 @@ struct KeyExchangeLiveView: View {
             return 4
         case .confirming, .complete:
             return 5
-        case .timedOut, .failed:
+        case .timedOut, .failed, .peerNeedsUpdate:
             return self.displayPhaseIndex
         }
     }

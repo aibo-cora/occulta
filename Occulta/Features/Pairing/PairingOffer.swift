@@ -41,6 +41,11 @@ struct PairingOffer: Equatable {
     /// Enclave blob is used once, by the exchange, and not again by the screens that follow.
     let pairwiseECDH: Data
 
+    /// `ExchangeCommitment.transcript` of every message of the exchange, which both phones committed their nonces before
+    /// (Bug 198). The routing key and the words are derived over it, under their own domains. An exchange with a peer that
+    /// did not commit is refused before an offer exists.
+    let exchangeTranscript: Data
+
     struct Batch: Equatable {
         let id: Data?
         let generatedAt: Date
@@ -102,22 +107,20 @@ struct PairingOffer: Equatable {
     /// or the key manager couldn't derive it, in which case nothing is saved.
     @MainActor
     func routingKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
-        guard let transcript = self.transcript else { return nil }
-        return keyManager.createRoutingKey(
+        keyManager.createCommittedRoutingKey(
             peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, ourAgreementKey: self.ours.agreementKey,
-            peerAgreementKey: self.theirs.agreementKey, transcript: transcript, quantumMaterial: quantum,
-            ourNonce: self.ourNonce, peerNonce: self.peerNonce
+            peerAgreementKey: self.theirs.agreementKey, quantumMaterial: quantum, ourNonce: self.ourNonce,
+            peerNonce: self.peerNonce, exchangeTranscript: self.exchangeTranscript
         )
     }
 
-    /// The key the verification words come from. It covers both pair blocks, so a pair key or an ML-DSA key a man in the
-    /// middle added, removed or swapped changes the words.
+    /// The key the verification words come from. It covers every message of the exchange, which carry both pair blocks, so a
+    /// pair key or an ML-DSA key a man in the middle added, removed or swapped changes the words.
     @MainActor
     func wordsKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
-        guard let transcript = self.transcript else { return nil }
-        return keyManager.createPairwiseDicewareKey(
-            peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, transcript: transcript, quantumMaterial: quantum,
-            ourNonce: self.ourNonce, peerNonce: self.peerNonce
+        keyManager.createCommittedDicewareKey(
+            peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, quantumMaterial: quantum,
+            ourNonce: self.ourNonce, peerNonce: self.peerNonce, exchangeTranscript: self.exchangeTranscript
         )?.withUnsafeBytes { Data($0) }
     }
 

@@ -14,6 +14,11 @@
 //  - If PostQuantumProvider is nil (iOS < 26), exchange is classical-only.
 //  - If peer sends identity without `encapsulationKey`, exchange is classical-only.
 //
+//  Commit, then reveal (Bug 198): each phone's discovery message carries a hash of its nonce; the nonce goes out last,
+//  initiator first, after every other message, and the words and the routing key are derived over both nonces and a hash
+//  of every message of the exchange (`ExchangeCommitment`). A peer whose discovery message carries no commitment, a build
+//  older than 2.0.5 or a relay that removed it, is refused before any key is exchanged: there is no uncommitted derivation.
+//
 //  ⚠️ Thread safety:
 //  MC and NI delegate callbacks arrive on arbitrary background threads.
 //  All state mutations are dispatched to the main queue via `DispatchQueue.main.async`.
@@ -74,9 +79,9 @@ class ExchangeManager: NSObject {
 
     /// PQ provider — nil on iOS < 26.
     private let postQuantumProvider: PostQuantumProvider? = PostQuantumProviderFactory.create()
-    /// Our 16-byte nonce, generated at session start and committed in discovery.
+    /// Our 16-byte nonce, generated at session start. Its commitment goes out in discovery and the nonce itself last (Bug 198).
     private var ourNonce: Data?
-    /// Peer's nonce from their discovery message. Nil if peer is v1.
+    /// Peer's nonce, from its reveal once that has been checked against its commitment. Nil until then.
     private var peerNonce: Data?
     /// Opaque handle to our SE-backed ML-KEM-1024 private key.
     private var privateKeyHandle: Any?
@@ -84,6 +89,44 @@ class ExchangeManager: NSObject {
     private var peerIdentity: Data?
     /// Our ML-KEM encapsulation key, included in the identity message.
     var encapsulationKeyData: Data?
+
+    // MARK: - Commit, then reveal (Bug 198)
+
+    /// What the peer committed to in its discovery message. An exchange goes no further without one: a peer that sends none,
+    /// an older build or a relay that removed it, is refused (`ExchangePhase.peerNeedsUpdate`).
+    private var peerCommitment: Data?
+    /// Whether this exchange has had its one discovery message. A second never replaces the first one's nonce or commitment.
+    private var peerDiscoveryAccepted = false
+    /// Every message of the exchange before the reveal, as sent and as received: what the words and the routing key cover.
+    private var transcriptMessages: [ExchangeCommitment.Message] = []
+    /// Both nonces and the transcript, once the peer's reveal has been checked.
+    private var committedExchange: ExchangePhase.Payload.Committed?
+    /// True from the moment proximity starts the exchange until its last message: ranging does not reset the deadline of a
+    /// step while it is.
+    private var protocolInProgress = false
+    private var stepDeadline: DispatchSourceTimer?
+
+    /// How long a phone waits for the peer's next message before the exchange ends. Not reset by ranging updates: the two
+    /// real phones keep ranging each other while a man in the middle takes his time.
+    var stepTimeout: TimeInterval = 15
+    /// The pause before each step the protocol takes on its own; the live view shows it as progress. A test shortens it.
+    var stepDelay: Duration = .seconds(3)
+    /// Our identity key as sent. A test supplies one that needs no Secure Enclave.
+    var identityProvider: () throws -> Data = {
+        let keyManager = Manager.Key()
+        #if targetEnvironment(simulator)
+        return keyManager.fixedX963
+        #else
+        return try keyManager.retrieveIdentity()
+        #endif
+    }
+    #if DEBUG
+    /// For tests: receives every message in place of the Multipeer session, and makes the discovery token a stand-in.
+    var sendInterceptorForTesting: ((Data) -> Void)?
+    #endif
+
+    private var ourRole: ExchangeCommitment.Role { self.isInitiator ? .initiator : .responder }
+    private var peerRole: ExchangeCommitment.Role { self.isInitiator ? .responder : .initiator }
 
     // MARK: - Routing key and first prekeys (`bugs.md` Bug 196)
 
@@ -98,6 +141,8 @@ class ExchangeManager: NSObject {
     private(set) var ownPairingField: Exchange.PairingField?
     /// Makes our pair keys. The Enclave in production; a test injects software keys.
     var pairKeyProvider: any CardKeyProviding = EnclaveCardKeys()
+    /// Makes our first prekeys. The Enclave in production; a test injects a record that needs none.
+    var prekeyMaker: () throws -> PrekeyRecord = { try PairingOffer.makeOwnPrekeys() }
     /// What the peer's `pairing` field came to once validated, and the pair-key ECDH with it. Nil from a phone that can't
     /// hold a routing key, or whose field we can't use.
     private var peerPairing: (batch: PairingOffer.Batch, keys: PairingOffer.PeerPairKeys, ecdh: Data)?
@@ -133,6 +178,9 @@ class ExchangeManager: NSObject {
         case waitingForPeerQuantum(ours: QuantumPayload)
         /// Both ciphertexts exchanged — ready to assemble the final result.
         case complete(ours: QuantumPayload, theirs: QuantumPayload)
+        /// Every message but the nonces is in; the initiator has revealed its nonce, the responder waits for it. `hybrid` is
+        /// nil for a classical exchange.
+        case awaitingReveal(hybrid: (ours: QuantumPayload, theirs: QuantumPayload)?)
         /// Terminal state for classical-only exchanges; prevents re-processing stray messages.
         case done
 
@@ -163,6 +211,10 @@ class ExchangeManager: NSObject {
         case complete
         case timedOut
         case failed
+        /// The peer's discovery message carried no commitment to its nonce: a phone on a version older than 2.0.5, or a relay
+        /// that removed it. Nothing was saved. The screen says the other phone needs to update, whatever the cause, since a
+        /// phone cannot tell the two apart.
+        case peerNeedsUpdate
 
         struct Payload: Equatable {
             let fingerprint: Data
@@ -173,6 +225,20 @@ class ExchangeManager: NSObject {
             /// Whether we sent one ourselves. With `pairing` nil it means the peer sent none we could use, which the
             /// confirmation screen says.
             var offeredPairing: Bool = false
+            /// Both phones committed to their nonces and revealed them, and the words and the routing key cover every message
+            /// of the exchange (Bug 198). An exchange with no commitment from the peer never gets this far.
+            let committed: Committed
+            /// Whether we sent an ML-KEM key ourselves. With `hybridResult` nil it means none came back, which the screen
+            /// says (Bug 199).
+            var offeredQuantum: Bool = false
+
+            /// What a committed exchange's words and routing key are derived over.
+            struct Committed: Equatable {
+                let ourNonce: Data
+                let peerNonce: Data
+                /// `ExchangeCommitment.transcript` of the messages before the reveal.
+                let transcript: Data
+            }
         }
     }
 
@@ -200,13 +266,18 @@ class ExchangeManager: NSObject {
     func start(cardMeeting: CardMeetingContext = .none) {
         self.finish()
         self.cardMeeting = cardMeeting
+
+        // No nonce, nothing to commit to: the exchange does not start.
+        guard let nonce = Manager.Key().generateExchangeNonce() else {
+            self.phase = .failed
+            return
+        }
+        self.ourNonce = nonce
+
         self.nearbySession = NISession()
         self.nearbySession?.delegate = self
 
         self.setupMC()
-
-        let keyManager = Manager.Key()
-        self.ourNonce = keyManager.generateExchangeNonce()
 
         if let provider = self.postQuantumProvider, let keyPair = provider.generateKeyPair() {
             self.privateKeyHandle = keyPair.privateKeyHandle
@@ -262,6 +333,17 @@ class ExchangeManager: NSObject {
         if case .sendingMyQuantum = self.exchangeStatus { return true }
         return false
     }
+
+    /// For tests: the nonce `start()` makes, without the radios.
+    func prepareNonceForTesting(_ nonce: Data) { self.ourNonce = nonce }
+
+    /// For tests: what the peer's discovery message came to.
+    var peerNonceForTesting: Data? { self.peerNonce }
+    var peerCommitmentForTesting: Data? { self.peerCommitment }
+
+    /// For tests: whether a step deadline is running, and how many times one has been armed or moved.
+    var isStepDeadlineArmed: Bool { self.stepDeadline != nil }
+    private(set) var stepDeadlineArmCountForTesting = 0
     #endif
 
     private func teardownSessions() {
@@ -270,6 +352,9 @@ class ExchangeManager: NSObject {
 
         self.watchdog?.cancel()
         self.watchdog = nil
+        self.stepDeadline?.cancel()
+        self.stepDeadline = nil
+        self.protocolInProgress = false
 
         self.nearbySession?.delegate = nil
         self.nearbySession?.invalidate()
@@ -301,6 +386,10 @@ class ExchangeManager: NSObject {
         self.bufferedIdentityMessage = nil
         self.ourNonce = nil
         self.peerNonce = nil
+        self.peerCommitment = nil
+        self.peerDiscoveryAccepted = false
+        self.transcriptMessages = []
+        self.committedExchange = nil
         self.peerIdentity = nil
         self.ownPrekeys = nil
         self.ownPairKeys = nil
@@ -335,19 +424,84 @@ class ExchangeManager: NSObject {
         self.watchdog = timer
     }
 
+    // MARK: - Step deadline (Bug 198)
+
+    /// Once the exchange has started, the next message has to arrive within `stepTimeout`, and a ranging update does not
+    /// move that. Called whenever a step completes, in either direction.
+    private func armStepDeadline() {
+        #if DEBUG
+        self.stepDeadlineArmCountForTesting += 1
+        #endif
+        self.watchdog?.cancel()
+        self.watchdog = nil
+        self.stepDeadline?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + self.stepTimeout)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            debugPrint("[KE] Step deadline passed — no message in \(self.stepTimeout)s")
+            #endif
+            self.phase = .timedOut
+            self.teardownSessions()
+        }
+        timer.resume()
+        self.stepDeadline = timer
+    }
+
+    private func stepProgress() {
+        guard self.protocolInProgress else { return }
+        self.armStepDeadline()
+    }
+
+    /// The last message of the exchange is in: the deadline gives way to the watchdog the confirmation screen has always had.
+    private func endProtocolSteps() {
+        guard self.protocolInProgress else { return }
+        self.protocolInProgress = false
+        self.stepDeadline?.cancel()
+        self.stepDeadline = nil
+        self.scheduleWatchdog()
+    }
+
     // MARK: - Send helpers
 
+    /// Sends one message and, for a step the transcript covers, records exactly the bytes that went out.
+    private func transmit(_ exchange: Exchange, to peerID: MCPeerID, recording step: ExchangeCommitment.Step? = nil) throws {
+        let encoded = try JSONEncoder().encode(exchange)
+        #if DEBUG
+        if let hook = self.sendInterceptorForTesting {
+            hook(encoded)
+        } else {
+            guard let session = self.multipeerSession else { throw CocoaError(.fileNoSuchFile) }
+            try session.send(encoded, toPeers: [peerID], with: .reliable)
+        }
+        #else
+        guard let session = self.multipeerSession else { throw CocoaError(.fileNoSuchFile) }
+        try session.send(encoded, toPeers: [peerID], with: .reliable)
+        #endif
+        if let step { self.record(step, by: self.ourRole, encoded) }
+    }
+
+    /// Adds a message to the transcript. The first message of a step and role is the one that counts: a message the peer
+    /// ignores as a second one never reaches the transcript on its side.
+    private func record(_ step: ExchangeCommitment.Step, by role: ExchangeCommitment.Role, _ bytes: Data) {
+        guard !self.transcriptMessages.contains(where: { $0.step == step && $0.role == role }) else { return }
+        self.transcriptMessages.append(ExchangeCommitment.Message(role: role, step: step, bytes: bytes))
+    }
+
+    /// Our NearbyInteraction token as it goes in a message. Nil while the session has none.
+    private func archivedDiscoveryToken() throws -> Data? {
+        #if DEBUG
+        if self.sendInterceptorForTesting != nil { return Data([0x01]) }
+        #endif
+        guard let token = self.nearbySession?.discoveryToken else { return nil }
+        return try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+    }
+
     private func sendIdentity(to peerID: MCPeerID) {
-        guard let session = self.multipeerSession,
-              let token = self.nearbySession?.discoveryToken else { return }
         do {
-            let keyManager = Manager.Key()
-            #if targetEnvironment(simulator)
-            let keyingMaterial = keyManager.fixedX963
-            #else
-            let keyingMaterial = try keyManager.retrieveIdentity()
-            #endif
-            let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+            guard let archivedToken = try self.archivedDiscoveryToken() else { return }
+            let keyingMaterial = try self.identityProvider()
             self.ourSentIdentity = keyingMaterial
             let exchange = Exchange(
                 id: UUID().uuidString,
@@ -357,8 +511,8 @@ class ExchangeManager: NSObject {
                 encapsulationKey: self.encapsulationKeyData,
                 pairing: self.ownPairingField
             )
-            let encoded = try JSONEncoder().encode(exchange)
-            try session.send(encoded, toPeers: [peerID], with: .reliable)
+            try self.transmit(exchange, to: peerID, recording: .identity)
+            self.stepProgress()
             #if DEBUG
             debugPrint("[KE] Identity sent to \(peerID.displayName)")
             #endif
@@ -370,18 +524,16 @@ class ExchangeManager: NSObject {
     }
 
     private func sendCiphertext(_ ciphertext: Data, to peerID: MCPeerID) {
-        guard let session = self.multipeerSession,
-              let token = self.nearbySession?.discoveryToken else { return }
         do {
-            let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+            guard let archivedToken = try self.archivedDiscoveryToken() else { return }
             let exchange = Exchange(
                 id: UUID().uuidString,
                 token: archivedToken,
                 version: .v1,
                 ciphertext: ciphertext
             )
-            let encoded = try JSONEncoder().encode(exchange)
-            try session.send(encoded, toPeers: [peerID], with: .reliable)
+            try self.transmit(exchange, to: peerID, recording: .ciphertext)
+            self.stepProgress()
             #if DEBUG
             debugPrint("[KE] Ciphertext sent to \(peerID.displayName)")
             #endif
@@ -392,11 +544,24 @@ class ExchangeManager: NSObject {
         }
     }
 
+    /// Our nonce, the last thing we send (Bug 198).
+    private func sendReveal(to peerID: MCPeerID) {
+        guard let ourNonce else { return }
+        do {
+            try self.transmit(Exchange(id: UUID().uuidString, token: Data(), version: .v1, revealedNonce: ourNonce), to: peerID)
+            self.stepProgress()
+        } catch {
+            #if DEBUG
+            debugPrint("[KE] Reveal send failed: \(error)")
+            #endif
+        }
+    }
+
     /// The meeting-check proof (SPEC §7), sent once the ML-KEM step completes: a signature by the card signing key
     /// over the transcript whenever the field holds one, else 64 random bytes. Always `CardMeeting.proofByteCount`
     /// long, in an `Exchange` with an empty token, so nothing shows which it is.
     private func sendCardProof(for result: HybridExchangeResult) {
-        guard let session = self.multipeerSession, let peerID = self.connectedPeerID, let ourIdentity = self.ourSentIdentity else { return }
+        guard let peerID = self.connectedPeerID, let ourIdentity = self.ourSentIdentity else { return }
         let transcript = CardMeeting.transcript(
             identityKeys: (ourIdentity, result.peerP256PublicKey),
             nonces: (result.ourNonce, result.peerNonce),
@@ -405,8 +570,7 @@ class ExchangeManager: NSObject {
         let signed = try? self.cardMeeting.sign?(CardMeeting.proofPayload(transcript: transcript, signerIdentityKey: ourIdentity))
         let proof = signed.flatMap { $0.count == CardMeeting.proofByteCount ? $0 : nil } ?? CardMeeting.filler()
         do {
-            let exchange = Exchange(id: UUID().uuidString, token: Data(), version: .v1, cardProof: proof)
-            try session.send(try JSONEncoder().encode(exchange), toPeers: [peerID], with: .reliable)
+            try self.transmit(Exchange(id: UUID().uuidString, token: Data(), version: .v1, cardProof: proof), to: peerID)
         } catch {
             #if DEBUG
             debugPrint("[KE] Card proof send failed: \(error)")
@@ -431,7 +595,7 @@ class ExchangeManager: NSObject {
     func makeOwnPairing() {
         guard self.ownPrekeys == nil else { return }
         guard
-            let prekeys = try? PairingOffer.makeOwnPrekeys(), let keys = try? PairingOffer.makeOwnPairKeys(using: self.pairKeyProvider),
+            let prekeys = try? self.prekeyMaker(), let keys = try? PairingOffer.makeOwnPairKeys(using: self.pairKeyProvider),
             let field = PairingOffer.field(prekeys: prekeys, keys: keys)
         else {
             self.ownPrekeys = nil
@@ -450,7 +614,7 @@ class ExchangeManager: NSObject {
         _ field: Exchange.PairingField?, peerIdentity: Data
     ) -> (batch: PairingOffer.Batch, keys: PairingOffer.PeerPairKeys, ecdh: Data)? {
         guard let field, let ours = self.ownPairKeys else { return nil }
-        let ourIdentity = self.ourSentIdentity ?? (try? Manager.Key().retrieveIdentity())
+        let ourIdentity = self.ourSentIdentity ?? (try? self.identityProvider())
         guard
             let accepted = PairingOffer.accepted(field, ours: ours, ourIdentity: ourIdentity, peerIdentity: peerIdentity),
             let ecdh = try? PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: accepted.keys.agreementKey, using: self.pairKeyProvider)
@@ -463,44 +627,71 @@ class ExchangeManager: NSObject {
     /// The pairing offer for a payload built now: only when both phones sent a `pairing` field and both nonces are known.
     /// Anything missing means the peer can't hold a routing key, and the pairing is made without one.
     private func pairingOffer() -> PairingOffer? {
-        guard let ourNonce, let peerNonce, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing else { return nil }
+        guard
+            let ourNonce, let peerNonce, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing,
+            let exchangeTranscript = self.committedExchange?.transcript
+        else { return nil }
         return PairingOffer(
             ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys,
             ownBatchDigest: PairingOffer.Batch(ownPairingField.prekeyBatch).digest, peerBatch: peerPairing.batch,
-            ours: ownPairKeys, theirs: peerPairing.keys, pairwiseECDH: peerPairing.ecdh
+            ours: ownPairKeys, theirs: peerPairing.keys, pairwiseECDH: peerPairing.ecdh,
+            exchangeTranscript: exchangeTranscript
         )
     }
 
+    /// Both ciphertexts are in: every message but the nonces has been exchanged, and the reveal comes next.
     private func assembleHybridResult(ours: QuantumPayload, theirs: QuantumPayload) {
-        guard let peerIdentity, let ourNonce, let peerNonce else { return }
+        guard let peerID = self.connectedPeerID else { return }
+        self.startReveal(to: peerID, hybrid: (ours, theirs))
+    }
 
-        let result = HybridExchangeResult(
-            peerP256PublicKey: peerIdentity,
-            mlkemSecret1: ours.secret,
-            mlkemSecret2: theirs.secret,
-            ourNonce: ourNonce,
-            peerNonce: peerNonce,
-            ourCiphertext: ours.ciphertext,
-            peerCiphertext: theirs.ciphertext
-        )
+    // MARK: - Reveal (Bug 198)
 
-        self.sendCardProof(for: result)
+    /// Every message but the nonces is in. The initiator reveals its nonce now; the responder waits for it and reveals its
+    /// own in answer, so each phone has fixed everything it sent before it learns the other's nonce.
+    private func startReveal(to peerID: MCPeerID, hybrid: (ours: QuantumPayload, theirs: QuantumPayload)?) {
+        self.exchangeStatus = .awaitingReveal(hybrid: hybrid)
+        if self.isInitiator { self.sendReveal(to: peerID) }
+        self.stepProgress()
+    }
 
-        #if DEBUG
-        debugPrint("[KE] Hybrid exchange complete")
-        #endif
+    /// The peer's nonce has opened its commitment: the exchange's words and routing key can be derived. Builds the payload
+    /// the confirmation screen takes, from the same messages the peer holds.
+    private func concludeCommitted(hybrid: (ours: QuantumPayload, theirs: QuantumPayload)?) {
+        guard let ourNonce, let peerNonce, let peerIdentity,
+              let transcript = ExchangeCommitment.transcript(self.transcriptMessages)
+        else {
+            self.phase = .failed
+            self.teardownSessions()
+            return
+        }
+        let committed = ExchangePhase.Payload.Committed(ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript)
+        self.committedExchange = committed
+        if let hybrid { self.exchangeStatus = .complete(ours: hybrid.ours, theirs: hybrid.theirs) } else { self.exchangeStatus = .done }
+        self.endProtocolSteps()
+
+        let result = hybrid.map {
+            HybridExchangeResult(
+                peerP256PublicKey: peerIdentity, mlkemSecret1: $0.ours.secret, mlkemSecret2: $0.theirs.secret,
+                ourNonce: ourNonce, peerNonce: peerNonce, ourCiphertext: $0.ours.ciphertext, peerCiphertext: $0.theirs.ciphertext
+            )
+        }
+        if let result { self.sendCardProof(for: result) }
 
         let payload = ExchangePhase.Payload(
             fingerprint: peerIdentity.sha256,
             classicalKey: peerIdentity,
             hybridResult: result,
             pairing: self.pairingOffer(),
-            offeredPairing: self.ownPairKeys != nil
+            offeredPairing: self.ownPairKeys != nil,
+            committed: committed,
+            offeredQuantum: self.encapsulationKeyData != nil
         )
         self.phase = .mlKemExchanged(payload)
         let generation = self.generation
+        let delay = self.stepDelay
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: delay)
             guard let self, self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
             self.phase = .confirming(p)
         }
@@ -532,23 +723,23 @@ class ExchangeManager: NSObject {
         debugPrint("[KE] MC connected: \(peerID.displayName) — role: \(self.isInitiator ? "initiator" : "responder")")
         #endif
 
-        guard let discoveryToken = self.nearbySession?.discoveryToken else {
-            #if DEBUG
-            debugPrint("[KE] Discovery token unavailable — NI session not ready")
-            #endif
-            return
-        }
+        // One discovery message per exchange, with the commitment to our nonce and not the nonce (Bug 198).
+        guard !self.transcriptMessages.contains(where: { $0.step == .discovery && $0.role == self.ourRole }) else { return }
 
         do {
-            let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
+            guard let archivedToken = try self.archivedDiscoveryToken() else {
+                #if DEBUG
+                debugPrint("[KE] Discovery token unavailable — NI session not ready")
+                #endif
+                return
+            }
             let exchange = Exchange(
                 id: UUID().uuidString,
                 token: archivedToken,
                 version: .v1,
-                nonce: self.ourNonce
+                nonceCommitment: self.ourNonce.flatMap { ExchangeCommitment.commitment(to: $0) }
             )
-            let encoded = try JSONEncoder().encode(exchange)
-            try self.multipeerSession?.send(encoded, toPeers: [peerID], with: .reliable)
+            try self.transmit(exchange, to: peerID, recording: .discovery)
             #if DEBUG
             debugPrint("[KE] Discovery token sent to \(peerID.displayName)")
             #endif
@@ -559,11 +750,40 @@ class ExchangeManager: NSObject {
         }
     }
 
+    /// The peer's one discovery message of this exchange, which has to carry its commitment to its nonce. A second discovery
+    /// message changes nothing, so a man in the middle can neither swap a nonce after seeing our messages nor change what the
+    /// commitment bound (Bug 198).
+    ///
+    /// A discovery message without a commitment ends the exchange before any key is exchanged or saved: it is from a phone on
+    /// a version older than 2.0.5, or a relay removed the commitment, and a phone cannot tell which. Either way the words would
+    /// not protect the exchange, so there is no derivation to fall back to. The phase is the same whatever the cause, and
+    /// nothing here reads a depth. Not `private`: tests drive it without a NearbyInteraction token.
+    ///
+    /// - Returns: whether this was the exchange's discovery message and it committed.
+    @discardableResult
+    func handleDiscovery(_ decoded: Exchange, data: Data, from peerID: MCPeerID) -> Bool {
+        guard peerID == self.connectedPeerID, !self.peerDiscoveryAccepted else { return false }
+        self.peerDiscoveryAccepted = true
+
+        guard let commitment = decoded.nonceCommitment, commitment.count == ExchangeCommitment.commitmentSize else {
+            #if DEBUG
+            debugPrint("[KE] Discovery without a commitment — exchange refused")
+            #endif
+            self.phase = .peerNeedsUpdate
+            self.teardownSessions()
+            return false
+        }
+        self.peerCommitment = commitment
+        self.record(.discovery, by: self.peerRole, data)
+        return true
+    }
+
     /// Not `private`, like `multipeerSession` above: the decoder-fuzzing tests call it directly, on the main thread, since the
     /// delegate's `session(_:didReceive:fromPeer:)` only hops to the main queue and then calls this.
     func handleReceivedData(_ data: Data, from peerID: MCPeerID) {
         do {
             let decoded = try BoundedJSON.decode(Exchange.self, from: data)
+            let delay = self.stepDelay
 
             // MARK: Meeting-check proof (before discovery: it has no identity and no ciphertext either)
 
@@ -575,7 +795,30 @@ class ExchangeManager: NSObject {
                 return
             }
 
-            // MARK: Phase 1 — Discovery (token + optional nonce)
+            // MARK: Reveal — the peer's nonce, checked against what it committed to (Bug 198)
+
+            if decoded.isNonceReveal {
+                guard peerID == self.connectedPeerID, let commitment = self.peerCommitment,
+                      case .awaitingReveal(let hybrid) = self.exchangeStatus,
+                      let nonce = decoded.revealedNonce, nonce.count == ExchangeCommitment.nonceSize else { return }
+
+                // A nonce that does not open the commitment, or is our own reflected back, ends the exchange.
+                guard nonce != self.ourNonce, ExchangeCommitment.opens(commitment, with: nonce) else {
+                    #if DEBUG
+                    debugPrint("[KE] Revealed nonce does not match its commitment — exchange failed")
+                    #endif
+                    self.phase = .failed
+                    self.teardownSessions()
+                    return
+                }
+                self.peerNonce = nonce
+                // The responder reveals in answer, so the initiator's is the first nonce that is known to anyone.
+                if !self.isInitiator { self.sendReveal(to: peerID) }
+                self.concludeCommitted(hybrid: hybrid)
+                return
+            }
+
+            // MARK: Phase 1 — Discovery (token + commitment to the nonce)
 
             if decoded.isDiscovery {
                 guard peerID == self.connectedPeerID else {
@@ -602,9 +845,9 @@ class ExchangeManager: NSObject {
                     return
                 }
 
-                if let nonce = decoded.nonce, nonce.count == 16 {
-                    self.peerNonce = nonce
-                }
+                // One discovery message per exchange, and it has to carry a commitment: a second one neither replaces the
+                // commitment nor re-points ranging, and one without a commitment ends the exchange.
+                guard self.handleDiscovery(decoded, data: data, from: peerID) else { return }
 
                 self.receivedDiscoveryTokens[token] = peerID
 
@@ -628,7 +871,7 @@ class ExchangeManager: NSObject {
                     return
                 }
                 switch self.exchangeStatus {
-                case .waitingForPeerIdentity, .sendingMyIdentity:
+                case .waitingForPeerIdentity:
                     break
                 case nil:
                     // NI hasn't confirmed proximity yet — buffer and replay when it does.
@@ -642,10 +885,16 @@ class ExchangeManager: NSObject {
                 }
                 guard let peersP256Key = decoded.identity, peersP256Key.count == 65 else { return }
 
+                // One identity message per exchange, only once the peer has committed to its nonce, and only while waiting for
+                // it. Nothing replaces it, so the transcript holds the one the words were derived from (Bug 198).
+                guard self.peerCommitment != nil, self.peerIdentity == nil else { return }
+
                 #if DEBUG
                 debugPrint("[KE] Identity received from \(peerID.displayName) — encapsulationKey: \(decoded.encapsulationKey != nil)")
                 #endif
 
+                self.record(.identity, by: self.peerRole, data)
+                self.stepProgress()
                 self.peerIdentity = peersP256Key
                 self.peerPairing = self.acceptedPairing(decoded.pairing, peerIdentity: peersP256Key)
                 self.phase = .identityExchanged(fingerprint: peersP256Key.sha256)
@@ -660,16 +909,12 @@ class ExchangeManager: NSObject {
                     guard let result = provider.encapsulate(peerPublicKeyData: peerEncapKey) else { return }
                     let ours = QuantumPayload(secret: result.sharedSecret, ciphertext: result.ciphertext)
 
-                    if case .sendingMyIdentity = self.exchangeStatus {
-                        // Backward compat: old peer sent identity in parallel before our send Task fired.
-                        // Store quantum now; the existing Task will chain the ciphertext send after identity.
-                        self.exchangeStatus = .sendingMyIdentity(ours: ours)
-                    } else if self.isInitiator {
+                    if self.isInitiator {
                         // Received responder's identity → send our ciphertext.
                         self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
                         let generation = self.generation
                         Task { @MainActor [weak self] in
-                            try? await Task.sleep(for: .seconds(3))
+                            try? await Task.sleep(for: delay)
                             guard let self, self.generation == generation,
                                   case .sendingMyQuantum(let ours, _) = self.exchangeStatus else { return }
                             self.sendCiphertext(ours.ciphertext, to: peerID)
@@ -680,7 +925,7 @@ class ExchangeManager: NSObject {
                         self.exchangeStatus = .sendingMyIdentity(ours: ours)
                         let generation = self.generation
                         Task { @MainActor [weak self] in
-                            try? await Task.sleep(for: .seconds(3))
+                            try? await Task.sleep(for: delay)
                             guard let self, self.generation == generation,
                                   case .sendingMyIdentity(let ours?) = self.exchangeStatus else { return }
                             self.sendIdentity(to: peerID)
@@ -693,49 +938,17 @@ class ExchangeManager: NSObject {
                     debugPrint("[KE] Classical path — provider: \(self.postQuantumProvider != nil), privateKey: \(self.privateKeyHandle != nil), peerKey: \(decoded.encapsulationKey != nil)")
                     #endif
 
-                    if case .sendingMyIdentity = self.exchangeStatus {
-                        // Backward compat: old peer sent identity in parallel.
-                        // peerIdentity is stored; the existing Task will confirm after sending.
-                    } else if self.isInitiator {
-                        // Already sent identity at NI fire — just confirm on receiving peer's.
-                        self.exchangeStatus = .done
-                        let payload = ExchangePhase.Payload(
-                            fingerprint: peersP256Key.sha256,
-                            classicalKey: peersP256Key,
-                            hybridResult: nil,
-                            pairing: self.pairingOffer(),
-                            offeredPairing: self.ownPairKeys != nil
-                        )
-                        let generation = self.generation
-                        Task { @MainActor [weak self] in
-                            try? await Task.sleep(for: .seconds(3))
-                            guard let self, self.generation == generation else { return }
-                            self.phase = .mlKemExchanged(payload)
-                            try? await Task.sleep(for: .seconds(3))
-                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
-                            self.phase = .confirming(p)
-                        }
+                    // The classical exchange: this identity message is the last before the reveal.
+                    if self.isInitiator {
+                        self.startReveal(to: peerID, hybrid: nil)
                     } else {
-                        // Send our identity in response, then confirm.
-                        self.exchangeStatus = .done
-                        let payload = ExchangePhase.Payload(
-                            fingerprint: peersP256Key.sha256,
-                            classicalKey: peersP256Key,
-                            hybridResult: nil,
-                            pairing: self.pairingOffer(),
-                            offeredPairing: self.ownPairKeys != nil
-                        )
+                        self.exchangeStatus = .sendingMyIdentity(ours: nil)
                         let generation = self.generation
                         Task { @MainActor [weak self] in
-                            try? await Task.sleep(for: .seconds(3))
-                            guard let self, self.generation == generation else { return }
+                            try? await Task.sleep(for: delay)
+                            guard let self, self.generation == generation, case .sendingMyIdentity = self.exchangeStatus else { return }
                             self.sendIdentity(to: peerID)
-                            try? await Task.sleep(for: .seconds(3))
-                            guard self.generation == generation else { return }
-                            self.phase = .mlKemExchanged(payload)
-                            try? await Task.sleep(for: .seconds(3))
-                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
-                            self.phase = .confirming(p)
+                            self.startReveal(to: peerID, hybrid: nil)
                         }
                     }
                 }
@@ -751,13 +964,7 @@ class ExchangeManager: NSObject {
                     #endif
                     return
                 }
-                let ours: QuantumPayload
-                if case .waitingForPeerQuantum(let o) = self.exchangeStatus {
-                    ours = o
-                } else if case .sendingMyQuantum(let o, nil) = self.exchangeStatus {
-                    // Backward compat: old peer sent ciphertext before our send Task fired.
-                    ours = o
-                } else {
+                guard self.peerCommitment != nil, case .waitingForPeerQuantum(let ours) = self.exchangeStatus else {
                     #if DEBUG
                     debugPrint("[KE] Ciphertext received but not waiting — ignoring")
                     #endif
@@ -781,26 +988,22 @@ class ExchangeManager: NSObject {
                 // ⚠️ Release SE private key — its only purpose is fulfilled.
                 self.privateKeyHandle = nil
                 let theirs = QuantumPayload(secret: secret, ciphertext: ciphertext)
+                self.record(.ciphertext, by: self.peerRole, data)
+                self.stepProgress()
 
                 #if DEBUG
                 debugPrint("[KE] Decapsulation succeeded")
                 #endif
 
                 if self.isInitiator {
-                    if case .sendingMyQuantum = self.exchangeStatus {
-                        // Backward compat: arrived before our send Task fired.
-                        // Store theirs now; the Task will assemble after sending.
-                        self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: theirs)
-                    } else {
-                        self.exchangeStatus = .complete(ours: ours, theirs: theirs)
-                        self.assembleHybridResult(ours: ours, theirs: theirs)
-                    }
+                    self.exchangeStatus = .complete(ours: ours, theirs: theirs)
+                    self.assembleHybridResult(ours: ours, theirs: theirs)
                 } else {
                     // Received initiator's ciphertext → send ours.
                     self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: theirs)
                     let generation = self.generation
                     Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: .seconds(3))
+                        try? await Task.sleep(for: delay)
                         guard let self, self.generation == generation,
                               case .sendingMyQuantum(let ours, let theirs?) = self.exchangeStatus else { return }
                         self.sendCiphertext(ours.ciphertext, to: peerID)
@@ -818,8 +1021,9 @@ class ExchangeManager: NSObject {
     }
 
     private func handleNearbyObjectsUpdate(_ nearbyObjects: [NINearbyObject]) {
-        // Any NI update proves the subsystem is alive — reset watchdog before distance filter.
-        self.scheduleWatchdog()
+        // Any NI update proves the subsystem is alive — reset watchdog before distance filter. Not once the exchange is
+        // under way: its steps have a deadline of their own, which ranging does not move (Bug 198).
+        if !self.protocolInProgress { self.scheduleWatchdog() }
 
         for object in nearbyObjects {
             if let d = object.distance { self.distance = d }
@@ -843,67 +1047,41 @@ class ExchangeManager: NSObject {
             // Protocol starts exactly once.
             guard self.exchangeStatus == nil else { continue }
 
-            if self.isInitiator {
-                self.exchangeStatus = .sendingMyIdentity(ours: nil)
-                #if DEBUG
-                debugPrint("[KE] Initiator — sending identity in 3s")
-                #endif
-                let generation = self.generation
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(3))
-                    guard let self, self.generation == generation, case .sendingMyIdentity(let ours) = self.exchangeStatus else { return }
-                    self.sendIdentity(to: peer)
-                    if let ours {
-                        // Backward compat: old peer sent identity in parallel, quantum already computed.
-                        // Chain ciphertext send directly — skip waitingForPeerIdentity.
-                        self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
-                        Task { @MainActor [weak self] in
-                            try? await Task.sleep(for: .seconds(3))
-                            guard let self, self.generation == generation,
-                                  case .sendingMyQuantum(let ours, let theirs) = self.exchangeStatus else { return }
-                            self.sendCiphertext(ours.ciphertext, to: peer)
-                            if let theirs {
-                                // Peer's ciphertext arrived before we sent ours — assemble now.
-                                self.exchangeStatus = .complete(ours: ours, theirs: theirs)
-                                self.assembleHybridResult(ours: ours, theirs: theirs)
-                            } else {
-                                self.exchangeStatus = .waitingForPeerQuantum(ours: ours)
-                            }
-                        }
-                    } else if let peerIdentity = self.peerIdentity {
-                        // Backward compat: classical path, old peer sent identity in parallel.
-                        self.exchangeStatus = .done
-                        let payload = ExchangePhase.Payload(
-                            fingerprint: peerIdentity.sha256,
-                            classicalKey: peerIdentity,
-                            hybridResult: nil,
-                            pairing: self.pairingOffer(),
-                            offeredPairing: self.ownPairKeys != nil
-                        )
-                        Task { @MainActor [weak self] in
-                            try? await Task.sleep(for: .seconds(3))
-                            guard let self, self.generation == generation else { return }
-                            self.phase = .mlKemExchanged(payload)
-                            try? await Task.sleep(for: .seconds(3))
-                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
-                            self.phase = .confirming(p)
-                        }
-                    } else {
-                        self.exchangeStatus = .waitingForPeerIdentity
-                    }
-                }
-            } else {
-                self.exchangeStatus = .waitingForPeerIdentity
-                #if DEBUG
-                debugPrint("[KE] Responder — waiting for initiator's identity")
-                #endif
-            }
+            self.startProtocol(with: peer)
+        }
+    }
 
-            // Replay identity that arrived before NI confirmed proximity.
-            if let buffered = self.bufferedIdentityMessage {
-                self.bufferedIdentityMessage = nil
-                self.handleReceivedData(buffered.data, from: buffered.peerID)
+    /// Proximity is confirmed and the peer is the one we are pinned to, and has committed to its nonce: the exchange's steps
+    /// begin. Not `private`, so tests can start an exchange without NearbyInteraction.
+    func startProtocol(with peer: MCPeerID) {
+        guard self.exchangeStatus == nil, self.peerCommitment != nil, peer == self.connectedPeerID else { return }
+        self.protocolInProgress = true
+        self.armStepDeadline()
+        let delay = self.stepDelay
+
+        if self.isInitiator {
+            self.exchangeStatus = .sendingMyIdentity(ours: nil)
+            #if DEBUG
+            debugPrint("[KE] Initiator — sending identity in 3s")
+            #endif
+            let generation = self.generation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: delay)
+                guard let self, self.generation == generation, case .sendingMyIdentity = self.exchangeStatus else { return }
+                self.sendIdentity(to: peer)
+                self.exchangeStatus = .waitingForPeerIdentity
             }
+        } else {
+            self.exchangeStatus = .waitingForPeerIdentity
+            #if DEBUG
+            debugPrint("[KE] Responder — waiting for initiator's identity")
+            #endif
+        }
+
+        // Replay identity that arrived before NI confirmed proximity.
+        if let buffered = self.bufferedIdentityMessage {
+            self.bufferedIdentityMessage = nil
+            self.handleReceivedData(buffered.data, from: buffered.peerID)
         }
     }
 }
