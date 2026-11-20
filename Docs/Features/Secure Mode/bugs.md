@@ -15299,6 +15299,13 @@ only where a re-exchange would give pair keys (the contact's recorded tier is 2.
 pair keys, quantum-resistant key agreement and quantum-resistant signatures (informational; never drives the glyph). Not a warning:
 a pairing made before pair keys is as safe as it was.
 
+**A hybrid pairing is not replaced by a classical one** (Bug 199, 2.0.5; decided 2026-11-20 by the owner). `update(key:for:pairing:)`
+throws `pairingWouldLoseQuantum` when the contact's current key holds ML-KEM material and the exchange gives none, as
+`pairingWouldBeWeaker` does for pair keys, and nothing is saved. The confirmation screen says so and points to Revoke Key: revoking
+leaves no current key to compare with, so the next exchange saves a classical pairing, which is the way to choose one on purpose. The
+check compares only with the contact's current key, so a new contact record, or a revoke first, is not refused, and nothing in it reads
+what another depth holds.
+
 **Other fixes made on the way, in this PR's branch:** the raw legacy trial decrypt now honours the old-form refusal (a legacy file
 used to open on a pairing that holds a routing key, and so on the twin record this bug is about); a re-pair retires every earlier
 key row in the save that adds the new one; a retired row's pairing column is overwritten with the sealed empty state, which is
