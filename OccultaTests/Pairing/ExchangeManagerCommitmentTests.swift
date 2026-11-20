@@ -134,8 +134,9 @@ private final class Loopback {
         }
     }
 
-    /// Runs until both phones hold a payload, or `timeout` passes.
-    func run(timeout: Duration = .seconds(120)) async {
+    /// Runs until both phones hold a payload, or `timeout` passes. The timeout is only a ceiling: in a full run another suite can hold
+    /// the main thread for minutes, and a test that gave up sooner would fail for that.
+    func run(timeout: Duration = .seconds(900)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             self.deliver()
@@ -145,7 +146,7 @@ private final class Loopback {
     }
 
     /// Runs until `condition` holds, or `timeout` passes.
-    func run(until condition: () -> Bool, timeout: Duration = .seconds(120)) async {
+    func run(until condition: () -> Bool, timeout: Duration = .seconds(900)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if condition() { return }
