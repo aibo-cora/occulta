@@ -162,7 +162,7 @@ struct KeyExchange: View {
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         @Environment(\.dismiss) private var dismiss
 
-        private enum SaveState { case confirming, saving, saved, failed, refusedWeaker }
+        private enum SaveState { case confirming, saving, saved, failed, refusedWeaker, refusedNoQuantum }
         @State private var saveState: SaveState = .confirming
         /// What the in-person check found about an earlier card conversation. Held only while its screen is up;
         /// nothing about it is stored.
@@ -275,6 +275,25 @@ struct KeyExchange: View {
                         .tint(.occultaAccent)
                         .frame(maxWidth: .infinity)
 
+                    case .refusedNoQuantum:
+                        // As above, a retry runs the same exchange. The way on is the person's choice: revoke, then exchange again.
+                        Label("Not saved: no quantum-resistant key in this exchange", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.occultaDanger)
+
+                        Text("You and this contact already share a quantum-resistant pairing, and this exchange had no ML-KEM key, so it was kept as it was. The other phone may be on an older version of iOS, or the exchange may have been interfered with. To save a classical pairing on purpose, use Revoke Key in this contact's details, then exchange keys again.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button("Done") {
+                            self.manager.finish()
+                            self.dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.occultaAccent)
+                        .frame(maxWidth: .infinity)
+
                     case .failed:
                         Label("Couldn't save key", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
@@ -337,6 +356,8 @@ struct KeyExchange: View {
             switch KeyExchange.saveExchange(self.payload, for: self.identifier, in: self.contactManager, using: self.keyManager) {
             case .refusedWeaker:
                 self.saveState = .refusedWeaker
+            case .refusedNoQuantum:
+                self.saveState = .refusedNoQuantum
             case .failed:
                 self.saveState = .failed
             case .saved:
@@ -394,6 +415,9 @@ extension KeyExchange {
         case saved
         /// The contact's pairing has pair keys and this exchange gave none: nothing is saved, and the exchange can be run again.
         case refusedWeaker
+        /// The contact's pairing is hybrid and this exchange gave no ML-KEM key (Bug 199): nothing is saved, and revoking the
+        /// contact's key first saves a classical pairing on purpose.
+        case refusedNoQuantum
         case failed
     }
 
@@ -439,6 +463,8 @@ extension KeyExchange {
             return .saved
         } catch ContactManager.Errors.pairingWouldBeWeaker {
             return .refusedWeaker
+        } catch ContactManager.Errors.pairingWouldLoseQuantum {
+            return .refusedNoQuantum
         } catch {
             return .failed
         }
