@@ -287,6 +287,16 @@ enum LaunchSequence {
             #endif
         }
 
+        // The routing key and pair keys a revoke left on the row it expired (Bug 201). After the pairing field exists on every
+        // row, which this reads.
+        do {
+            try DatabaseMigration.migrateRevokedPairings(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("revoked pairing migration error: \(error)")
+            #endif
+        }
+
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
         do {

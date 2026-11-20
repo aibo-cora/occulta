@@ -43,6 +43,14 @@ class ExchangeManager: NSObject {
     private let log = Logger(subsystem: "com.occulta.multipeer", category: "multipeer")
 
     private var watchdog: DispatchSourceTimer?
+
+    /// Counts the exchanges that have ended. A callback or a task records the number when it is queued and does nothing if
+    /// the number has moved when it runs: whatever was queued before `teardownSessions()` ran belongs to an exchange that
+    /// is over, and must not touch the manager that follows (Bug 200). Read from the Multipeer and NearbyInteraction
+    /// delegate threads as well as the main queue, so it is behind a lock.
+    private let generationLock = OSAllocatedUnfairLock(initialState: 0)
+    private var generation: Int { self.generationLock.withLock { $0 } }
+
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
 
@@ -210,9 +218,10 @@ class ExchangeManager: NSObject {
 
         self.phase = .searching
 
+        let generation = self.generation
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(3))
-            guard let self, case .searching = self.phase else { return }
+            guard let self, self.generation == generation, case .searching = self.phase else { return }
             self.advertiser?.startAdvertisingPeer()
             self.browser?.startBrowsingForPeers()
             self.scheduleWatchdog()
@@ -233,10 +242,36 @@ class ExchangeManager: NSObject {
         self.phase = .complete
     }
 
+    #if DEBUG
+    /// For tests, which can't have NearbyInteraction confirm proximity: the state the exchange is in once it has, waiting
+    /// for the peer's identity.
+    func waitForPeerIdentityForTesting() { self.exchangeStatus = .waitingForPeerIdentity }
+
+    /// For tests: whether the 30-second watchdog is armed.
+    var isWatchdogArmed: Bool { self.watchdog != nil }
+
+    /// For tests: the ML-KEM key pair `start()` makes, without the radios.
+    func preparePostQuantumForTesting() {
+        guard let keyPair = self.postQuantumProvider?.generateKeyPair() else { return }
+        self.privateKeyHandle = keyPair.privateKeyHandle
+        self.encapsulationKeyData = keyPair.publicKeyData
+    }
+
+    /// For tests: whether the initiator holds its ciphertext, about to send it.
+    var isSendingMyQuantum: Bool {
+        if case .sendingMyQuantum = self.exchangeStatus { return true }
+        return false
+    }
+    #endif
+
     private func teardownSessions() {
+        // First: from here on, everything queued for this exchange is stale.
+        self.generationLock.withLock { $0 &+= 1 }
+
         self.watchdog?.cancel()
         self.watchdog = nil
 
+        self.nearbySession?.delegate = nil
         self.nearbySession?.invalidate()
         self.nearbySession = nil
         self.lastNIConfiguration = nil
@@ -259,6 +294,7 @@ class ExchangeManager: NSObject {
         // are accessed via their object reference, not a keychain tag.
         self.privateKeyHandle = nil
 
+        self.receivedDiscoveryTokens = [:]
         self.connectedPeerID = nil
         self.isInitiator = false
         self.exchangeStatus = nil
@@ -462,9 +498,10 @@ class ExchangeManager: NSObject {
             offeredPairing: self.ownPairKeys != nil
         )
         self.phase = .mlKemExchanged(payload)
+        let generation = self.generation
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(3))
-            guard let self, case .mlKemExchanged(let p) = self.phase else { return }
+            guard let self, self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
             self.phase = .confirming(p)
         }
     }
@@ -472,7 +509,7 @@ class ExchangeManager: NSObject {
     // MARK: - Phase handlers (always called on main queue)
 
     private func handleSessionStateChange(peerID: MCPeerID, state: MCSessionState) {
-        guard state == .connected else { return }
+        guard state == .connected, let session = self.multipeerSession else { return }
 
         // Pin to the first peer only — a second peer connecting mid-exchange must not
         // hijack the slot the MITM guard below checks against.
@@ -485,7 +522,7 @@ class ExchangeManager: NSObject {
 
         self.phase = .found
         self.connectedPeerID = peerID
-        self.isInitiator = self.multipeerSession!.myPeerID.displayName < peerID.displayName
+        self.isInitiator = session.myPeerID.displayName < peerID.displayName
 
         // Our first prekeys, once, for the peer we're pinned to. Made here and not at `start()` so an exchange that
         // never finds anyone makes none. A failure sends no batch.
@@ -630,9 +667,10 @@ class ExchangeManager: NSObject {
                     } else if self.isInitiator {
                         // Received responder's identity → send our ciphertext.
                         self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
+                        let generation = self.generation
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
-                            guard let self,
+                            guard let self, self.generation == generation,
                                   case .sendingMyQuantum(let ours, _) = self.exchangeStatus else { return }
                             self.sendCiphertext(ours.ciphertext, to: peerID)
                             self.exchangeStatus = .waitingForPeerQuantum(ours: ours)
@@ -640,9 +678,10 @@ class ExchangeManager: NSObject {
                     } else {
                         // Received initiator's identity → send our identity (quantum pre-computed).
                         self.exchangeStatus = .sendingMyIdentity(ours: ours)
+                        let generation = self.generation
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
-                            guard let self,
+                            guard let self, self.generation == generation,
                                   case .sendingMyIdentity(let ours?) = self.exchangeStatus else { return }
                             self.sendIdentity(to: peerID)
                             self.exchangeStatus = .waitingForPeerQuantum(ours: ours)
@@ -667,12 +706,13 @@ class ExchangeManager: NSObject {
                             pairing: self.pairingOffer(),
                             offeredPairing: self.ownPairKeys != nil
                         )
+                        let generation = self.generation
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
-                            guard let self else { return }
+                            guard let self, self.generation == generation else { return }
                             self.phase = .mlKemExchanged(payload)
                             try? await Task.sleep(for: .seconds(3))
-                            guard case .mlKemExchanged(let p) = self.phase else { return }
+                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
                             self.phase = .confirming(p)
                         }
                     } else {
@@ -685,14 +725,16 @@ class ExchangeManager: NSObject {
                             pairing: self.pairingOffer(),
                             offeredPairing: self.ownPairKeys != nil
                         )
+                        let generation = self.generation
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
-                            guard let self else { return }
+                            guard let self, self.generation == generation else { return }
                             self.sendIdentity(to: peerID)
                             try? await Task.sleep(for: .seconds(3))
+                            guard self.generation == generation else { return }
                             self.phase = .mlKemExchanged(payload)
                             try? await Task.sleep(for: .seconds(3))
-                            guard case .mlKemExchanged(let p) = self.phase else { return }
+                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
                             self.phase = .confirming(p)
                         }
                     }
@@ -756,9 +798,10 @@ class ExchangeManager: NSObject {
                 } else {
                     // Received initiator's ciphertext → send ours.
                     self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: theirs)
+                    let generation = self.generation
                     Task { @MainActor [weak self] in
                         try? await Task.sleep(for: .seconds(3))
-                        guard let self,
+                        guard let self, self.generation == generation,
                               case .sendingMyQuantum(let ours, let theirs?) = self.exchangeStatus else { return }
                         self.sendCiphertext(ours.ciphertext, to: peerID)
                         self.exchangeStatus = .complete(ours: ours, theirs: theirs)
@@ -805,9 +848,10 @@ class ExchangeManager: NSObject {
                 #if DEBUG
                 debugPrint("[KE] Initiator — sending identity in 3s")
                 #endif
+                let generation = self.generation
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .seconds(3))
-                    guard let self, case .sendingMyIdentity(let ours) = self.exchangeStatus else { return }
+                    guard let self, self.generation == generation, case .sendingMyIdentity(let ours) = self.exchangeStatus else { return }
                     self.sendIdentity(to: peer)
                     if let ours {
                         // Backward compat: old peer sent identity in parallel, quantum already computed.
@@ -815,7 +859,7 @@ class ExchangeManager: NSObject {
                         self.exchangeStatus = .sendingMyQuantum(ours: ours, theirs: nil)
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
-                            guard let self,
+                            guard let self, self.generation == generation,
                                   case .sendingMyQuantum(let ours, let theirs) = self.exchangeStatus else { return }
                             self.sendCiphertext(ours.ciphertext, to: peer)
                             if let theirs {
@@ -838,10 +882,10 @@ class ExchangeManager: NSObject {
                         )
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .seconds(3))
-                            guard let self else { return }
+                            guard let self, self.generation == generation else { return }
                             self.phase = .mlKemExchanged(payload)
                             try? await Task.sleep(for: .seconds(3))
-                            guard case .mlKemExchanged(let p) = self.phase else { return }
+                            guard self.generation == generation, case .mlKemExchanged(let p) = self.phase else { return }
                             self.phase = .confirming(p)
                         }
                     } else {
@@ -869,20 +913,26 @@ class ExchangeManager: NSObject {
 
 extension ExchangeManager: MCSessionDelegate {
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        let generation = self.generation
         DispatchQueue.main.async { [weak self] in
+            // Dropped if the exchange ended while this waited, or if it is another session's: a stale connect must not
+            // pin a new exchange to the old peer (Bug 200).
+            guard let self, self.generation == generation, self.multipeerSession === session else { return }
             #if DEBUG
             debugPrint("[KE] Session state changed: \(state.rawValue) for \(peerID.displayName)")
             #endif
-            self?.handleSessionStateChange(peerID: peerID, state: state)
+            self.handleSessionStateChange(peerID: peerID, state: state)
         }
     }
 
     func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+        let generation = self.generation
         DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation == generation, self.multipeerSession === session else { return }
             #if DEBUG
             debugPrint("[KE] Received data from \(peerID.displayName)")
             #endif
-            self?.handleReceivedData(data, from: peerID)
+            self.handleReceivedData(data, from: peerID)
         }
     }
 
@@ -923,12 +973,15 @@ extension ExchangeManager: MCNearbyServiceAdvertiserDelegate {
 
 extension ExchangeManager: NISessionDelegate {
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
+        let generation = self.generation
         DispatchQueue.main.async { [weak self] in
+            // An update that was queued when the exchange ended would arm the watchdog on a manager at rest (Bug 200).
+            guard let self, self.generation == generation else { return }
             #if DEBUG
             let distances = nearbyObjects.map { $0.distance.map { String(format: "%.2f", $0) } ?? "nil" }
             debugPrint("[KE] NI didUpdate: distances: \(distances)")
             #endif
-            self?.handleNearbyObjectsUpdate(nearbyObjects)
+            self.handleNearbyObjectsUpdate(nearbyObjects)
         }
     }
 
