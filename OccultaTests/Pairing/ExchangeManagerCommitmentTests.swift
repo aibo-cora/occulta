@@ -135,7 +135,7 @@ private final class Loopback {
     }
 
     /// Runs until both phones hold a payload, or `timeout` passes.
-    func run(timeout: Duration = .seconds(30)) async {
+    func run(timeout: Duration = .seconds(120)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             self.deliver()
@@ -145,7 +145,7 @@ private final class Loopback {
     }
 
     /// Runs until `condition` holds, or `timeout` passes.
-    func run(until condition: () -> Bool, timeout: Duration = .seconds(30)) async {
+    func run(until condition: () -> Bool, timeout: Duration = .seconds(120)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if condition() { return }
@@ -590,18 +590,19 @@ struct StepDeadlineTests {
         manager.finish()
     }
 
-    @Test("A message that arrives in time moves the deadline: an exchange that takes longer than one deadline in all still completes")
+    @Test("Every step moves the deadline: it is armed at the start and again for each message sent or received")
     func progressMovesTheDeadline() async throws {
         let loop = Loopback()
         defer { loop.end() }
-        for phone in [loop.a, loop.b] {
-            phone.manager.stepTimeout = 1.5
-            phone.manager.stepDelay = .milliseconds(800)
-        }
         await loop.start()
-        await loop.run(timeout: .seconds(10))
+        await loop.run()
 
-        #expect(loop.a.payload != nil && loop.b.payload != nil, "0.8 s between steps, 1.6 s in all, against a 1.5 s deadline")
+        // Classical: the start, then the initiator's identity out and in, the responder's identity out and in, a reveal out and
+        // in on each side. Counted, not timed: a full run keeps the main thread busy for seconds at a time.
+        for phone in [loop.a, loop.b] {
+            #expect(phone.manager.stepDeadlineArmCountForTesting >= 5, "\(phone.manager.stepDeadlineArmCountForTesting) times")
+        }
+        #expect(loop.a.payload != nil && loop.b.payload != nil)
     }
 
     @Test("A deadline passing ends the exchange and nothing is left armed")

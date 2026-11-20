@@ -341,8 +341,9 @@ class ExchangeManager: NSObject {
     var peerNonceForTesting: Data? { self.peerNonce }
     var peerCommitmentForTesting: Data? { self.peerCommitment }
 
-    /// For tests: whether a step deadline is running.
+    /// For tests: whether a step deadline is running, and how many times one has been armed or moved.
     var isStepDeadlineArmed: Bool { self.stepDeadline != nil }
+    private(set) var stepDeadlineArmCountForTesting = 0
     #endif
 
     private func teardownSessions() {
@@ -429,6 +430,9 @@ class ExchangeManager: NSObject {
     /// Once the exchange has started, the next message has to arrive within `stepTimeout`, and a ranging update does not
     /// move that. Called whenever a step completes, in either direction.
     private func armStepDeadline() {
+        #if DEBUG
+        self.stepDeadlineArmCountForTesting += 1
+        #endif
         self.watchdog?.cancel()
         self.watchdog = nil
         self.stepDeadline?.cancel()
