@@ -580,8 +580,8 @@ class ExchangeManager: NSObject {
 
     /// The meeting-check verdict for a completed exchange (`payload` is the one `.confirming` carries). Final once
     /// the peer's proof message has arrived, which is long before the confirmation screen is. Call it after the
-    /// ceremony's own confirmation succeeds and before `finish()`, which discards the proof. `.none` for a
-    /// classical-only exchange, which has no transcript, and wherever SPEC §7 shows nothing.
+    /// ceremony's own confirmation succeeds and before `finish()`, which discards the proof. `.none` wherever SPEC §7
+    /// shows nothing; W-11 for a classical-only exchange where it shows a verdict (Bug 203).
     func cardMeetingVerdict(for payload: ExchangePhase.Payload) -> CardMeetingVerdict {
         CardMeetingContext.verdict(
             context: self.cardMeeting, result: payload.hybridResult, ourIdentity: self.ourSentIdentity, peerProof: self.peerCardProof
