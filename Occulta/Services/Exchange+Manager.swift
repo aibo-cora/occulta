@@ -108,11 +108,24 @@ class ExchangeManager: NSObject {
 
     /// How long a phone waits for the peer's next message before the exchange ends. Not reset by ranging updates: the two
     /// real phones keep ranging each other while a man in the middle takes his time.
+    #if DEBUG
     var stepTimeout: TimeInterval = 15
+    #else
+    let stepTimeout: TimeInterval = 15
+    #endif
     /// The pause before each step the protocol takes on its own; the live view shows it as progress. A test shortens it.
+    #if DEBUG
     var stepDelay: Duration = .seconds(3)
+    #else
+    let stepDelay: Duration = .seconds(3)
+    #endif
     /// Our identity key as sent. A test supplies one that needs no Secure Enclave.
-    var identityProvider: () throws -> Data = {
+    #if DEBUG
+    var identityProvider: () throws -> Data = ExchangeManager.ownIdentity
+    #else
+    let identityProvider: () throws -> Data = ExchangeManager.ownIdentity
+    #endif
+    private static func ownIdentity() throws -> Data {
         let keyManager = Manager.Key()
         #if targetEnvironment(simulator)
         return keyManager.fixedX963
@@ -140,9 +153,17 @@ class ExchangeManager: NSObject {
     /// batch sent and the digest of it in the transcript are the same evaluation and cannot differ.
     private(set) var ownPairingField: Exchange.PairingField?
     /// Makes our pair keys. The Enclave in production; a test injects software keys.
+    #if DEBUG
     var pairKeyProvider: any CardKeyProviding = EnclaveCardKeys()
+    #else
+    let pairKeyProvider: any CardKeyProviding = EnclaveCardKeys()
+    #endif
     /// Makes our first prekeys. The Enclave in production; a test injects a record that needs none.
+    #if DEBUG
     var prekeyMaker: () throws -> PrekeyRecord = { try PairingOffer.makeOwnPrekeys() }
+    #else
+    let prekeyMaker: () throws -> PrekeyRecord = { try PairingOffer.makeOwnPrekeys() }
+    #endif
     /// What the peer's `pairing` field came to once validated, and the pair-key ECDH with it. Nil from a phone that can't
     /// hold a routing key, or whose field we can't use.
     private var peerPairing: (batch: PairingOffer.Batch, keys: PairingOffer.PeerPairKeys, ecdh: Data)?
