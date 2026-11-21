@@ -122,7 +122,7 @@ class ExchangeManager: NSObject {
     }
     #if DEBUG
     /// For tests: receives every message in place of the Multipeer session, and makes the discovery token a stand-in.
-    var sendInterceptorForTesting: ((Data) -> Void)?
+    var sendInterceptorForTesting: ((Data) throws -> Void)?
     #endif
 
     private var ourRole: ExchangeCommitment.Role { self.isInitiator ? .initiator : .responder }
@@ -470,7 +470,7 @@ class ExchangeManager: NSObject {
         let encoded = try JSONEncoder().encode(exchange)
         #if DEBUG
         if let hook = self.sendInterceptorForTesting {
-            hook(encoded)
+            try hook(encoded)
         } else {
             guard let session = self.multipeerSession else { throw CocoaError(.fileNoSuchFile) }
             try session.send(encoded, toPeers: [peerID], with: .reliable)
@@ -498,9 +498,17 @@ class ExchangeManager: NSObject {
         return try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
     }
 
-    private func sendIdentity(to peerID: MCPeerID) {
+    /// A message we could not send ends the exchange: the peer would wait for it until its deadline, and nothing here may go on to
+    /// a step that assumes it went out. The phase is the one a failed exchange has, so the screen says it did not check out.
+    private func sendFailed() {
+        self.phase = .failed
+        self.teardownSessions()
+    }
+
+    /// - Returns: whether the message went out. When it did not the exchange has ended (`sendFailed`).
+    private func sendIdentity(to peerID: MCPeerID) -> Bool {
         do {
-            guard let archivedToken = try self.archivedDiscoveryToken() else { return }
+            guard let archivedToken = try self.archivedDiscoveryToken() else { self.sendFailed(); return false }
             let keyingMaterial = try self.identityProvider()
             self.ourSentIdentity = keyingMaterial
             let exchange = Exchange(
@@ -516,16 +524,20 @@ class ExchangeManager: NSObject {
             #if DEBUG
             debugPrint("[KE] Identity sent to \(peerID.displayName)")
             #endif
+            return true
         } catch {
             #if DEBUG
             debugPrint("[KE] Identity send failed: \(error)")
             #endif
+            self.sendFailed()
+            return false
         }
     }
 
-    private func sendCiphertext(_ ciphertext: Data, to peerID: MCPeerID) {
+    /// - Returns: whether the message went out. When it did not the exchange has ended (`sendFailed`).
+    private func sendCiphertext(_ ciphertext: Data, to peerID: MCPeerID) -> Bool {
         do {
-            guard let archivedToken = try self.archivedDiscoveryToken() else { return }
+            guard let archivedToken = try self.archivedDiscoveryToken() else { self.sendFailed(); return false }
             let exchange = Exchange(
                 id: UUID().uuidString,
                 token: archivedToken,
@@ -537,23 +549,31 @@ class ExchangeManager: NSObject {
             #if DEBUG
             debugPrint("[KE] Ciphertext sent to \(peerID.displayName)")
             #endif
+            return true
         } catch {
             #if DEBUG
             debugPrint("[KE] Ciphertext send failed: \(error)")
             #endif
+            self.sendFailed()
+            return false
         }
     }
 
     /// Our nonce, the last thing we send (Bug 198).
-    private func sendReveal(to peerID: MCPeerID) {
-        guard let ourNonce else { return }
+    ///
+    /// - Returns: whether the message went out. When it did not the exchange has ended (`sendFailed`).
+    private func sendReveal(to peerID: MCPeerID) -> Bool {
+        guard let ourNonce else { self.sendFailed(); return false }
         do {
             try self.transmit(Exchange(id: UUID().uuidString, token: Data(), version: .v1, revealedNonce: ourNonce), to: peerID)
             self.stepProgress()
+            return true
         } catch {
             #if DEBUG
             debugPrint("[KE] Reveal send failed: \(error)")
             #endif
+            self.sendFailed()
+            return false
         }
     }
 
@@ -651,7 +671,7 @@ class ExchangeManager: NSObject {
     /// own in answer, so each phone has fixed everything it sent before it learns the other's nonce.
     private func startReveal(to peerID: MCPeerID, hybrid: (ours: QuantumPayload, theirs: QuantumPayload)?) {
         self.exchangeStatus = .awaitingReveal(hybrid: hybrid)
-        if self.isInitiator { self.sendReveal(to: peerID) }
+        if self.isInitiator { guard self.sendReveal(to: peerID) else { return } }
         self.stepProgress()
     }
 
@@ -813,7 +833,7 @@ class ExchangeManager: NSObject {
                 }
                 self.peerNonce = nonce
                 // The responder reveals in answer, so the initiator's is the first nonce that is known to anyone.
-                if !self.isInitiator { self.sendReveal(to: peerID) }
+                if !self.isInitiator { guard self.sendReveal(to: peerID) else { return } }
                 self.concludeCommitted(hybrid: hybrid)
                 return
             }
@@ -917,7 +937,7 @@ class ExchangeManager: NSObject {
                             try? await Task.sleep(for: delay)
                             guard let self, self.generation == generation,
                                   case .sendingMyQuantum(let ours, _) = self.exchangeStatus else { return }
-                            self.sendCiphertext(ours.ciphertext, to: peerID)
+                            guard self.sendCiphertext(ours.ciphertext, to: peerID) else { return }
                             self.exchangeStatus = .waitingForPeerQuantum(ours: ours)
                         }
                     } else {
@@ -928,7 +948,7 @@ class ExchangeManager: NSObject {
                             try? await Task.sleep(for: delay)
                             guard let self, self.generation == generation,
                                   case .sendingMyIdentity(let ours?) = self.exchangeStatus else { return }
-                            self.sendIdentity(to: peerID)
+                            guard self.sendIdentity(to: peerID) else { return }
                             self.exchangeStatus = .waitingForPeerQuantum(ours: ours)
                         }
                     }
@@ -947,7 +967,7 @@ class ExchangeManager: NSObject {
                         Task { @MainActor [weak self] in
                             try? await Task.sleep(for: delay)
                             guard let self, self.generation == generation, case .sendingMyIdentity = self.exchangeStatus else { return }
-                            self.sendIdentity(to: peerID)
+                            guard self.sendIdentity(to: peerID) else { return }
                             self.startReveal(to: peerID, hybrid: nil)
                         }
                     }
@@ -1006,7 +1026,7 @@ class ExchangeManager: NSObject {
                         try? await Task.sleep(for: delay)
                         guard let self, self.generation == generation,
                               case .sendingMyQuantum(let ours, let theirs?) = self.exchangeStatus else { return }
-                        self.sendCiphertext(ours.ciphertext, to: peerID)
+                        guard self.sendCiphertext(ours.ciphertext, to: peerID) else { return }
                         self.exchangeStatus = .complete(ours: ours, theirs: theirs)
                         self.assembleHybridResult(ours: ours, theirs: theirs)
                     }
@@ -1068,7 +1088,7 @@ class ExchangeManager: NSObject {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: delay)
                 guard let self, self.generation == generation, case .sendingMyIdentity = self.exchangeStatus else { return }
-                self.sendIdentity(to: peer)
+                guard self.sendIdentity(to: peer) else { return }
                 self.exchangeStatus = .waitingForPeerIdentity
             }
         } else {
