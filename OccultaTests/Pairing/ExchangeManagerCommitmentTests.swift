@@ -250,6 +250,7 @@ struct CommittedExchangeTests {
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
         let offerA = try #require(a.pairing), offerB = try #require(b.pairing)
         #expect(offerA.exchangeTranscript == a.committed.transcript)
+        #expect(offerA.committed == a.committed && offerB.committed == b.committed, "the offer carries the exchange's commitment, not a copy")
         let routingA = try #require(offerA.routingKey(withPeer: a.classicalKey, quantum: nil, using: loop.a.key))
         let routingB = try #require(offerB.routingKey(withPeer: b.classicalKey, quantum: nil, using: loop.b.key))
         #expect(routingA == routingB)
@@ -266,6 +267,8 @@ struct CommittedExchangeTests {
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
         #expect(a.hybridResult != nil && b.hybridResult != nil)
         #expect(a.committed.transcript == b.committed.transcript)
+        #expect(a.hybridResult?.committed == a.committed && b.hybridResult?.committed == b.committed, "the result carries the exchange's commitment, not a copy")
+        #expect(a.pairing?.committed == a.committed)
         #expect(loop.a.words == loop.b.words)
         let tail = loop.kinds.filter { $0 != "discovery" && $0 != "proof" }
         #expect(tail == ["identity", "identity", "ciphertext", "ciphertext", "reveal", "reveal"], "\(tail)")

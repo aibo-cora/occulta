@@ -15,10 +15,14 @@ import OccultaFormats
 nonisolated
 struct PairingOffer: Equatable {
 
-    /// Our nonce and the peer's, from the discovery messages. A classical exchange has them too, with a peer that
-    /// sends one.
-    let ourNonce: Data
-    let peerNonce: Data
+    /// Both nonces and the transcript of the exchange's messages, which both phones committed their nonces before (Bug 198).
+    /// The routing key and the words are derived over it, under their own domains. An exchange with a peer that did not
+    /// commit is refused before an offer exists.
+    let committed: CommittedExchange
+
+    var ourNonce: Data { self.committed.ourNonce }
+    var peerNonce: Data { self.committed.peerNonce }
+    var exchangeTranscript: Data { self.committed.transcript }
 
     /// The record we'll hold for this peer: one pending batch of our keys, Enclave blobs kept in memory only until
     /// `save()` installs them. An exchange that is abandoned leaves nothing behind: CryptoKit Enclave keys have no
@@ -35,11 +39,6 @@ struct PairingOffer: Equatable {
     /// The ECDH output between the two agreement keys (X9.63 KDF applied), made when the offer is assembled so the
     /// Enclave blob is used once, by the exchange, and not again by the screens that follow.
     let pairwiseECDH: Data
-
-    /// `ExchangeCommitment.transcript` of every message of the exchange, which both phones committed their nonces before
-    /// (Bug 198). The routing key and the words are derived over it, under their own domains. An exchange with a peer that
-    /// did not commit is refused before an offer exists.
-    let exchangeTranscript: Data
 
     struct Batch: Equatable {
         let id: Data?

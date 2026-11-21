@@ -307,7 +307,7 @@ struct ExchangeWordsTests {
     func quantumResultIsCovered() throws {
         let result = ExchangeManager.HybridExchangeResult(
             peerP256PublicKey: try self.bob.retrieveIdentity(), mlkemSecret1: Data(repeating: 0x31, count: 32),
-            mlkemSecret2: Data(repeating: 0x32, count: 32), ourNonce: nonce(1), peerNonce: nonce(2),
+            mlkemSecret2: Data(repeating: 0x32, count: 32), committed: self.committed(1, 2),
             ourCiphertext: Data(repeating: 0x41, count: 16), peerCiphertext: Data(repeating: 0x42, count: 16)
         )
         let withKey = KeyExchange.words(for: try self.payload(peer: self.bob, committed: self.committed(1, 2), hybrid: result), using: self.alice)

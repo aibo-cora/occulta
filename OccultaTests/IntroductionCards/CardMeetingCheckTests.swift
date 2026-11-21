@@ -48,8 +48,11 @@ private struct Ceremony {
         return ExchangeManager.HybridExchangeResult(
             peerP256PublicKey: theirs,
             mlkemSecret1: Data(repeating: 1, count: 32), mlkemSecret2: Data(repeating: 2, count: 32),
-            ourNonce: side == .bob ? self.bobNonce : self.carolNonce,
-            peerNonce: side == .bob ? self.carolNonce : self.bobNonce,
+            committed: CommittedExchange(
+                ourNonce: side == .bob ? self.bobNonce : self.carolNonce,
+                peerNonce: side == .bob ? self.carolNonce : self.bobNonce,
+                transcript: Data(repeating: 0x5A, count: 32)
+            ),
             ourCiphertext: side == .bob ? self.bobCiphertext : self.carolCiphertext,
             peerCiphertext: side == .bob ? self.carolCiphertext : self.bobCiphertext
         )

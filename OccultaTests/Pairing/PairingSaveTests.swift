@@ -47,9 +47,8 @@ private func offer(own: PrekeyRecord.OwnBatch? = nil, peer: PairingOffer.Batch? 
     var record = PrekeyRecord.empty
     record.ownBatches = [own ?? ownBatch(id: 0xAA)]
     return PairingOffer(
-        ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, peerBatch: peer ?? peerBatch(),
-        ours: ownPairKeys(), theirs: peerPairKeys(), pairwiseECDH: Data(repeating: 0x33, count: 32),
-        exchangeTranscript: exchangeTranscript
+        committed: .init(ourNonce: nonce(1), peerNonce: nonce(2), transcript: exchangeTranscript), ownPrekeys: record, peerBatch: peer ?? peerBatch(),
+        ours: ownPairKeys(), theirs: peerPairKeys(), pairwiseECDH: Data(repeating: 0x33, count: 32)
     )
 }
 
@@ -127,11 +126,10 @@ struct PairingOfferDerivationTests {
             ourNonce: Data, peerNonce: Data
         ) throws -> PairingOffer {
             PairingOffer(
-                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, peerBatch: peerBatch,
+                committed: .init(ourNonce: ourNonce, peerNonce: peerNonce, transcript: exchangeTranscript), ownPrekeys: record, peerBatch: peerBatch,
                 ours: ours,
                 theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
-                pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: self.provider),
-                exchangeTranscript: exchangeTranscript
+                pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: self.provider)
             )
         }
         return (
@@ -178,8 +176,8 @@ struct PairingOfferDerivationTests {
             id: Data(repeating: 0x99, count: 16), lastResort: nil
         ))
         let tampered = PairingOffer(
-            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, peerBatch: other, ours: b.ours, theirs: b.theirs,
-            pairwiseECDH: b.pairwiseECDH, exchangeTranscript: Data(repeating: 0x5B, count: 32)
+            committed: .init(ourNonce: b.ourNonce, peerNonce: b.peerNonce, transcript: Data(repeating: 0x5B, count: 32)),
+            ownPrekeys: b.ownPrekeys, peerBatch: other, ours: b.ours, theirs: b.theirs, pairwiseECDH: b.pairwiseECDH
         )
 
         #expect(a.wordsKey(withPeer: bobKey, quantum: nil, using: self.alice) != tampered.wordsKey(withPeer: aliceKey, quantum: nil, using: self.bob))
@@ -298,11 +296,10 @@ struct KeyExchangeSaveTests {
         var bobsRecord = PrekeyRecord.empty
         bobsRecord.ownBatches = [ownBatch(id: 0xBB)]
         return PairingOffer(
-            ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record,
+            committed: .init(ourNonce: nonce(1), peerNonce: nonce(2), transcript: exchangeTranscript), ownPrekeys: record,
             peerBatch: PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: bobsRecord))), ours: ours,
             theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
-            pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: SoftwareCardKeys()),
-            exchangeTranscript: exchangeTranscript
+            pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: SoftwareCardKeys())
         )
     }
 

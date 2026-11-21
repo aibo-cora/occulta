@@ -213,10 +213,13 @@ class ExchangeManager: NSObject {
         let peerP256PublicKey: Data
         let mlkemSecret1: Data
         let mlkemSecret2: Data
-        let ourNonce: Data
-        let peerNonce: Data
+        /// The nonces both phones committed to: the exchange's own value, not a copy of it.
+        let committed: CommittedExchange
         let ourCiphertext: Data
         let peerCiphertext: Data
+
+        var ourNonce: Data { self.committed.ourNonce }
+        var peerNonce: Data { self.committed.peerNonce }
     }
 
     // MARK: - Exchange phase
@@ -254,12 +257,7 @@ class ExchangeManager: NSObject {
             var offeredQuantum: Bool = false
 
             /// What a committed exchange's words and routing key are derived over.
-            struct Committed: Equatable {
-                let ourNonce: Data
-                let peerNonce: Data
-                /// `ExchangeCommitment.transcript` of the messages before the reveal.
-                let transcript: Data
-            }
+            typealias Committed = CommittedExchange
         }
     }
 
@@ -670,14 +668,12 @@ class ExchangeManager: NSObject {
     /// Anything missing means the peer can't hold a routing key, and the pairing is made without one.
     private func pairingOffer() -> PairingOffer? {
         guard
-            let ourNonce, let peerNonce, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing,
-            let exchangeTranscript = self.committedExchange?.transcript
+            let committed = self.committedExchange, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing
         else { return nil }
         return PairingOffer(
-            ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys,
+            committed: committed, ownPrekeys: ownPrekeys,
             peerBatch: peerPairing.batch,
-            ours: ownPairKeys, theirs: peerPairing.keys, pairwiseECDH: peerPairing.ecdh,
-            exchangeTranscript: exchangeTranscript
+            ours: ownPairKeys, theirs: peerPairing.keys, pairwiseECDH: peerPairing.ecdh
         )
     }
 
@@ -715,7 +711,7 @@ class ExchangeManager: NSObject {
         let result = hybrid.map {
             HybridExchangeResult(
                 peerP256PublicKey: peerIdentity, mlkemSecret1: $0.ours.secret, mlkemSecret2: $0.theirs.secret,
-                ourNonce: ourNonce, peerNonce: peerNonce, ourCiphertext: $0.ours.ciphertext, peerCiphertext: $0.theirs.ciphertext
+                committed: committed, ourCiphertext: $0.ours.ciphertext, peerCiphertext: $0.theirs.ciphertext
             )
         }
         if let result { self.sendCardProof(for: result) }
