@@ -604,7 +604,8 @@ class ExchangeManager: NSObject {
     /// shows nothing; W-11 for a classical-only exchange where it shows a verdict (Bug 203).
     func cardMeetingVerdict(for payload: ExchangePhase.Payload) -> CardMeetingVerdict {
         CardMeetingContext.verdict(
-            context: self.cardMeeting, result: payload.hybridResult, ourIdentity: self.ourSentIdentity, peerProof: self.peerCardProof
+            context: self.cardMeeting, result: payload.hybridResult, offeredQuantum: payload.offeredQuantum,
+            ourIdentity: self.ourSentIdentity, peerProof: self.peerCardProof
         )
     }
 
