@@ -246,9 +246,11 @@ struct CommittedDerivationTests {
         #expect(a == b && a.count == 32)
         #expect(a != (try self.words(pairKeys: true, hybrid: true).alice))
 
-        let old = try #require(self.alice.identity.createRoutingKey(
-            peerP256Material: try self.bob.identity.retrieveIdentity(), pairwiseECDH: alicePK, ourAgreementKey: self.alice.agreementPublic,
-            peerAgreementKey: self.bob.agreementPublic, transcript: self.transcript, quantumMaterial: q.alice, ourNonce: nonce(1), peerNonce: nonce(2)))
+        let identityECDH = try #require(self.alice.identity.rawECDHWithSalt(peerP256Material: try self.bob.identity.retrieveIdentity())).rawECDH
+        let old = try #require(RoutingKey.derive(
+            pairwiseECDH: alicePK, identityECDH: identityECDH, ourAgreementKey: self.alice.agreementPublic,
+            peerAgreementKey: self.bob.agreementPublic, mlkemSecrets: (q.alice.encapsulatedSecret, q.alice.decapsulatedSecret),
+            ourNonce: nonce(1), peerNonce: nonce(2), transcript: self.transcript))
         #expect(a != old, "the committed derivation has a domain of its own")
 
         let other = try #require(self.alice.identity.createCommittedRoutingKey(

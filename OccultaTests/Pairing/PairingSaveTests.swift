@@ -40,11 +40,6 @@ private func peerBatch(keys: Int = 15) -> PairingOffer.Batch {
     ))
 }
 
-/// The digest of the batch `record` would send, as the exchange takes it once when it makes the field.
-private func sentDigest(of record: PrekeyRecord) -> Data {
-    PairingOffer.Batch(PairingOffer.wireBatch(of: record)!).digest
-}
-
 /// What both phones hold of an exchange, in these tests: the hash of its messages, which every offer carries (Bug 198).
 private let exchangeTranscript = Data(repeating: 0x5A, count: 32)
 
@@ -52,7 +47,7 @@ private func offer(own: PrekeyRecord.OwnBatch? = nil, peer: PairingOffer.Batch? 
     var record = PrekeyRecord.empty
     record.ownBatches = [own ?? ownBatch(id: 0xAA)]
     return PairingOffer(
-        ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peer ?? peerBatch(),
+        ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, peerBatch: peer ?? peerBatch(),
         ours: ownPairKeys(), theirs: peerPairKeys(), pairwiseECDH: Data(repeating: 0x33, count: 32),
         exchangeTranscript: exchangeTranscript
     )
@@ -132,7 +127,7 @@ struct PairingOfferDerivationTests {
             ourNonce: Data, peerNonce: Data
         ) throws -> PairingOffer {
             PairingOffer(
-                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peerBatch,
+                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, peerBatch: peerBatch,
                 ours: ours,
                 theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
                 pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: self.provider),
@@ -155,7 +150,6 @@ struct PairingOfferDerivationTests {
         let routingB = try #require(b.routingKey(withPeer: aliceKey, quantum: nil, using: self.bob))
         #expect(routingA == routingB && routingA.count == 32)
         #expect(a.wordsKey(withPeer: bobKey, quantum: nil, using: self.alice) == b.wordsKey(withPeer: aliceKey, quantum: nil, using: self.bob))
-        #expect(a.transcript == b.transcript)
     }
 
     @Test("They agree with ML-KEM secrets and with an ML-DSA key on one side, and differ from the exchange without")
@@ -184,7 +178,7 @@ struct PairingOfferDerivationTests {
             id: Data(repeating: 0x99, count: 16), lastResort: nil
         ))
         let tampered = PairingOffer(
-            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, ownBatchDigest: b.ownBatchDigest, peerBatch: other, ours: b.ours, theirs: b.theirs,
+            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, peerBatch: other, ours: b.ours, theirs: b.theirs,
             pairwiseECDH: b.pairwiseECDH, exchangeTranscript: Data(repeating: 0x5B, count: 32)
         )
 
@@ -304,7 +298,7 @@ struct KeyExchangeSaveTests {
         var bobsRecord = PrekeyRecord.empty
         bobsRecord.ownBatches = [ownBatch(id: 0xBB)]
         return PairingOffer(
-            ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, ownBatchDigest: sentDigest(of: record),
+            ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record,
             peerBatch: PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: bobsRecord))), ours: ours,
             theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
             pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: SoftwareCardKeys()),

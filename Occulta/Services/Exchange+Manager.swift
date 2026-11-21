@@ -653,7 +653,7 @@ class ExchangeManager: NSObject {
         else { return nil }
         return PairingOffer(
             ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: ownPrekeys,
-            ownBatchDigest: PairingOffer.Batch(ownPairingField.prekeyBatch).digest, peerBatch: peerPairing.batch,
+            peerBatch: peerPairing.batch,
             ours: ownPairKeys, theirs: peerPairing.keys, pairwiseECDH: peerPairing.ecdh,
             exchangeTranscript: exchangeTranscript
         )
