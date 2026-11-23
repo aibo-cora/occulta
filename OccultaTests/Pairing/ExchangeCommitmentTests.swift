@@ -246,9 +246,11 @@ struct CommittedDerivationTests {
         #expect(a == b && a.count == 32)
         #expect(a != (try self.words(pairKeys: true, hybrid: true).alice))
 
-        let old = try #require(self.alice.identity.createRoutingKey(
-            peerP256Material: try self.bob.identity.retrieveIdentity(), pairwiseECDH: alicePK, ourAgreementKey: self.alice.agreementPublic,
-            peerAgreementKey: self.bob.agreementPublic, transcript: self.transcript, quantumMaterial: q.alice, ourNonce: nonce(1), peerNonce: nonce(2)))
+        let identityECDH = try #require(self.alice.identity.rawECDHWithSalt(peerP256Material: try self.bob.identity.retrieveIdentity())).rawECDH
+        let old = try #require(RoutingKey.derive(
+            pairwiseECDH: alicePK, identityECDH: identityECDH, ourAgreementKey: self.alice.agreementPublic,
+            peerAgreementKey: self.bob.agreementPublic, mlkemSecrets: (q.alice.encapsulatedSecret, q.alice.decapsulatedSecret),
+            ourNonce: nonce(1), peerNonce: nonce(2), transcript: self.transcript))
         #expect(a != old, "the committed derivation has a domain of its own")
 
         let other = try #require(self.alice.identity.createCommittedRoutingKey(
@@ -305,7 +307,7 @@ struct ExchangeWordsTests {
     func quantumResultIsCovered() throws {
         let result = ExchangeManager.HybridExchangeResult(
             peerP256PublicKey: try self.bob.retrieveIdentity(), mlkemSecret1: Data(repeating: 0x31, count: 32),
-            mlkemSecret2: Data(repeating: 0x32, count: 32), ourNonce: nonce(1), peerNonce: nonce(2),
+            mlkemSecret2: Data(repeating: 0x32, count: 32), committed: self.committed(1, 2),
             ourCiphertext: Data(repeating: 0x41, count: 16), peerCiphertext: Data(repeating: 0x42, count: 16)
         )
         let withKey = KeyExchange.words(for: try self.payload(peer: self.bob, committed: self.committed(1, 2), hybrid: result), using: self.alice)

@@ -102,7 +102,10 @@ extension RoutingKey {
 
     // MARK: - The routing key
 
-    /// The routing key of a pair-key pairing: HKDF-SHA256 over `pk ‖ ik ‖` both ML-KEM secrets sorted (where the exchange
+    /// The routing key of a pair-key pairing in an exchange that did not commit to its nonces, as a build before 2.0.5 made it.
+    /// The app no longer calls it (`deriveCommitted` replaced it, Bug 198); it stays because the interop vectors pin it.
+    ///
+    /// HKDF-SHA256 over `pk ‖ ik ‖` both ML-KEM secrets sorted (where the exchange
     /// had them), salted with the two agreement keys XORed, with both exchange nonces sorted and the transcript after
     /// `pairingDomain` as the info.
     ///
@@ -122,7 +125,11 @@ extension RoutingKey {
 
     // MARK: - The words
 
-    /// The key the verification words come from, for an exchange that made pair keys: the same input as the routing key,
+    /// The key the verification words come from, for an exchange that made pair keys and did not commit to its nonces, as a
+    /// build before 2.0.5 made it. The app no longer calls it (`wordsKeyCommitted` replaced it, Bug 198); it stays because the
+    /// interop vectors pin it.
+    ///
+    /// The same input as the routing key,
     /// salted with the two identity keys XORed (`identitySalt`) and under a domain of its own, so what a screen shows
     /// reveals nothing of the routing key.
     ///

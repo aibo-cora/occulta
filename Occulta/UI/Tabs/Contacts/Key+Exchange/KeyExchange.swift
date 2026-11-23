@@ -13,8 +13,8 @@ struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
     @State private var displayingInfo: Bool = true
     @State private var confirmingPayload: ExchangeManager.ExchangePhase.Payload?
-    @State private var showTimeoutBanner: Bool = false
-    @State private var showUpdateBanner: Bool = false
+    /// Why the last exchange ended without a result. Shown on this screen only; nothing is stored.
+    @State private var notice: Notice?
 
     @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
 
@@ -51,17 +51,8 @@ struct KeyExchange: View {
             } else {
                 if self.exchangeManager.isExchangePossible {
                     VStack(spacing: 24) {
-                        if self.showUpdateBanner {
-                            // The same words whatever the cause: a phone on an older version, or a message that was
-                            // interfered with, look the same to this one. Shown on this screen only; nothing is stored.
-                            Label("The other phone needs to update Occulta to exchange keys with this one.", systemImage: "exclamationmark.triangle.fill")
-                                .font(.subheadline)
-                                .foregroundStyle(Color.occultaWarn)
-                                .padding(.horizontal)
-                        }
-
-                        if self.showTimeoutBanner {
-                            Label("Didn't connect — make sure both devices are within 25 cm and try again.", systemImage: "exclamationmark.triangle.fill")
+                        if let notice = self.notice {
+                            Label(notice.text, systemImage: "exclamationmark.triangle.fill")
                                 .font(.subheadline)
                                 .foregroundStyle(Color.occultaWarn)
                                 .padding(.horizontal)
@@ -97,8 +88,7 @@ struct KeyExchange: View {
 
                         HStack(spacing: 16) {
                             Button {
-                                self.showTimeoutBanner = false
-                                self.showUpdateBanner = false
+                                self.notice = nil
                                 // The meeting check (SPEC §7) runs against this contact's card field, if it holds one.
                                 let cardMeeting = self.contacts.first.flatMap { self.contactManager?.cardMeetingContext(for: $0) } ?? .none
                                 self.exchangeManager.start(cardMeeting: cardMeeting)
@@ -130,14 +120,9 @@ struct KeyExchange: View {
             if case .confirming(let payload) = newPhase {
                 self.confirmingPayload = payload
             }
-            if newPhase == .timedOut || newPhase == .failed {
+            if let notice = KeyExchange.notice(for: newPhase) {
                 self.confirmingPayload = nil
-                self.showTimeoutBanner = true
-                self.exchangeManager.finish()
-            }
-            if newPhase == .peerNeedsUpdate {
-                self.confirmingPayload = nil
-                self.showUpdateBanner = true
+                self.notice = notice
                 self.exchangeManager.finish()
             }
         }
@@ -408,6 +393,35 @@ extension KeyExchange {
     ) -> [String] {
         generator.generate(separator: "-", sharedKey: self.wordsKey(for: payload, using: keyManager))
             .components(separatedBy: "-")
+    }
+
+    /// How an exchange ended without a result, for the screen to say. Each has words of its own: a failed exchange is a message that
+    /// did not check out, which the person should not read as poor ranging and simply retry.
+    enum Notice: Equatable {
+        case timedOut, failed, peerNeedsUpdate
+
+        var text: String {
+            switch self {
+            case .timedOut:
+                "Didn't connect — make sure both devices are within 25 cm and try again."
+            case .failed:
+                "This exchange didn't check out, so nothing was saved. Try again. If it happens again, try somewhere else."
+            case .peerNeedsUpdate:
+                // The same words whatever the cause: a phone on an older version, or a message that was interfered with, look the
+                // same to this one.
+                "The other phone needs to update Occulta to exchange keys with this one."
+            }
+        }
+    }
+
+    /// The notice for a phase that ends an exchange, nil for any other.
+    static func notice(for phase: ExchangeManager.ExchangePhase) -> Notice? {
+        switch phase {
+        case .timedOut: .timedOut
+        case .failed: .failed
+        case .peerNeedsUpdate: .peerNeedsUpdate
+        default: nil
+        }
     }
 
     /// What Save did, for the confirmation screen to show.

@@ -74,6 +74,8 @@ private final class Loopback {
     let a: Phone
     let b: Phone
     var tamper: ((_ from: Phone, _ data: Data) -> Data?)?
+    /// Makes a phone's send of a message fail, as `session.send` can: sees the sender and what the message is.
+    var failSend: ((_ from: Phone, _ kind: String) -> Bool)?
     private var queue: [(to: Phone, data: Data)] = []
     /// Sender, then what the message was, for every message on the channel.
     private(set) var log: [(from: Phone, kind: String)] = []
@@ -85,6 +87,7 @@ private final class Loopback {
             // Weak: a task the manager queued can send after the test is over.
             me.manager.sendInterceptorForTesting = { [weak self, weak me] data in
                 guard let self, let me else { return }
+                if self.failSend?(me, Loopback.kind(of: data)) == true { throw CocoaError(.fileWriteUnknown) }
                 me.record(data)
                 self.log.append((me, Loopback.kind(of: data)))
                 let delivered = self.tamper?(me, data) ?? (self.tamper == nil ? data : nil)
@@ -247,6 +250,7 @@ struct CommittedExchangeTests {
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
         let offerA = try #require(a.pairing), offerB = try #require(b.pairing)
         #expect(offerA.exchangeTranscript == a.committed.transcript)
+        #expect(offerA.committed == a.committed && offerB.committed == b.committed, "the offer carries the exchange's commitment, not a copy")
         let routingA = try #require(offerA.routingKey(withPeer: a.classicalKey, quantum: nil, using: loop.a.key))
         let routingB = try #require(offerB.routingKey(withPeer: b.classicalKey, quantum: nil, using: loop.b.key))
         #expect(routingA == routingB)
@@ -263,6 +267,8 @@ struct CommittedExchangeTests {
         let a = try #require(loop.a.payload), b = try #require(loop.b.payload)
         #expect(a.hybridResult != nil && b.hybridResult != nil)
         #expect(a.committed.transcript == b.committed.transcript)
+        #expect(a.hybridResult?.committed == a.committed && b.hybridResult?.committed == b.committed, "the result carries the exchange's commitment, not a copy")
+        #expect(a.pairing?.committed == a.committed)
         #expect(loop.a.words == loop.b.words)
         let tail = loop.kinds.filter { $0 != "discovery" && $0 != "proof" }
         #expect(tail == ["identity", "identity", "ciphertext", "ciphertext", "reveal", "reveal"], "\(tail)")
@@ -716,5 +722,101 @@ struct StepDeadlineTests {
 
         #expect(loop.a.manager.phase == .timedOut && loop.b.manager.phase == .timedOut)
         #expect(loop.a.payload == nil && loop.b.payload == nil)
+    }
+}
+
+// MARK: - A send that fails
+
+@Suite("Bug 198 — a message that could not be sent ends the exchange", .serialized)
+struct SendFailureTests {
+
+    /// Only a ceiling, like the others: a full run can hold the main thread for minutes.
+    static let ceiling: Duration = .seconds(900)
+
+    /// Nothing but the failure is the reason for the end: the phone said so and nothing is left armed.
+    @MainActor
+    private func expectEnded(_ phone: Phone, sourceLocation: SourceLocation = #_sourceLocation) {
+        #expect(phone.manager.phase == .failed, sourceLocation: sourceLocation)
+        #expect(phone.payload == nil, sourceLocation: sourceLocation)
+        #expect(!phone.manager.isStepDeadlineArmed, "no deadline is left running", sourceLocation: sourceLocation)
+    }
+
+    @Test("The initiator's identity cannot be sent")
+    @MainActor func initiatorIdentity() async throws {
+        let loop = Loopback()
+        defer { loop.end() }
+        loop.failSend = { from, kind in from === loop.a && kind == "identity" }
+        await loop.start()
+        await loop.run(until: { loop.a.manager.phase == .failed }, timeout: Self.ceiling)
+
+        self.expectEnded(loop.a)
+        #expect(!loop.kinds.contains("identity"), "nothing went out in its place")
+    }
+
+    @Test("Our identity key cannot be read")
+    @MainActor func identityUnavailable() async throws {
+        let loop = Loopback()
+        defer { loop.end() }
+        loop.a.manager.identityProvider = { throw CocoaError(.fileReadUnknown) }
+        await loop.start()
+        await loop.run(until: { loop.a.manager.phase == .failed }, timeout: Self.ceiling)
+
+        self.expectEnded(loop.a)
+    }
+
+    @Test("The responder's identity cannot be sent: it does not go on to wait for a reveal")
+    @MainActor func responderIdentity() async throws {
+        let loop = Loopback()
+        defer { loop.end() }
+        loop.failSend = { from, kind in from === loop.b && kind == "identity" }
+        await loop.start()
+        await loop.run(until: { loop.b.manager.phase == .failed }, timeout: Self.ceiling)
+
+        self.expectEnded(loop.b)
+        #expect(!loop.log.contains { $0.from === loop.b && $0.kind == "reveal" })
+    }
+
+    @Test("The initiator's reveal cannot be sent")
+    @MainActor func initiatorReveal() async throws {
+        let loop = Loopback()
+        defer { loop.end() }
+        loop.failSend = { from, kind in from === loop.a && kind == "reveal" }
+        await loop.start()
+        await loop.run(until: { loop.a.manager.phase == .failed }, timeout: Self.ceiling)
+
+        self.expectEnded(loop.a)
+    }
+
+    @Test("The responder's reveal cannot be sent: it does not conclude an exchange the peer cannot")
+    @MainActor func responderReveal() async throws {
+        let loop = Loopback()
+        defer { loop.end() }
+        loop.failSend = { from, kind in from === loop.b && kind == "reveal" }
+        await loop.start()
+        await loop.run(until: { loop.b.manager.phase == .failed }, timeout: Self.ceiling)
+
+        self.expectEnded(loop.b)
+    }
+
+    @Test("The initiator's ciphertext cannot be sent", .enabled(if: enclave))
+    @MainActor func initiatorCiphertext() async throws {
+        let loop = Loopback(pairing: true, quantum: true)
+        defer { loop.end() }
+        loop.failSend = { from, kind in from === loop.a && kind == "ciphertext" }
+        await loop.start()
+        await loop.run(until: { loop.a.manager.phase == .failed }, timeout: Self.ceiling)
+
+        self.expectEnded(loop.a)
+    }
+
+    @Test("The responder's ciphertext cannot be sent", .enabled(if: enclave))
+    @MainActor func responderCiphertext() async throws {
+        let loop = Loopback(pairing: true, quantum: true)
+        defer { loop.end() }
+        loop.failSend = { from, kind in from === loop.b && kind == "ciphertext" }
+        await loop.start()
+        await loop.run(until: { loop.b.manager.phase == .failed }, timeout: Self.ceiling)
+
+        self.expectEnded(loop.b)
     }
 }

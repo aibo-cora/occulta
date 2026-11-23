@@ -360,7 +360,7 @@ The signer's identity key in the payload stops a proof being reflected back to i
 **Verdict,** where the table shows one:
 - **The peer's proof verifies:** **W-12**.
 - **Otherwise: W-11.** That covers a filler, a bad signature, or no proof message from an older build. A card-capable build always signs when it holds a card key, and the real peer always has one.
-- **An exchange with no hybrid result: W-11**, where the table shows a verdict (Bug 203). The proof is signed over a transcript that holds the ML-KEM ciphertexts, so a classical-only exchange has none, and nothing arrives to check. A card conversation needs iOS 26 at both ends, so a person met in person on a phone that did no ML-KEM cannot have been its other end; neither can one whose ML-KEM was removed in transit. A row whose table entry shows nothing shows nothing here too.
+- **An exchange with no hybrid result: W-11**, where the table shows a verdict (Bug 203). The proof is signed over a transcript that holds the ML-KEM ciphertexts, so a classical-only exchange has none, and nothing arrives to check. A card conversation needs iOS 26 at both ends, so a person met in person on a phone that did no ML-KEM cannot have been its other end; neither can one whose ML-KEM was removed in transit. A row whose table entry shows nothing shows nothing here too. If this phone made no ML-KEM key of its own, the missing result says nothing about the peer: the verdict is **W-23**, that the check could not run, not W-11.
 
 The proof message is the same 64 bytes in every row, so it doesn't tell the person in front which state this side is in.
 
@@ -422,6 +422,7 @@ FINDINGS' action-item tests, plus these:
 - The card field is the same length in every state, before and after sealing.
 - A proof filler and a real proof are the same length. W-11 for no proof message.
 - A classical-only exchange (no hybrid result) shows W-11 in each row whose table entry is a verdict, and nothing in the rest (`CardMeetingTableTests.classicalOnly`).
+- Where our own ML-KEM key was not made, a held peer key shows W-23, not W-11 (`CardMeetingClassicalOnlyTests.ownFailureIsUnchecked`).
 - The §7 table: each field state sends and shows exactly what its row says. A side `imported` with a message sent, meeting a side in `conversation`, gets W-12 on both phones, not a false W-11. Every row ends with an `empty` field and a Verified contact.
 - Every §8 feature refuses `imported` and `conversation` contacts.
 - A card agreement key's Enclave blob can't be loaded as a signing key, or the reverse. This needs a real Enclave. The two-key design doesn't depend on the answer, but if loading does work, one key could do both jobs later.

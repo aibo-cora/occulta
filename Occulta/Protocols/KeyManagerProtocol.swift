@@ -91,18 +91,6 @@ protocol KeyManagerProtocol {
     func createHybridSharedSecret(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
     func createHybridFSSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
 
-    func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
-    /// The routing key of a pair-key pairing (`bugs.md` Bug 196, stage 2): `RoutingKey.derive` over the pair-key ECDH
-    /// the caller made and the identity ECDH made here, so no raw identity ECDH output leaves the key manager.
-    func createRoutingKey(
-        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data, transcript: Data,
-        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
-    ) -> Data?
-    /// The key the verification words come from for an exchange that made pair keys: `RoutingKey.wordsKey`.
-    func createPairwiseDicewareKey(
-        peerP256Material: Data, pairwiseECDH: Data, transcript: Data,
-        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
-    ) -> SymmetricKey?
     /// The routing key of a pair-key pairing made in a committed exchange (Bug 198): `RoutingKey.deriveCommitted`, over the
     /// hash of every message of the exchange.
     func createCommittedRoutingKey(
@@ -1063,7 +1051,7 @@ final class TestKeyManager: KeyManagerProtocol, LegacyLocalKeyProviding {
     /// Uses the identity key pair — same key `retrieveIdentity()` exposes and the same
     /// one `createSharedSecret(using:)` uses for the classical fallback path. Mirrors the
     /// real `Manager.Key.createHybridSharedSecret`, which does one ECDH via the SE identity key.
-    private func rawECDHWithSalt(peerP256Material: Data) -> (rawECDH: Data, salt: Data)? {
+    func rawECDHWithSalt(peerP256Material: Data) -> (rawECDH: Data, salt: Data)? {
         guard peerP256Material.count == 65 else { return nil }
 
         let attrs: [String: Any] = [
@@ -1153,64 +1141,6 @@ extension TestKeyManager {
             info: SaltInfo.kHybridFSTransportKeyInfo,
             outputByteCount: 32
         )
-    }
-
-    func createDicewareKey(
-        peerP256Material: Data,
-        quantumMaterial: QuantumKeyMaterial,
-        ourNonce: Data,
-        peerNonce: Data
-    ) -> SymmetricKey? {
-        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
-        guard quantumMaterial.isValid else { return nil }
-        guard ourNonce.count == 16, peerNonce.count == 16 else { return nil }
-
-        let sortedSecrets = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
-            .sorted { $0.lexicographicallyPrecedes($1) }
-        var ikm = ecdh.rawECDH
-        ikm.append(contentsOf: sortedSecrets[0])
-        ikm.append(contentsOf: sortedSecrets[1])
-
-        let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
-        var info = SaltInfo.kDicewareKeyInfo
-        info.append(contentsOf: sortedNonces[0])
-        info.append(contentsOf: sortedNonces[1])
-
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: ikm),
-            salt: ecdh.salt,
-            info: info,
-            outputByteCount: 32
-        )
-    }
-
-    func createRoutingKey(
-        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data, transcript: Data,
-        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
-    ) -> Data? {
-        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
-        if let quantumMaterial, !quantumMaterial.isValid { return nil }
-
-        return RoutingKey.derive(
-            pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, ourAgreementKey: ourAgreementKey,
-            peerAgreementKey: peerAgreementKey,
-            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
-            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
-        )
-    }
-
-    func createPairwiseDicewareKey(
-        peerP256Material: Data, pairwiseECDH: Data, transcript: Data,
-        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
-    ) -> SymmetricKey? {
-        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
-        if let quantumMaterial, !quantumMaterial.isValid { return nil }
-
-        return RoutingKey.wordsKey(
-            pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, identitySalt: ecdh.salt,
-            mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
-            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
-        ).map { SymmetricKey(data: $0) }
     }
 
     func createCommittedRoutingKey(

@@ -289,6 +289,15 @@ nonisolated enum IntroCardCopy {
         )
     }
 
+    /// W-23. This phone could not run the check, so it says nothing about \(name): not W-11, which tells the person their
+    /// earlier messages were intercepted.
+    static func exchangeUnchecked(name: String) -> Message {
+        Message(
+            label: "Your earlier conversation couldn't be checked",
+            text:  "This phone couldn't finish the check on your earlier messages with \(name), so it can't say whether they went to this person. You're now connected to \(name), verified in person. Treat your earlier messages as unconfirmed."
+        )
+    }
+
     static let acknowledgeButton = "I understand"
 
     /// W-12.
