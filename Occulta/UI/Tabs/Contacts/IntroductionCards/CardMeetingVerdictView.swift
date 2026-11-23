@@ -37,6 +37,12 @@ struct CardMeetingVerdictView: View {
                 CardPrimaryButton(title: IntroCardCopy.acknowledgeButton, action: self.onDone)
             }
             .interactiveDismissDisabled()
+        case .unchecked:
+            self.screen {
+                CardNotice(tone: .warn, IntroCardCopy.exchangeUnchecked(name: self.name))
+                CardPrimaryButton(title: IntroCardCopy.acknowledgeButton, action: self.onDone)
+            }
+            .interactiveDismissDisabled()
         }
     }
 
@@ -70,6 +76,10 @@ struct CardMeetingVerdictView: View {
 
 #Preview("Match") {
     CardMeetingVerdictView(verdict: .match, identifier: "preview-carol", fullName: "Carol Reyes", onDone: {})
+}
+
+#Preview("Unchecked") {
+    CardMeetingVerdictView(verdict: .unchecked, identifier: "preview-carol", fullName: "Carol Reyes", onDone: {})
 }
 
 #Preview("Mismatch") {

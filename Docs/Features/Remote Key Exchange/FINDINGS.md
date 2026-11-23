@@ -38,7 +38,7 @@ Every downstream security claim in the product reduces to (1). The strategic val
 
 This is the load-bearing finding, and it is easy to get wrong, because the SAS genuinely is strong against the attack it was built for.
 
-The SAS is derived from the completed shared secret — raw ECDH ∥ both ML-KEM secrets (sorted), HKDF'd with both nonces (sorted) as info (`Key+Manager.swift:1349`), rendered as 5 EFF words ≈ **64.6 bits**, with each side's nonce committed in the discovery message before any identity key is seen (`Key+Manager.swift:1385`). It is not grindable and it comprehensively defeats a **wire** MITM: an attacker splicing the channel produces two different secrets, the two word lists differ, the humans catch it.
+The SAS is derived from the completed shared secret — raw ECDH ∥ both ML-KEM secrets (sorted), HKDF'd with both nonces (sorted) as info (`Key+Manager.swift:1349`), rendered as 5 EFF words ≈ **64.6 bits**, with each side's nonce committed in the discovery message before any identity key is seen (`Key+Manager.swift:1385`). *(Corrected 2026-11-20, Bug 198: through 2.0.4 the discovery message carried the nonce itself, and a later one replaced it, so nothing was committed. From 2.0.5 it carries a hash of the nonce and the nonce is revealed last; see `bugs.md` Bug 196, "Committed exchange".)* It is not grindable and it comprehensively defeats a **wire** MITM: an attacker splicing the channel produces two different secrets, the two word lists differ, the humans catch it.
 
 A relay attack is not a wire MITM. Mallory runs **two genuine, complete, untampered exchanges** — one with Alice while presenting a synthetic Bob, one with Bob under a separate pretext:
 

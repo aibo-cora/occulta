@@ -32,6 +32,14 @@ struct Exchange: Codable {
     /// sends none is treated as one that can't. It is one field so there is one capability bit: a phone sends all of it
     /// or none. An older build's decoder ignores the key. `nil` in every other message.
     let pairing: PairingField?
+    /// `ExchangeCommitment.commitment(to:)` of the sender's nonce, in the discovery message in place of `nonce` (Bug 198).
+    /// Its presence is the signal that the sender commits before it reveals; a discovery message with a `nonce` and no
+    /// commitment is an older build's, whose nonce is in the clear. An older build's decoder ignores the key.
+    let nonceCommitment: Data?
+    /// The nonce a commitment was made to, 16 bytes, sent last in the exchange, initiator first, with an empty `token` and
+    /// nothing else. Sent only to a peer that sent a commitment, so an older build never receives one (its decoder would
+    /// read it as a discovery message with an empty token and drop it).
+    let revealedNonce: Data?
 
     init(
         id: String,
@@ -42,7 +50,9 @@ struct Exchange: Codable {
         encapsulationKey: Data? = nil,
         ciphertext: Data? = nil,
         cardProof: Data? = nil,
-        pairing: PairingField? = nil
+        pairing: PairingField? = nil,
+        nonceCommitment: Data? = nil,
+        revealedNonce: Data? = nil
     ) {
         self.id = id
         self.token = token
@@ -53,6 +63,8 @@ struct Exchange: Codable {
         self.ciphertext = ciphertext
         self.cardProof = cardProof
         self.pairing = pairing
+        self.nonceCommitment = nonceCommitment
+        self.revealedNonce = revealedNonce
     }
 
     /// The `pairing` field of an identity message.
@@ -74,7 +86,9 @@ struct Exchange: Codable {
 
     /// Checked before `isDiscovery` in routing: a proof has no identity and no ciphertext either.
     var isCardProof: Bool { cardProof != nil }
-    var isDiscovery: Bool { identity == nil && ciphertext == nil && cardProof == nil }
+    /// Checked before `isDiscovery` too, for the same reason.
+    var isNonceReveal: Bool { revealedNonce != nil && identity == nil && ciphertext == nil && cardProof == nil }
+    var isDiscovery: Bool { identity == nil && ciphertext == nil && cardProof == nil && revealedNonce == nil }
     var isIdentity: Bool { identity != nil && ciphertext == nil }
     var isCiphertext: Bool { ciphertext != nil }
     var supportsPQ: Bool { encapsulationKey != nil }

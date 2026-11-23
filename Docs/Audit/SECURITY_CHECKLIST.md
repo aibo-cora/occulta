@@ -433,6 +433,12 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       — both intake paths encrypt before writing and zero the plaintext buffer first
       (`:299–302` file representation, `:334–336` data representation). Filenames are
       positional (`0.tmp`, `1.tmp`); real names live only inside the encrypted manifest.
+- [x] A session's files and manifest open only in that session (Bug 213, 2.0.5)
+      — each file is sealed under `ShareManifest.sessionKey`, the staging key bound to the session's ID by HKDF, and
+      the manifest carries `sessionID`. `ShareSession.staged`, `introductionCard` and `sweep` refuse a manifest that
+      names another session, and a file moved in from another session fails its header check whenever it is read, so
+      a check-then-swap gains nothing. Guards: `ShareSessionBindingTests`,
+      `ShareSessionStreamedTests.cardFromElsewhereIsNotRead`.
 - [x] Main app decrypts session files via `ShareIndexKeyManager` before EXIF stripping and
       bundle encryption, and zeroes the ciphertext buffer after decryption
       — all three now live in `ShareSession.load` (`ShareSession.swift`), which zeroes each
@@ -657,6 +663,8 @@ That split is why the gate has to be run by a human on real hardware before a re
       current state of `release/v1.10.3`, not a repeat of the old one. The one expected
       failure is `restoreShardFileIsBounded` (Bug 96 item 2, `withKnownIssue`-wrapped,
       genuinely still open, not a regression).
+      **Re-verified 2026-11-23 on `release/v2.0.5`:** 2375 total, 0 failed, 6 skipped, run
+      serially; see the post-sign-off entries at the end of this file.
 - [x] **Zero skips**, excluding `KeychainMigrationSETests` — **confirmed by name, not just
       count, 2026-08-26.** Queried the `.xcresult` directly
       (`xcrun xcresulttool get test-results tests`) rather than trusting the summary number:
@@ -953,6 +961,14 @@ re-checked, no second reviewer has looked at the ~100 intervening commits, and n
 archive containing this work has been inspected (condition 1 below still applies, now more so).
 Treat the current branch as **tested, not cleared to ship** — the remaining gate items are process,
 not code.
+
+**Post-sign-off, 2026-11-23 (`release/v2.0.5`, `bb79e2f9`):** §8 re-run against the 2.0.5 release
+head, serially (`-parallel-testing-enabled NO`), iPhone 17 Pro Simulator on iOS 26.2, Apple
+Silicon, bare metal. 2375 total, 2369 passed, 0 failed, 0 expected failures, 6 skipped — all 6
+confirmed by name via `xcresulttool` to be exactly `KeychainMigrationSETests`, no others. As with
+the entry above, this is §8 only: no other section was re-checked, the signed 2.0.5 archive has not
+been inspected (condition 1 below), and the two-phone key exchange and the share extension have not
+been run on devices for this release.
 
 Three conditions of the gate are **not** met, knowingly:
 

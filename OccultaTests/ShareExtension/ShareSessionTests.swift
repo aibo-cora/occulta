@@ -32,7 +32,7 @@ private func shareKeyAvailable() -> Bool {
 /// one share-staging key that the app and the extension both derive — so a session staged
 /// with one instance opens with another, as it does in production. Same AES-GCM format.
 private struct TestShareStagingKey: ShareSessionDecrypting {
-    private static let key = SymmetricKey(size: .bits256)
+    static let key = SymmetricKey(size: .bits256)
 
     func encrypt(data: Data) throws -> Data {
         let sealed = try AES.GCM.seal(data, using: Self.key, nonce: AES.GCM.Nonce())
@@ -53,7 +53,15 @@ private func makeContainer() throws -> URL {
     return url
 }
 
-/// Stage a session the way the extension does: encrypted files plus an encrypted manifest.
+/// Seals `data` as a `.eatt` at `url`, as the extension does.
+private func seal(_ data: Data, under key: SymmetricKey, to url: URL) throws {
+    let encryptor = try StreamingEncryptor(url: url, contactKey: key)
+    try encryptor.append(data)
+    try encryptor.finalize()
+}
+
+/// Stage a session the way the extension does: each file a `.eatt` under the session's key, and a sealed manifest that
+/// names the session.
 @discardableResult
 private func stage(
     in container: URL,
@@ -67,11 +75,12 @@ private func stage(
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
     let keyManager = TestShareStagingKey()
+    let sessionKey = ShareManifest.sessionKey(staging: TestShareStagingKey.key, sessionID: id)
     var entries: [ShareManifest.FileEntry] = []
 
     for (index, file) in files.enumerated() {
         let name = "\(index).tmp"
-        try keyManager.encrypt(data: file.data).write(to: dir.appendingPathComponent(name))
+        try seal(file.data, under: sessionKey, to: dir.appendingPathComponent(name))
         entries.append(ShareManifest.FileEntry(filename: name, uti: file.uti, fileExtension: file.ext))
     }
 
@@ -80,7 +89,7 @@ private func stage(
         if corruptManifest {
             try Data((0..<64).map { _ in UInt8.random(in: 0...255) }).write(to: manifestURL)
         } else {
-            let manifest = ShareManifest(files: entries, createdAt: createdAt)
+            let manifest = ShareManifest(sessionID: id, files: entries, createdAt: createdAt)
             try keyManager.encrypt(data: JSONEncoder().encode(manifest)).write(to: manifestURL)
         }
     }
@@ -268,6 +277,108 @@ struct ShareSessionLoadTests {
 
         let files = try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
         #expect(files.first?.content == pdfBytes)
+    }
+}
+
+// MARK: - binding (Bug 213)
+
+/// Someone who can write the App Group but can't use the staging key must not be able to put a file or a manifest staged
+/// for one session into another: the app would encrypt it for whoever the person picks, and the picker doesn't show it.
+@Suite("ShareSession — a session's files and manifest are its own")
+struct ShareSessionBindingTests {
+
+    private func path(_ name: String, of id: String, in container: URL) -> URL {
+        ShareSession.directory(for: id, in: container).appendingPathComponent(name)
+    }
+
+    private func replace(_ target: URL, with source: URL) throws {
+        try FileManager.default.removeItem(at: target)
+        try FileManager.default.copyItem(at: source, to: target)
+    }
+
+    @Test func fileFromAnotherSession_isRefused() throws {
+        let container = try makeContainer()
+        let earlier = try stage(in: container, files: [(Data("kept from an earlier share".utf8), UTType.plainText.identifier, "txt")])
+        let current = try stage(in: container, files: [(Data("what the person shared".utf8), UTType.plainText.identifier, "txt")])
+        try self.replace(self.path("0.tmp", of: current, in: container), with: self.path("0.tmp", of: earlier, in: container))
+
+        #expect(throws: (any Error).self) {
+            try ShareSession.load(id: current, in: container, keyManager: TestShareStagingKey())
+        }
+        #expect(!exists(current, in: container))
+    }
+
+    @Test func manifestFromAnotherSession_isRefused() throws {
+        let container = try makeContainer()
+        let earlier = try stage(in: container, files: [(Data("one".utf8), UTType.pdf.identifier, "pdf")])
+        let current = try stage(in: container, files: [(Data("two".utf8), UTType.plainText.identifier, "txt")])
+        try self.replace(self.path("manifest.enc", of: current, in: container), with: self.path("manifest.enc", of: earlier, in: container))
+
+        #expect(throws: ShareSession.Errors.misplaced) {
+            try ShareSession.load(id: current, in: container, keyManager: TestShareStagingKey())
+        }
+        #expect(!exists(current, in: container))
+    }
+
+    @Test func sessionCopiedUnderAnotherName_isRefused() throws {
+        let container = try makeContainer()
+        let earlier = try stage(in: container)
+        let copy = UUID().uuidString
+        try FileManager.default.copyItem(
+            at: ShareSession.directory(for: earlier, in: container), to: ShareSession.directory(for: copy, in: container)
+        )
+
+        #expect(throws: ShareSession.Errors.misplaced) {
+            try ShareSession.load(id: copy, in: container, keyManager: TestShareStagingKey())
+        }
+        #expect(!exists(copy, in: container))
+    }
+
+    /// As builds before 2.0.0 staged a file: one AES-GCM blob under the staging key itself.
+    @Test func fileSealedWholeUnderTheStagingKey_isRefused() throws {
+        let container = try makeContainer()
+        let id = try stage(in: container)
+        try TestShareStagingKey().encrypt(data: Data("payload".utf8)).write(to: self.path("0.tmp", of: id, in: container))
+
+        #expect(throws: (any Error).self) {
+            try ShareSession.load(id: id, in: container, keyManager: TestShareStagingKey())
+        }
+        #expect(!exists(id, in: container))
+    }
+
+    /// A session a build before 2.0.5 staged and the app hadn't read when it updated: its manifest names no session.
+    @Test func manifestThatNamesNoSession_isRefusedAndSwept() throws {
+        struct EarlierManifest: Encodable {
+            let files: [ShareManifest.FileEntry]
+            let createdAt: Date
+        }
+        let container = try makeContainer()
+        let refused = try stage(in: container)
+        let swept = try stage(in: container)
+        for id in [refused, swept] {
+            let manifest = EarlierManifest(files: [ShareManifest.FileEntry(filename: "0.tmp", uti: UTType.plainText.identifier, fileExtension: "txt")], createdAt: .now)
+            try TestShareStagingKey().encrypt(data: JSONEncoder().encode(manifest)).write(to: self.path("manifest.enc", of: id, in: container))
+        }
+
+        #expect(throws: (any Error).self) {
+            try ShareSession.load(id: refused, in: container, keyManager: TestShareStagingKey())
+        }
+        #expect(!exists(refused, in: container))
+
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
+        #expect(!exists(swept, in: container))
+    }
+
+    @Test func sweep_deletesSessionWhoseManifestNamesAnother() throws {
+        let container = try makeContainer()
+        let earlier = try stage(in: container)
+        let current = try stage(in: container)
+        try self.replace(self.path("manifest.enc", of: current, in: container), with: self.path("manifest.enc", of: earlier, in: container))
+
+        ShareSession.sweep(in: container, keyManager: TestShareStagingKey())
+
+        #expect(!exists(current, in: container))
+        #expect(exists(earlier, in: container))
     }
 }
 

@@ -15,6 +15,7 @@ import MultipeerConnectivity
 import NearbyInteraction
 import OccultaCore
 @testable import Occulta
+@testable import OccultaFormats
 
 @MainActor
 @Suite("ExchangeManager — callbacks queued when the exchange ends (Bug 200)", .serialized)
@@ -27,6 +28,14 @@ struct ExchangeManagerTeardownCallbacksTests {
     }
 
     private func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
+
+    /// The peer's discovery message, which has to carry a commitment before the exchange takes anything else from it
+    /// (Bug 198). Handed to the discovery handler directly: its NearbyInteraction token can't be made in a test.
+    private func commit(_ manager: ExchangeManager, to peer: MCPeerID) throws {
+        let commitment = try #require(ExchangeCommitment.commitment(to: Data(repeating: 6, count: 16)))
+        let discovery = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, nonceCommitment: commitment)
+        try #require(manager.handleDiscovery(discovery, data: try JSONEncoder().encode(discovery), from: peer))
+    }
 
     @Test("A connect delivered just before finish() neither crashes nor pins a peer")
     func connectAroundFinish() async {
@@ -73,6 +82,7 @@ struct ExchangeManagerTeardownCallbacksTests {
         manager.session(manager.multipeerSession!, peer: peer, didChange: .connected)
         await self.settle()
         try #require(manager.connectedPeerID == peer)
+        try self.commit(manager, to: peer)
         manager.waitForPeerIdentityForTesting()
 
         let identity = Exchange(id: UUID().uuidString, token: Data([1]), version: .v1, identity: Data(repeating: 4, count: 65))
@@ -96,7 +106,9 @@ struct ExchangeManagerTeardownCallbacksTests {
 
         let token = try #require(NISession().discoveryToken, "NIDiscoveryToken unavailable in this test environment")
         let archived = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
-        manager.handleReceivedData(try JSONEncoder().encode(Exchange(id: UUID().uuidString, token: archived, version: .v1)), from: peer)
+        let commitment = try #require(ExchangeCommitment.commitment(to: Data(repeating: 6, count: 16)))
+        let discovery = Exchange(id: UUID().uuidString, token: archived, version: .v1, nonceCommitment: commitment)
+        manager.handleReceivedData(try JSONEncoder().encode(discovery), from: peer)
         try #require(manager.receivedDiscoveryTokens[token] == peer)
 
         manager.finish()
@@ -121,6 +133,7 @@ struct ExchangeManagerTeardownCallbacksTests {
         manager.session(manager.multipeerSession!, peer: peer, didChange: .connected)
         await self.settle()
         try #require(manager.connectedPeerID == peer)
+        try self.commit(manager, to: peer)
         manager.preparePostQuantumForTesting()
         manager.waitForPeerIdentityForTesting()
         manager.handleReceivedData(message, from: peer)
@@ -133,6 +146,7 @@ struct ExchangeManagerTeardownCallbacksTests {
         manager.multipeerSession = MCSession(peer: MCPeerID(displayName: "self-a"))
         manager.session(manager.multipeerSession!, peer: peer, didChange: .connected)
         await self.settle()
+        try self.commit(manager, to: peer)
         manager.preparePostQuantumForTesting()
         manager.waitForPeerIdentityForTesting()
         manager.handleReceivedData(message, from: peer)

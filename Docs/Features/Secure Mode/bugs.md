@@ -15268,6 +15268,22 @@ secrets, salt the two agreement keys XORed, info `Occulta-v2-routing-key-2026` �
 `Occulta-v2-pairwise-diceware-2026`; long-term slot key = HKDF(pk ‖ ML-KEM secrets, salt the agreement keys XORed), with no
 identity key in it, so holding `K`'s private half opens nothing of such a pairing.
 
+**Committed exchange** (Bugs 198 and 199, 2.0.5; `ExchangeCommitment.swift`, `PairwiseDerivation.swift`, vectors `exchange.*`). The
+discovery message carries `nonceCommitment`, SHA-256("occulta-exchange-commit-v1" ‖ nonce), and no nonce. Each phone sends its nonce
+last, in a `revealedNonce` message, the initiator first, only after every other message of the exchange; the receiver checks it
+against the commitment and ends the exchange on a mismatch or a reflection of its own nonce. One discovery message and one identity
+message are accepted per exchange. The words (`wordsKeyCommitted`, every shape: with or without pair keys, with or without ML-KEM,
+classical included) and the routing key (`deriveCommitted`) are derived over both nonces and the exchange transcript, a hash of
+every message before the reveal as it was sent and as it was received, so a message changed in any byte, an ML-KEM key removed
+included, makes the two phones' words differ. Both derivations have domains of their own. A discovery message with no commitment (a
+build older than 2.0.5, or a relay that removed it) ends the exchange before any key is exchanged: `ExchangePhase.peerNeedsUpdate`, in
+both roles, with the same screen text whatever the cause ("The other phone needs to update Occulta to exchange keys with this one."),
+the first prekeys and pair keys made at connect discarded by the teardown, nothing sent in answer and nothing saved. No derivation
+exists for an exchange without a commitment: `Payload.committed` and `PairingOffer.exchangeTranscript` are not optional. Each step has
+a deadline (`stepTimeout`, 15 s) that ranging updates do not reset. The screen also says when this phone sent an ML-KEM key and got
+none. Nothing of this is stored: the commitment, the transcript and the notes live in the exchange and on the confirmation screen
+only, and no part depends on a depth. 2.0.5 does not pair or re-exchange with a phone below 2.0.5.
+
 **Send and receive.** A pair-key pairing's long-term slots use the pair-key ECDH; its forward-secret slots are signed by the pair
 signing key (prefixed form only) and checked against the one the peer sent. A slot made the old way, a pair-key slot to a pairing
 without pair keys, a wrong routing key and an old-form file all give `recipientSlotNotFound`; a pairing whose Enclave blob will not
@@ -15282,6 +15298,13 @@ response is signed by the responder's; the long-term challenge format is refused
 only where a re-exchange would give pair keys (the contact's recorded tier is 2.0.1 or later). The detail view says it once and lists
 pair keys, quantum-resistant key agreement and quantum-resistant signatures (informational; never drives the glyph). Not a warning:
 a pairing made before pair keys is as safe as it was.
+
+**A hybrid pairing is not replaced by a classical one** (Bug 199, 2.0.5; decided 2026-11-20 by the owner). `update(key:for:pairing:)`
+throws `pairingWouldLoseQuantum` when the contact's current key holds ML-KEM material and the exchange gives none, as
+`pairingWouldBeWeaker` does for pair keys, and nothing is saved. The confirmation screen says so and points to Revoke Key: revoking
+leaves no current key to compare with, so the next exchange saves a classical pairing, which is the way to choose one on purpose. The
+check compares only with the contact's current key, so a new contact record, or a revoke first, is not refused, and nothing in it reads
+what another depth holds.
 
 **Other fixes made on the way, in this PR's branch:** the raw legacy trial decrypt now honours the old-form refusal (a legacy file
 used to open on a pairing that holds a routing key, and so on the twin record this bug is about); a re-pair retires every earlier

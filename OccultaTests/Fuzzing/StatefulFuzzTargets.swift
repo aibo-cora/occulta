@@ -100,7 +100,10 @@ struct ShareManifestSessionTarget: MainActorFuzzTarget {
 
     var corpus: [FuzzSeedInput] {
         let encoder = JSONEncoder()
-        let manifest = ShareManifest(files: [ShareManifest.FileEntry(filename: "0.tmp", uti: "public.plain-text", fileExtension: "txt")], createdAt: .now)
+        let manifest = ShareManifest(
+            sessionID: FuzzShareStaging.seedSessionID,
+            files: [ShareManifest.FileEntry(filename: "0.tmp", uti: "public.plain-text", fileExtension: "txt")], createdAt: .now
+        )
         return [FuzzSeedInput("manifest", try! encoder.encode(manifest), isText: true)]
     }
 
@@ -109,7 +112,10 @@ struct ShareManifestSessionTarget: MainActorFuzzTarget {
         try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: container) }
 
-        let id = try FuzzShareStaging.stage(content: Data("hello".utf8), uti: "public.plain-text", ext: "txt", in: container, manifest: input)
+        // Under the seed's session ID, so a manifest that names it gets past the ID check.
+        let id = try FuzzShareStaging.stage(
+            content: Data("hello".utf8), uti: "public.plain-text", ext: "txt", in: container, manifest: input, id: FuzzShareStaging.seedSessionID
+        )
         let directory = ShareSession.directory(for: id, in: container)
 
         // Neither of these throws or deletes: they answer "is this a card" and "should this session go".
@@ -151,15 +157,25 @@ enum FuzzShareStaging {
 
     static let key = Key()
 
-    /// Writes one staged file and a sealed manifest. `manifest` replaces the manifest's plaintext.
-    static func stage(content: Data, uti: String, ext: String, in container: URL, manifest: Data? = nil) throws -> String {
-        let id = UUID().uuidString
+    /// The session the manifest seed names.
+    static let seedSessionID = "00000000-0000-0000-0000-000000000000"
+
+    /// Writes one staged file, a `.eatt` under the session's key, and a sealed manifest. `manifest` replaces the
+    /// manifest's plaintext.
+    static func stage(
+        content: Data, uti: String, ext: String, in container: URL, manifest: Data? = nil, id: String = UUID().uuidString
+    ) throws -> String {
         let directory = ShareSession.directory(for: id, in: container)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Self.key.encrypt(data: content).write(to: directory.appendingPathComponent("0.tmp"))
+        let encryptor = try StreamingEncryptor(
+            url: directory.appendingPathComponent("0.tmp"),
+            contactKey: ShareManifest.sessionKey(staging: Key.symmetric, sessionID: id)
+        )
+        try encryptor.append(content)
+        try encryptor.finalize()
 
         let plaintext = try manifest ?? JSONEncoder().encode(ShareManifest(
-            files: [ShareManifest.FileEntry(filename: "0.tmp", uti: uti, fileExtension: ext)], createdAt: .now
+            sessionID: id, files: [ShareManifest.FileEntry(filename: "0.tmp", uti: uti, fileExtension: ext)], createdAt: .now
         ))
         try Self.key.encrypt(data: plaintext).write(to: directory.appendingPathComponent("manifest.enc"))
         return id
