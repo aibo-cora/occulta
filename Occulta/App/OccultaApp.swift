@@ -1224,8 +1224,8 @@ struct RootView: View {
                 id: sessionID, in: container, keyManager: ShareStagingKeyManager()
             )
 
-            // Whatever is held in memory — an image, whose EXIF is stripped, or a file staged by the build before
-            // this one — is zeroed on every exit from here on, the success path included, where it is dead the
+            // Whatever is held in memory — an image, whose EXIF is stripped, or a file sealed under another form of
+            // the staging key — is zeroed on every exit from here on, the success path included, where it is dead the
             // moment the bundle is sealed.
             defer {
                 for i in staged.files.indices {
