@@ -389,9 +389,9 @@ extension KeyExchange {
     @MainActor
     static func words(
         for payload: ExchangeManager.ExchangePhase.Payload, using keyManager: any KeyManagerProtocol,
-        generator: Manager.PassphraseGenerator = Manager.PassphraseGenerator()
+        generator: Manager.PassphraseGenerator? = nil
     ) -> [String] {
-        generator.generate(separator: "-", sharedKey: self.wordsKey(for: payload, using: keyManager))
+        (generator ?? Manager.PassphraseGenerator()).generate(separator: "-", sharedKey: self.wordsKey(for: payload, using: keyManager))
             .components(separatedBy: "-")
     }
 
