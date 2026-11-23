@@ -15,20 +15,19 @@ import OccultaFormats
 nonisolated
 struct PairingOffer: Equatable {
 
-    /// Our nonce and the peer's, from the discovery messages. A classical exchange has them too, with a peer that
-    /// sends one.
-    let ourNonce: Data
-    let peerNonce: Data
+    /// Both nonces and the transcript of the exchange's messages, which both phones committed their nonces before (Bug 198).
+    /// The routing key and the words are derived over it, under their own domains. An exchange with a peer that did not
+    /// commit is refused before an offer exists.
+    let committed: CommittedExchange
+
+    var ourNonce: Data { self.committed.ourNonce }
+    var peerNonce: Data { self.committed.peerNonce }
+    var exchangeTranscript: Data { self.committed.transcript }
 
     /// The record we'll hold for this peer: one pending batch of our keys, Enclave blobs kept in memory only until
     /// `save()` installs them. An exchange that is abandoned leaves nothing behind: CryptoKit Enclave keys have no
     /// keychain item.
     let ownPrekeys: PrekeyRecord
-
-    /// The digest of the batch we sent in our identity message (`RoutingKey.batchDigest`), taken from the field as it was
-    /// sent. It is not read back from `ownPrekeys`: that costs an Enclave import per key each time the transcript is
-    /// computed, and a blob that failed to import then would shorten the batch and make the two phones' words differ.
-    let ownBatchDigest: Data
 
     /// The batch the peer sent in its identity message, as received.
     let peerBatch: Batch
@@ -77,47 +76,25 @@ struct PairingOffer: Equatable {
         let mldsaKey: Data?
     }
 
-    /// What each phone sent, as `RoutingKey.transcript` takes it: its keys and a digest of the prekey batch beside them.
-    var ourBlock: RoutingKey.PairBlock? {
-        RoutingKey.PairBlock(
-            agreementKey: self.ours.agreementKey, signingKey: self.ours.signingKey, mldsaKey: self.ours.mldsaKey,
-            batchDigest: self.ownBatchDigest
-        )
-    }
-    var theirBlock: RoutingKey.PairBlock? {
-        RoutingKey.PairBlock(
-            agreementKey: self.theirs.agreementKey, signingKey: self.theirs.signingKey, mldsaKey: self.theirs.mldsaKey,
-            batchDigest: self.peerBatch.digest
-        )
-    }
-
-    /// Both phones' transcript. `nil` only for a block that does not validate, which `accepted` has already refused.
-    var transcript: Data? {
-        guard let ours = self.ourBlock, let theirs = self.theirBlock else { return nil }
-        return RoutingKey.transcript(ours, theirs)
-    }
-
     /// The routing key this pairing holds, from the pair-key ECDH, the identity ECDH made inside `keyManager`, the ML-KEM
     /// secrets where the exchange had them and both nonces. Both phones get the same bytes. `nil` if anything is missing
     /// or the key manager couldn't derive it, in which case nothing is saved.
     @MainActor
     func routingKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
-        guard let transcript = self.transcript else { return nil }
-        return keyManager.createRoutingKey(
+        keyManager.createCommittedRoutingKey(
             peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, ourAgreementKey: self.ours.agreementKey,
-            peerAgreementKey: self.theirs.agreementKey, transcript: transcript, quantumMaterial: quantum,
-            ourNonce: self.ourNonce, peerNonce: self.peerNonce
+            peerAgreementKey: self.theirs.agreementKey, quantumMaterial: quantum, ourNonce: self.ourNonce,
+            peerNonce: self.peerNonce, exchangeTranscript: self.exchangeTranscript
         )
     }
 
-    /// The key the verification words come from. It covers both pair blocks, so a pair key or an ML-DSA key a man in the
-    /// middle added, removed or swapped changes the words.
+    /// The key the verification words come from. It covers every message of the exchange, which carry both pair blocks, so a
+    /// pair key or an ML-DSA key a man in the middle added, removed or swapped changes the words.
     @MainActor
     func wordsKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
-        guard let transcript = self.transcript else { return nil }
-        return keyManager.createPairwiseDicewareKey(
-            peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, transcript: transcript, quantumMaterial: quantum,
-            ourNonce: self.ourNonce, peerNonce: self.peerNonce
+        keyManager.createCommittedDicewareKey(
+            peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, quantumMaterial: quantum,
+            ourNonce: self.ourNonce, peerNonce: self.peerNonce, exchangeTranscript: self.exchangeTranscript
         )?.withUnsafeBytes { Data($0) }
     }
 

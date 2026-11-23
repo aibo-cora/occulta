@@ -51,12 +51,15 @@ enum ShareSession {
         case imageTooLarge
         /// An image that declares more bytes than it holds, which ImageIO allocates before it finds out.
         case imageMalformed
+        /// A manifest that names another session than the directory it is in (Bug 213).
+        case misplaced
 
         var errorDescription: String? {
             switch self {
             case .stale: "This share session has expired. Please share the content again."
             case .imageTooLarge: "This image is too large to share."
             case .imageMalformed: "This image is damaged and can't be shared."
+            case .misplaced: "This share session can't be read. Please share the content again."
             }
         }
     }
@@ -86,12 +89,13 @@ enum ShareSession {
 
     /// Reads a staged session without decrypting its streamed files.
     ///
-    /// Two formats, told apart by `AttachmentManager.isSealed` (STREAMING_SPEC §8.4). A file the extension staged
-    /// as `.eatt` stays on disk, sealed, and is read a chunk at a time when it is sent: its `url` is returned and
-    /// nothing is decrypted. A file staged by the build before this one is one AES-GCM blob, read and decrypted
-    /// whole as it always was. Sessions are deleted after use, so the legacy reader can go in the next release.
+    /// Every file is a `.eatt` (STREAMING_SPEC §8.4) sealed under the session's key, `ShareManifest.sessionKey`. It
+    /// stays on disk, sealed, and is read a chunk at a time when it is sent: its `url` is returned and nothing is
+    /// decrypted. The manifest must name this session, and a file sealed for any other session doesn't open (Bug 213),
+    /// so nothing can be moved in from another session, even after this check. A file sealed whole under the staging
+    /// key, as builds before 2.0.0 staged them, doesn't open either: no session that old is inside the cutoff.
     ///
-    /// An image is decrypted either way, because its EXIF is stripped (below), and that needs the whole image.
+    /// An image is decrypted here, because its EXIF is stripped (below), and that needs the whole image.
     ///
     /// Deletes the session directory on **any** throw. The caller deletes it on the success
     /// and cancellation paths, but the guarantee that a failed load leaves no plaintext on
@@ -122,13 +126,14 @@ enum ShareSession {
             _ = manifestData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
             manifestData = Data()
 
+            guard manifest.sessionID == id else { throw Errors.misplaced }
             guard manifest.createdAt > now.addingTimeInterval(-Self.staleAfter) else {
                 throw Errors.stale
             }
 
             var attachments: AttachmentManager?
             var attachmentsKey: Int?
-            let keys = keyManager.stagingKeys()
+            let keys = Self.sessionKeys(id: id, keyManager: keyManager)
             for entry in manifest.files {
                 let url = sessionDir.appendingPathComponent(entry.filename)
                 let isImage = UTType(entry.uti)?.conforms(to: .image) == true
@@ -137,24 +142,16 @@ enum ShareSession {
                     extension: entry.fileExtension
                 ))
 
-                var content: Data
-                if AttachmentManager.isSealed(at: url) {
-                    // The key that opens it is the one whose header check passes. One manager serves every file that
-                    // stays on disk; a file sealed under another key, which a session staged across a key change
-                    // could hold, is read whole instead.
-                    guard let (index, manager) = Self.opener(of: url, among: keys) else { throw AttachmentError.headerMACFailed }
-                    if attachments == nil { attachments = manager; attachmentsKey = index }
-                    guard isImage || index != attachmentsKey else {
-                        files.append(OccultaFormats.File(url: url, format: format))
-                        continue
-                    }
-                    content = try manager.plaintextBlocking(at: url)
-                } else {
-                    var ciphertext = try Data(contentsOf: url)
-                    content = try keyManager.decrypt(data: ciphertext)
-                    _ = ciphertext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                    ciphertext = Data()
+                // The key that opens it is the one whose header check passes. One manager serves every file that
+                // stays on disk; a file sealed under another key, which a session staged across a key change
+                // could hold, is read whole instead.
+                guard let (index, manager) = Self.opener(of: url, among: keys) else { throw AttachmentError.headerMACFailed }
+                if attachments == nil { attachments = manager; attachmentsKey = index }
+                guard isImage || index != attachmentsKey else {
+                    files.append(OccultaFormats.File(url: url, format: format))
+                    continue
                 }
+                var content = try manager.plaintextBlocking(at: url)
 
                 if isImage, let stripped = try self.stripEXIF(from: content, uti: entry.uti) {
                     _ = content.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
@@ -172,6 +169,11 @@ enum ShareSession {
             self.delete(id: id, in: container)
             throw error
         }
+    }
+
+    /// The keys a session's files can be sealed under: each of the staging key's forms, bound to the session.
+    private static func sessionKeys(id: String, keyManager: any ShareSessionDecrypting) -> [SymmetricKey] {
+        keyManager.stagingKeys().map { ShareManifest.sessionKey(staging: $0, sessionID: id) }
     }
 
     /// The manager, and its place in `keys`, whose key opens the sealed file at `url`.
@@ -227,6 +229,7 @@ enum ShareSession {
         guard
             let manifestData = try? keyManager.decrypt(data: Data(contentsOf: sessionDir.appendingPathComponent("manifest.enc"))),
             let manifest = try? BoundedJSON.decode(ShareManifest.self, from: manifestData),
+            manifest.sessionID == id,
             manifest.createdAt > now.addingTimeInterval(-Self.staleAfter),
             manifest.files.count == 1,
             let entry = manifest.files.first
@@ -239,14 +242,12 @@ enum ShareSession {
             size >= IntroductionCard.byteCount, size <= IntroductionCard.byteCount + 1024
         else { return nil }
 
-        // A file the extension staged as `.eatt`, or one the build before it sealed whole.
-        let plaintext: Data?
-        if AttachmentManager.isSealed(at: file) {
-            plaintext = Self.opener(of: file, among: keyManager.stagingKeys()).flatMap { try? $0.manager.plaintextBlocking(at: file) }
-        } else {
-            plaintext = try? keyManager.decrypt(data: Data(contentsOf: file))
-        }
-        guard let plaintext, IntroductionCard.recognize(plaintext) != nil else { return nil }
+        // Opens only under this session's key, as in `staged`.
+        guard
+            let plaintext = Self.opener(of: file, among: Self.sessionKeys(id: id, keyManager: keyManager))
+                .flatMap({ try? $0.manager.plaintextBlocking(at: file) }),
+            IntroductionCard.recognize(plaintext) != nil
+        else { return nil }
 
         return plaintext
     }
@@ -262,6 +263,7 @@ enum ShareSession {
     /// - a manifest older than `staleAfter` → delete
     /// - no manifest (extension killed mid-write) → delete immediately; those files are plaintext
     /// - an unreadable manifest (corrupt or orphaned) → delete immediately
+    /// - a manifest that names another session, which `staged` refuses (Bug 213) → delete immediately
     static func sweep(in container: URL, keyManager: any ShareSessionDecrypting, now: Date = .now) {
         let fm = FileManager.default
 
@@ -278,6 +280,7 @@ enum ShareSession {
             if let encrypted = try? Data(contentsOf: manifestURL),
                let plaintext = try? keyManager.decrypt(data: encrypted),
                let manifest  = try? BoundedJSON.decode(ShareManifest.self, from: plaintext),
+               manifest.sessionID == sessionDir.lastPathComponent,
                manifest.createdAt > cutoff {
                 continue
             }

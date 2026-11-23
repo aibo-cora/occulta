@@ -24,6 +24,7 @@
 //
 
 import UIKit
+import CryptoKit
 import UniformTypeIdentifiers
 
 class ShareViewController: UIViewController {
@@ -134,14 +135,14 @@ class ShareViewController: UIViewController {
                 // Prefer loadFileRepresentation — bytes flow through the kernel, not app memory.
                 // This is O(1) on APFS (copy-on-write clone). No memory pressure for any file size.
                 let copied = try await self.copyFileRepresentation(
-                    from: provider, uti: uti, to: destURL
+                    from: provider, uti: uti, to: destURL, sessionID: sessionID
                 )
 
                 if !copied {
                     // Some NSItemProvider sources don't support file representation.
                     // Fall back to loadDataRepresentation with a 10 MB size guard.
                     try await self.copyDataRepresentation(
-                        from: provider, uti: uti, to: destURL
+                        from: provider, uti: uti, to: destURL, sessionID: sessionID
                     )
                 }
 
@@ -157,7 +158,7 @@ class ShareViewController: UIViewController {
 
         // Write encrypted manifest and hand off to main app
         do {
-            let manifest = ShareManifest(files: fileEntries, createdAt: Date())
+            let manifest = ShareManifest(sessionID: sessionID, files: fileEntries, createdAt: Date())
 
             var manifestData = try JSONEncoder().encode(manifest)
             let encryptedManifest = try self.shareKeyManager.encrypt(data: manifestData)
@@ -184,13 +185,13 @@ class ShareViewController: UIViewController {
         }
     }
 
-    /// Copy via `loadFileRepresentation`, sealing it as `.eatt` under the share key, 64 KB at a time.
+    /// Copy via `loadFileRepresentation`, sealing it as `.eatt` under the session's key, 64 KB at a time.
     /// Returns false if this provider doesn't support file representation for the given UTI.
     ///
     /// The source is never read whole: each piece goes through `StreamingEncryptor` to the staged file,
     /// which has complete protection, stays out of the page cache, and is removed if the sealing fails.
     private func copyFileRepresentation(
-        from provider: NSItemProvider, uti: String, to destination: URL
+        from provider: NSItemProvider, uti: String, to destination: URL, sessionID: String
     ) async throws -> Bool {
         guard provider.hasRepresentationConforming(toTypeIdentifier: uti, fileOptions: []) else {
             return false
@@ -212,9 +213,7 @@ class ShareViewController: UIViewController {
                     guard size <= Self.maxFileBytes else { throw ShareError.fileTooLarge }
 
                     let source = try NoCacheFile.reader(sourceURL)
-                    let encryptor = try StreamingEncryptor(
-                        url: destination, contactKey: try self.shareKeyManager.deriveStreamSealingKey()
-                    )
+                    let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.sessionKey(sessionID))
                     try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
                     try encryptor.finalize()
                     continuation.resume(returning: true)
@@ -227,7 +226,7 @@ class ShareViewController: UIViewController {
 
     /// Fallback: load into memory with a 10 MB size guard, sealed as `.eatt` before it is written.
     private func copyDataRepresentation(
-        from provider: NSItemProvider, uti: String, to destination: URL
+        from provider: NSItemProvider, uti: String, to destination: URL, sessionID: String
     ) async throws {
         var data: Data = try await withCheckedThrowingContinuation { continuation in
             provider.loadDataRepresentation(forTypeIdentifier: uti) { data, error in
@@ -247,11 +246,16 @@ class ShareViewController: UIViewController {
             throw ShareError.fileTooLarge
         }
 
-        let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.shareKeyManager.deriveStreamSealingKey())
+        let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.sessionKey(sessionID))
         try encryptor.append(data)
         try encryptor.finalize()
         _ = data.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
         data = Data()
+    }
+
+    /// The staging key bound to this session (Bug 213): what the app opens the session's files with, and nothing else.
+    private func sessionKey(_ sessionID: String) throws -> SymmetricKey {
+        ShareManifest.sessionKey(staging: try self.shareKeyManager.deriveStreamSealingKey(), sessionID: sessionID)
     }
 
     // MARK: - Phase 3: Handoff
