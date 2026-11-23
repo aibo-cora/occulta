@@ -373,13 +373,15 @@ extension's memory (`Data(contentsOf:)`, capped at 100 MB), and `ShareSession.lo
 app's memory.
 
 - **Extension.** The extension stages `.eatt` through `StreamingEncryptor`, keyed by
-  `ShareStagingKeyManager.deriveSymmetricKey()`. It streams from `loadFileRepresentation`'s URL in 64 KB reads, as
+  `ShareManifest.sessionKey`: the staging key (`deriveStreamSealingKey()`) bound to the session's ID by HKDF, so a
+  file opens only in the session it was staged for (Bug 213). It streams from `loadFileRepresentation`'s URL in 64 KB reads, as
   `ComposeViewModel.seal(contentsOf:to:using:)` does.
 - **App.** The app passes the staged files to the streamed send as sources, as compose does.
 - **Size cap.** The 100 MB cap stays until the extension's peak memory is measured on a device.
-- **Migration.** A session staged by the previous build, in flight at upgrade, is read with today's one-shot
-  decrypt. `AttachmentManager.isSealed` tells the formats apart. Sessions are deleted after use or cancel, so the
-  legacy reader can go in the next release.
+- **Migration.** The one-shot reader for files sealed whole under the staging key was removed in 2.0.5: no session
+  staged before 2.0.0 is inside the one-hour cutoff, and a file in that form is refused. From 2.0.5 the manifest names
+  its session and the app refuses one found under any other directory (Bug 213). A session staged by a build before
+  2.0.5 and not yet read at upgrade is refused and swept; the person shares again.
 
 ---
 

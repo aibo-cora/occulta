@@ -433,6 +433,12 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       — both intake paths encrypt before writing and zero the plaintext buffer first
       (`:299–302` file representation, `:334–336` data representation). Filenames are
       positional (`0.tmp`, `1.tmp`); real names live only inside the encrypted manifest.
+- [x] A session's files and manifest open only in that session (Bug 213, 2.0.5)
+      — each file is sealed under `ShareManifest.sessionKey`, the staging key bound to the session's ID by HKDF, and
+      the manifest carries `sessionID`. `ShareSession.staged`, `introductionCard` and `sweep` refuse a manifest that
+      names another session, and a file moved in from another session fails its header check whenever it is read, so
+      a check-then-swap gains nothing. Guards: `ShareSessionBindingTests`,
+      `ShareSessionStreamedTests.cardFromElsewhereIsNotRead`.
 - [x] Main app decrypts session files via `ShareIndexKeyManager` before EXIF stripping and
       bundle encryption, and zeroes the ciphertext buffer after decryption
       — all three now live in `ShareSession.load` (`ShareSession.swift`), which zeroes each
