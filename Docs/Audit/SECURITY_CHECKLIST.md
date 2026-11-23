@@ -970,6 +970,26 @@ the entry above, this is §8 only: no other section was re-checked, the signed 2
 been inspected (condition 1 below), and the two-phone key exchange and the share extension have not
 been run on devices for this release.
 
+**Post-sign-off, 2026-11-23 (tag `v2.0.5`, `ac9f77fa`):** the signed-artifact checks re-run against
+a **distribution-signed** build: Release archive, `generic/platform=iOS`, exported for App Store
+Connect (2.0.5, build 1), the `.ipa` unpacked and inspected. This meets, for 2.0.5, the four
+distribution-only checks listed under "What is still not verified" above:
+
+1. `get-task-allow` is `false` on the app, `ShareExtension` and `OccultaPreview`.
+2. Every embedded profile is an App Store profile ("iOS Team Store Provisioning Profile", no
+   `ProvisionedDevices`), signed "Apple Distribution", team `R6F5KHKKNX`.
+3. Entitlements beyond the profile's `application-identifier`, `team-identifier` and
+   `beta-reports-active`: the app and `ShareExtension` carry exactly the App Group
+   `group.com.occulta.shared` and `com.apple.developer.default-data-protection =
+   NSFileProtectionComplete` (Bug 214); `OccultaPreview` carries neither, which is correct for the
+   reason given above.
+4. `codesign --verify --deep --strict` passes on the app.
+
+The table's checks hold on the same build: no `.md`/`.html`, no `*.bundle` or framework, no
+`*crypto*`/`*boring*` path, no BoringSSL symbols, `otool -L` links CryptoKit and Security only, no
+debug map in any of the three binaries, three dSYMs in the archive, no ATS key, and
+`features.plist` at the release values recorded in §6.4. Not uploaded at the time of this entry.
+
 Three conditions of the gate are **not** met, knowingly:
 
 1. **The signed artifact was never inspected.** The archive above was built with
