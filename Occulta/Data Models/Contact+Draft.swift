@@ -41,8 +41,20 @@ extension Contact {
         var urlAddresses: [URLAddress] = []
         
         var importedAt: Date = Date()
+        /// What the form shows of the contact's keys, in memory. Left out of `CodingKeys`: a draft written to a file holds no
+        /// key material, and one read from a file holds none, whatever the file says (Bug 202).
         var contactPublicKeys: [Key] = []
-        
+
+        private enum CodingKeys: String, CodingKey {
+            case identifier
+            case givenName, familyName, middleName, namePrefix, nameSuffix, nickname
+            case organizationName, departmentName, jobTitle
+            case phoneticGivenName, phoneticMiddleName, phoneticFamilyName
+            case birthday, note, thumbnailImageData, imageData
+            case phoneNumbers, emailAddresses, postalAddresses, urlAddresses
+            case importedAt, status
+        }
+
         enum Status: Codable {
             case encrypted, decrypted
         }

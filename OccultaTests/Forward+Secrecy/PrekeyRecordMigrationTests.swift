@@ -57,12 +57,12 @@ private func insertRow(
 private func sealedLegacyRecord(inboundIDs: [String] = [UUID().uuidString]) throws -> Data {
     var legacy = ForwardSecrecy()
     legacy.encodedPrekeys = try inboundIDs.map {
-        try JSONEncoder().encode(Prekey(id: $0, contactID: "", publicKey: Data(repeating: 0x04, count: 65)))
+        try JSONEncoder().encode(Prekey(id: $0, contactID: "", publicKey: testPoint(4)))
     }
     legacy.latestPrekeysGeneratedAt = Date(timeIntervalSince1970: 1_800_000_000)
     legacy.pendingOutboundBatch = try JSONEncoder().encode(OccultaBundle.SealedPayload.PrekeySyncBatch(
         generatedAt: Date(timeIntervalSince1970: 1_800_000_000),
-        prekeys: [OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: 0x04, count: 65))]
+        prekeys: [OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: testPoint(4))]
     ))
     return try #require(try JSONEncoder().encode(legacy).encrypt())
 }

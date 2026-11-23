@@ -26,17 +26,17 @@ private func ownBatch(id: UInt8, keys: Int = 15) -> PrekeyRecord.OwnBatch {
     PrekeyRecord.OwnBatch(
         id: Data(repeating: id, count: 16), createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000), retiredAt: nil,
         isPending: true,
-        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
-        lastResort: PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: 0xEE, count: 65))
+        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: testPoint(UInt8(truncatingIfNeeded: $0 + 1))) },
+        lastResort: PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: testPoint(0xEE))
     )
 }
 
 private func peerBatch(keys: Int = 15) -> PairingOffer.Batch {
     PairingOffer.Batch(OccultaBundle.SealedPayload.PrekeySyncBatch(
         generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_100),
-        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
+        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: testPoint(UInt8(truncatingIfNeeded: $0 + 1))) },
         id: Data(repeating: 0xBB, count: 16),
-        lastResort: OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: 0xDD, count: 65))
+        lastResort: OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: testPoint(0xDD))
     ))
 }
 

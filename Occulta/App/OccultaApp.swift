@@ -473,9 +473,7 @@ struct RootView: View {
                 .onDisappear {
                     // Stops pass 2 if it is running, and deletes what it wrote (STREAMING_SPEC §5.3).
                     data.receive?.cancel()
-                    data.basket.files.forEach { file in
-                        if let url = file.url { try? FileManager.default.removeItem(at: url) }
-                    }
+                    data.removeSealedFiles()
                 }
             }
             .sheet(item: self.$shareResult) { result in
@@ -844,8 +842,12 @@ struct RootView: View {
         }
 
         guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else {
-            // Nothing is shown, so nothing will read the attachments: release the file and write none.
-            if case .success(let basket?) = result { basket.receive?.cancel() }
+            // Nothing is shown, so nothing will read the attachments: release the file and write none, and delete the sealed
+            // files an inline message already wrote (Bug 217).
+            if case .success(let basket?) = result {
+                basket.receive?.cancel()
+                basket.removeSealedFiles()
+            }
             return
         }
 

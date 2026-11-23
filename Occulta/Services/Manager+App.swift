@@ -12,6 +12,9 @@ extension Manager {
         private let contacts: ContactManager
         private let vault: VaultManager
 
+        /// What the wipe throws when every row step succeeded but a key could not be deleted.
+        enum EraseError: Error { case keysNotDeleted }
+
         init(contacts: ContactManager, vault: VaultManager) {
             self.contacts = contacts
             self.vault = vault
@@ -32,12 +35,16 @@ extension Manager {
         ///   - stagingContainer: The app group container the share extension stages into, or nil if there is none.
         ///   - staging: The share-staging key, its secret `r_S` and its PQ record.
         ///   - keys: The Secure Enclave keys, the tier secrets and the tier PQ records.
+        ///   - deleteStagingKey: Deletes `staging`'s items; false if one could not be deleted.
+        ///   - deleteKeys: Deletes `keys`' items; false if one could not be deleted.
         func eraseAllData(
             erasePrekeys: () -> Void = { Manager.PrekeySecretsManager().deleteAllKeys() },
             draftsRoot: URL = Message.Draft.attachmentsRoot,
             stagingContainer: URL? = ShareSession.sharedContainer,
             staging: ShareStagingKeyManager = ShareStagingKeyManager(),
-            keys: Manager.Key = Manager.Key()
+            keys: Manager.Key = Manager.Key(),
+            deleteStagingKey: (ShareStagingKeyManager) -> Bool = { $0.deleteKey() },
+            deleteKeys: (Manager.Key) -> Bool = { $0.deleteAllKeys() }
         ) throws {
             erasePrekeys()
             var failure: Error?
@@ -55,8 +62,11 @@ extension Manager {
             if let stagingContainer {
                 ShareSession.removeAll(in: stagingContainer)
             }
-            staging.deleteKey()
-            keys.deleteAllKeys()
+            // Both run whatever the first returns. A key that was not deleted leaves everything sealed under it readable, so it
+            // is a failure as a row step is, and Settings tells the user to run the wipe again.
+            let stagingDeleted = deleteStagingKey(staging)
+            let keysDeleted = deleteKeys(keys)
+            if failure == nil, !(stagingDeleted && keysDeleted) { failure = EraseError.keysNotDeleted }
             if let failure { throw failure }
         }
     }
