@@ -116,8 +116,12 @@ step where a UX failure destroys data.
    within a day) into a recoverable one, at the price of the old store lasting a little longer than "verified".
    *Open, needs a decision:* that price is the exposure window decision 4 weighed, now short and bounded by the
    date.
-3. **Add a ladder step: write it down and type it back from the paper.** Hand-copying 7 words introduces typos, and
-   a paper copy that doesn't match is a backup that fails later. This is local to the ladder.
+3. **Keep the ladder's last step as the only check, and don't tell people how to store the phrase.** An earlier
+   draft added "write it down and type it back from the paper"; withdrawn. A paper copy is a trace of its own, and
+   so is an entry in the phone's own password manager, which sits on the phone a coercer holds and syncs to the
+   cloud. The app can't tell the real phrase from a decoy, so one piece of copy has to be right for both (finding
+   12, suggestion 3). This makes suggestions 1 and 2 more important, not less: with no advised copy, a forgotten
+   phrase has no fallback.
 4. **Say what is and isn't final.** The phrase is final only when the reseal verifies; abandoning the ladder
    before that writes nothing and shows a *new* phrase next time. After an interrupted reseal the person must
    retype every phrase (the keys come from them); say so on the resume screen, so they know to expect it.
@@ -293,15 +297,19 @@ real space who wants the decoy, or the reverse, must kill the app or wait out th
   grace it opens (§8, item 27's stated residual). With no Lock now there is no way to close it.
 
 **Suggestions.**
-1. **A Lock now control**, always in the same place (a lock icon on the tab bar or at the top of Settings), shown
+1. **A Lock now control**, always in the same place (Settings > Security, the owner's choice), shown
    when the lock is on. It drops the key and every decrypted record, ends the grace and shows the lock screen, as
    going past the grace does (§8, item 27). It is both the switching mechanism and the "put the phone down"
    mechanism.
 2. **A visible button, not a hidden gesture.** A hidden gesture is a tell if discovered and a trap for the person
    who forgets it.
 3. The lock screen after Lock now is the same screen as after a cold launch.
-4. **Name it for both jobs: "Lock / Switch space".** Switching is Lock now followed by typing the other phrase.
-   Typing is the rehearsal that finding 3 needs, so the switch must not be made cheaper than that.
+4. **Call it "Lock now", and let it double as the way to switch.** Switching is Lock now followed by typing the
+   other phrase. Typing is the rehearsal that finding 3 needs, so the switch must not be made cheaper than that.
+   **Not "Switch space" or "Switch account".** Either word tells whoever opens Settings that a second space exists,
+   on every install with the lock on, and an app with no sign-in has no accounts to switch; the familiarity of
+   "Switch account" is the leak. Only a lock is neutral. An earlier draft of this suggestion used "Lock / Switch
+   space"; it had the same flaw and is withdrawn.
 5. **Optional: flip between spaces opened in this session.** Once a second phrase has been typed, the first
    space's key stays in memory and a toggle appears, so the two feel like switched accounts. Nothing is written
    to disk. Lock now, grace expiry and an app kill clear every cached key. The toggle is absent until a second
@@ -310,6 +318,10 @@ real space who wants the decoy, or the reverse, must kill the app or wait out th
 **Threat check.** The control exists on every install with the lock on and is absent on installs with it off,
 which the lock screen already shows. It is not per space and names nothing. A coercer sees a lock button; that
 tells them there is a lock. Pressing it in front of them is ordinary.
+
+**Placement.** In Settings > Security the control is three taps away. That suits switching and is slow for
+"someone is walking up". *Open, needs a decision:* an icon-only padlock in the top bar of every tab as a second
+route. It names nothing, and it is not per space.
 
 **Why not a stored switcher** ("the real space has access to all the others", as with account switching). It
 needs the other spaces' keys or phrases kept inside one space, so:
@@ -383,7 +395,8 @@ and "state restoration"; it doesn't mention the other ways a screen leaves the p
 1. **Hide the words while the screen is being captured or mirrored,** and blank the screen when a capture starts.
 2. **On a screenshot (`userDidTakeScreenshotNotification`), say so,** with the steps to remove it (Photos, then
    Recently Deleted), and offer to generate a new phrase now (nothing has been written yet).
-3. **Say that a screenshot is not a backup.** The write-it-down advice should be paper (finding 1, suggestion 3).
+3. **Say that a screenshot is not a copy to keep:** it sits in the Photos library and in iCloud. Name no storage
+   method (finding 1, suggestion 3).
 4. **A "Cover the words" button** that the person can use when someone walks in.
 
 **Threat check.** These run only on the phrase-display screen, which is the same at every space. They add no
@@ -479,8 +492,8 @@ guesses, each opening an empty space, and learns nothing. There is no "Forgot yo
 1. **"Forgot your phrase?" on every lock screen,** the same everywhere: what can and can't be recovered (a Shamir
    backup restores the vault only, §6; nothing restores contacts), and that the only way to start again is to
    delete the app and re-pair contacts in person.
-2. **Say it while setting up,** in the order: nothing can recover this; write it on paper and keep the paper
-   away from the phone; the phone's backup doesn't carry it (the Enclave key stays on this phone, and so does any
+2. **Say it while setting up,** in the order: nothing can recover this; learn it, and if you keep a copy,
+   keep it away from this phone (no method named); the phone's backup doesn't carry it (the Enclave key stays on this phone, and so does any
    space; a restore to a new phone starts empty: *Device Migration* is out of scope, §6).
 3. **One rule for every phrase.** "Don't write the decoy down, do write the real one down" can't be said: the app
    doesn't know which phrase is which, and the copy must be the same for each. Use: "If you write it down, keep it
@@ -596,8 +609,8 @@ A sweep for stage 6 and the counsel pass (steps 11 and 16):
 6. **Wrapped-key Face ID re-entry.** Ruled out in spec §4.
 7. **A visible suggestion bar, or autocompletion.** Ruled out by decision 13a; 5a is the same leak in a different
    place.
-8. **A retype or checksum at setup** beyond the ladder's. Decided against (§1.5); a typed-back-from-paper step in
-   the ladder (finding 1) is not a checksum.
+8. **A retype or checksum at setup** beyond the ladder's. Decided against (§1.5); the ladder's own last step
+   (type it unaided, finding 1) is not a checksum.
 
 ---
 
