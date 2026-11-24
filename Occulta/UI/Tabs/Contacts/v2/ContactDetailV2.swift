@@ -276,14 +276,10 @@ extension Contact {
             }
 
             // The glyph in the list leads here: said once, where it can be acted on, without opening the key details (Bug 196).
-            if let p = self.profile, !self.needsExchange, !shown.card.isCardContact, let key, p.pairingCapabilities(using: key).upgradeAvailable {
-                NavigationLink {
-                    KeyExchange(identifier: self.identifier)
-                } label: {
-                    Label("Re-exchange in person to upgrade", systemImage: "arrow.up.circle")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                }
+            // Also for a pairing that lacks only quantum-resistant key agreement (hardening step 7a).
+            if let p = self.profile, !self.needsExchange, !shown.card.isCardContact, let key,
+               let upgrade = p.pairingCapabilities(using: key).upgrade() {
+                PairingUpgradePrompt(identifier: self.identifier, upgrade: upgrade)
             }
 
             if let p = self.profile, !self.needsExchange {
