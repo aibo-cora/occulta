@@ -54,7 +54,7 @@ extension CardPhone {
         try self.run {
             let crypto = Manager.Crypto()
             let key = Contact.Profile.Key(
-                material: try #require(try crypto.encrypt(data: material)),
+                material: try crypto.encrypt(data: material),
                 owner: Data(),
                 date: try #require(try crypto.encrypt(data: Data(String(acquiredAt.timeIntervalSince1970).utf8))),
                 quantumKeyMaterialEncrypted: nil

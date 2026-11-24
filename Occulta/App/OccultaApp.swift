@@ -84,9 +84,13 @@ struct OccultaApp: App {
         }
         // The file-level calls below (attributes, pragma, checkpoint) open the path they are given and never create it, so
         // a test host points them at a file that doesn't exist rather than at the real store.
+        #if DEBUG
         let url = hostsTests
             ? FileManager.default.temporaryDirectory.appendingPathComponent("occulta-test-host.store")
             : modelConfiguration.url
+        #else
+        let url = modelConfiguration.url
+        #endif
         let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
         
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path)

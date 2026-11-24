@@ -71,6 +71,7 @@ enum AppFuzzTargets {
 
     // MARK: Seeds
 
+    @MainActor
     static func exchangeSeeds() -> [FuzzSeedInput] {
         func json(_ exchange: Exchange) -> Data {
             let encoder = JSONEncoder()
@@ -93,6 +94,7 @@ enum AppFuzzTargets {
         ]
     }
 
+    @MainActor
     static func vaultBackupSeeds() -> [FuzzSeedInput] {
         let entry = VaultManager.VaultBackupEntry(
             id: UUID(), entryType: 0, createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000), label: Data("label".utf8), content: Data("content".utf8)
