@@ -272,7 +272,7 @@ extension VaultManager {
 
             guard let box     = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
                   let plain   = try? AES.GCM.open(box, using: restoreKey, authenticating: row.aad()),
-                  let payload = try? JSONDecoder().decode(ReconstructShard.Payload.self, from: plain)
+                  let payload = try? BoundedJSON.decode(ReconstructShard.Payload.self, from: plain)
             else { continue }
 
             try? self.absorbShard(payload.signedAttribute, senderIdentifier: payload.senderIdentifier)
