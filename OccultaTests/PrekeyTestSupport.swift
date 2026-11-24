@@ -10,11 +10,25 @@
 import Testing
 import Foundation
 import SwiftData
+import CryptoKit
 @testable import Occulta
 @testable import OccultaFormats
 
 func randomBytes(_ count: Int) -> Data {
     Data((0..<count).map { _ in .random(in: .min ... .max) })
+}
+
+/// A real P-256 public key in x963 form, which a prekey must be (Bug 204): 65 random bytes are not one.
+func randomPoint() -> Data {
+    P256.KeyAgreement.PrivateKey().publicKey.x963Representation
+}
+
+/// A P-256 public key that is the same for the same `n`, for tests that compare batches. The scalar's leading byte is zero,
+/// so it is below the curve's order whatever `n` is.
+func testPoint(_ n: UInt8) -> Data {
+    let scalar = Data([0]) + Data(repeating: n, count: 30) + Data([1])
+    // swiftlint:disable:next force_try
+    return try! P256.KeyAgreement.PrivateKey(rawRepresentation: scalar).publicKey.x963Representation
 }
 
 /// SplitMix64, so a failing random run can be replayed from its seed.

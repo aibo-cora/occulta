@@ -473,9 +473,7 @@ struct RootView: View {
                 .onDisappear {
                     // Stops pass 2 if it is running, and deletes what it wrote (STREAMING_SPEC §5.3).
                     data.receive?.cancel()
-                    data.basket.files.forEach { file in
-                        if let url = file.url { try? FileManager.default.removeItem(at: url) }
-                    }
+                    data.removeSealedFiles()
                 }
             }
             .sheet(item: self.$shareResult) { result in
@@ -844,8 +842,12 @@ struct RootView: View {
         }
 
         guard self.appScreen.phase == .unlocked, self.sessionEpoch == epoch else {
-            // Nothing is shown, so nothing will read the attachments: release the file and write none.
-            if case .success(let basket?) = result { basket.receive?.cancel() }
+            // Nothing is shown, so nothing will read the attachments: release the file and write none, and delete the sealed
+            // files an inline message already wrote (Bug 217).
+            if case .success(let basket?) = result {
+                basket.receive?.cancel()
+                basket.removeSealedFiles()
+            }
             return
         }
 
@@ -1223,8 +1225,8 @@ struct RootView: View {
                 id: sessionID, in: container, keyManager: ShareStagingKeyManager()
             )
 
-            // Whatever is held in memory — an image, whose EXIF is stripped, or a file staged by the build before
-            // this one — is zeroed on every exit from here on, the success path included, where it is dead the
+            // Whatever is held in memory — an image, whose EXIF is stripped, or a file sealed under another form of
+            // the staging key — is zeroed on every exit from here on, the success path included, where it is dead the
             // moment the bundle is sealed.
             defer {
                 for i in staged.files.indices {

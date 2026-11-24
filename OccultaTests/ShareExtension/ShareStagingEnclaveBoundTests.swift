@@ -463,7 +463,7 @@ struct ShareStagingEnclaveBoundTests {
         if corrupt {
             try Data((0..<64).map { _ in UInt8.random(in: 0...255) }).write(to: dir.appendingPathComponent("manifest.enc"))
         } else if let sealing {
-            let manifest = ShareManifest(files: [], createdAt: createdAt)
+            let manifest = ShareManifest(sessionID: id, files: [], createdAt: createdAt)
             try sealing(try JSONEncoder().encode(manifest)).write(to: dir.appendingPathComponent("manifest.enc"))
         }
         return id

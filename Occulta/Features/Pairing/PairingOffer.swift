@@ -15,20 +15,19 @@ import OccultaFormats
 nonisolated
 struct PairingOffer: Equatable {
 
-    /// Our nonce and the peer's, from the discovery messages. A classical exchange has them too, with a peer that
-    /// sends one.
-    let ourNonce: Data
-    let peerNonce: Data
+    /// Both nonces and the transcript of the exchange's messages, which both phones committed their nonces before (Bug 198).
+    /// The routing key and the words are derived over it, under their own domains. An exchange with a peer that did not
+    /// commit is refused before an offer exists.
+    let committed: CommittedExchange
+
+    var ourNonce: Data { self.committed.ourNonce }
+    var peerNonce: Data { self.committed.peerNonce }
+    var exchangeTranscript: Data { self.committed.transcript }
 
     /// The record we'll hold for this peer: one pending batch of our keys, Enclave blobs kept in memory only until
     /// `save()` installs them. An exchange that is abandoned leaves nothing behind: CryptoKit Enclave keys have no
     /// keychain item.
     let ownPrekeys: PrekeyRecord
-
-    /// The digest of the batch we sent in our identity message (`RoutingKey.batchDigest`), taken from the field as it was
-    /// sent. It is not read back from `ownPrekeys`: that costs an Enclave import per key each time the transcript is
-    /// computed, and a blob that failed to import then would shorten the batch and make the two phones' words differ.
-    let ownBatchDigest: Data
 
     /// The batch the peer sent in its identity message, as received.
     let peerBatch: Batch
@@ -77,47 +76,25 @@ struct PairingOffer: Equatable {
         let mldsaKey: Data?
     }
 
-    /// What each phone sent, as `RoutingKey.transcript` takes it: its keys and a digest of the prekey batch beside them.
-    var ourBlock: RoutingKey.PairBlock? {
-        RoutingKey.PairBlock(
-            agreementKey: self.ours.agreementKey, signingKey: self.ours.signingKey, mldsaKey: self.ours.mldsaKey,
-            batchDigest: self.ownBatchDigest
-        )
-    }
-    var theirBlock: RoutingKey.PairBlock? {
-        RoutingKey.PairBlock(
-            agreementKey: self.theirs.agreementKey, signingKey: self.theirs.signingKey, mldsaKey: self.theirs.mldsaKey,
-            batchDigest: self.peerBatch.digest
-        )
-    }
-
-    /// Both phones' transcript. `nil` only for a block that does not validate, which `accepted` has already refused.
-    var transcript: Data? {
-        guard let ours = self.ourBlock, let theirs = self.theirBlock else { return nil }
-        return RoutingKey.transcript(ours, theirs)
-    }
-
     /// The routing key this pairing holds, from the pair-key ECDH, the identity ECDH made inside `keyManager`, the ML-KEM
     /// secrets where the exchange had them and both nonces. Both phones get the same bytes. `nil` if anything is missing
     /// or the key manager couldn't derive it, in which case nothing is saved.
     @MainActor
     func routingKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
-        guard let transcript = self.transcript else { return nil }
-        return keyManager.createRoutingKey(
+        keyManager.createCommittedRoutingKey(
             peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, ourAgreementKey: self.ours.agreementKey,
-            peerAgreementKey: self.theirs.agreementKey, transcript: transcript, quantumMaterial: quantum,
-            ourNonce: self.ourNonce, peerNonce: self.peerNonce
+            peerAgreementKey: self.theirs.agreementKey, quantumMaterial: quantum, ourNonce: self.ourNonce,
+            peerNonce: self.peerNonce, exchangeTranscript: self.exchangeTranscript
         )
     }
 
-    /// The key the verification words come from. It covers both pair blocks, so a pair key or an ML-DSA key a man in the
-    /// middle added, removed or swapped changes the words.
+    /// The key the verification words come from. It covers every message of the exchange, which carry both pair blocks, so a
+    /// pair key or an ML-DSA key a man in the middle added, removed or swapped changes the words.
     @MainActor
     func wordsKey(withPeer peerIdentity: Data, quantum: QuantumKeyMaterial?, using keyManager: any KeyManagerProtocol) -> Data? {
-        guard let transcript = self.transcript else { return nil }
-        return keyManager.createPairwiseDicewareKey(
-            peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, transcript: transcript, quantumMaterial: quantum,
-            ourNonce: self.ourNonce, peerNonce: self.peerNonce
+        keyManager.createCommittedDicewareKey(
+            peerP256Material: peerIdentity, pairwiseECDH: self.pairwiseECDH, quantumMaterial: quantum,
+            ourNonce: self.ourNonce, peerNonce: self.peerNonce, exchangeTranscript: self.exchangeTranscript
         )?.withUnsafeBytes { Data($0) }
     }
 
@@ -155,16 +132,20 @@ extension PairingOffer {
 
     /// What the peer's `pairing` field comes to, or `nil` if it is not one we can use, in which case the pairing is made
     /// without pair keys and the two phones' words differ, which is on the screen. Refused: a key that is the wrong size
-    /// or not a point on the curve, two keys that are the same, a key equal to either phone's identity key, and a key
+    /// or not a point on the curve (the batch's prekeys included), two keys that are the same, a key equal to either phone's identity key, and a key
     /// equal to one of ours (a reflection). A malformed ML-DSA key alone is dropped and the P-256 pair stays.
     ///
     /// Never checked against other contacts' keys: a refusal that depended on a hidden contact would reveal it.
     static func accepted(
         _ field: Exchange.PairingField, ours: OwnPairKeys, ourIdentity: Data?, peerIdentity: Data,
-        isPoint: (Data) -> Bool = PairingOffer.isP256Point
+        isPoint: (Data) -> Bool = PrekeyBookkeeper.loads
     ) -> (batch: Batch, keys: PeerPairKeys)? {
         let agreement = field.agreementKey, signing = field.signingKey
         guard isPoint(agreement), isPoint(signing) else { return nil }
+        // The batch's keys too: one that isn't a point would stop every send to this contact (Bug 204).
+        guard field.prekeyBatch.prekeys.allSatisfy({ isPoint($0.publicKey) }),
+              field.prekeyBatch.lastResort.map({ isPoint($0.publicKey) }) ?? true
+        else { return nil }
 
         var forbidden: Set<Data> = [peerIdentity, ours.agreementKey, ours.signingKey]
         if let ourIdentity { forbidden.insert(ourIdentity) }
@@ -178,11 +159,6 @@ extension PairingOffer {
             RoutingKey.PairBlock(agreementKey: agreement, signingKey: signing, mldsaKey: $0, batchDigest: digest) == nil ? nil : $0
         }
         return (Batch(field.prekeyBatch), PeerPairKeys(agreementKey: agreement, signingKey: signing, mldsaKey: mldsa))
-    }
-
-    /// Whether `key` is a 65-byte X9.63 point on P-256.
-    nonisolated static func isP256Point(_ key: Data) -> Bool {
-        key.count == 65 && (try? P256.KeyAgreement.PublicKey(x963Representation: key)) != nil
     }
 }
 

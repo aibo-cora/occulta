@@ -13,7 +13,8 @@ struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
     @State private var displayingInfo: Bool = true
     @State private var confirmingPayload: ExchangeManager.ExchangePhase.Payload?
-    @State private var showTimeoutBanner: Bool = false
+    /// Why the last exchange ended without a result. Shown on this screen only; nothing is stored.
+    @State private var notice: Notice?
 
     @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
 
@@ -50,8 +51,8 @@ struct KeyExchange: View {
             } else {
                 if self.exchangeManager.isExchangePossible {
                     VStack(spacing: 24) {
-                        if self.showTimeoutBanner {
-                            Label("Didn't connect — make sure both devices are within 25 cm and try again.", systemImage: "exclamationmark.triangle.fill")
+                        if let notice = self.notice {
+                            Label(notice.text, systemImage: "exclamationmark.triangle.fill")
                                 .font(.subheadline)
                                 .foregroundStyle(Color.occultaWarn)
                                 .padding(.horizontal)
@@ -87,7 +88,7 @@ struct KeyExchange: View {
 
                         HStack(spacing: 16) {
                             Button {
-                                self.showTimeoutBanner = false
+                                self.notice = nil
                                 // The meeting check (SPEC §7) runs against this contact's card field, if it holds one.
                                 let cardMeeting = self.contacts.first.flatMap { self.contactManager?.cardMeetingContext(for: $0) } ?? .none
                                 self.exchangeManager.start(cardMeeting: cardMeeting)
@@ -119,9 +120,9 @@ struct KeyExchange: View {
             if case .confirming(let payload) = newPhase {
                 self.confirmingPayload = payload
             }
-            if newPhase == .timedOut || newPhase == .failed {
+            if let notice = KeyExchange.notice(for: newPhase) {
                 self.confirmingPayload = nil
-                self.showTimeoutBanner = true
+                self.notice = notice
                 self.exchangeManager.finish()
             }
         }
@@ -146,7 +147,7 @@ struct KeyExchange: View {
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         @Environment(\.dismiss) private var dismiss
 
-        private enum SaveState { case confirming, saving, saved, failed, refusedWeaker }
+        private enum SaveState { case confirming, saving, saved, failed, refusedWeaker, refusedNoQuantum }
         @State private var saveState: SaveState = .confirming
         /// What the in-person check found about an earlier card conversation. Held only while its screen is up;
         /// nothing about it is stored.
@@ -189,6 +190,15 @@ struct KeyExchange: View {
                         Label("Quantum-resistant exchange", systemImage: "shield.checkered")
                             .font(.caption2)
                             .foregroundStyle(Color.occultaVerified)
+                    }
+
+                    // This phone sent a quantum-resistant key and none came back: an older phone, or a message that was
+                    // interfered with, look the same here (Bug 199). Shown on this screen only; nothing about it is stored.
+                    if self.payload.offeredQuantum && self.payload.hybridResult == nil {
+                        Text("Quantum-resistant keys weren't exchanged. The other phone may be on an older version of iOS or Occulta. If you expected it to be up to date, cancel and try again.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
 
                     // We sent pair keys and the other phone sent none we could use: the pairing is made as before, and
@@ -250,6 +260,25 @@ struct KeyExchange: View {
                         .tint(.occultaAccent)
                         .frame(maxWidth: .infinity)
 
+                    case .refusedNoQuantum:
+                        // As above, a retry runs the same exchange. The way on is the person's choice: revoke, then exchange again.
+                        Label("Not saved: no quantum-resistant key in this exchange", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.occultaDanger)
+
+                        Text("You and this contact already share a quantum-resistant pairing, and this exchange had no ML-KEM key, so it was kept as it was. The other phone may be on an older version of iOS, or the exchange may have been interfered with. To save a classical pairing on purpose, use Revoke Key in this contact's details, then exchange keys again.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button("Done") {
+                            self.manager.finish()
+                            self.dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.occultaAccent)
+                        .frame(maxWidth: .infinity)
+
                     case .failed:
                         Label("Couldn't save key", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
@@ -283,29 +312,7 @@ struct KeyExchange: View {
         }
 
         private var words: [String] {
-            let sharedKey: Data?
-            
-            if let pairing = self.payload.pairing {
-                // A pair-key exchange: the words cover both phones' pair keys and the identity ECDH (Bug 196, stage 2), so a
-                // key a man in the middle added, removed or swapped changes them. A failure to derive shows words that
-                // cannot match, and `save()` refuses the pairing.
-                sharedKey = pairing.wordsKey(
-                    withPeer: self.payload.classicalKey, quantum: self.payload.hybridResult.map(QuantumKeyMaterial.init(from:)),
-                    using: self.keyManager
-                )
-            } else if let result = self.payload.hybridResult {
-                let material = QuantumKeyMaterial(from: result)
-                sharedKey = self.keyManager.createDicewareKey(
-                    peerP256Material: result.peerP256PublicKey,
-                    quantumMaterial: material,
-                    ourNonce: result.ourNonce,
-                    peerNonce: result.peerNonce
-                )?.withUnsafeBytes { Data($0) }
-            } else {
-                sharedKey = self.keyManager.createSharedSecret(using: self.payload.classicalKey)?.withUnsafeBytes { Data($0) }
-            }
-            return self.passphraseGenerator.generate(separator: "-", sharedKey: sharedKey)
-                .components(separatedBy: "-")
+            KeyExchange.words(for: self.payload, using: self.keyManager, generator: self.passphraseGenerator)
         }
 
         private func keyRow(label: String, hex: String, color: Color) -> some View {
@@ -334,6 +341,8 @@ struct KeyExchange: View {
             switch KeyExchange.saveExchange(self.payload, for: self.identifier, in: self.contactManager, using: self.keyManager) {
             case .refusedWeaker:
                 self.saveState = .refusedWeaker
+            case .refusedNoQuantum:
+                self.saveState = .refusedNoQuantum
             case .failed:
                 self.saveState = .failed
             case .saved:
@@ -359,11 +368,70 @@ struct KeyExchange: View {
 
 extension KeyExchange {
 
+    /// The key the verification words come from. Every shape of exchange has one derivation, over both nonces and every
+    /// message of the exchange, so what was added, removed or changed in transit changes the words, ML-KEM included
+    /// (Bugs 198 and 199). An exchange whose peer did not commit to its nonce never reaches this screen. Nil when the key
+    /// manager can't derive it.
+    @MainActor
+    static func wordsKey(for payload: ExchangeManager.ExchangePhase.Payload, using keyManager: any KeyManagerProtocol) -> Data? {
+        let quantum = payload.hybridResult.map(QuantumKeyMaterial.init(from:))
+
+        if let pairing = payload.pairing {
+            return pairing.wordsKey(withPeer: payload.classicalKey, quantum: quantum, using: keyManager)
+        }
+        return keyManager.createCommittedDicewareKey(
+            peerP256Material: payload.classicalKey, pairwiseECDH: nil, quantumMaterial: quantum,
+            ourNonce: payload.committed.ourNonce, peerNonce: payload.committed.peerNonce,
+            exchangeTranscript: payload.committed.transcript
+        )?.withUnsafeBytes { Data($0) }
+    }
+
+    @MainActor
+    static func words(
+        for payload: ExchangeManager.ExchangePhase.Payload, using keyManager: any KeyManagerProtocol,
+        generator: Manager.PassphraseGenerator = Manager.PassphraseGenerator()
+    ) -> [String] {
+        generator.generate(separator: "-", sharedKey: self.wordsKey(for: payload, using: keyManager))
+            .components(separatedBy: "-")
+    }
+
+    /// How an exchange ended without a result, for the screen to say. Each has words of its own: a failed exchange is a message that
+    /// did not check out, which the person should not read as poor ranging and simply retry.
+    enum Notice: Equatable {
+        case timedOut, failed, peerNeedsUpdate
+
+        var text: String {
+            switch self {
+            case .timedOut:
+                "Didn't connect — make sure both devices are within 25 cm and try again."
+            case .failed:
+                "This exchange didn't check out, so nothing was saved. Try again. If it happens again, try somewhere else."
+            case .peerNeedsUpdate:
+                // The same words whatever the cause: a phone on an older version, or a message that was interfered with, look the
+                // same to this one.
+                "The other phone needs to update Occulta to exchange keys with this one."
+            }
+        }
+    }
+
+    /// The notice for a phase that ends an exchange, nil for any other.
+    static func notice(for phase: ExchangeManager.ExchangePhase) -> Notice? {
+        switch phase {
+        case .timedOut: .timedOut
+        case .failed: .failed
+        case .peerNeedsUpdate: .peerNeedsUpdate
+        default: nil
+        }
+    }
+
     /// What Save did, for the confirmation screen to show.
     enum SaveOutcome: Equatable {
         case saved
         /// The contact's pairing has pair keys and this exchange gave none: nothing is saved, and the exchange can be run again.
         case refusedWeaker
+        /// The contact's pairing is hybrid and this exchange gave no ML-KEM key (Bug 199): nothing is saved, and revoking the
+        /// contact's key first saves a classical pairing on purpose.
+        case refusedNoQuantum
         case failed
     }
 
@@ -409,6 +477,8 @@ extension KeyExchange {
             return .saved
         } catch ContactManager.Errors.pairingWouldBeWeaker {
             return .refusedWeaker
+        } catch ContactManager.Errors.pairingWouldLoseQuantum {
+            return .refusedNoQuantum
         } catch {
             return .failed
         }

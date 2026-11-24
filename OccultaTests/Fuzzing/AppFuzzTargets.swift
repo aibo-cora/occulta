@@ -79,11 +79,17 @@ enum AppFuzzTargets {
         }
         let key65 = Data([0x04] + [UInt8](repeating: 5, count: 64))
         return [
-            FuzzSeedInput("discovery", json(Exchange(id: UUID().uuidString, token: DiscoveryTokenTarget.archivedToken(), nonce: Data(repeating: 1, count: 16))), isText: true),
+            // The commitment is what an exchange needs from its peer's discovery message (Bug 198); the first discovery message
+            // a target takes is this one, so the later ones, mutated or not, are second messages and change nothing.
+            FuzzSeedInput("discovery", json(Exchange(
+                id: UUID().uuidString, token: DiscoveryTokenTarget.archivedToken(),
+                nonceCommitment: ExchangeCommitment.commitment(to: Data(repeating: 1, count: 16))
+            )), isText: true),
             FuzzSeedInput("identity, classical", json(Exchange(id: UUID().uuidString, token: Data(), identity: key65)), isText: true),
             FuzzSeedInput("identity, hybrid", json(Exchange(id: UUID().uuidString, token: Data(), identity: key65, encapsulationKey: FuzzSeeds.mlkemKey)), isText: true),
             FuzzSeedInput("ciphertext", json(Exchange(id: UUID().uuidString, token: Data(), ciphertext: Data(repeating: 9, count: 1_568))), isText: true),
             FuzzSeedInput("card proof", json(Exchange(id: UUID().uuidString, token: Data(), cardProof: Data(repeating: 7, count: 64))), isText: true),
+            FuzzSeedInput("reveal", json(Exchange(id: UUID().uuidString, token: Data(), revealedNonce: Data(repeating: 1, count: 16))), isText: true),
         ]
     }
 

@@ -1065,6 +1065,121 @@
         "batchPrekeyKeys": ["4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141"]
       },
       "expected": "d801f430aa58cfbdb3978e1ca4c7577b3de512a6da40306e079aa0affc581e2e"
+    },
+    {
+      "name": "exchange.commitment",
+      "kind": "exchangeCommitment",
+      "note": "Bug 198. SHA-256(\"occulta-exchange-commit-v1\" || nonce): what the discovery message carries in place of the nonce.",
+      "pairing": {
+        "nonce": "101112131415161718191a1b1c1d1e1f"
+      },
+      "expected": "5750c1f7f4252a835620eab8dc8bad6c8a7f789898830d3d23e5a743c5f175a2"
+    },
+    {
+      "name": "exchange.transcript.classical",
+      "kind": "exchangeTranscript",
+      "note": "Bug 198. SHA-256(\"occulta-exchange-transcript-v1\" || each message as step || role || UInt32 big-endian length || bytes), in the order discovery, identity, ciphertext, the initiator's before the responder's. A classical exchange has no ciphertexts. Each message is the bytes as sent.",
+      "pairing": {
+        "exchangeMessages": [
+          {"role": "initiator", "step": "discovery", "bytes": "492d646973636f76657279"},
+          {"role": "responder", "step": "discovery", "bytes": "522d646973636f76657279"},
+          {"role": "initiator", "step": "identity", "bytes": "492d6964656e74697479"},
+          {"role": "responder", "step": "identity", "bytes": "522d6964656e74697479"}
+        ]
+      },
+      "expected": "f405e330446a22be7a7563b9645e37cf20a08a31277f46509bea1ef738f009db"
+    },
+    {
+      "name": "exchange.transcript.hybrid",
+      "kind": "exchangeTranscript",
+      "note": "Bug 198. The same with both ML-KEM ciphertext messages.",
+      "pairing": {
+        "exchangeMessages": [
+          {"role": "initiator", "step": "discovery", "bytes": "492d646973636f76657279"},
+          {"role": "responder", "step": "discovery", "bytes": "522d646973636f76657279"},
+          {"role": "initiator", "step": "identity", "bytes": "492d6964656e74697479"},
+          {"role": "responder", "step": "identity", "bytes": "522d6964656e74697479"},
+          {"role": "initiator", "step": "ciphertext", "bytes": "492d63697068657274657874"},
+          {"role": "responder", "step": "ciphertext", "bytes": "522d63697068657274657874"}
+        ]
+      },
+      "expected": "517875173aa119a9183672481175c776eef4ee8ce6c618f589bd59fefcf03380"
+    },
+    {
+      "name": "exchange.words.classical",
+      "kind": "exchangeWordsKey",
+      "note": "Bug 198. The words key of a committed exchange with no pair keys and no ML-KEM: HKDF over ik, salted with the two identity keys XORed, info \"Occulta-v2-exchange-words-committed-2026\" || flags 0x00 || both nonces sorted || the exchange transcript.",
+      "pairing": {
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "identitySalt": "005c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "f405e330446a22be7a7563b9645e37cf20a08a31277f46509bea1ef738f009db"
+      },
+      "expected": "29e17df55b1bc60dbc04360ac8204daa305f556a2d3702d55dc0cf941f10f2a7"
+    },
+    {
+      "name": "exchange.words.pairKeys.hybrid",
+      "kind": "exchangeWordsKey",
+      "note": "Bug 198. With pair keys and ML-KEM: HKDF over pk || ik || both ML-KEM secrets sorted, flags 0x03.",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "identitySalt": "005c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "517875173aa119a9183672481175c776eef4ee8ce6c618f589bd59fefcf03380",
+        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
+        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232"
+      },
+      "expected": "ce51bc8393e689477fbd06d411ad988a20f8d0424629df5b11bff0dfc914b22a"
+    },
+    {
+      "name": "exchange.words.hybrid",
+      "kind": "exchangeWordsKey",
+      "note": "Bug 198. With ML-KEM and no pair keys: HKDF over ik || both ML-KEM secrets sorted, flags 0x02.",
+      "pairing": {
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "identitySalt": "005c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "517875173aa119a9183672481175c776eef4ee8ce6c618f589bd59fefcf03380",
+        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
+        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232"
+      },
+      "expected": "9d43b8bdb5871a8d1d70738548e59cec2ad1e6fcb86bc3c982d21e6e6c2eeac9"
+    },
+    {
+      "name": "exchange.routingKey.hybrid",
+      "kind": "exchangeRoutingKey",
+      "note": "Bug 198. The routing key of a committed pair-key exchange: HKDF over pk || ik || both ML-KEM secrets sorted, salted with the two agreement keys XORed, info \"Occulta-v2-routing-key-committed-2026\" || flags 0x03 || both nonces sorted || the exchange transcript.",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "ourAgreementKey": "04a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "peerAgreementKey": "04b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "517875173aa119a9183672481175c776eef4ee8ce6c618f589bd59fefcf03380",
+        "mlkemSecret1": "3131313131313131313131313131313131313131313131313131313131313131",
+        "mlkemSecret2": "3232323232323232323232323232323232323232323232323232323232323232"
+      },
+      "expected": "a14b02ea22c3f36c27ffce2657d09682370310a8fda4dded5974e301189351db"
+    },
+    {
+      "name": "exchange.routingKey.classical",
+      "kind": "exchangeRoutingKey",
+      "note": "Bug 198. As the hybrid routing key with no ML-KEM secrets, flags 0x01.",
+      "pairing": {
+        "pairwiseECDH": "1111111111111111111111111111111111111111111111111111111111111111",
+        "identityECDH": "2222222222222222222222222222222222222222222222222222222222222222",
+        "ourAgreementKey": "04a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "peerAgreementKey": "04b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "ourNonce": "101112131415161718191a1b1c1d1e1f",
+        "peerNonce": "202122232425262728292a2b2c2d2e2f",
+        "transcript": "f405e330446a22be7a7563b9645e37cf20a08a31277f46509bea1ef738f009db"
+      },
+      "expected": "919b331b57cd26173d9d4f0f371c3a0ecfc2e1ddb8f5edc2446b97e4b2dd7efd"
     }
   ]
 }

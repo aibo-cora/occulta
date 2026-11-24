@@ -198,10 +198,10 @@ struct NextSendSecrecyTests {
         var record = PrekeyRecord.empty
         if oneTimeKeys > 0 {
             record.inboundBatches = [.init(id: nil, keys: (0..<oneTimeKeys).map { _ in
-                .init(id: UUID().uuidString, publicKey: Data.randomBytes(65))
+                .init(id: UUID().uuidString, publicKey: randomPoint())
             })]
         }
-        if lastResort { record.inboundLastResort = .init(id: UUID().uuidString, publicKey: Data.randomBytes(65)) }
+        if lastResort { record.inboundLastResort = .init(id: UUID().uuidString, publicKey: randomPoint()) }
         return record
     }
 

@@ -277,6 +277,26 @@ enum LaunchSequence {
             #endif
         }
 
+        // A postal country left under the v1 key by a migration that didn't list it (Bug 216). After `migrateToV2`, which now
+        // converts it with the rest of a v1 row, for the rows that were marked v2 before.
+        do {
+            try DatabaseMigration.migrateCountryOrphans(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+        } catch {
+            #if DEBUG
+            debugPrint("postal country migration error: \(error)")
+            #endif
+        }
+
+        // The routing key and pair keys a revoke left on the row it expired (Bug 201). After the pairing field exists on every
+        // row, which this reads.
+        do {
+            try DatabaseMigration.migrateRevokedPairings(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("revoked pairing migration error: \(error)")
+            #endif
+        }
+
         // Entries created before `VaultEntry.deletionToken` existed read as orphaned until
         // this runs (Bug 133). Independent of every pass above.
         do {
