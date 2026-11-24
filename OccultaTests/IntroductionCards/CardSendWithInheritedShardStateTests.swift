@@ -173,7 +173,7 @@ struct CardSendWithInheritedShardStateTests {
         let ops = try rig.custody.buildShardOperations(for: pair.bobSide, currentContactPublicKey: nil, isCardContact: false)
         #expect(ops.count == 1, "precondition")
 
-        try pair.bob.run {
+        _ = try pair.bob.run {
             #expect { try pair.bob.cm.encryptBundle(basket: CardPhone.basket("x"), for: pair.bobSide, shardOperations: ops) }
                 throws: { if case ContactManager.CardError.hardBlocked = $0 { true } else { false } }
         }

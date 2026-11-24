@@ -112,6 +112,7 @@ struct ExchangeTranscriptTests {
     }
 
     @Test("Bug 199: an identity message with its ML-KEM key removed is a different message, so a different transcript")
+    @MainActor
     func strippedMLKEMKeyIsCovered() throws {
         let key = Data(repeating: 0x5A, count: 1568)
         func identity(withKey: Bool) throws -> Data {
