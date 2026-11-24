@@ -33,7 +33,7 @@ private func insertTwicePaired(
     )
     func row(_ byte: UInt8) throws -> Contact.Profile.Key {
         Contact.Profile.Key(
-            material: try #require(try Manager.Crypto().encrypt(data: Data(repeating: byte, count: 65))),
+            material: try Manager.Crypto().encrypt(data: Data(repeating: byte, count: 65)),
             owner: try #require(try Manager.Crypto().encrypt(data: Data(repeating: 9, count: 32))), date: Data(), quantumKeyMaterialEncrypted: nil
         )
     }
