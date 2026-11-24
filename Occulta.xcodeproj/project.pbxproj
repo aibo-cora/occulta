@@ -83,6 +83,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Extensions/Data.swift,
+				Features/ShareExtension/ShareIntake.swift,
 				Features/ShareExtension/ShareManifest.swift,
 				Features/ShareExtension/ShareStagingKeyManager.swift,
 				"Services/Attachment+Manager.swift",
