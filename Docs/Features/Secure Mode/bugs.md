@@ -16007,7 +16007,8 @@ what another depth holds.
 
 **For 2.1.0's record (decided 2026-11-24 by the owner, `PASSPHRASE_ROLLOUT.md` §8, 29):** a retired key row keeps its ML-KEM
 material today, read by nothing; in the new record it is dropped at retirement, and a contact keeps the public key and dates of its
-two latest retired keys only. Not built.
+two latest retired keys only. The 2.1.0 migration applies this to every retired row it carries. 2.0.x is left as it is, with no fix
+of its own (decided 2026-11-24 by the owner). Not built.
 
 **Other fixes made on the way, in this PR's branch:** the raw legacy trial decrypt now honours the old-form refusal (a legacy file
 used to open on a pairing that holds a routing key, and so on the twin record this bug is about); a re-pair retires every earlier

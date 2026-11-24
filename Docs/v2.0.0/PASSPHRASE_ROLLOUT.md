@@ -1507,7 +1507,8 @@ there and aren't repeated here.
         the revoked state on screen. Its ML-KEM material is read by nothing, yet with the phrase and the passcode it
         opens captured long-term files of that old pairing. So in the new record a retired key drops its ML-KEM
         material at retirement, and a contact keeps the public key and dates of its two latest retired keys only,
-        about 0.2 KB each; the migration applies the same to every contact.
+        about 0.2 KB each; the migration applies the same to every contact. 2.0.x keeps the material on its retired rows
+        and gets no fix of its own: the drop ships with 2.1.0's migration (decided 2026-11-24 by the owner).
 30. **One person paired in two spaces** (added 2026-11-03). ~~Open, needs a decision.~~ **Decided 2026-11-03 by
     the owner: a random secret per pairing, used for both routing and key binding, with `senderProof` covering it**
     (`decisions.md`, 2026-11-03). Not built. ~~Still open, needs a decision: how existing pairings get a secret,
