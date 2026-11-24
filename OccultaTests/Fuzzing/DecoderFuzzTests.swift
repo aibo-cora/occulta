@@ -81,6 +81,16 @@ struct DecoderFuzzTests {
         }
     }
 
+    @Test("A contact's image, however malformed, is drawn or refused as any damaged image is", arguments: DecoderFuzzTests.configuration.seeds)
+    @MainActor
+    func receivedImage(seed: UInt64) async {
+        let target = ReceivedImageTarget()
+        guard Self.selected(target.name) else { return }
+        let report = await Fuzzer.runOnMainActor(target, seed: seed, configuration: Self.stateful)
+        Self.record(report, for: target.name, seed: seed)
+        #expect(report.cases > 0, "\(target.name) ran no cases")
+    }
+
     @Test("A nearby phone's messages never move a pinned exchange", arguments: DecoderFuzzTests.configuration.seeds)
     @MainActor
     func exchange(seed: UInt64) async {
@@ -138,7 +148,7 @@ struct DecoderFuzzTests {
         func statefulSeedsRun() async throws {
             let exchange = ExchangeSessionTarget()
             await exchange.pin()
-            let targets: [any MainActorFuzzTarget] = [ShareSessionTarget(), ShareManifestSessionTarget(), exchange, try StreamedReceiveTarget()]
+            let targets: [any MainActorFuzzTarget] = [ShareSessionTarget(), ShareManifestSessionTarget(), ReceivedImageTarget(), exchange, try StreamedReceiveTarget()]
             for target in targets {
                 #expect(!target.corpus.filter(\.isValid).isEmpty, "\(target.name) has no valid seed")
                 for seed in target.corpus where seed.isValid {

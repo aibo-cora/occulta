@@ -87,6 +87,7 @@
 				Features/ShareExtension/ShareStagingKeyManager.swift,
 				"Services/Attachment+Manager.swift",
 				Services/AttachmentKeyInfo.swift,
+				Services/ImageGuard.swift,
 				Services/NoCacheFile.swift,
 			);
 			target = DE1C8BDF2F8EC10C00F0E248 /* ShareExtension */;
