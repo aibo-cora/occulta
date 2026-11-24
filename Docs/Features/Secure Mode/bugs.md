@@ -15063,8 +15063,9 @@ decode, so a regression allocates what the probes did. The memory figures above 
 
 ## Bug 188 — The share extension reads a whole inbound `.occ` into memory
 
-**Status:** Open, needs a decision. Found 2026-10-30 by reading `ShareViewController` for hardening step 12. Not
-reproduced: the extension can't be driven from the test host, and no device was used.
+**Status:** Fixed on `v2.1.0/bug-188-inbound-share-stream`, not merged; not verified on a device (below). Found 2026-10-30
+by reading `ShareViewController` for hardening step 12. The extension can't be driven from the test host, so the copy
+step is tested and the extension's own run is not.
 
 **Target:** `v2.1.0`, and every build with the inbound handoff (1.x).
 
@@ -15086,18 +15087,54 @@ crash is the system's: a report that names the Occulta share extension, outside 
 Opened through Files or "Open in", the file doesn't go through the extension and is mapped, not read
 (`InboundFile.open`), so only the share-sheet route is affected.
 
-### Candidate fix, not made
+### The fix
 
-Take a file representation instead (`loadFileRepresentation`) and copy it to `inbound/<uuid>.occ` with
-`FileManager.copyItem`, which clones on APFS and holds nothing in memory, as the outbound path already does. The app's
-`InboundFile.open` then maps or streams it like any other file. It isn't made here because the extension can't be run in
-a test, and a change there should be tried on a device. The alternative, a size cap, would refuse exactly the bundles
-Bug 183 made it possible to open.
+`handoffInboundOCC` takes `loadFileRepresentation` and, inside its handler (the URL is valid only there), calls
+`NoCacheFile.copy(_:to:)`: a loop of 1 MiB reads from the provider's file into a `NoCacheFile.Writer` on
+`inbound/<uuid>.occ`. Nothing larger than one chunk is held, whatever the size. There is no size cap: it would refuse
+exactly the bundles Bug 183 made it possible to open. The UTI choice, the `inbound` directory's `.complete` protection
+and the `cancelRequest(ShareError.noData)` on failure are as before.
+
+Not `FileManager.copyItem`, which the candidate named: it clones on APFS, and what protection class a clone of the
+provider's temporary file takes was not something to rely on, with no device to look at it. `Writer` creates the file
+with `.complete` in the call that creates it, so there is no moment at a weaker class and nothing to set afterwards. The
+price is a real copy where a clone would have been free; at 800 MB that is seconds of I/O, with `F_NOCACHE` on both
+handles so the page cache doesn't fill.
+
+**No fallback to `loadDataRepresentation`.** A provider with no file representation fails like any other failure. A data
+fallback can't be bounded: its size is known only once the whole file is in memory, which is the bug. A cap on it would
+guard nothing. Whether such a provider exists for a `.occ` is for a device to say; `loadFileRepresentation` is expected
+to materialise a registered data representation as a file, but that was not confirmed here. Open, needs a decision: if a
+source turns up that offers data only, it is refused, not read.
+
+**On a failure, nothing is left.** `copy` removes the destination before it throws, on every path (a missing source, a
+read that fails part-way, a write that fails, `finish`'s `fsync`), `Writer` removes it again if it is dropped
+unfinished, and `handoffInboundOCC`'s `catch` removes it a third time. The provider's temporary file is the system's
+and is removed when the handler returns. No log line was added. Killed mid-copy, the partial file is swept by the app's
+sweep of `inbound/` once it is stale (`ShareSession.sweepInbound`), as before.
+
+**Depth.** The extension has no depth. What it writes is the bytes, the `.complete` class and the backup-exclusion flag,
+none of which varies with anything but the file.
+
+**Hostile files.** With no cap, a hostile large `.occ` can fill storage where it used to end the extension, and the app
+reads it only through `InboundFile.open`, which maps it or streams it. Open, needs a decision: whether a ceiling on the
+inbound file is wanted against a full disk, which is a different question from memory.
 
 ### Guard
 
-None yet. `Docs/Features/Bundle/STREAMING_SPEC.md` §8.4 already says the extension's peak memory has not been
-measured on a device; this would be the second thing to measure there.
+`InboundCopyTests` (`OccultaTests/ShareExtension/InboundCopyTests.swift`), on the Simulator: the copy is byte for byte
+at sizes either side of a chunk; a 400 MB sparse file with marks at the start, across a chunk boundary, in the middle and
+at the end is copied exactly (SHA-256 of both) while the process's footprint grows by 1 MB, where loading the same file
+whole grows it by 400 MB (the control, so the meter is shown to see it); the destination is requested at `.complete` and
+excluded from backup, and the copy contains no `copyItem` or clone; a missing source, an unreadable source, an
+uncreatable destination and a source cut short part-way through the copy each leave `inbound/` empty; and
+`InboundFile.open` opens a copied streamed bundle (the same digest as the original, still readable after the app unlinks
+it) and a copied inline bundle (mapped, decoding to the original).
+
+**Not verified, needs a device:** the extension's peak memory in its own process (`STREAMING_SPEC.md` §8.4), which a test
+host's footprint does not stand in for; the share sheet from Messages and from Files, and what `loadFileRepresentation`
+returns for each; the protection class the file lands in (the Simulator doesn't enforce it); and that an 800 MB bundle
+reaches the app and opens.
 
 ---
 
