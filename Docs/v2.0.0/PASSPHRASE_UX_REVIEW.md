@@ -300,10 +300,33 @@ real space who wants the decoy, or the reverse, must kill the app or wait out th
 2. **A visible button, not a hidden gesture.** A hidden gesture is a tell if discovered and a trap for the person
    who forgets it.
 3. The lock screen after Lock now is the same screen as after a cold launch.
+4. **Name it for both jobs: "Lock / Switch space".** Switching is Lock now followed by typing the other phrase.
+   Typing is the rehearsal that finding 3 needs, so the switch must not be made cheaper than that.
+5. **Optional: flip between spaces opened in this session.** Once a second phrase has been typed, the first
+   space's key stays in memory and a toggle appears, so the two feel like switched accounts. Nothing is written
+   to disk. Lock now, grace expiry and an app kill clear every cached key. The toggle is absent until a second
+   phrase has been typed this session, its rows carry no names or colours, and it exists only in memory.
 
 **Threat check.** The control exists on every install with the lock on and is absent on installs with it off,
 which the lock screen already shows. It is not per space and names nothing. A coercer sees a lock button; that
 tells them there is a lock. Pressing it in front of them is ordinary.
+
+**Why not a stored switcher** ("the real space has access to all the others", as with account switching). It
+needs the other spaces' keys or phrases kept inside one space, so:
+- *List and count.* Whoever has that one phrase, by coercion or by watching it typed, learns how many spaces there
+  are and can open every one. Independence is lost: today handing over one phrase reveals nothing about the rest.
+  The app does not know which space is "real", so a person with several compartments has no obvious top.
+- *Depth-only observable.* A switcher in one space only marks that depth; one in every space needs invented
+  entries in the others, and the shapes then differ.
+- *A stored trace.* Wrapped keys inside a space are a persistent artifact, and "phrases are never stored" stops
+  being true.
+- *It erodes finding 3.* A one-tap switch means the decoy phrase is never typed, then forgotten, then unavailable
+  under coercion.
+
+**Open, needs a decision (suggestion 5 only).** Someone who takes the unlocked phone mid-session, after both
+phrases were typed, sees the toggle and learns a second space exists. Mitigations are an unlabelled toggle, a
+prominent Lock now and the 5-minute grace. Whether that residual is tolerable is for the owner. Suggestion 4 alone
+has no such leak.
 
 ---
 
@@ -565,6 +588,8 @@ A sweep for stage 6 and the counsel pass (steps 11 and 16):
    used".** Each is a verifier. It tells a coercer holding the unlocked phone, and any phrase the user gave them,
    whether it opens a real space.
 3. **A list, count or switcher of spaces,** a "you have N spaces" line, space names or colours. §1.5 forbids it.
+   This includes a *stored* switcher in which one space holds the others' keys, like account switching (finding
+   6, "Why not a stored switcher"). The in-memory toggle of finding 6, suggestion 5 is a separate, open item.
 4. **A stored per-space date or reminder** (rehearsal, "last used"). A per-space record; notifications are forbidden
    (`OSTraceTests`).
 5. **A per-space grace or setting.** Any value that differs by space is a depth-only observable.
