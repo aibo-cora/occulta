@@ -155,6 +155,9 @@ final class StreamedReceive {
     }
 
     private func completed() {
+        // Cancelled while the last file was in flight: its completion is dropped by `finished(id:at:)`, so the file would
+        // stay in `tmp/` until the next cold launch (Bug 218).
+        if self.discarded { self.deleteFiles() }
         self.release()
     }
 
@@ -189,6 +192,8 @@ nonisolated final class ReceiveSink: StreamSink, @unchecked Sendable {
     private var encryptor: StreamingEncryptor?
     private var current: Int?
     private var created: [URL] = []
+    /// Set by `abandonAll()`: the receive was cancelled or failed, and no file may be begun after it (Bug 218).
+    private var abandoned = false
 
     /// Called, off the main actor, when a file's last byte is written and the file is sealed.
     var onFinished: (@Sendable (UUID, URL) -> Void)?
@@ -202,6 +207,9 @@ nonisolated final class ReceiveSink: StreamSink, @unchecked Sendable {
     func begin(fileIndex: Int) throws {
         guard let url = self.plan[fileIndex] else { throw BodyStream.StreamError.lengthMismatch }
         self.lock.lock(); defer { self.lock.unlock() }
+        // A file begun in the last chunk, or by `finish`, after the cancel: it would be created and finalised with nothing
+        // left to delete it.
+        guard !self.abandoned else { throw CancellationError() }
         let encryptor = try self.manager.streamingEncryptor(to: url)
         self.created.append(url)
         self.encryptor = encryptor
@@ -225,7 +233,7 @@ nonisolated final class ReceiveSink: StreamSink, @unchecked Sendable {
 
     /// Stops the file being written and removes it, and every one finished before it.
     func abandonAll() {
-        self.lock.lock(); let encryptor = self.encryptor; self.encryptor = nil; self.lock.unlock()
+        self.lock.lock(); let encryptor = self.encryptor; self.encryptor = nil; self.abandoned = true; self.lock.unlock()
         encryptor?.abandon()
         self.removeAll()
     }

@@ -102,7 +102,10 @@ extension RoutingKey {
 
     // MARK: - The routing key
 
-    /// The routing key of a pair-key pairing: HKDF-SHA256 over `pk ‖ ik ‖` both ML-KEM secrets sorted (where the exchange
+    /// The routing key of a pair-key pairing in an exchange that did not commit to its nonces, as a build before 2.0.5 made it.
+    /// The app no longer calls it (`deriveCommitted` replaced it, Bug 198); it stays because the interop vectors pin it.
+    ///
+    /// HKDF-SHA256 over `pk ‖ ik ‖` both ML-KEM secrets sorted (where the exchange
     /// had them), salted with the two agreement keys XORed, with both exchange nonces sorted and the transcript after
     /// `pairingDomain` as the info.
     ///
@@ -122,7 +125,11 @@ extension RoutingKey {
 
     // MARK: - The words
 
-    /// The key the verification words come from, for an exchange that made pair keys: the same input as the routing key,
+    /// The key the verification words come from, for an exchange that made pair keys and did not commit to its nonces, as a
+    /// build before 2.0.5 made it. The app no longer calls it (`wordsKeyCommitted` replaced it, Bug 198); it stays because the
+    /// interop vectors pin it.
+    ///
+    /// The same input as the routing key,
     /// salted with the two identity keys XORed (`identitySalt`) and under a domain of its own, so what a screen shows
     /// reveals nothing of the routing key.
     ///
@@ -161,12 +168,66 @@ extension RoutingKey {
         )
     }
 
+    // MARK: - Committed exchanges (Bug 198)
+
+    /// The routing key of a pair-key pairing made in a committed exchange (`ExchangeCommitment`): the same input as
+    /// `derive`, with the exchange transcript, a hash of every message of the exchange, in place of the pair blocks'
+    /// transcript, under a domain of its own. The pair keys and the prekey batch are inside the messages it covers.
+    ///
+    /// - Returns: `nil` for any input of the wrong size, two equal nonces, or two equal agreement keys.
+    public static func deriveCommitted(
+        pairwiseECDH: Data, identityECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data,
+        mlkemSecrets: (Data, Data)?, ourNonce: Data, peerNonce: Data, exchangeTranscript: Data
+    ) -> Data? {
+        guard let ikm = Self.keyMaterial(pairwiseECDH, identityECDH, mlkemSecrets),
+              let salt = Self.salt(ourAgreementKey, peerAgreementKey),
+              let nonces = Self.sortedNonces(ourNonce, peerNonce), exchangeTranscript.count == ExchangeCommitment.transcriptSize
+        else { return nil }
+        let flags = Self.shapeFlags(pairKeys: true, mlkem: mlkemSecrets != nil)
+        return Self.expand(ikm, salt: salt, info: Self.committedPairingDomain + flags + nonces + exchangeTranscript)
+    }
+
+    /// The key the verification words come from in a committed exchange, for every shape of exchange: with or without pair
+    /// keys, with or without ML-KEM. The identity ECDH is always in it, so a classical exchange's words are no longer the
+    /// transport key's output, and are different at every exchange. Salted with the two identity keys XORed, under a domain
+    /// of its own, so what a screen shows reveals nothing of the routing key.
+    ///
+    /// - Parameter pairwiseECDH: the pair-key ECDH output, or `nil` when the exchange made no pair keys.
+    /// - Returns: `nil` for any input of the wrong size or two equal nonces.
+    public static func wordsKeyCommitted(
+        pairwiseECDH: Data?, identityECDH: Data, identitySalt: Data, mlkemSecrets: (Data, Data)?,
+        ourNonce: Data, peerNonce: Data, exchangeTranscript: Data
+    ) -> Data? {
+        guard identityECDH.count == Self.size, identitySalt.count == PairBlock.p256KeySize,
+              let nonces = Self.sortedNonces(ourNonce, peerNonce), exchangeTranscript.count == ExchangeCommitment.transcriptSize
+        else { return nil }
+        var ikm = Data()
+        if let pairwiseECDH {
+            guard pairwiseECDH.count == Self.size else { return nil }
+            ikm.append(pairwiseECDH)
+        }
+        ikm.append(identityECDH)
+        if let mlkemSecrets {
+            guard let sorted = Self.sortedSecrets(mlkemSecrets) else { return nil }
+            ikm.append(sorted)
+        }
+        let flags = Self.shapeFlags(pairKeys: pairwiseECDH != nil, mlkem: mlkemSecrets != nil)
+        return Self.expand(ikm, salt: identitySalt, info: Self.committedWordsDomain + flags + nonces + exchangeTranscript)
+    }
+
+    /// One byte saying which parts the key material has: bit 0 pair keys, bit 1 ML-KEM.
+    private static func shapeFlags(pairKeys: Bool, mlkem: Bool) -> Data {
+        Data([(pairKeys ? 0x01 : 0x00) | (mlkem ? 0x02 : 0x00)])
+    }
+
     // MARK: - Internals
 
     static let transcriptDomain       = Data("occulta-pairing-transcript-v1".utf8)
     static let batchDomain            = Data("occulta-pairing-batch-v1".utf8)
     static let pairingDomain          = Data("Occulta-v2-routing-key-2026".utf8)
     static let wordsDomain            = Data("Occulta-v2-pairwise-diceware-2026".utf8)
+    static let committedPairingDomain = Data("Occulta-v2-routing-key-committed-2026".utf8)
+    static let committedWordsDomain   = Data("Occulta-v2-exchange-words-committed-2026".utf8)
     static let longTermClassicalDomain = Data("Occulta-v1-pairwise-transport-2026".utf8)
     static let longTermHybridDomain    = Data("Occulta-v2-pairwise-hybrid-transport-2026".utf8)
 

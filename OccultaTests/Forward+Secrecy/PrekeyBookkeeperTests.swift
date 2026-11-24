@@ -29,7 +29,7 @@ private extension PrekeyBookkeeper {
 }
 
 private func wire(_ count: Int) -> [OccultaBundle.WirePrekey] {
-    (0..<count).map { _ in OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65)) }
+    (0..<count).map { _ in OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomPoint()) }
 }
 
 private let day: TimeInterval = 24 * 60 * 60
@@ -143,7 +143,7 @@ struct PrekeyBookkeeperAcceptTests {
         let tooMany = wire(PrekeyBookkeeper.maxInboundKeysPerBatch + 1)
         let badKey  = [OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(64))]
         let longID  = [OccultaBundle.WirePrekey(
-            id: String(repeating: "k", count: PrekeyBookkeeper.maxInboundKeyIDBytes + 1), publicKey: randomBytes(65)
+            id: String(repeating: "k", count: PrekeyBookkeeper.maxInboundKeyIDBytes + 1), publicKey: randomPoint()
         )]
         for prekeys in [tooMany, badKey, longID] {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
@@ -467,7 +467,7 @@ struct PrekeyBookkeeperLastResortTests {
     @Test("The contact's last-resort key is stored, outlives their one-time keys, and is replaced by their next batch")
     func inboundLastResort() throws {
         var record = PrekeyRecord.empty
-        let first = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        let first = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomPoint())
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
                                        lastResort: first, onReopenableSlot: false, into: &record)
         #expect(record.inboundLastResort?.id == first.id)
@@ -476,7 +476,7 @@ struct PrekeyBookkeeperLastResortTests {
         #expect(record.inboundBatches.isEmpty)
         #expect(record.inboundLastResort?.id == first.id, "running out of one-time keys keeps it")
 
-        let second = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        let second = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomPoint())
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(1),
                                        lastResort: second, onReopenableSlot: false, into: &record)
         #expect(record.inboundLastResort?.id == second.id)
@@ -491,7 +491,7 @@ struct PrekeyBookkeeperLastResortTests {
         var record = PrekeyRecord.empty
         let bad = [
             OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(64)),
-            OccultaBundle.WirePrekey(id: "not-a-uuid", publicKey: randomBytes(65)),
+            OccultaBundle.WirePrekey(id: "not-a-uuid", publicKey: randomPoint()),
         ]
         for lastResort in bad {
             #expect(throws: PrekeyBookkeeper.BookkeeperError.malformedBatch) {
@@ -604,7 +604,7 @@ struct PrekeyBookkeeperLastResortUseTests {
     @Test("The contact's last-resort key is what we seal to once their one-time keys are gone")
     func lastResortForSending() throws {
         var record = PrekeyRecord.empty
-        let lastResort = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        let lastResort = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomPoint())
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: [], lastResort: lastResort, onReopenableSlot: false, into: &record)
 
         let prekey = try #require(self.bookkeeper.lastResortPrekey(in: record, contactID: "contact"))
@@ -645,8 +645,8 @@ struct PrekeyBookkeeperAppendTests {
     @Test("The last-resort key is the newest batch's, and the record encodes with two full batches held")
     func lastResortIsNewest() throws {
         var record = PrekeyRecord.empty
-        let older = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
-        let newer = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        let older = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomPoint())
+        let newer = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomPoint())
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(15), lastResort: older, onReopenableSlot: false, into: &record)
         _ = try self.bookkeeper.accept(id: randomBytes(16), generatedAt: Date(), prekeys: wire(15), lastResort: newer, onReopenableSlot: false, into: &record)
 
@@ -778,7 +778,7 @@ struct PrekeyBookkeeperReplayTests {
     let start = Date(timeIntervalSince1970: 1_800_000_000)
 
     private func lastResortKey() -> OccultaBundle.WirePrekey {
-        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomBytes(65))
+        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: randomPoint())
     }
 
     @Test("Once 8 newer batches have pushed its ID out, a replayed batch on a reopenable slot is refused")

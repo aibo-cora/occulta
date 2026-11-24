@@ -20,7 +20,7 @@ import OccultaCore
 struct PairingOfferTests {
 
     private func wirePrekey(_ n: UInt8) -> OccultaBundle.WirePrekey {
-        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: n, count: 65))
+        OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: testPoint(n))
     }
 
     private func batch(keys: Int = 3) -> OccultaBundle.SealedPayload.PrekeySyncBatch {
@@ -127,6 +127,26 @@ struct PairingOfferTests {
         #expect(try self.accept(self.field(signing: Data(repeating: 4, count: 66))) == nil)
         #expect(try self.accept(self.field(agreement: Data(repeating: 0x04, count: 65))) == nil, "65 bytes that are not a point")
         #expect(try self.accept(self.field(agreement: Data(count: 65))) == nil)
+    }
+
+    @Test("A prekey or last-resort key that is not a point on the curve refuses the field (Bug 204)")
+    func refusesBadPrekeys() throws {
+        func field(prekeys: [OccultaBundle.WirePrekey], lastResort: OccultaBundle.WirePrekey) -> Exchange.PairingField {
+            Exchange.PairingField(
+                prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch(
+                    generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_000), prekeys: prekeys,
+                    id: Data(repeating: 0xAB, count: 16), lastResort: lastResort
+                ),
+                agreementKey: Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation),
+                signingKey: Data(P256.Signing.PrivateKey().publicKey.x963Representation), mldsaKey: nil
+            )
+        }
+        let bad = OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: 0x04, count: 65))
+        let good = [self.wirePrekey(1), self.wirePrekey(2)]
+
+        #expect(try self.accept(field(prekeys: [good[0], bad], lastResort: self.wirePrekey(0xEE))) == nil)
+        #expect(try self.accept(field(prekeys: good, lastResort: bad)) == nil)
+        #expect(try self.accept(field(prekeys: good, lastResort: self.wirePrekey(0xEE))) != nil, "a batch of real points is accepted")
     }
 
     @Test("Two keys that are the same refuse the field")

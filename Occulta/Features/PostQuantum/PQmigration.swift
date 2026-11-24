@@ -472,6 +472,90 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
+    /// Moves a postal `country` that is still under the v1 key onto the current one (`bugs.md` Bug 216).
+    ///
+    /// `migrateContact` left `country` out of its field list, so a v1 contact's value stayed sealed under the v1 key, a
+    /// function of the identity public key, while the row was marked v2 and nothing retried it. The list is fixed; this
+    /// pass repairs the rows that were converted before it was.
+    ///
+    /// A value is touched only if it does not open under the current key and does open under the v1 key. One that opens
+    /// under the current key is left byte-identical, and one that opens under neither (a row stranded by a rotation, or
+    /// noise) is left as it is, which is what the key reseal does with a value it can't open. Empty values are skipped. Rows still at the v1 scheme are `migrateToV2`'s,
+    /// and soft-deleted rows are skipped as there: their content is erased.
+    ///
+    /// Migration plan, nothing is lost: the plaintext is read before anything is written, the new ciphertext is opened and
+    /// compared with it before it replaces the old, and every change is committed by one `save()` at the end, so a failure
+    /// leaves every row as it was and the next launch tries again. Idempotent: once a row is resealed it opens under the
+    /// current key and is skipped, so the pass writes nothing on a store without such rows. The column is a sealed string
+    /// either way, so its size does not change. The passphrase release reads every field: after this pass no `country` is
+    /// left that only the v1 key opens.
+    ///
+    /// - Parameters:
+    ///   - modelContext: The context to fetch and save postal addresses.
+    ///   - legacyCrypto: Opens values sealed under the v1 key.
+    ///   - newCrypto: The current key, as `Manager.Crypto()` derives it.
+    static func migrateCountryOrphans(modelContext: ModelContext, legacyCrypto: LegacyCryptoProtocol, newCrypto: CryptoProtocol) throws {
+        let v1 = EncryptionScheme.v1_identityDerived.rawValue
+        let addresses = try modelContext.fetch(FetchDescriptor<Contact.Profile.PostalAddress>())
+        var didChange = false
+
+        for address in addresses {
+            guard let profile = address.profile, profile.encryptionScheme != v1, profile.deletionToken == nil,
+                  !address.country.isEmpty, let sealed = Data(base64Encoded: address.country), !sealed.isEmpty
+            else { continue }
+
+            // Under the current key already: nothing to do, and nothing to write.
+            if (try? newCrypto.decrypt(data: sealed)) != nil { continue }
+
+            guard let plaintext = try? legacyCrypto.decryptLegacy(data: sealed),
+                  let resealed = try newCrypto.encrypt(data: plaintext),
+                  try newCrypto.decrypt(data: resealed) == plaintext
+            else { continue }
+
+            address.country = resealed.base64EncodedString()
+            didChange = true
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
+    /// Clears the routing key and pair keys from key rows that were revoked before `ContactManager.reset(identity:)` did it
+    /// (`bugs.md` Bug 201).
+    ///
+    /// A revoke only stamped `expiredOn`, so the expired row kept its pairing column: the routing key and the Enclave
+    /// blobs of the pair keys. A re-pair clears the rows it retires; this does the same for the rows a revoke expired, by
+    /// writing the sealed empty state over any whose column reads as a pairing that holds something.
+    ///
+    /// One pass over every row of every contact that is no longer at the v1 scheme, live, hidden and soft-deleted, so the
+    /// pass reaches the same rows at every depth. A row that is not expired is the current pairing and is never touched. A
+    /// column that can't be read is left as it is: it may be mid-reseal, and an unreadable value isn't one this can judge.
+    ///
+    /// Migration plan, nothing is lost: only a row that is already expired is changed, and nothing reads an expired row's
+    /// pairing (`ContactManager.pairingState(for:)` looks at the current key). The empty state is sealed at the same size as
+    /// the state it replaces, so the column's length doesn't change. Every change is committed by one `save()` at the end,
+    /// so a failure leaves every row as it was and the next launch tries again. Idempotent: a cleared row reads as empty and
+    /// is skipped, so a store with nothing to clear is not written.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateRevokedPairings(modelContext: ModelContext) throws {
+        let v1 = EncryptionScheme.v1_identityDerived.rawValue
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.encryptionScheme != v1 })
+        )
+        var didChange = false
+
+        for key in contacts.flatMap({ $0.contactPublicKeys ?? [] }) where key.expiredOn != nil {
+            guard let sealed = key.pairingEncrypted, let plaintext = sealed.decrypt(),
+                  let state = try? PairingCodec().decode(plaintext), state != .empty
+            else { continue }
+            guard let empty = try PairingCodec().encode(.empty).encrypt() else { throw MigrationError.hybridKeyUnavailable }
+            key.pairingEncrypted = empty
+            didChange = true
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
     /// Deletes any remaining `GlobalShardConfig` rows, the old depth-0-only global trustee
     /// list. It used to stamp `globalTrusteeDepth = encrypt(0)` on those contacts first (the
     /// shard-custody bug doc, item 3); with Global Trustees retired it stamps nothing, which
@@ -563,7 +647,8 @@ struct DatabaseMigration {
             postal.city           = try reencryptString(postal.city,           field: "postal.city",    id: id, legacy: legacyCrypto, new: newCrypto)
             postal.state          = try reencryptString(postal.state,          field: "postal.state",   id: id, legacy: legacyCrypto, new: newCrypto)
             postal.postalCode     = try reencryptString(postal.postalCode,     field: "postal.zip",     id: id, legacy: legacyCrypto, new: newCrypto)
-            postal.isoCountryCode = try reencryptString(postal.isoCountryCode, field: "postal.country", id: id, legacy: legacyCrypto, new: newCrypto)
+            postal.country        = try reencryptString(postal.country,        field: "postal.country", id: id, legacy: legacyCrypto, new: newCrypto)
+            postal.isoCountryCode = try reencryptString(postal.isoCountryCode, field: "postal.isoCountryCode", id: id, legacy: legacyCrypto, new: newCrypto)
         }
 
         try contact.urlAddresses?.forEach { url in

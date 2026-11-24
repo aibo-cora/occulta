@@ -69,16 +69,19 @@ private func derive(
     let transcript = RoutingKey.transcript(me.block, theirBlock)
     let pk = try me.pairwiseECDH(with: peerAgreement)
     guard
-        let routing = me.identity.createRoutingKey(
-            peerP256Material: peerIdentity, pairwiseECDH: pk, ourAgreementKey: me.agreementPublic, peerAgreementKey: peerAgreement,
-            transcript: transcript, quantumMaterial: quantum, ourNonce: ourNonce, peerNonce: peerNonce
+        quantum.map(\.isValid) ?? true, let ecdh = me.identity.rawECDHWithSalt(peerP256Material: peerIdentity),
+        let routing = RoutingKey.derive(
+            pairwiseECDH: pk, identityECDH: ecdh.rawECDH, ourAgreementKey: me.agreementPublic, peerAgreementKey: peerAgreement,
+            mlkemSecrets: quantum.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) }, ourNonce: ourNonce, peerNonce: peerNonce,
+            transcript: transcript
         ),
-        let words = me.identity.createPairwiseDicewareKey(
-            peerP256Material: peerIdentity, pairwiseECDH: pk, transcript: transcript, quantumMaterial: quantum,
-            ourNonce: ourNonce, peerNonce: peerNonce
+        let words = RoutingKey.wordsKey(
+            pairwiseECDH: pk, identityECDH: ecdh.rawECDH, identitySalt: ecdh.salt,
+            mlkemSecrets: quantum.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) }, ourNonce: ourNonce, peerNonce: peerNonce,
+            transcript: transcript
         )
     else { return nil }
-    return Derived(routingKey: routing, words: words.withUnsafeBytes { Data($0) })
+    return Derived(routingKey: routing, words: words)
 }
 
 // MARK: - Suite
@@ -275,6 +278,7 @@ struct PairwiseDerivationTests {
     @Test("A bad size, equal nonces or equal agreement keys derive nothing")
     func refusesBadInput() throws {
         let identity = try self.bob.identity.retrieveIdentity()
+        let ecdh = try #require(self.alice.identity.rawECDHWithSalt(peerP256Material: identity))
         let pk = try self.alice.pairwiseECDH(with: self.bob.agreementPublic)
         let transcript = RoutingKey.transcript(self.alice.block, self.bob.block)
 
@@ -282,10 +286,10 @@ struct PairwiseDerivationTests {
             pk: Data? = nil, ourAgreement: Data? = nil, peerAgreement: Data? = nil, transcript t: Data? = nil,
             ourNonce: Data = nonce(1), peerNonce: Data = nonce(2)
         ) -> Data? {
-            self.alice.identity.createRoutingKey(
-                peerP256Material: identity, pairwiseECDH: pk ?? pk_, ourAgreementKey: ourAgreement ?? self.alice.agreementPublic,
-                peerAgreementKey: peerAgreement ?? self.bob.agreementPublic, transcript: t ?? transcript,
-                quantumMaterial: nil, ourNonce: ourNonce, peerNonce: peerNonce
+            RoutingKey.derive(
+                pairwiseECDH: pk ?? pk_, identityECDH: ecdh.rawECDH, ourAgreementKey: ourAgreement ?? self.alice.agreementPublic,
+                peerAgreementKey: peerAgreement ?? self.bob.agreementPublic, mlkemSecrets: nil,
+                ourNonce: ourNonce, peerNonce: peerNonce, transcript: t ?? transcript
             )
         }
         let pk_ = pk

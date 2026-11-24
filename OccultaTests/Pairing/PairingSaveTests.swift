@@ -26,30 +26,28 @@ private func ownBatch(id: UInt8, keys: Int = 15) -> PrekeyRecord.OwnBatch {
     PrekeyRecord.OwnBatch(
         id: Data(repeating: id, count: 16), createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000), retiredAt: nil,
         isPending: true,
-        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
-        lastResort: PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: Data(repeating: 0xEE, count: 65))
+        keys: (0..<keys).map { PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: testPoint(UInt8(truncatingIfNeeded: $0 + 1))) },
+        lastResort: PrekeyRecord.OwnKey(id: uuidBytes(), blob: nil, publicKey: testPoint(0xEE))
     )
 }
 
 private func peerBatch(keys: Int = 15) -> PairingOffer.Batch {
     PairingOffer.Batch(OccultaBundle.SealedPayload.PrekeySyncBatch(
         generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_100),
-        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: UInt8(truncatingIfNeeded: $0 + 1), count: 65)) },
+        prekeys: (0..<keys).map { OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: testPoint(UInt8(truncatingIfNeeded: $0 + 1))) },
         id: Data(repeating: 0xBB, count: 16),
-        lastResort: OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: Data(repeating: 0xDD, count: 65))
+        lastResort: OccultaBundle.WirePrekey(id: UUID().uuidString, publicKey: testPoint(0xDD))
     ))
 }
 
-/// The digest of the batch `record` would send, as the exchange takes it once when it makes the field.
-private func sentDigest(of record: PrekeyRecord) -> Data {
-    PairingOffer.Batch(PairingOffer.wireBatch(of: record)!).digest
-}
+/// What both phones hold of an exchange, in these tests: the hash of its messages, which every offer carries (Bug 198).
+private let exchangeTranscript = Data(repeating: 0x5A, count: 32)
 
 private func offer(own: PrekeyRecord.OwnBatch? = nil, peer: PairingOffer.Batch? = nil) -> PairingOffer {
     var record = PrekeyRecord.empty
     record.ownBatches = [own ?? ownBatch(id: 0xAA)]
     return PairingOffer(
-        ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peer ?? peerBatch(),
+        committed: .init(ourNonce: nonce(1), peerNonce: nonce(2), transcript: exchangeTranscript), ownPrekeys: record, peerBatch: peer ?? peerBatch(),
         ours: ownPairKeys(), theirs: peerPairKeys(), pairwiseECDH: Data(repeating: 0x33, count: 32)
     )
 }
@@ -128,7 +126,7 @@ struct PairingOfferDerivationTests {
             ourNonce: Data, peerNonce: Data
         ) throws -> PairingOffer {
             PairingOffer(
-                ourNonce: ourNonce, peerNonce: peerNonce, ownPrekeys: record, ownBatchDigest: sentDigest(of: record), peerBatch: peerBatch,
+                committed: .init(ourNonce: ourNonce, peerNonce: peerNonce, transcript: exchangeTranscript), ownPrekeys: record, peerBatch: peerBatch,
                 ours: ours,
                 theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
                 pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: self.provider)
@@ -150,7 +148,6 @@ struct PairingOfferDerivationTests {
         let routingB = try #require(b.routingKey(withPeer: aliceKey, quantum: nil, using: self.bob))
         #expect(routingA == routingB && routingA.count == 32)
         #expect(a.wordsKey(withPeer: bobKey, quantum: nil, using: self.alice) == b.wordsKey(withPeer: aliceKey, quantum: nil, using: self.bob))
-        #expect(a.transcript == b.transcript)
     }
 
     @Test("They agree with ML-KEM secrets and with an ML-DSA key on one side, and differ from the exchange without")
@@ -168,18 +165,19 @@ struct PairingOfferDerivationTests {
         #expect(a != plain.alice.routingKey(withPeer: bobKey, quantum: q.alice, using: self.alice), "other keys, other pairing")
     }
 
-    @Test("A prekey batch swapped on the way makes the two phones' words and routing keys differ")
+    @Test("A prekey batch swapped on the way changes the transcript, and with it the two phones' words and routing keys")
     func swappedBatchIsSeen() throws {
         let (a, b) = try self.offers()
         let aliceKey = try self.alice.retrieveIdentity(), bobKey = try self.bob.retrieveIdentity()
-        // Bob is shown Alice's keys with another batch beside them; everything else is honest.
+        // Bob is shown Alice's keys with another batch beside them; everything else is honest. The batch is part of the
+        // identity message the transcript hashes, so his transcript is not Alice's.
         let other = PairingOffer.Batch(OccultaBundle.SealedPayload.PrekeySyncBatch(
             generatedAt: Date(timeIntervalSinceReferenceDate: 800_000_999), prekeys: [OccultaBundle.WirePrekey(id: "x", publicKey: Data(repeating: 9, count: 65))],
             id: Data(repeating: 0x99, count: 16), lastResort: nil
         ))
         let tampered = PairingOffer(
-            ourNonce: b.ourNonce, peerNonce: b.peerNonce, ownPrekeys: b.ownPrekeys, ownBatchDigest: b.ownBatchDigest, peerBatch: other, ours: b.ours, theirs: b.theirs,
-            pairwiseECDH: b.pairwiseECDH
+            committed: .init(ourNonce: b.ourNonce, peerNonce: b.peerNonce, transcript: Data(repeating: 0x5B, count: 32)),
+            ownPrekeys: b.ownPrekeys, peerBatch: other, ours: b.ours, theirs: b.theirs, pairwiseECDH: b.pairwiseECDH
         )
 
         #expect(a.wordsKey(withPeer: bobKey, quantum: nil, using: self.alice) != tampered.wordsKey(withPeer: aliceKey, quantum: nil, using: self.bob))
@@ -298,7 +296,7 @@ struct KeyExchangeSaveTests {
         var bobsRecord = PrekeyRecord.empty
         bobsRecord.ownBatches = [ownBatch(id: 0xBB)]
         return PairingOffer(
-            ourNonce: nonce(1), peerNonce: nonce(2), ownPrekeys: record, ownBatchDigest: sentDigest(of: record),
+            committed: .init(ourNonce: nonce(1), peerNonce: nonce(2), transcript: exchangeTranscript), ownPrekeys: record,
             peerBatch: PairingOffer.Batch(try #require(PairingOffer.wireBatch(of: bobsRecord))), ours: ours,
             theirs: PairingOffer.PeerPairKeys(agreementKey: theirs.agreementKey, signingKey: theirs.signingKey, mldsaKey: theirs.mldsaKey),
             pairwiseECDH: try PairingOffer.pairwiseECDH(ours: ours, peerAgreementKey: theirs.agreementKey, using: SoftwareCardKeys())
@@ -308,7 +306,8 @@ struct KeyExchangeSaveTests {
     private func payload(_ pairing: PairingOffer?, peerKey: Data? = nil) throws -> ExchangeManager.ExchangePhase.Payload {
         .init(
             fingerprint: Data(count: 32), classicalKey: try peerKey ?? self.bob.retrieveIdentity(), hybridResult: nil,
-            pairing: pairing, offeredPairing: true
+            pairing: pairing, offeredPairing: true,
+            committed: .init(ourNonce: nonce(1), peerNonce: nonce(2), transcript: exchangeTranscript)
         )
     }
 

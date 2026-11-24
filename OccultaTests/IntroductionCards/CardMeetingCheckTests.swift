@@ -48,8 +48,11 @@ private struct Ceremony {
         return ExchangeManager.HybridExchangeResult(
             peerP256PublicKey: theirs,
             mlkemSecret1: Data(repeating: 1, count: 32), mlkemSecret2: Data(repeating: 2, count: 32),
-            ourNonce: side == .bob ? self.bobNonce : self.carolNonce,
-            peerNonce: side == .bob ? self.carolNonce : self.bobNonce,
+            committed: CommittedExchange(
+                ourNonce: side == .bob ? self.bobNonce : self.carolNonce,
+                peerNonce: side == .bob ? self.carolNonce : self.bobNonce,
+                transcript: Data(repeating: 0x5A, count: 32)
+            ),
             ourCiphertext: side == .bob ? self.bobCiphertext : self.carolCiphertext,
             peerCiphertext: side == .bob ? self.carolCiphertext : self.bobCiphertext
         )
@@ -261,15 +264,19 @@ struct CardMeetingTableTests {
 
     // MARK: Classical-only
 
-    @Test("A classical-only exchange has no transcript: no verdict in any row", arguments: rows.map(\.0))
+    /// Bug 203: a card conversation needs iOS 26 at both ends, so a peer met in person without a hybrid result cannot have
+    /// been its other end. Wherever the table shows a verdict the answer is W-11; where it shows none, it still shows none.
+    @Test("A classical-only exchange is W-11 wherever the table shows a verdict", arguments: rows.map(\.0))
     func classicalOnly(_ name: String) throws {
+        let expected = try #require(Self.rows.first { $0.0 == name })
         let pair = try self.setUp(name)
         let ceremony = Ceremony()
         let bob = try pair.bob.meetingContext(pair.bobSide), carol = try pair.carol.meetingContext(pair.carolSide)
 
         let bobVerdict = CardMeetingContext.verdict(context: bob, result: nil, ourIdentity: ceremony.bobIdentity, peerProof: ceremony.proof(.carol, carol))
         let carolVerdict = CardMeetingContext.verdict(context: carol, result: nil, ourIdentity: ceremony.carolIdentity, peerProof: ceremony.proof(.bob, bob))
-        #expect(bobVerdict == .none && carolVerdict == .none, "\(name)")
+        #expect(bobVerdict == (expected.1 == .none ? .none : .mismatch), "\(name): Bob")
+        #expect(carolVerdict == (expected.2 == .none ? .none : .mismatch), "\(name): Carol")
     }
 
     @Test("Without the identity key we sent there is nothing to check against")
@@ -279,6 +286,46 @@ struct CardMeetingTableTests {
         let ceremony = Ceremony()
         let bob = try pair.bob.meetingContext(pair.bobSide), carol = try pair.carol.meetingContext(pair.carolSide)
         #expect(CardMeetingContext.verdict(context: bob, result: ceremony.result(.bob), ourIdentity: nil, peerProof: ceremony.proof(.carol, carol)) == .none)
+    }
+}
+
+// MARK: - Classical-only, without an Enclave
+
+@Suite("Meeting check — a classical-only exchange (Bug 203), without an Enclave")
+struct CardMeetingClassicalOnlyTests {
+
+    private let identity = Data([0x04]) + randomBytes(64)
+    private let peerKey = Data([0x04]) + randomBytes(64)
+
+    @Test("A held peer signing key and no hybrid result is W-11, with or without a proof message")
+    func heldKeyNoResultIsMismatch() {
+        let context = CardMeetingContext(sign: nil, peerSigningKey: self.peerKey)
+        #expect(CardMeetingContext.verdict(context: context, result: nil, ourIdentity: self.identity, peerProof: nil) == .mismatch)
+        #expect(CardMeetingContext.verdict(context: context, result: nil, ourIdentity: self.identity, peerProof: randomBytes(CardMeeting.proofByteCount)) == .mismatch)
+        #expect(CardMeetingContext.verdict(context: context, result: nil, ourIdentity: nil, peerProof: nil) == .mismatch)
+    }
+
+    /// A phone that made no ML-KEM key of its own has no hybrid result whatever the peer did, so a missing result says
+    /// nothing about the peer. W-11 tells the person their earlier messages were intercepted; it must not be shown for that.
+    @Test("Where our own ML-KEM key was not made, a held key shows that the check could not run, not W-11")
+    func ownFailureIsUnchecked() {
+        let context = CardMeetingContext(sign: nil, peerSigningKey: self.peerKey)
+        for proof in [nil, randomBytes(CardMeeting.proofByteCount)] {
+            #expect(CardMeetingContext.verdict(context: context, result: nil, offeredQuantum: false, ourIdentity: self.identity, peerProof: proof) == .unchecked)
+        }
+        #expect(CardMeetingContext.verdict(context: .none, result: nil, offeredQuantum: false, ourIdentity: self.identity, peerProof: nil) == .none, "no key, no verdict")
+    }
+
+    @Test("A peer that sent no ML-KEM key, which we offered ours to, is still W-11")
+    func peerStrippedIsStillMismatch() {
+        let context = CardMeetingContext(sign: nil, peerSigningKey: self.peerKey)
+        #expect(CardMeetingContext.verdict(context: context, result: nil, offeredQuantum: true, ourIdentity: self.identity, peerProof: nil) == .mismatch)
+    }
+
+    @Test("No peer signing key and no hybrid result still shows nothing")
+    func noKeyNoResultIsNone() {
+        #expect(CardMeetingContext.verdict(context: .none, result: nil, ourIdentity: self.identity, peerProof: nil) == .none)
+        #expect(CardMeetingContext.verdict(context: .none, result: nil, ourIdentity: self.identity, peerProof: randomBytes(CardMeeting.proofByteCount)) == .none)
     }
 }
 

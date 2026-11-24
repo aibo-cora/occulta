@@ -1778,58 +1778,30 @@ extension Manager.Key {
         )
     }
  
-    /// Derive a Diceware verification key from hybrid material with per-session nonces.
-    ///
-    /// Same IKM and salt as `createHybridSharedSecret`, but the HKDF info field
-    /// includes both exchange nonces (sorted) for per-session uniqueness.
-    /// This ensures Diceware words differ on every exchange, even between the same key pairs.
+    /// The routing key of a pair-key pairing made in a committed exchange (Bug 198): `RoutingKey.deriveCommitted`.
     ///
     /// SE operations: one ECDH via SE identity key.
-    func createDicewareKey(
-        peerP256Material: Data,
-        quantumMaterial: QuantumKeyMaterial,
-        ourNonce: Data,
-        peerNonce: Data
-    ) -> SymmetricKey? {
-        guard let ecdh = self.identityECDH(peerP256Material: peerP256Material) else { return nil }
-        guard ourNonce.count == 16, peerNonce.count == 16 else { return nil }
-
-        let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
-        var info = SaltInfo.kDicewareKeyInfo
-        info.append(contentsOf: sortedNonces[0])
-        info.append(contentsOf: sortedNonces[1])
-
-        return try? TransportKeyDerivation.sessionKey(
-            ecdhOutput: ecdh.rawECDH, ownPublicKey: ecdh.ownPublicKey, peerPublicKey: peerP256Material,
-            postQuantumSecrets: quantumMaterial.sharedSecrets, info: info
-        )
-    }
- 
-    /// The routing key of a pair-key pairing (`bugs.md` Bug 196, stage 2): `RoutingKey.derive` over the pair-key ECDH the
-    /// caller made and the identity ECDH made here. No raw identity ECDH output leaves this type.
-    ///
-    /// SE operations: one ECDH via SE identity key.
-    func createRoutingKey(
-        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data, transcript: Data,
-        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    func createCommittedRoutingKey(
+        peerP256Material: Data, pairwiseECDH: Data, ourAgreementKey: Data, peerAgreementKey: Data,
+        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data, exchangeTranscript: Data
     ) -> Data? {
         guard let ecdh = self.identityECDH(peerP256Material: peerP256Material) else { return nil }
         if let quantumMaterial, !quantumMaterial.isValid { return nil }
 
-        return RoutingKey.derive(
+        return RoutingKey.deriveCommitted(
             pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, ourAgreementKey: ourAgreementKey,
             peerAgreementKey: peerAgreementKey,
             mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
-            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
+            ourNonce: ourNonce, peerNonce: peerNonce, exchangeTranscript: exchangeTranscript
         )
     }
 
-    /// The key the verification words come from for an exchange that made pair keys: `RoutingKey.wordsKey`.
+    /// The key the verification words come from in a committed exchange, whatever its shape: `RoutingKey.wordsKeyCommitted`.
     ///
     /// SE operations: one ECDH via SE identity key.
-    func createPairwiseDicewareKey(
-        peerP256Material: Data, pairwiseECDH: Data, transcript: Data,
-        quantumMaterial: QuantumKeyMaterial?, ourNonce: Data, peerNonce: Data
+    func createCommittedDicewareKey(
+        peerP256Material: Data, pairwiseECDH: Data?, quantumMaterial: QuantumKeyMaterial?,
+        ourNonce: Data, peerNonce: Data, exchangeTranscript: Data
     ) -> SymmetricKey? {
         guard let ecdh = self.identityECDH(peerP256Material: peerP256Material) else { return nil }
         if let quantumMaterial, !quantumMaterial.isValid { return nil }
@@ -1837,10 +1809,10 @@ extension Manager.Key {
         // The same salt `TransportKeyDerivation` makes of the two public keys.
         let identitySalt = Data(zip(peerP256Material, ecdh.ownPublicKey).map { $0 ^ $1 })
 
-        return RoutingKey.wordsKey(
+        return RoutingKey.wordsKeyCommitted(
             pairwiseECDH: pairwiseECDH, identityECDH: ecdh.rawECDH, identitySalt: identitySalt,
             mlkemSecrets: quantumMaterial.map { ($0.encapsulatedSecret, $0.decapsulatedSecret) },
-            ourNonce: ourNonce, peerNonce: peerNonce, transcript: transcript
+            ourNonce: ourNonce, peerNonce: peerNonce, exchangeTranscript: exchangeTranscript
         ).map { SymmetricKey(data: $0) }
     }
 

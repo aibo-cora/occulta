@@ -20,6 +20,9 @@ enum CardMeetingVerdict: Equatable {
     case match
     /// Anything else where a verdict is shown: a filler, a bad signature, or no proof message: W-11.
     case mismatch
+    /// The check could not run here: this phone made no ML-KEM key of its own, so no hybrid result was possible whatever the
+    /// peer did. Neither a match nor a mismatch, and not an accusation of anyone.
+    case unchecked
 }
 
 struct CardMeetingContext {
@@ -35,9 +38,16 @@ struct CardMeetingContext {
     static let none = CardMeetingContext(sign: nil, peerSigningKey: nil)
 
     /// The verdict for an exchange that produced `result`, where `ourIdentity` is the identity key we sent.
-    /// `.none` without a hybrid result (no transcript) or where the table shows nothing.
-    static func verdict(context: CardMeetingContext, result: ExchangeManager.HybridExchangeResult?, ourIdentity: Data?, peerProof: Data?) -> CardMeetingVerdict {
-        guard let key = context.peerSigningKey, let result, let ourIdentity else { return .none }
+    /// `.none` where the table shows nothing. Where it shows a verdict and the exchange had no hybrid result, `.mismatch`
+    /// (Bug 203): a card conversation needs iOS 26 at both ends, so a person met on a phone that did no ML-KEM, or whose
+    /// ML-KEM was removed in transit, cannot have been its other end, and there is no transcript to check a proof against. If this phone made no ML-KEM key of
+    /// its own (`offeredQuantum` false) a missing result says nothing about the peer, and the verdict is `.unchecked`.
+    static func verdict(
+        context: CardMeetingContext, result: ExchangeManager.HybridExchangeResult?, offeredQuantum: Bool = true, ourIdentity: Data?, peerProof: Data?
+    ) -> CardMeetingVerdict {
+        guard let key = context.peerSigningKey else { return .none }
+        guard let result else { return offeredQuantum ? .mismatch : .unchecked }
+        guard let ourIdentity else { return .none }
         let transcript = CardMeeting.transcript(
             identityKeys: (ourIdentity, result.peerP256PublicKey),
             nonces: (result.ourNonce, result.peerNonce),

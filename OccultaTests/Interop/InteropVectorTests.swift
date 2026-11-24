@@ -21,6 +21,7 @@
 import Testing
 import Foundation
 import CryptoKit
+import OccultaCore
 @testable import Occulta
 @testable import OccultaFormats
 
@@ -70,12 +71,13 @@ struct InteropVectorTests {
         #expect(recipientSide == (try vector.compute()), "\(vector.name): the two sides disagree")
     }
 
-    /// The `ltKey` and `diceware` vectors run on a software identity key, because `Manager.Key` keeps its identity
-    /// in the Enclave. This ties the two together: an Enclave identity and the vector's software peer derive the
-    /// same key with each other, so what the vectors pin is what `Manager.Key` produces.
+    /// The `ltKey` vectors run on a software identity key, because `Manager.Key` keeps its identity in the Enclave.
+    /// This ties the two together: an Enclave identity and the vector's software peer derive the same key with each
+    /// other, so what the vectors pin is what `Manager.Key` produces. `diceware` is not here: `Manager.Key` no longer
+    /// derives it.
     @Test("The Enclave identity derives the same long-term key as the software one",
           .enabled(if: TestSupport.secureEnclaveAvailable()),
-          arguments: try loadVectors().filter { $0.kind == "ltKey" || $0.kind == "diceware" })
+          arguments: try loadVectors().filter { $0.kind == "ltKey" })
     func enclaveIdentityAgrees(_ vector: Vector) throws {
         let tag = UUID().uuidString
         let enclave = Manager.Key(testingTag: tag)
@@ -272,6 +274,14 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
         let blockTwoMLDSA: String?
         // recipientPayload
         let slotProof: String?
+        // exchangeTranscript (Bug 198)
+        let exchangeMessages: [ExchangeMessageInput]?
+    }
+
+    struct ExchangeMessageInput: Decodable, Sendable {
+        let role: String
+        let step: String
+        let bytes: String
     }
 
     struct ChallengeSlotInput: Decodable, Sendable {
@@ -694,6 +704,56 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
                 ourNonce: try Self.bytes(input.ourNonce), peerNonce: try Self.bytes(input.peerNonce),
                 transcript: try Self.bytes(input.transcript)))
 
+        case "exchangeCommitment":
+            let nonce = try Self.bytes(try #require(self.pairing).nonce)
+            let commitment = try #require(ExchangeCommitment.commitment(to: nonce))
+            #expect(ExchangeCommitment.opens(commitment, with: nonce), "\(self.name): production check rejected its own nonce")
+            return commitment
+
+        case "exchangeTranscript":
+            let input = try #require(self.pairing)
+            let messages = try #require(input.exchangeMessages).map { message in
+                ExchangeCommitment.Message(
+                    role: message.role == "initiator" ? .initiator : .responder,
+                    step: message.step == "discovery" ? .discovery : message.step == "identity" ? .identity : .ciphertext,
+                    bytes: try Self.bytes(message.bytes))
+            }
+            let transcript = try #require(ExchangeCommitment.transcript(messages))
+            #expect(transcript == ExchangeCommitment.transcript(messages.reversed()), "\(self.name): the order of the list matters")
+            return transcript
+
+        case "exchangeWordsKey":
+            // Both phones derive it, each with itself as "our": the nonces and ML-KEM secrets, swapped, must agree.
+            let input = try #require(self.pairing)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            let pairwise = try input.pairwiseECDH.map(Self.bytes)
+            let nonceOne = try Self.bytes(input.ourNonce), nonceTwo = try Self.bytes(input.peerNonce)
+            let derived = try #require(RoutingKey.wordsKeyCommitted(
+                pairwiseECDH: pairwise, identityECDH: try Self.bytes(input.identityECDH), identitySalt: try Self.bytes(input.identitySalt),
+                mlkemSecrets: secrets, ourNonce: nonceOne, peerNonce: nonceTwo, exchangeTranscript: try Self.bytes(input.transcript)))
+            let otherSide = RoutingKey.wordsKeyCommitted(
+                pairwiseECDH: pairwise, identityECDH: try Self.bytes(input.identityECDH), identitySalt: try Self.bytes(input.identitySalt),
+                mlkemSecrets: secrets.map { ($0.1, $0.0) }, ourNonce: nonceTwo, peerNonce: nonceOne,
+                exchangeTranscript: try Self.bytes(input.transcript))
+            #expect(derived == otherSide, "\(self.name): the two sides disagree")
+            return derived
+
+        case "exchangeRoutingKey":
+            let input = try #require(self.pairing)
+            let ours = try Self.bytes(input.ourAgreementKey), theirs = try Self.bytes(input.peerAgreementKey)
+            let nonceOne = try Self.bytes(input.ourNonce), nonceTwo = try Self.bytes(input.peerNonce)
+            let secrets = try input.mlkemSecret1.map { one in (try Self.bytes(one), try Self.bytes(input.mlkemSecret2)) }
+            let derived = try #require(RoutingKey.deriveCommitted(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                ourAgreementKey: ours, peerAgreementKey: theirs, mlkemSecrets: secrets,
+                ourNonce: nonceOne, peerNonce: nonceTwo, exchangeTranscript: try Self.bytes(input.transcript)))
+            let otherSide = RoutingKey.deriveCommitted(
+                pairwiseECDH: try Self.bytes(input.pairwiseECDH), identityECDH: try Self.bytes(input.identityECDH),
+                ourAgreementKey: theirs, peerAgreementKey: ours, mlkemSecrets: secrets.map { ($0.1, $0.0) },
+                ourNonce: nonceTwo, peerNonce: nonceOne, exchangeTranscript: try Self.bytes(input.transcript))
+            #expect(derived == otherSide, "\(self.name): the two sides disagree")
+            return derived
+
         case "pairwiseLongTermKey":
             let input = try #require(self.pairing)
             let ours = try Self.bytes(input.ourAgreementKey), theirs = try Self.bytes(input.peerAgreementKey)
@@ -893,12 +953,19 @@ struct Vector: Decodable, Sendable, CustomTestStringConvertible {
     func longTermKey(_ manager: any KeyManagerProtocol, peerPublicKey: Data, fromPeer: Bool) throws -> Data {
         let key: SymmetricKey?
         if self.kind == "diceware" {
+            // The app no longer derives this key (the exchange derives its words only the committed way, Bug 198), so
+            // the vector is computed here as the removed `createDicewareKey` did, from the software identity's ECDH.
+            let software = try #require(manager as? TestKeyManager)
+            let ecdh = try #require(software.rawECDHWithSalt(peerP256Material: peerPublicKey))
             let ours = try Self.bytes(self.ourNonce), theirs = try Self.bytes(self.peerNonce)
-            key = manager.createDicewareKey(
-                peerP256Material: peerPublicKey,
-                quantumMaterial:  try self.quantumMaterial(try #require(self.encapsulatedSecret), swapped: fromPeer),
-                ourNonce:         fromPeer ? theirs : ours,
-                peerNonce:        fromPeer ? ours : theirs
+            let sortedNonces = [ours, theirs].sorted { $0.lexicographicallyPrecedes($1) }
+            var info = SaltInfo.kDicewareKeyInfo
+            info.append(contentsOf: sortedNonces[0])
+            info.append(contentsOf: sortedNonces[1])
+            key = try TransportKeyDerivation.sessionKey(
+                ecdhOutput: ecdh.rawECDH, ownPublicKey: try software.retrieveIdentity(), peerPublicKey: peerPublicKey,
+                postQuantumSecrets: try self.quantumMaterial(try #require(self.encapsulatedSecret), swapped: fromPeer).sharedSecrets,
+                info: info
             )
         } else if let encapsulated = self.encapsulatedSecret {
             key = manager.createHybridSharedSecret(

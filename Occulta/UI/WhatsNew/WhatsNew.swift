@@ -155,6 +155,31 @@ enum WhatsNew {
                     "Your groups are no longer removed by mistake.",
                     "The contact list and contact details no longer freeze while they load."
                 ]
+            ),
+            Release(
+                version: "2.0.4",
+                features: [],
+                fixes: [
+                    "Ending a key exchange early no longer leaves it running in the background or shows a confirmation afterwards.",
+                    "Messages to a contact whose keys were damaged now still send, and a message that fails to send no longer uses up a key.",
+                    "Revoking a contact now clears everything stored for their old key.",
+                    "Addresses saved by older versions of Occulta are now protected like the rest of your contacts.",
+                    "Attachments from messages you didn't open, or that were cancelled, are now removed.",
+                    "A very large image in a message no longer closes Occulta; it is shown as a file instead.",
+                    "Occulta's files are now protected whenever your phone is locked.",
+                    "Erase All Data now tells you if your keys couldn't be removed."
+                ]
+            ),
+            Release(
+                version: "2.0.5",
+                features: [],
+                fixes: [
+                    "Exchanging keys in person now checks more of what was sent, so the five words you compare catch more kinds of tampering.",
+                    "Both phones now need Occulta 2.0.5 or later to exchange keys. If the other phone is on an older version, you'll be asked to have them update first.",
+                    "Exchanging keys again with a contact who has quantum-resistant keys no longer replaces them with ordinary ones. To do that on purpose, revoke their key first.",
+                    "Meeting someone through an introduction card now warns you when the key exchange wasn't quantum-resistant.",
+                    "Files you share into Occulta from other apps are now checked to be the ones you shared. If you started a share just before updating, share it again."
+                ]
             )
         ]
 
