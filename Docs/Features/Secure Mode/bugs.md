@@ -14972,7 +14972,8 @@ slice to every target one case in four, so a fourth decoder with the same habit 
 
 ## Bug 187 — A shared image can make ImageIO allocate gigabytes, by its declared size or by a chunk length
 
-**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged; four residuals open, needs a decision (below). The size
+**Status:** Fixed, merged with PR #145 and shipped in 2.0.3. Residual 2 (images from a contact) closed 2026-11-24 on
+`v2.1.0/fuzzing-follow-ups`, not merged; three residuals and one new one open, needs a decision (below). The size
 mechanism was found 2026-10-30 from reading `ShareSession.stripEXIF` while listing the share extension's input path for
 hardening step 12; the chunk mechanism by the fuzzer the same day (seed 1, iteration 151 of the staged-file target).
 Both confirmed by standalone probes.
@@ -15039,10 +15040,24 @@ or "...is damaged and can't be shared."
 1. **The pixel limit.** 100 megapixels is a judgment. An image at the limit can still take several hundred megabytes to
    decode (a 16-bit RGBA one 800 MB), and a lower limit would refuse photos from cameras above 64 or 100 megapixels,
    which some Android phones take. The number needs an owner; the check does not depend on it.
-2. **Images from a contact are decoded unchecked, by both mechanisms.** A received attachment and a contact photo in an
-   imported draft are read with `UIImage(data:)` and SwiftUI's image views (`ComposableMessage.swift`,
-   `Contact+Photo.swift`, `Import+View.swift`), with no size check. The same file reaches them from a paired contact. Not
-   tested; the same two checks where a received file is written, or shown, would close it.
+2. **Closed 2026-11-24: images from a contact were decoded unchecked, by both mechanisms.** Every path where bytes a
+   contact sent reach ImageIO or `UIImage` was listed again from the source. There is one: a received image attachment
+   shown in the message view (`ComposableMessage.swift`, `imageBubble`), which opens the sealed file and calls
+   `AttachmentManager.image(at:)`, and that handed the plaintext to ImageIO with no check. It now goes through the same
+   check as the share path, `ImageGuard.source(for:)` (the PNG chunk walk and the 100-megapixel limit, moved out of
+   `ShareSession` unchanged, which now calls it too), in `AttachmentManager.thumbnail(of:)`. A refused image throws
+   `AttachmentError.invalidImageData`, the error a damaged image already gives, so the bubble stays on its spinner as it
+   does for any undecodable image: no new text, no log line, nothing written, and no depth input, since
+   `AttachmentManager` is built from a key alone. **Contact photos have no path from a contact.** The Import screen that
+   the earlier text names (`Import+View.swift`) was removed in `fb60f452`, no code decodes a `Contact.Draft` from outside
+   bytes, and a contact's photo comes from the user's own photo picker or the system Contacts. The reads
+   (`Contact+Photo.swift`, `ContactFormV2.swift`, the list and detail views) are `UIImage(data:)` on what the user chose
+   and on a thumbnail the app re-encoded, and are not changed. Three paths are not guarded and are open, needs a
+   decision: (a) a received **video** is parsed by AVFoundation (`AttachmentManager.player(for:)`), a different decoder
+   with its own declared-size behaviour, not probed; (b) the **share sheet** of a received image (`shareProvider`)
+   hands the bytes to the system's own preview, outside this process; (c) a photo the user **picks** for a contact is
+   decoded by `UIImage(data:)` unchecked: a hostile image the user saved from elsewhere would reach it, and it takes
+   the user's own action, not a message.
 3. **Only PNG's chunk layout is checked.** Other formats declare sizes too: a TIFF's tag counts and offsets, an
    ISO-BMFF (HEIC) box's size, WebP's chunks. The fuzzer ran mutated JPEG, GIF and TIFF files through the same path and
    found none over its limit, but a mutation of a two-by-two image rarely sets those fields to a hostile value. Not
@@ -15058,6 +15073,15 @@ a well-formed PNG, reads a slice, refuses a length of 2^31, and ignores what is 
 pixels (valid, about 300 KB, its IDAT written out in the test) and one of 100,001,000 pixels in a shape neither side of
 which is large are refused with `imageTooLarge`; an ordinary JPEG and the well-formed PNG are still stripped and returned. Each refusal comes before any
 decode, so a regression allocates what the probes did. The memory figures above are from the probes, not from a test.
+
+Received images: `ReceivedImageRegressionTests` (`OccultaTests/Fuzzing/ReceivedImageRegressionTests.swift`) seals the
+exact hostile inputs (the 79-byte PNG that declares 2 GB, the fuzzer's 574-byte one, a PNG that declares 30,000 by
+30,000 pixels in under 1 MB, written out by the test's own deflate stream) as received attachments and opens them as the bubble does: each is refused with the error
+a damaged image gives, and the directory is unchanged. The guard's own refusals (`malformed`, `tooLarge`) are asserted
+too, since ImageIO fails on the 79 bytes either way and the outcome alone would not show the guard ran. The limit is
+the share path's (10,000 by 10,000 passes, 100,001 by 1,000 does not), and an ordinary PNG and JPEG still draw.
+`ReceivedImageTarget` (`ReceivedImageFuzzTarget.swift`) runs `AttachmentManager.thumbnail(of:)` in `DecoderFuzzTests`,
+seeded with those inputs, and fails on any other error than `invalidImageData` or a thumbnail over 960 pixels.
 
 ---
 
@@ -15103,7 +15127,9 @@ measured on a device; this would be the second thing to measure there.
 
 ## Bug 189 — 513 bytes of `[` end the app: a JSON document Foundation's scanner traps on
 
-**Status:** Fixed on `v2.1.0/decoder-fuzzing`, not merged; two residuals open, needs a decision (below). Found 2026-10-30
+**Status:** Fixed, merged with PR #145 and shipped in 2.0.3. Residual 2 closed 2026-11-24 on
+`v2.1.0/fuzzing-follow-ups`, not merged; residual 1 open, needs a decision, and eight decodes in three files are
+pending (below). Found 2026-10-30
 by the decoder fuzzer's standalone run: seed 12, iteration 98773 of the depth target, a 513-byte input, exit 133.
 
 **Update 2026-11-15:** in `release/v2.1.0` and shipped in 2.0.3 ([aibo-cora/occulta#191](https://github.com/aibo-cora/occulta/pull/191), tag `v2.0.3`, backported from the 2.1.0 commits). Anything above that says "not merged" is as of filing.
@@ -15164,8 +15190,9 @@ the limit is handed to `JSONDecoder` unchanged, so what decoded before decodes t
 every call that reads bytes from outside the device: the legacy bundle and the group section, the payload, basket and
 file entries, the exchange's message, the recipient payload (five call sites: group slots, card slots, a card's redemption), the
 legacy sealed payload, the identity challenge's payload, the legacy basket, imported contacts, the vault backup JSON, the
-share manifest and the legacy depth row. It is not applied to a field this device sealed under its own key and no one
-outside can write: stored contact key material, settings, drafts, custody and buffer rows.
+share manifest and the legacy depth row. Until 2026-11-24 it was not applied to a field this device sealed under its own
+key and no one outside can write (stored contact key material, settings, drafts, custody and buffer rows); it is now,
+see residual 2.
 
 64 is far above anything Occulta writes: the deepest document in the tests, a basket with every kind of file, nests six
 levels, and every recorded JSON vector nests four or fewer. No wire format changes and no
@@ -15176,9 +15203,21 @@ no encoder in the app can produce one.
 
 1. **The bug is Apple's, and is not reported from here.** Foundation should throw. Another JSON decoder, or another
    entry in the app, that reaches the same scanner is not covered by anything but the check below.
-2. **Nothing stops a new `JSONDecoder` call on outside bytes.** `JSONDecoderUseTests` fails on a `JSONDecoder` in any file
-   not on its list of files that decode only what the device sealed. A listed file that gains an outside-facing decode
-   passes. Reviewing that list is the control.
+2. **Closed 2026-11-24: nothing stopped a new `JSONDecoder` call on outside bytes.** `JSONDecoderUseTests` kept a list of
+   files that decode only what the device sealed, and a listed file that gained an outside-facing decode passed. Every use
+   was read (19 `JSONDecoder` in shipped code besides `BoundedJSON`'s own, none on outside bytes), and the rule is now the simplest sound one:
+   **no `JSONDecoder` anywhere in shipped code but the one inside `BoundedJSON`.** The 11 local ones outside those files (stored ML-KEM
+   material, drafts, the vault's custody, buffer, pending and label rows, the legacy backup-key row, the legacy
+   prekey record, and the identity-challenge coordinator) go through `BoundedJSON.decode` too: it is one pass over bytes
+   already in memory, it refuses only past 64 levels, and the deepest thing Occulta writes nests under ten, so it is
+   simpler and safer than a list someone has to keep right. The test reads the source with `OSTraceScanner`'s lexer
+   (comments and strings blanked) and fails on the identifier `JSONDecoder` in any form, a stored decoder, a type
+   annotation or a typealias included, which the old `JSONDecoder(` match missed. `JSONSerialization` is not
+   flagged: it throws at 513 `[` (probed, macOS 26) and nothing in shipped code uses it.
+   **Pending, open, needs a decision:** eight decodes in three files that the passphrase refactor is rewriting, so they
+   were left alone: `Group+Model.swift` (1), `AppLayerConfig+Model.swift` (4), `Contact+Manager.swift` (3). Each decodes a
+   field this device sealed. They are an exact list in the test (a count that grows or shrinks fails it), to be converted
+   when that branch lands, and the list emptied.
 
 ### Guard
 
@@ -15187,7 +15226,10 @@ ends the test host: the 513-byte file; a binary bundle whose group section is 51
 refusal is `BoundedJSON`'s); a payload, a basket and a file entry whose JSON block is 513 `[`; a depth row; a message
 from a pinned peer, with a valid one after it to show the manager still reads messages. The guard itself: nesting counted
 outside strings and across escapes, 63 and 64 levels decode and 65 are refused, and what Occulta writes decodes to the
-same value as through `JSONDecoder`. `JSONDecoderUseTests` keeps the list of files described above.
+same value as through `JSONDecoder`. `JSONDecoderUseTests` (`OccultaTests/Fuzzing/JSONDecoderUseTests.swift`) is the check described in residual 2: it scans the
+source tree, and its planted cases show it finds a `JSONDecoder` in each of the forms above, on the right line, in a
+shipped file, a second one in `BoundedJSON` or in a pending file, and a pending entry that has gone stale, and that a
+comment, a string, `BoundedJSON.decode` and a longer name such as `MyJSONDecoder` are not found.
 
 ---
 
