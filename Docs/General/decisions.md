@@ -1749,7 +1749,7 @@ back to the old key, touches every attachment open and keeps the old key in use 
 
 ## The passphrase design's open items, 2026-11-15
 
-**Status:** Decided 2026-11-15 by the owner, one at a time. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, items 28 and 29, §1.1's derivation change, §1.3's re-enable marker, item 26's remainder, item 23's SwiftData remainder (Bug 190), item 31's last two findings, the photo table's noise, and the open parts of Bugs 162 and 170. Still open: the write-order measurement (item 23), the row size and the retired-key cap (set when built), the unlock cost on a device, and spec §2's rewrite.
+**Status:** Decided 2026-11-15 by the owner, one at a time. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, items 28 and 29, §1.1's derivation change, §1.3's re-enable marker, item 26's remainder, item 23's SwiftData remainder (Bug 190), item 31's last two findings, the photo table's noise, and the open parts of Bugs 162 and 170. Still open: the write-order measurement (item 23), the row size and the retired-key cap (set when built), the unlock cost on a device, and spec §2's rewrite *(each decided 2026-11-24, "The passphrase design's last open items")*.
 
 **Decisions:**
 - *Where a contact goes (29):* only to the space it was created in (`originDepth`), with its pairing and prekeys; no copies. Copies would share prekey blobs (D9), so a prekey used in one space would still open the message in another, two spaces would send to the same one-time keys, and each would replace the other's batch. A keyless copy for decoys only kept a decoy looking full, which register §I already doesn't require.
@@ -1794,3 +1794,19 @@ are untouched. The per-pairing secret of 2.1.0 ("A secret per pairing
 routes and binds every bundle") should derive from the committed exchange's input, so the words authenticate it. Bug 199's third part,
 decided 2026-11-20 by the owner: a re-exchange that would replace a hybrid pairing with a classical one is refused, and the person
 who wants a classical pairing revokes the contact's key and exchanges again (`bugs.md` Bug 196, "A hybrid pairing is not replaced").
+
+## The passphrase design's last open items, 2026-11-24
+
+**Status:** Decided 2026-11-24 by the owner, one at a time. Not built. Closes stage 2's list in `PASSPHRASE_ROLLOUT.md`: spec §2's rewrite, the unlock cost, item 23's write order and item 29's row size, text that doesn't fit and retired keys. Three outcomes wait on a measurement whose meaning is decided here: the unlock run on the spare iPhone 11 (decision 6), the write-order test and the row size's number (both on the Simulator).
+
+**Decisions:**
+- *Spec §2:* rewritten in place for independent spaces, with the text of 2026-09 to 2026-10-15 kept below it as its history, so every reference to it still resolves.
+- *Unlock cost (§1.5):* everything after PBKDF2 takes at most 0.5 s at 1,000 contacts and 2 s at 5,000 on an iPhone 11, at item 29's row size with photos and 1,000 noise rows; a grace return costs the same. Within it, no locator tag. Over it, lazy decoding first, then the locator tag before stage 4, shredded with its row. The PBKDF2 target is never lowered. The measuring app is updated to the decided row size first.
+- *Write order (23):* the migration writes every row and its noise in one shuffled order and rebuilds the file once. Pass condition: a row's pages follow its random ID and the header matches a freshly built file. If it fails, `VACUUM INTO` a new file and an atomic replace when the store closes after a session that added a row (any write if rewrites move pages). Item 26's "rotation not adopted" changes to that.
+- *Row size (29):* bottom-up from field limits, counting only fields that coexist, sealed, rounded up to 4 KB, plus one 4 KB page reserved inside the record; a test builds every type's maximal record. Fixed in code on every install, never taken from the data: a size per install would show, in one image, the largest record any space held, and peer-supplied fields could grow it. Growth beyond the reserve comes with a release, by extending every row with random bytes outside its seal, which needs no key. Likely 48–64 KB, an estimate.
+- *Text that doesn't fit (29):* the record holds a text budget, and longer contact text, and vault notes, go to overflow rows of the one size, listed in the record like a photo. Nothing is refused or trimmed, so every existing contact fits.
+- *Retired keys (29):* a retired key drops its ML-KEM material at retirement, since nothing reads it, and a contact keeps the public key and dates of its two latest retired keys only.
+
+**Not chosen:** the locator tag now, or no threshold until measured; `VACUUM` in place, noise added after migration, or a stated limit for write order; a fixed 48 or 64 KB row, 25% headroom or no reserve; a row size per install, or one that grows with the data; a pre-flight that refuses to migrate an over-long record; retired keys kept whole, or none kept.
+
+**Full reasoning:** `PASSPHRASE_ROLLOUT.md` §1.5 ("Fallback") and §8, items 23, 26 and 29.

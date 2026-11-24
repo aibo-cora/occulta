@@ -90,12 +90,30 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - Bug 170, legacy keychain prekeys deleted in stage 4, the custody key derived from the space key in stage 5;
 - Bug 162, one padded custody record per owner, and a stated limit for a holder of the trustee's phrase.
 
-**Open, needs a decision:**
-- spec §2 still describes the 2026-10-15 storage design as history and needs rewriting for independent spaces
-  (its open sub-items were closed 2026-11-02);
-- the unlock cost, to be measured on a device, by the measuring app of decision 6 (PR #155; not run on a device);
-- 23, write order in the SQLite file: a stage 0 measurement first, with `VACUUM` on close as the candidate fix;
-- 29, the row size itself and the cap on retired keys, set when the record is built and measured;
+**Decided 2026-11-24 by the owner** (`decisions.md`, 2026-11-24), which closes stage 2's list:
+- spec §2 is rewritten in place for independent spaces, with the 2026-09 to 2026-10-15 text kept below it as its
+  history, so every reference to it still resolves;
+- the unlock cost: everything after PBKDF2 (the Enclave derivation, reading and trial-decrypting every row) takes at
+  most 0.5 s at 1,000 contacts and 2 s at 5,000 on an iPhone 11; within it, no locator tag; over it, lazy decoding,
+  then the locator tag before stage 4; the PBKDF2 target is never lowered (§1.5);
+- 23, write order: the migration writes every row and its noise in one shuffled order and rebuilds the file once;
+  a row's pages must follow its random ID and the header must match a freshly built file; if they don't, the store is
+  rebuilt with `VACUUM INTO` a new file and an atomic replace when it closes after a session that added a row (after
+  any write if rewrites move pages), which changes item 26's "rotation not adopted";
+- 29, the row size: fixed in code on every install, never from the data; from the largest record any type can
+  reach under its field limits, counting only fields that coexist, sealed, rounded up to 4 KB, plus one 4 KB page
+  reserved inside the record; growth beyond the reserve extends every row with random bytes outside the seal in one
+  release; contact text and vault notes past the record's budget go to overflow rows, so every existing contact
+  fits; the number is set at stage 3 or 4;
+- 29, retired keys: a retired key drops its ML-KEM material at retirement, and a contact keeps the public key and
+  dates of its two latest retired keys only.
+
+**Waiting on a measurement, each with its outcome decided:** the unlock cost (the spare iPhone 11, decision 6, with
+the measuring app updated to the decided row size), the write-order test (stage 0, on the Simulator) and the row
+size's number (stage 3 or 4, on the Simulator, Enclave blob sizes checked on the spare phone).
+
+**Open, needs a decision:** none of stage 2's list. Items that stay open inside §8 are marked there. Stage 2's other
+part, the model sweep for requirement 5, is still to do (§7.2).
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -374,7 +392,25 @@ Decision 1 is closed by it.
     per install uniformly from 10–200, never stored, written at the same moments as the contact noise (§8, 21).
     A hidden space of 40 entries stays unprovable on 79% of installs. At the cap the noise is about 0.8 MB.
   - **Fallback:** a 16-byte locator tag per row (an HMAC under a subkey of the space key), if a device
-    measurement shows unlock is too slow.
+    measurement shows unlock is too slow. **The threshold, decided 2026-11-24 by the owner** (`decisions.md`,
+    2026-11-24):
+    - *What is measured:* on an iPhone 11 (decision 6), in Release, at the row size item 29 sets, with one photo per
+      contact in the same table and 1,000 noise rows: everything after PBKDF2, that is the Enclave derivation and
+      reading, trial-decrypting and decoding every row, at 100, 1,000 and 5,000 contacts, first pass and median. A
+      return within the grace (§8, 27) costs the same. The same run sets PBKDF2's count: the smallest multiple of
+      10,000 whose median is at least 1 s.
+    - *Threshold:* at most 0.5 s at 1,000 contacts and 2 s at 5,000.
+    - *Within it:* no locator tag.
+    - *Over it, mostly in decrypting and decoding:* records are decoded lazily, which changes no format, and the
+      run is repeated. *Over it in reading, or still over:* the locator tag, in the row format before stage 4,
+      since adding it later is a migration of every row. A shred overwrites the tag with the row, or a phrase holder
+      could pick out their own space's deleted rows.
+    - *Never:* lowering the PBKDF2 target to pay for reading.
+    - *What unlock time shows:* nothing the file doesn't. The part shared by every phrase scales with the table's
+      total row count, which the file shows; the rest scales with the open space's own size, which whoever opened
+      it sees.
+    - *First:* the measuring app (PR #155) still uses 8,220-byte records and a photo table of its own; it is updated
+      to item 29's size and photos in the one table before a device run means anything.
 - **Removing a space:** unlock it, crypto-shred its rows into noise, and forget the phrase. The app keeps no record
   of the space.
 - **Cost accepted:** a decoy goes stale unless it is actually used. Nothing copies the real space's changes into
@@ -420,7 +456,9 @@ records, crypto and encoding only, no store read; median of 5 passes):
 - One Enclave ECDH costs about 4.6 ms here against 0.23 ms on the Simulator, so one per record would cost 4.6 s at
   1,000 records. The design's one derivation per unlock stays.
 - Opening is mostly JSON decoding: a noise row fails its tag check in under 4 µs.
-- Still unmeasured: PBKDF2, reading the rows from the store, and an iPhone 11 (decision 6).
+- Still unmeasured: PBKDF2, reading the rows from the store, and an iPhone 11 (decision 6). *2026-11-24:* rows
+  will be larger than 8 KB (§8, 29, likely 48–64 KB, an estimate), so these figures understate reading and
+  authenticating; the threshold under "Fallback" above says what the device run decides.
 
 ### 1.6 Binding each sealed record to its row (step 5)
 
@@ -444,7 +482,7 @@ sealed record (§8, 23); a vault entry's row holds two seals, its wrapped entry 
 **Construction.**
 - **AAD = a table label ‖ the row's 16-byte ID**, plus a field tag only where a row holds more than one seal (a
   vault entry's key and content, as `VaultEntry.aad(for:)` does today).
-- **The label** is a constant per table: small records, photos, vault entries. It is never stored, so it leaves
+- **The label** is a constant per table: small records, photos, vault entries *(2026-11-15: photos are small records, and install-wide state has a table of its own; spec §2.1)*. It is never stored, so it leaves
   nothing in the file, and it makes a record moved between tables fail whatever the row sizes are.
 - **Not in it:**
   - the record's type, which is inside the seal (§8, 21); unlock doesn't know it before opening;
@@ -995,11 +1033,11 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
 | P | Pairing secret, in a release before 2.1.0. *Shipped in 2.0.1, without the swap; cards deferred* | `bugs.md` Bug 196; §8, 30: the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material; a routing label in each slot; key binding; a new bundle version and interop vectors | Not estimated |
-| 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3); install-wide state in its own table, so no SwiftData after migration (§8, 23); the write-order test (§8, 23); the data-protection entitlement (§8, 31) | 1.5–2 |
+| 0 | Groundwork | The measuring app (§8, 6), updated to item 29's row size with photos in the one table before its device run; the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11, and unlock against the 0.5 s / 2 s threshold (§1.5, "Fallback"); generator v2 (§2.3); install-wide state in its own table, so no SwiftData after migration (§8, 23); the write-order test, on the Simulator: pages in random-ID order and a fresh-file header, with `VACUUM INTO` and an atomic replace on close if it fails (§8, 23); the data-protection entitlement (§8, 31) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
-| 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; each record bound to its row (step 5, §1.6) | 2–3 |
-| 4 | Contacts into the new store | One padded text record per contact, each in the space it was created in, at the one row size (§8, 29); ~~photos in their own table at one size, re-encoded, with no noise rows;~~ photos re-encoded, as records in the same table (§1.5); a manifest row per space (§8, 28); legacy keychain prekeys deleted once their blobs verify (Bug 170); vault entries in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
+| 2 | Close the design | ~~§8's remaining open items~~ *(decided 2026-11-24; spec §2 rewritten)*; the model sweep for requirement 5 | 1–2 |
+| 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; vault notes past their budget in overflow rows (§8, 29); each record bound to its row (step 5, §1.6); the row size set from the field limits, with its maximal-record test (§8, 29), and the locator tag if the device run is over the threshold (§1.5) | 2–3 |
+| 4 | Contacts into the new store | One padded text record per contact, each in the space it was created in, at the one row size (§8, 29), long text in overflow rows, a retired key without its ML-KEM material and at most two kept (§8, 29); the migration's rows and noise in one shuffled order, then one rebuild (§8, 23); ~~photos in their own table at one size, re-encoded, with no noise rows;~~ photos re-encoded, as records in the same table (§1.5); a manifest row per space (§8, 28); legacy keychain prekeys deleted once their blobs verify (Bug 170); vault entries in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part, as one padded custody record per owner (ROLLOUT_PLAN stage 4); the backup-export record as a space row (Bug 234); the custody key derived from the space key (Bug 170) | 1–2 |
 | 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); Erase All Data scoped to one space; deleting the old store once every layer has migrated; no old-PIN fallback and no graduation | 2.5–4 |
 | 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several spaces | 1, plus ~1 calendar week: a 7-day phased release |
@@ -1044,6 +1082,10 @@ there and aren't repeated here.
      naming the phone. ~~Not built.~~ *Built 2026-11-02 as `Tools/OccultaMeasure/`, PR #155, merged into `develop`
      2026-11-03 and into this branch with #172. It runs on the Simulator; a device run is manual and per phone (its
      README).*
+   - *2026-11-24:* what its unlock figures decide is set in advance (§1.5, "Fallback"), and it is updated to item 29's
+     row size, with photos in the one table, before the device run. The write-order test (item 23) and the row size
+     (item 29) need no phone: the Simulator runs iOS's own SQLite, and record sizes don't depend on the device
+     except for Enclave blobs.
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ ~~**Decided:** refused while duress depths exist.~~ **Superseded
@@ -1206,14 +1248,42 @@ there and aren't repeated here.
     pages, since `secure_delete` doesn't reach SwiftData's connection (Bugs 210 and 229). Measured first: opening, changing and resealing
     100 records takes about 9 ms, plus about 1.6 ms for the Enclave derivation, on the iPhone 17 Pro Simulator
     (`ContactRecordCryptoMeasurementTests`). ~~Open, needs a decision: whether the SQLite header or page placement
-    says anything about write order; not checked.~~ **Write order: decided 2026-11-15 to measure first, open until
-    then.** A row larger than a page goes mostly to overflow pages taken from the end of the file or the freelist, so
+    says anything about write order; not checked.~~ **Write order: decided 2026-11-15 to measure first**~~, open until
+    then~~. A row larger than a page goes mostly to overflow pages taken from the end of the file or the freelist, so
     rows added after the migration batch tend to sit after it; noise is written only then, so in one image a row the
     open space can't read in pages allocated later points to another space's activity. The header's change counter
     may count transactions, which WAL mode may not update; not checked. A stage 0 store-layer test builds a migration
     batch and later inserts from two spaces, then reads each row's pages and the header, before and after a `VACUUM`.
     The candidate fix is a `VACUUM` when the store closes (item 26), which rewrites the file in key order, random by
     ID; its cost is a full-file rewrite per session.
+
+    **Decided 2026-11-24 by the owner: the rule and the pass condition now, confirmed by the stage 0 test**
+    (`decisions.md`, 2026-11-24).
+    - **Three ways the layout can show order, in one image:** the migration batch, if spaces and noise are written
+      one after another, each in a run of pages of its own; rows added after migration, in pages allocated later;
+      and edits, if a same-size rewrite reallocates a row's overflow chain, which would move every recently written
+      row, a hidden space's contacts with every message received, while noise never moves. Whether SQLite overwrites
+      a same-size cell in place in a `WITHOUT ROWID` table is what the test finds out.
+    - **The migration, whatever the test shows:** every space's rows and the noise are written in one shuffled
+      order, and the file is rebuilt once at the end.
+    - **The pass condition:** from the file alone, every row's pages appear in the order of its random ID, and the
+      header's counters (change counter, page count, freelist, version-valid-for) equal those of a freshly built file
+      holding the same rows. The test runs on the Simulator, whose SQLite is iOS's own; it needs no phone.
+    - **The fix, if the layout fails:** `VACUUM INTO` a new file, then an atomic replace, when the store closes after
+      a session that added a row, or after any write if the test shows rewrites move pages. It needs no key, since it
+      copies sealed bytes. If the phone locks before it finishes, `NSFileProtectionComplete` stops the write, the old
+      file stays, and the rebuild runs at the next close. *If the layout passes without it,* no rebuild after the
+      migration's.
+    - **Why `VACUUM INTO` and not `VACUUM`:** `VACUUM` in WAL mode writes the file about three times (a temporary
+      database, the WAL, the checkpoint) and may keep the header's counters; `VACUUM INTO` writes it once and starts a
+      fresh header. This is the rotation item 26 didn't adopt for cost; once a rebuild is paid for, rotation is the
+      cheaper way to do it, and it also discards the old file's key, for what that is worth (item 26).
+    - **Cost:** at a 32 KB row, about 100 MB per rebuild at 1,000 contacts with photos and 1,000 noise rows, about
+      350 MB at 5,000; additions are rare next to the received messages that rewrite records. Each rebuild leaves the
+      old file's blocks freed, within item 26's stated limit.
+    - **Not adopted:** `VACUUM` in place after every write (three times the writes, the header possibly unchanged);
+      noise rows added after migration so late rows can be explained (reopens item 21, and covers neither edits that
+      move nor the header); a stated limit (it is a one-image leak, which §1.5 exists to remove).
 24. **A known contact's bundle failing to open is the rejection oracle again** (added 2026-10-31; §1.5,
     `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). The 2026-10-29 rule above
     doesn't cite that document's inbound-path analysis, which removed exactly this behaviour in `b1f9045`. Today a bundle from a contact
@@ -1266,7 +1336,8 @@ there and aren't repeated here.
       image holds, so there is no group. In the 8a/8b exception a space migrates later, as one batch, which shows
       its size. That batch also appends a random number of noise rows; how many is settled with item 21. Under the
       plain SQLite store (§8, 23) the random key gives the batch no order, but where its pages land in the file
-      isn't checked (item 23's open sub-question).
+      isn't checked ~~(item 23's open sub-question)~~ *(decided 2026-11-24, item 23: the batch and its noise are
+      written in one shuffled order and the store is rebuilt when it closes after a session that added a row)*.
 
     Spreading these writes over time was not adopted: it keeps erased or exposed data readable for longer.
 26. **Whether an overwritten row is gone below SQLite** (added 2026-11-01; §1.5, §5; not verified). A shred
@@ -1307,9 +1378,12 @@ there and aren't repeated here.
       pages add is its history, deleted records and older versions. Step 16's guidance says so: deleting removes data
       from the app and its file, and a forensic copy of the storage, with the phrase, may recover older versions.
       Rotation (below) stays not adopted: nothing Apple documents says a deleted file's key leaves the flash.
-    - **Not adopted:** rotating the file on going to the background after any write (`VACUUM INTO` a new file and
+    - ~~**Not adopted:** rotating the file on going to the background after any write (`VACUUM INTO` a new file and
       delete the old one, discarding its key and every stale copy). About 40 MB written per session at 5,000
-      contacts, nearly every session since received messages rewrite records, against that narrow attacker.
+      contacts, nearly every session since received messages rewrite records, against that narrow attacker.~~
+      **Changed 2026-11-24 (item 23):** the same rotation is the store's rebuild for write order, after a session
+      that added a row (any write if rewrites move pages), and only if the stage 0 test shows the layout needs it.
+      Rotation after every write for this item's attacker alone stays not adopted.
 27. **What the key cache holds, and when it drops it** (added 2026-11-01; stage 0, register C2, §1.5). One Enclave
     ECDH costs about 4.6 ms on an iPhone 15 Pro (§1.5's measurements), and a phrase-derived key can't be re-derived
     without the phrase, so a key is derived once and kept for the session. Caching is no weaker than today's
@@ -1337,7 +1411,8 @@ there and aren't repeated here.
       copy is dropped when the 5 minutes run out on return, when the app locks itself and when the space changes.
     - **Every depth alike** (Bug 41).
     - *2026-11-12:* the time away must be measured on a clock the user can't set; today's grace uses the wall
-      clock (Bug 227; §8, 31). Open, needs a decision.
+      clock (Bug 227; §8, 31). ~~Open, needs a decision.~~ *Settled 2026-11-15 (item 31): fixed in 2.0.2 on
+      `ContinuousClock`, and the phrase grace keeps that clock.*
     - **A memory dump of a locked phone** gets only the wrapped copy: the Enclave refuses while the phone is locked.
       The copy never reaches disk, where it would be §1.1's device slot, which older images unwrap.
     - **What it leaves, as today's PIN grace does:** someone who takes the phone unlocked, or compels its passcode,
@@ -1378,9 +1453,9 @@ there and aren't repeated here.
       - what happens to the prekey state, now copied into every space. A prekey consumed in one space is still
         listed in the others, while its private key, held once in the Enclave (`PrekeySecretsManager`), is gone.
     - **Records that don't fit their row.** The decided sizes are 8 KB for a small record, about 3.5 KB of text for
-      a vault note and 24 KB for a photo (§1.5, §8, 21). Today's store has no such limits. Open, needs a decision
+      a vault note and 24 KB for a photo (§1.5, §8, 21). Today's store has no such limits. ~~Open, needs a decision
       for a contact record or a note that is too large: failing the migration loudly, splitting the record, or
-      raising the size.
+      raising the size.~~ *Decided 2026-11-24 (below): text beyond the record's budget goes to overflow rows.*
       - A photo is re-encoded until it fits, by decision, so only a photo that still doesn't fit at the lowest
         quality is a case to cover.
     - **Found 2026-11-15: every contact is too large for 8 KB.** Since 2.0.1 a contact carries three fields padded to
@@ -1392,7 +1467,47 @@ there and aren't repeated here.
       it is fixed in code, so a larger contact never changes another row. Every field that can grow has a limit, and
       retired keys are capped at the last few, so no record can outgrow the row. Changing the size later is a
       migration of every row, the same on every install. Not adopted: continuation rows (an edit would rewrite a
-      varying number of rows) and two tables (a per-type count again).
+      varying number of rows) *(2026-11-24: adopted for long user text only, below)* and two tables (a per-type count
+      again).
+    - **Decided 2026-11-24 by the owner: the size, the text that doesn't fit, and retired keys** (`decisions.md`,
+      2026-11-24).
+      - *The size, bottom-up.* Every field that can grow gets a limit first. The row is the largest record any type
+        can reach under those limits, counting only fields that can coexist (a card state and a pairing, if the
+        record type makes them exclusive), encoded and sealed, rounded up to 4 KB, plus one 4 KB page reserved
+        inside the record for fields a later release adds. A test builds the maximal record of every type and fails if
+        one doesn't fit. The number is set when the record is built, at stage 3 or 4, on the Simulator; Enclave blob
+        sizes are checked on the spare phone (decision 6). From today's fields: the pairing state is about 15.7 KB
+        at most (`PairingCodec`, 12 KB of it the ML-DSA blob's room), the prekey record up to 16 KB (`PrekeyBookkeeper`'s
+        limits), the card state 12 KB, a key's ML-KEM material about 3.2 KB, so the row is likely 48–64 KB, an
+        estimate; two of those figures are budgets, not measured maxima.
+      - *Fixed in code, never from the data.* A size taken from the largest existing contact, or grown when a larger
+        one appears, would be a number per install, readable in one image with no phrase, that reflects the largest
+        record any space ever held: a decoy of short contacts in large rows has nothing to account for it. Fields a
+        peer supplies (signed attributes, card state, prekey batches) would let the peer grow every row. Not adopted.
+      - *A record never grows its row.* One larger row would be a size class of one. A record past the size is
+        refused, never trimmed, as today's codecs do, and the field limits make that unreachable.
+      - *Growth beyond the reserve* comes only with a release that raises the limits, on every install at once:
+        every row, noise included, is extended with random bytes outside its seal, which needs no space's key; an
+        open tries the old sealed length, then the new one; a row is resealed at the full size when its own space next
+        writes it. Old and new rows are both random bytes of the new size in one image, and every row changed in the
+        same release across images.
+      - *Text that doesn't fit: overflow rows.* Contact text is unbounded today (the note, and any number of phone
+        numbers, email, postal and URL addresses, which Address Book imports can fill), and every existing contact
+        must fit. The record holds a text budget; text beyond it goes to extra rows of the one size in the same table,
+        their type inside the seal, listed by row ID in the contact's record as its photo is. Nothing is refused or
+        trimmed at migration or later. Vault notes past their budget do the same in the vault table. Editing such
+        text rewrites the contact's row and its text rows together, which shows across images within Bug 120's stated
+        limit; in one image they are ordinary rows. This is continuation rows for long user text only; structural
+        fields stay within the record.
+      - *Retired keys.* A key is retired by a re-pair, which stamps every current key row `expiredOn` and overwrites its
+        pairing column (`Contact+Manager.swift:706`), or by Revoke, which does the same to the current row
+        (`Contact+Manager.swift:797`). Nothing decrypts with a retired key: routing and decryption use the current key
+        only (`Contact+Manager.swift:1953`). What reads a retired row is the old public key, for Bug 196's attachment
+        pass and the prekey repair sweep's key-change date (`Contact+Manager+Prekeys.swift:222`), and `expiredOn`, for
+        the revoked state on screen. Its ML-KEM material is read by nothing, yet with the phrase and the passcode it
+        opens captured long-term files of that old pairing. So in the new record a retired key drops its ML-KEM
+        material at retirement, and a contact keeps the public key and dates of its two latest retired keys only,
+        about 0.2 KB each; the migration applies the same to every contact.
 30. **One person paired in two spaces** (added 2026-11-03). ~~Open, needs a decision.~~ **Decided 2026-11-03 by
     the owner: a random secret per pairing, used for both routing and key binding, with `senderProof` covering it**
     (`decisions.md`, 2026-11-03). Not built. ~~Still open, needs a decision: how existing pairings get a secret,
