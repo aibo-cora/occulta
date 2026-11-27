@@ -10431,6 +10431,9 @@ anyone who can write the store can use it (no prompt on that key). So it is fold
 entry's remedy re-seals these fields under layer keys, the same migration must bind each to its row and
 field** (an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)` already does for the
 content fields). Recorded as a requirement in `PASSPHRASE_LAYER_KEYS.md` §2.
+*Decided 2026-11-27 by the owner, for the store under spaces (rollout §1.6):* the fields become part of whole
+records, and each seal's AAD is the table's label ‖ the row's 16-byte ID ‖ a one-byte field tag, fixed width on every
+row, built in the store layer and pinned by a test vector.
 
 ### Threat review, 2026-09-29
 
@@ -10600,7 +10603,9 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   migration writes every row and its noise in one shuffled order and rebuilds the file once; a stage 0 test checks
   that a row's pages follow its random ID and that the header matches a freshly built file, and if not, the store
   is rebuilt with `VACUUM INTO` a new file when it closes after a session that added a row. Not built or measured.
-- **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
+- **Status: still open, needs a decision.** It is recorded as a limit, not accepted. *Confirmed 2026-11-27 by the
+  owner: kept open, since no fix is known and a later mechanism should be weighed against it; the rollout's wording
+  now says the same.*
 
 ---
 
@@ -13917,6 +13922,9 @@ other keys (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`, decision 15). Not verified on a
   stage 5 derives the shard custody key from the space key and deletes its keychain item. What then outlives an
   app deletion is only decision 15's install-wide keys, which every install has (`PASSPHRASE_ROLLOUT.md` §6;
   `decisions.md`, 2026-11-15).
+- **Decided 2026-11-27 by the owner: older keychain images are a stated limit.** A keychain image taken before stage 4
+  deletes the legacy prekeys keeps their tags; no code reaches it. The passphrase release's user guidance (step 16)
+  says so (`PASSPHRASE_ROLLOUT.md` §4; `decisions.md`, 2026-11-27).
 - **Decided 2026-10-19 by the owner (decision 15):** per-install keys stay in the keychain, the new phrase key
   included. Erase All Data deletes the share staging key, built and merged 2026-10-19 (PR #118, with #119's
   sweep of unread `inbound/` handoffs).
@@ -16009,6 +16017,11 @@ what another depth holds.
 material today, read by nothing; in the new record it is dropped at retirement, and a contact keeps the public key and dates of its
 two latest retired keys only. The 2.1.0 migration applies this to every retired row it carries. 2.0.x is left as it is, with no fix
 of its own (decided 2026-11-24 by the owner). Not built.
+
+**Pairings made before 2.0.1, under spaces (decided 2026-11-27 by the owner, `PASSPHRASE_ROLLOUT.md` §8, 30):** with no
+in-band upgrade, each keeps the identity fingerprint until the two re-pair in person, so one person paired at two depths before
+2.0.1 matches in both spaces after the migration. A stated limit. 2.1.0 shows the same "pair in person again to upgrade" note on
+every such pairing, in every space, so the note says nothing about spaces. Stage 4. Not built.
 
 **Other fixes made on the way, in this PR's branch:** the raw legacy trial decrypt now honours the old-form refusal (a legacy file
 used to open on a pairing that holds a routing key, and so on the twin record this bug is about); a re-pair retires every earlier

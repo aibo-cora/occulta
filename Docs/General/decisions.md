@@ -1810,3 +1810,19 @@ who wants a classical pairing revokes the contact's key and exchanges again (`bu
 **Not chosen:** the locator tag now, or no threshold until measured; `VACUUM` in place, noise added after migration, or a stated limit for write order; a fixed 48 or 64 KB row, 25% headroom or no reserve; a row size per install, or one that grows with the data; a pre-flight that refuses to migrate an over-long record; retired keys kept whole, or none kept.
 
 **Full reasoning:** `PASSPHRASE_ROLLOUT.md` §1.5 ("Fallback") and §8, items 23, 26 and 29.
+
+## The passphrase design's remaining questions, 2026-11-27
+
+**Status:** Decided 2026-11-27 by the owner, one at a time. Not built. The questions a re-read of `PASSPHRASE_ROLLOUT.md` found still open after 2026-11-24.
+
+**Decisions:**
+- *Binding (§1.6):* each seal's AAD is the table's label ‖ the row's 16-byte ID ‖ a one-byte field tag, fixed width on every row (one constant tag for a row with one seal, two for a vault entry's key and content). The label is a constant per table (small records, vault entries, install-wide state), never stored. Overflow and manifest rows are bound the same way. Built in the store layer, which seals and opens only through calls that take the table and the row ID; pinned by a test vector.
+- *Drafts (§1.6):* a draft (recipient reference, text, thread bubbles, compose mode) is a small record in its space, long text in overflow rows. Its attachments, files outside any store today (`Application Support/Drafts/`, listed with no phrase, so a decoy phrase would show folders it doesn't account for; group ones under tier U's phrase-less compose key), are staged under a key from the space key and deleted when the store closes; each launch empties `Drafts/` and the staging folder before any space opens. An attachment in a draft doesn't survive the app leaving the foreground.
+- *Photos (§1.5, §8 29):* stay at about 360 px and 24 KB, each its own row in the one small-records table, though rows are now 48–64 KB. The app shows a photo only as an avatar, the file and unlock cost the same either way, and the photo never sets the row size. No photo fails to fit at the lowest quality.
+- *Stated limits (§4, §1.2, Bug 170):* images taken before the migration, older keychain images with the legacy prekey tags, and the old store while it waits for every layer to migrate (8a, 8b), which opens with the passcode as all data does today. No code reaches an image already taken. Step 16's guidance states them, and the setup copy asks for every layer in one sitting.
+- *Pairings made before 2.0.1 (§8, 30):* corrected: 2.0.1 shipped without the in-band upgrade, so every such pairing keeps the identity fingerprint until re-paired in person, whether or not both have upgraded. A stated limit, with the same "pair in person again to upgrade" note on every such pairing in every space, so it says nothing about spaces. Stage 4.
+- *Bug 120:* stays open, needs a decision. No fix is known; it stays open so a later mechanism is weighed against it.
+
+**Not chosen:** the tag only on rows with two seals (two layouts to pin); a key per row from HKDF instead of an AAD; a per-space write counter in every AAD (reseals every row on each write, item 25); draft attachments as store rows (a total row count no decoy accounts for); draft files kept on disk under the space key (the listing still shows them); photo quality up to the row's spare room, more pixels, or the photo inside the contact's row (every row about 24 KB larger); keeping the pre-migration residuals open with no fix in view; no re-pair note for pre-2.0.1 pairings; closing Bug 120 as a stated limit.
+
+**Full reasoning:** `PASSPHRASE_ROLLOUT.md` §1.6, §1.5 (photos), §4 and §8, items 20, 29 and 30.

@@ -286,8 +286,9 @@ and in `decisions.md` under the date.
 - Every write to a space rewrites that space's manifest row in the same transaction.
 
 **Binding and integrity** (rollout §1.6, §8, 28).
-- Each seal's AAD is the table's label followed by the row's ID, plus a field tag where a row holds two seals. The
-  label is a constant per table and is never stored. The layout is pinned by a test vector. The store layer seals and
+- Each seal's AAD is the table's label, the row's 16-byte ID and a one-byte field tag, fixed width on every row
+  (decided 2026-11-27); a vault entry's two seals take two tags, every other row one constant tag. The label is a
+  constant per table and is never stored. The layout is pinned by a test vector. The store layer seals and
   opens only through calls that take the table and the row ID. This is requirement 6 of §2.2, applied to whole records.
 - The manifest row holds a hash over the sorted (row ID, hash of sealed bytes) of every row that opens under the space
   key. Unlock recomputes it. A row rolled back, or one the manifest doesn't list, is not used, and unlock says some
@@ -314,6 +315,9 @@ and in `decisions.md` under the date.
   space whose pairing sealed a file (`bugs.md` Bug 196).
 - A retired key drops its ML-KEM material at retirement. A contact keeps the public key and dates of its two latest
   retired keys only.
+- A draft is a small record in its space (decided 2026-11-27, rollout §1.6). Its attachments are staged under a key
+  derived from the space key and deleted when the store closes; each launch empties `Drafts/` and the staging folder,
+  so no draft leaves a file outside the store at rest.
 
 **Message keys.** The 2026-10-04 requirement in §2.2 stands: message keys must not route around the space key. Its
 open items stay open, as listed there.
@@ -327,8 +331,12 @@ open items stay open, as listed there.
   image and not a series; `bugs.md` Bug 120 keeps it open, needs a decision, and so does the register.
 - *Stale pages outside the file,* in APFS free blocks and flash, stay readable with a raw image, the file's key and the
   phrase. A stated limit (rollout §8, 26).
-- *Open, needs a decision:* images taken before the migration (rollout §8, 20); pairings with a contact still on a
-  build before 2.0.1, which keep the identity fingerprint (rollout §8, 30); the message-key items in §2.2.
+- *Stated limits, decided 2026-11-27:* images taken before the migration, and older keychain images with the legacy
+  prekey tags (rollout §4, Bug 170); the old store while it waits for every layer to migrate, which opens with the
+  passcode as all data does today (rollout §1.2); every pairing made before 2.0.1, which keeps the identity
+  fingerprint until re-paired in person and shows the same re-pair note in every space (rollout §8, 30). The user
+  guidance (rollout step 16) states each.
+- *Open, needs a decision:* the across-images limit above (Bug 120); the message-key items in §2.2.
 
 **Waiting on a measurement, the outcome decided:** the unlock cost, on a spare iPhone 11 (rollout decision 6); the
 write-order test, and the row size's number, both on the Simulator.
