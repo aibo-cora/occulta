@@ -67,7 +67,13 @@ struct SpaceKeyDerivation {
     }
 
     func derive(from output: [UInt8]) throws -> SymmetricKey {
-        var material = try self.exchange(with: try self.point(from: output))
+        try self.derive(point: try self.point(from: output))
+    }
+
+    /// The derivation for a point that is already known: what the design's fixed point costs, which is no point
+    /// derivation at all.
+    func derive(point: SecKey) throws -> SymmetricKey {
+        var material = try self.exchange(with: point)
         if self.decapsulate != nil {
             material.append(try self.decapsulation())
         }
