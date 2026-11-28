@@ -117,7 +117,7 @@ extension IdentityChallenge {
                         let enc = keyRecord.quantumKeyMaterialEncrypted,
                         let dec = try? crypto.decrypt(data: enc)
                     else { return nil }
-                    return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
+                    return try? BoundedJSON.decode(QuantumKeyMaterial.self, from: dec)
                 }()
                 let encoded = try self.manager.createChallenge(
                     recipientKey:     recipientKey,
@@ -215,7 +215,7 @@ extension IdentityChallenge {
                     let enc = keyRecord.quantumKeyMaterialEncrypted,
                     let dec = try? crypto.decrypt(data: enc)
                 else { return nil }
-                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
+                return try? BoundedJSON.decode(QuantumKeyMaterial.self, from: dec)
             }()
             let senderID   = sender.identifier
             let senderName = { let n = sender.givenName.decrypt(); return n.isEmpty ? "Unknown" : n }()

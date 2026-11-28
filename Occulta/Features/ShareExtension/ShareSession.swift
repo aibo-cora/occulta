@@ -42,8 +42,9 @@ enum ShareSession {
     /// The most pixels of an image `stripEXIF` will decode. Stripping decodes the whole image and encodes it again,
     /// and an image's size in memory is its dimensions, not its file size: a 107 KB PNG that declares 30,000 by 30,000
     /// one-bit pixels took 1.6 GB and four seconds to strip on a Mac (`bugs.md` Bug 187). 100 megapixels is about twice
-    /// what an iPhone's 48-megapixel camera takes.
-    static let maxImagePixels = 100_000_000
+    /// what an iPhone's 48-megapixel camera takes. The limit and the check live in `ImageGuard`, which a contact's
+    /// attachment goes through as well.
+    static let maxImagePixels = ImageGuard.maxPixels
 
     enum Errors: Swift.Error, LocalizedError {
         case stale
@@ -371,21 +372,9 @@ enum ShareSession {
     // MARK: - Private
 
     /// Whether `data` is a PNG with a chunk that runs past its end, or declares a length the format doesn't allow.
-    /// A well-formed PNG, truncated or not, never does: every chunk's length is the bytes that follow its header.
-    /// False for anything that isn't a PNG.
+    /// See `ImageGuard.pngChunkOverruns`.
     static func pngChunkOverruns(_ data: Data) -> Bool {
-        let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-        guard data.count >= signature.count, data.prefix(signature.count).elementsEqual(signature) else { return false }
-
-        let base = data.startIndex
-        var offset = signature.count
-        // A chunk is length (4), type (4), data, CRC (4).
-        while offset + 12 <= data.count {
-            let length = (0..<4).reduce(0) { $0 << 8 | Int(data[base + offset + $1]) }
-            guard length <= 0x7FFF_FFFF, offset + 12 + length <= data.count else { return true }
-            offset += 12 + length
-        }
-        return false
+        ImageGuard.pngChunkOverruns(data)
     }
 
     /// Strip EXIF, GPS, and camera metadata using CGImageSource/CGImageDestination.
@@ -404,19 +393,16 @@ enum ShareSession {
     /// pass such an image through: that would send its location and camera metadata, which is the one thing this
     /// function exists to stop.
     private static func stripEXIF(from imageData: Data, uti: String) throws -> Data? {
-        // Before ImageIO sees a byte of the chunks: it allocates a chunk's declared length when it reads the header
-        // of one, and reads the properties of a 79-byte PNG that declares 2 GB with 1.9 GB (`bugs.md` Bug 187).
-        guard !Self.pngChunkOverruns(imageData) else { throw Errors.imageMalformed }
-
-        guard let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }
-
-        // The declared size comes from the header, without decoding. A header that gives none can't be decoded either.
-        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.int64Value,
-           let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.int64Value {
-            let (pixels, overflow) = width.multipliedReportingOverflow(by: height)
-            if overflow || pixels > Int64(Self.maxImagePixels) { throw Errors.imageTooLarge }
+        // Before ImageIO decodes anything: a PNG chunk that overruns the file, or a declared size over the limit (Bug 187).
+        let checked: CGImageSource?
+        do {
+            checked = try ImageGuard.source(for: imageData)
+        } catch ImageGuard.Refusal.tooLarge {
+            throw Errors.imageTooLarge
+        } catch {
+            throw Errors.imageMalformed
         }
+        guard let source = checked else { return nil }
 
         let destData = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(

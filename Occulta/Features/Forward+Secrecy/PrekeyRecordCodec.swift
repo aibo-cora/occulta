@@ -86,8 +86,7 @@ struct PrekeyRecordCodec {
     /// Our other keychain prekeys aren't read here, and never enter the record: the keychain can't give up an
     /// Enclave key's wrapped blob. They stay in the keychain until `legacyKeys` lets them go.
     private func decodeLegacy(_ plaintext: Data) throws -> PrekeyRecord {
-        let decoder = JSONDecoder()
-        guard let legacy = try? decoder.decode(ForwardSecrecy.self, from: plaintext) else { throw CodecError.malformed }
+        guard let legacy = try? BoundedJSON.decode(ForwardSecrecy.self, from: plaintext) else { throw CodecError.malformed }
 
         var record = PrekeyRecord.empty
         record.latestInboundGeneratedAt = legacy.latestPrekeysGeneratedAt
@@ -95,7 +94,7 @@ struct PrekeyRecordCodec {
         record.legacyKeys = .inUse
 
         let inbound = try (legacy.encodedPrekeys ?? []).map { blob -> PrekeyRecord.InboundKey in
-            guard let prekey = try? decoder.decode(Prekey.self, from: blob) else { throw CodecError.malformed }
+            guard let prekey = try? BoundedJSON.decode(Prekey.self, from: blob) else { throw CodecError.malformed }
             return PrekeyRecord.InboundKey(id: prekey.id, publicKey: prekey.publicKey)
         }
         if !inbound.isEmpty {
@@ -103,7 +102,7 @@ struct PrekeyRecordCodec {
         }
 
         if let encoded = legacy.pendingOutboundBatch {
-            guard let batch = try? decoder.decode(OccultaBundle.SealedPayload.PrekeySyncBatch.self, from: encoded) else {
+            guard let batch = try? BoundedJSON.decode(OccultaBundle.SealedPayload.PrekeySyncBatch.self, from: encoded) else {
                 throw CodecError.malformed
             }
             let keys = try batch.prekeys.map { wire -> PrekeyRecord.OwnKey in

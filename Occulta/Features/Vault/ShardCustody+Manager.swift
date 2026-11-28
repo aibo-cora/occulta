@@ -705,7 +705,7 @@ final class ShardCustodyManager {
     private func openRow<T: Codable>(_ data: Data, as type: T.Type, using key: SymmetricKey, id: UUID) throws -> T {
         let box       = try AES.GCM.SealedBox(combined: data)
         let plaintext = try AES.GCM.open(box, using: key, authenticating: Self.rowAAD(id: id))
-        return try JSONDecoder().decode(type, from: plaintext)
+        return try BoundedJSON.decode(type, from: plaintext)
     }
 
     private struct DecodedCustodyShard {

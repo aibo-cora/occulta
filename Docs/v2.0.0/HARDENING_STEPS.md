@@ -390,8 +390,7 @@ listed; D5 is not: see "What is not covered".
 - **What is not covered.** What runs after a slot opens (prekey acceptance, the shard handlers, `acceptReturnedShard`):
   it needs a contact with keys, and only a paired contact reaches it, so its decoders are fuzzed and its consumers
   (`receivedManifest`, `verify`) are called, but the handlers are not run on hostile content. `ShareViewController` can't
-  be driven from the test host (D5). The pasteboard is never read, and there is no QR input. Images and photos a contact
-  sends are decoded by the system with no check (Bug 187, residual 2).
+  be driven from the test host (D5; see the update below). The pasteboard is never read, and there is no QR input.
 - **What it found.** Bug 189, 513 bytes of `[` in a file or a nearby phone's message end the app inside Foundation's JSON
   scanner (fixed, `BoundedJSON`); Bug 187, a shared image makes ImageIO allocate gigabytes by its declared size or a chunk
   length (fixed for PNG chunks and for dimensions); Bug 186, decoders that trap on a `Data` slice, not reachable today
@@ -401,6 +400,22 @@ listed; D5 is not: see "What is not covered".
   standalone harness, or in the committed seeds.
 - **Cost.** The committed run is four seeds of 400 cases per target, about 30 seconds in the Simulator in a Debug build.
   `TEST_RUNNER_OCCULTA_FUZZ_ITERATIONS=50000` is a local run; `TEST_RUNNER_OCCULTA_FUZZ_SEED=<n>` picks another seed.
+- **Update 2026-11-24, `v2.1.0/fuzzing-follow-ups`.** Three follow-ups closed:
+  - *Received images (Bug 187, residual 2).* The one path where a contact's bytes reach ImageIO, an image attachment in
+    the message view, now goes through the share path's check (`ImageGuard`, the PNG chunk walk and the 100-megapixel
+    limit, unchanged) and fails as an undecodable image does. Contact photos have no path from a contact (the Import screen
+    was removed). Regression tests with the bug's exact inputs, and a fuzz target (`ReceivedImageTarget`).
+  - *`JSONDecoder` (Bug 189, residual 2).* The hand-reviewed list is replaced by a rule the test enforces: no
+    `JSONDecoder` in shipped code but the one in `BoundedJSON`. Eleven local decodes were routed through `BoundedJSON`;
+    eight in three files the passphrase refactor owns are an exact, temporary exception.
+  - *The extension (D5), in part.* What `ShareViewController` does with a file (the size limits, the choice of type,
+    sealing a source into the session, writing the manifest) moved unchanged into `ShareIntake`, which the app compiles
+    too, and is tested, including a session carried through `ShareSession.staged`. Still untested: asking an
+    `NSItemProvider` for its file, opening the app by URL, and the inbound `.occ` handoff (Bug 188, in flight on another branch).
+- **Open, needs a decision.** The 100-megapixel limit of Bug 187, its PNG-only chunk check and first-frame-only check
+  (residuals 1, 3, 4), and three unguarded image paths (a received video through AVFoundation, the system's share-sheet
+  preview, a photo the user picks for a contact); the share extension's inbound read (Bug 188); the extension's
+  remaining untested part (D5); converting the eight pending `JSONDecoder` decodes and emptying the exception (Bug 189).
 - **Open, needs a decision.** The 100-megapixel limit of Bug 187 and the unchecked decode of received images; the
   share extension's inbound read (Bug 188, until it is measured on a device); the extension itself (D5); that nothing but a list reviewed by hand stops a
   new `JSONDecoder` call on outside bytes (Bug 189, residual 2).

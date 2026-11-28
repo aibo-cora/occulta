@@ -383,7 +383,7 @@ struct OSTraceScanner {
     /// Blanks comments in both outputs, and string literals (interpolations included) in `code`.
     /// Handles nested block comments, `"""` strings and `\(…)` with strings inside. The app has no
     /// raw strings (`#"…"#`); one would be lexed as an ordinary string, which is close enough here.
-    private static func lex(_ source: [UInt8]) -> (code: [UInt8], text: [UInt8]) {
+    static func lex(_ source: [UInt8]) -> (code: [UInt8], text: [UInt8]) {
         let quote = UInt8(ascii: "\""), slash = UInt8(ascii: "/"), star = UInt8(ascii: "*")
         let backslash = UInt8(ascii: "\\"), open = UInt8(ascii: "("), close = UInt8(ascii: ")")
         var code = source

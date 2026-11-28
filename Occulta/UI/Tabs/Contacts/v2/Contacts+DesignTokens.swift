@@ -5,6 +5,7 @@
 
 import SwiftUI
 import CryptoKit
+import OccultaFormats
 
 // MARK: - Color Tokens
 
@@ -183,7 +184,7 @@ extension Contact.Profile {
             return "Classical (v1) · exchange for full protection if the contact's device has iOS 26+"
         }
         guard let dec = open(enc),
-              (try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)) != nil
+              (try? BoundedJSON.decode(QuantumKeyMaterial.self, from: dec)) != nil
         else {
             return "Classical (v1) · exchange again to restore full protection"
         }

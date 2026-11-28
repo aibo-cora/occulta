@@ -711,7 +711,7 @@ extension VaultManager {
               var plaintext     = try? AES.GCM.open(box, using: vaultKey, authenticating: legacyRow.aad())
         else { return }
         defer { plaintext.resetBytes(in: plaintext.startIndex..<plaintext.endIndex) }
-        guard let legacyPayload = try? JSONDecoder().decode(BackupEncryptionKey.Payload.self, from: plaintext) else { return }
+        guard let legacyPayload = try? BoundedJSON.decode(BackupEncryptionKey.Payload.self, from: plaintext) else { return }
 
         do {
             try self.backup.stage(legacyPayload, vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext)

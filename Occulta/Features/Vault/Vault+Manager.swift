@@ -513,7 +513,7 @@ final class VaultManager {
         let pek       = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
         let plaintext = try self.openField(entry.encryptedLabel, key: pek, aad: entry.aad(for: .label))
         do {
-            return try JSONDecoder().decode(SealedLabelPayload.self, from: plaintext)
+            return try BoundedJSON.decode(SealedLabelPayload.self, from: plaintext)
         } catch {
             throw VaultError.decryptionFailed
         }

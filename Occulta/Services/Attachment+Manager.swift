@@ -208,20 +208,25 @@ final class AttachmentManager: Sendable {
         let key = self.contactKey
 
         return try await Task.detached(priority: .userInitiated) {
-            let data   = try Decryptor.all(at: url, contactKey: key)
-            let source = CGImageSourceCreateWithData(data as CFData, nil)
-
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize:          960,
-                kCGImageSourceCreateThumbnailWithTransform:   true
-            ]
-            guard let source,
-                  let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-            else { throw AttachmentError.invalidImageData }
-            
-            return UIImage(cgImage: cgImage)
+            try AttachmentManager.thumbnail(of: try Decryptor.all(at: url, contactKey: key))
         }.value
+    }
+
+    /// The thumbnail of an image's bytes. The bytes came from a contact, so `ImageGuard` reads the header first: an image
+    /// that declares a chunk longer than the file, or more pixels than the limit, is never handed to ImageIO to decode
+    /// (`bugs.md` Bug 187). A refused image throws what a damaged one does, `invalidImageData`, so the bubble can't tell
+    /// them apart, and nothing here logs or writes.
+    nonisolated static func thumbnail(of data: Data) throws -> UIImage {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize:          960,
+            kCGImageSourceCreateThumbnailWithTransform:   true
+        ]
+        guard let source = try? ImageGuard.source(for: data),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { throw AttachmentError.invalidImageData }
+
+        return UIImage(cgImage: cgImage)
     }
 
     // MARK: Video

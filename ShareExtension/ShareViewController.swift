@@ -33,10 +33,6 @@ class ShareViewController: UIViewController {
     private let shareKeyManager = ShareStagingKeyManager()
     private var sessionID: String?
 
-    /// Per-file ceiling for `copyFileRepresentation`. Staging streams now, so memory no longer grows with it;
-    /// the cap stays until the extension's peak memory has been measured on a device (STREAMING_SPEC §8.4).
-    private static let maxFileBytes = 100_000_000
-
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -128,9 +124,7 @@ class ShareViewController: UIViewController {
             let filename = "\(index).tmp"
             let destURL = sessionDir.appendingPathComponent(filename)
 
-            let uti = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
-            let utType = UTType(uti) ?? .data
-            let fileExt = utType.preferredFilenameExtension ?? "bin"
+            let (uti, fileExt) = ShareIntake.requestedType(registered: provider.registeredTypeIdentifiers)
 
             do {
                 // Prefer loadFileRepresentation — bytes flow through the kernel, not app memory.
@@ -161,23 +155,7 @@ class ShareViewController: UIViewController {
         do {
             let manifest = ShareManifest(sessionID: sessionID, files: fileEntries, createdAt: Date())
 
-            var manifestData = try JSONEncoder().encode(manifest)
-            let encryptedManifest = try self.shareKeyManager.encrypt(data: manifestData)
-
-            // Zero plaintext manifest. It no longer carries a recipient, but it still lists
-            // original file extensions, and it stays encrypted for that reason.
-            _ = manifestData.withUnsafeMutableBytes { buffer in
-                memset(buffer.baseAddress!, 0, buffer.count)
-            }
-            manifestData = Data()
-
-            let manifestURL = sessionDir.appendingPathComponent("manifest.enc")
-
-            // Protection class applied by the write itself, as every other write in this
-            // file does. Setting it afterwards via `setResourceValue` — which is what this
-            // used to do — leaves the manifest at the default class for the window between
-            // the two calls.
-            try encryptedManifest.write(to: manifestURL, options: .completeFileProtection)
+            try ShareIntake.writeManifest(manifest, in: sessionDir, encrypting: self.shareKeyManager.encrypt(data:))
 
             self.openContainingApp(sessionID: sessionID)
         } catch {
@@ -209,26 +187,22 @@ class ShareViewController: UIViewController {
                     return
                 }
                 do {
-                    // Refuse early, before the read, so the user gets a clean cancel.
-                    let size = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                    guard size <= Self.maxFileBytes else { throw ShareError.fileTooLarge }
-
-                    let source = try NoCacheFile.reader(sourceURL)
-                    let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.sessionKey(sessionID))
                     #if DEBUG
                     // Measures the 100 MB cap's replacement (STREAMING_SPEC §8.4). Numbers only, no name or type,
                     // and compiled out of Release. Reads 0 on the Simulator; run it on a device.
                     let availableAtStart = os_proc_available_memory()
                     var availableLowest = availableAtStart
                     #endif
-                    try source.forEachChunk(range: 0..<source.size, size: 65_536) {
-                        try encryptor.append($0)
-                        #if DEBUG
-                        availableLowest = min(availableLowest, os_proc_available_memory())
-                        #endif
-                    }
-                    try encryptor.finalize()
+                    try ShareIntake.seal(
+                        fileAt: sourceURL, to: destination, key: { try self.sessionKey(sessionID) },
+                        afterChunk: {
+                            #if DEBUG
+                            availableLowest = min(availableLowest, os_proc_available_memory())
+                            #endif
+                        }
+                    )
                     #if DEBUG
+                    let size = (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                     print("[ShareExtension] sealed \(size / 1_048_576) MB; available memory \(availableAtStart / 1_048_576) MB at start, lowest \(availableLowest / 1_048_576) MB, drop \((availableAtStart - availableLowest) / 1_048_576) MB")
                     #endif
                     continuation.resume(returning: true)
@@ -257,13 +231,7 @@ class ShareViewController: UIViewController {
             }
         }
 
-        guard data.count <= 10_000_000 else {
-            throw ShareError.fileTooLarge
-        }
-
-        let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.sessionKey(sessionID))
-        try encryptor.append(data)
-        try encryptor.finalize()
+        try ShareIntake.seal(data, to: destination, key: { try self.sessionKey(sessionID) })
         _ = data.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
         data = Data()
     }
@@ -471,7 +439,6 @@ class ShareViewController: UIViewController {
 
     enum ShareError: Error {
         case noData
-        case fileTooLarge
         case cancelled
     }
 }

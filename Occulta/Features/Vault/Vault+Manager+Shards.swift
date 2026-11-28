@@ -81,7 +81,7 @@ extension VaultManager {
             for row in (try? self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())) ?? [] {
                 guard let box     = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
                       let plain   = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                      let payload = try? JSONDecoder().decode(PendingShardDistribute.Payload.self, from: plain),
+                      let payload = try? BoundedJSON.decode(PendingShardDistribute.Payload.self, from: plain),
                       let entryID = payload.signedAttribute.entryID, entryIDs.contains(entryID)
                 else { continue }
                 self.modelContext.delete(row)

@@ -112,7 +112,7 @@ final class DraftStore {
             guard let key = try Manager.Ambient.keyManager.createHybridLocalEncryptionKey() else { return nil }
             let box     = try AES.GCM.SealedBox(combined: row.encryptedContent)
             let plain   = try AES.GCM.open(box, using: key, authenticating: row.aad(for: .content))
-            let payload = try JSONDecoder().decode(Message.Draft.Payload.self, from: plain)
+            let payload = try BoundedJSON.decode(Message.Draft.Payload.self, from: plain)
 
             let folder = Message.Draft.attachmentsFolder(for: row.id)
             var loadedMessages: [OccultaFormats.File] = []
@@ -279,7 +279,7 @@ final class DraftStore {
         guard
             let box     = try? AES.GCM.SealedBox(combined: row.encryptedContent),
             let plain   = try? AES.GCM.open(box, using: key, authenticating: row.aad(for: .content)),
-            let payload = try? JSONDecoder().decode(Message.Draft.Payload.self, from: plain)
+            let payload = try? BoundedJSON.decode(Message.Draft.Payload.self, from: plain)
         else { return false }
 
         guard payload.draftText == snapshot.text, payload.wasThreadMode == snapshot.wasThreadMode
