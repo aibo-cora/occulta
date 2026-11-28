@@ -200,6 +200,18 @@ older gets classical crypto only. A well-resourced adversary records traffic now
 Show each contact's post-quantum status, and give at-risk users a setting that refuses to send
 classical-only messages.
 
+**Split, 2026-11-24.** The step has two halves:
+- **7a. Show each contact's status.** Built on `v2.1.0/contact-protection-status`, not merged. The detail screen reads
+  two facts from the contact's current key row and nothing else: whether the pairing holds ML-KEM material
+  (`quantumKeyMaterialEncrypted`), and whether it holds a routing key (`PairingState.routingKey`, which is present exactly
+  when the pair keys are, so the screen calls it "Pair keys"). Bug 196 had already built the rows, the list glyph and the
+  glyph's link, for pair keys. This branch adds the prompt for a pairing that lacks either one, which says the only fix is
+  to exchange keys again in person: nothing is swapped in band. ML-KEM is offered only where this phone can make it
+  (iOS 26+), and only for a contact whose recorded build could re-exchange. It stores nothing, and reads the same at every
+  depth: the prompt depends on that contact's own row, this phone's OS, and nothing about any other contact. No count or
+  summary across contacts exists, and the list glyph is unchanged, so it still follows pair keys only.
+- **7b. A setting that refuses to send classical-only.** Not built.
+
 **Tracked:** new.
 
 ### 8. Authenticate the exchange peer
@@ -250,6 +262,20 @@ Software keys in the record are the fallback only with the owner's explicit sign
    anyone with the user's public key, which every contact has, can tell which `.occ` files the user
    sent. Group files carry one tag per recipient entry in place of the single outer fingerprint. It
    ships in 17a because 17a already changes the wire format and its negotiation.
+
+**17a, delivered for new pairings by Bug 196 in 2.0.1 (note, 2026-11-24).** A pairing made at an in-person exchange from 2.0.1
+on holds a routing key, derived at the exchange with its pair keys. It labels every slot, is mixed into every slot's key and
+covers the sender proof, and the file's outer sender fingerprint is gone for such a pairing. What this step proposed in
+band, "existing pairs exchange it in band", was not built: an existing pairing gets a routing key only by exchanging keys
+again in person (Bug 196, "Stage 2"). The detail screen says so for each contact that lacks one (step 7a). **Open, needs a
+decision:**
+- **Pairings without a routing key until they exchange again.** Every pairing made before 2.0.1 stays as it was, with the
+  identity key as its only per-contact input and the attributable fingerprint.
+- **Peers on older builds.** A pairing with a peer below 2.0.1 can't get one, and 2.0.5 does not exchange with a phone below
+  2.0.5, so a re-exchange waits on the peer updating. The screen offers none for a contact whose recorded build is older or
+  unknown, so those contacts carry no prompt at all.
+- **Group files that include such a contact.** A group file keeps the old, attributable fingerprint while any recipient
+  lacks a routing key (see "Mixed groups" below).
 
 **Open, needs a decision.** This step doesn't close these, and none is accepted:
 - **Senders on old versions.** Their classical-only messages stay readable until they update.

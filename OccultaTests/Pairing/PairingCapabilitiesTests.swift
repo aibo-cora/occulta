@@ -165,6 +165,146 @@ struct PairingCapabilitiesTests {
     }
 }
 
+// MARK: - What a re-exchange would add (hardening step 7a)
+
+/// The detail screen's prompt: shown when the pairing lacks pair keys (and with them the routing key) or quantum-resistant key
+/// agreement, and a re-exchange in person could give it. It reads this pairing, this phone's OS and nothing else, so a contact
+/// reads the same at every depth.
+@MainActor
+@Suite("Hardening step 7a — the re-exchange prompt", .serialized)
+struct PairingUpgradePromptTests {
+
+    private func caps(pairKeys: Bool, quantum: Bool, peerCanPair: Bool) -> PairingCapabilities {
+        PairingCapabilities(pairKeys: pairKeys, postQuantumAgreement: quantum, postQuantumSignatures: false, peerCanPair: peerCanPair)
+    }
+
+    @Test("Every state of a pairing with a current key, on a phone that can make ML-KEM")
+    func everyStateOnAPostQuantumPhone() {
+        // pair keys, ML-KEM, peer's recorded build can pair: what a re-exchange adds
+        #expect(self.caps(pairKeys: false, quantum: false, peerCanPair: true).upgrade(thisPhoneCanPostQuantum: true) == .both)
+        #expect(self.caps(pairKeys: false, quantum: true,  peerCanPair: true).upgrade(thisPhoneCanPostQuantum: true) == .pairKeys)
+        #expect(self.caps(pairKeys: true,  quantum: false, peerCanPair: true).upgrade(thisPhoneCanPostQuantum: true) == .postQuantum)
+        #expect(self.caps(pairKeys: true,  quantum: true,  peerCanPair: true).upgrade(thisPhoneCanPostQuantum: true) == nil)
+
+        // A pairing with pair keys has a peer that can pair, whatever tier is recorded.
+        #expect(self.caps(pairKeys: true,  quantum: false, peerCanPair: false).upgrade(thisPhoneCanPostQuantum: true) == .postQuantum)
+        #expect(self.caps(pairKeys: true,  quantum: true,  peerCanPair: false).upgrade(thisPhoneCanPostQuantum: true) == nil)
+
+        // No pair keys and a peer that could not make them: a re-exchange could not help, ML-KEM included.
+        #expect(self.caps(pairKeys: false, quantum: false, peerCanPair: false).upgrade(thisPhoneCanPostQuantum: true) == nil)
+        #expect(self.caps(pairKeys: false, quantum: true,  peerCanPair: false).upgrade(thisPhoneCanPostQuantum: true) == nil)
+    }
+
+    @Test("A phone that cannot make ML-KEM is never told to exchange for it")
+    func everyStateOnAnOlderPhone() {
+        #expect(self.caps(pairKeys: false, quantum: false, peerCanPair: true).upgrade(thisPhoneCanPostQuantum: false) == .pairKeys)
+        #expect(self.caps(pairKeys: false, quantum: true,  peerCanPair: true).upgrade(thisPhoneCanPostQuantum: false) == .pairKeys)
+        #expect(self.caps(pairKeys: true,  quantum: false, peerCanPair: true).upgrade(thisPhoneCanPostQuantum: false) == nil)
+        #expect(self.caps(pairKeys: true,  quantum: true,  peerCanPair: true).upgrade(thisPhoneCanPostQuantum: false) == nil)
+        #expect(self.caps(pairKeys: false, quantum: false, peerCanPair: false).upgrade(thisPhoneCanPostQuantum: false) == nil)
+    }
+
+    @Test("The list glyph's rule is the pair-keys half of the prompt")
+    func glyphAgreesWithThePrompt() {
+        for pairKeys in [false, true] {
+            for quantum in [false, true] {
+                for peer in [false, true] {
+                    for phone in [false, true] {
+                        let caps = self.caps(pairKeys: pairKeys, quantum: quantum, peerCanPair: peer)
+                        let upgrade = caps.upgrade(thisPhoneCanPostQuantum: phone)
+                        #expect(caps.upgradeAvailable == (upgrade == .pairKeys || upgrade == .both), "\(pairKeys) \(quantum) \(peer) \(phone)")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test("No current key, a card contact that has not met, and a revoked pairing offer nothing")
+    func noKeyOffersNothing() {
+        #expect(PairingCapabilities.none.upgrade(thisPhoneCanPostQuantum: true) == nil)
+        #expect(PairingCapabilities.none.upgrade(thisPhoneCanPostQuantum: false) == nil)
+    }
+
+    @Test("The copy is plain: it says the fix is in person, and names no authority, adversary or danger")
+    func copyIsPlain() {
+        let prompts = [PairingCapabilities.Upgrade.pairKeys, .postQuantum, .both].map(\.prompt)
+
+        #expect(Set(prompts).count == 3)
+        // The words OnboardingTests bans, and the ones that would make the line a warning.
+        let forbidden = [
+            "police", "government", "authority", "authorities", "law enforcement", "subpoena", "border", "seize", "seizure",
+            "forensic", "adversary", "coerc", "surveil", "attack", "hack", "vulnerab", "insecure", "unsafe", "danger", "risk",
+            "warning", "weak", "exposed", "compromis", "leak", "unbreakable", "military", "guarantee", "fully protected",
+        ]
+        for prompt in prompts {
+            #expect(prompt.localizedCaseInsensitiveContains("in person"), "\(prompt)")
+            for word in forbidden {
+                #expect(!prompt.localizedCaseInsensitiveContains(word), "\"\(word)\" in: \(prompt)")
+            }
+        }
+        #expect(PairingCapabilities.Upgrade.postQuantum.prompt.contains("iOS 26"))
+    }
+
+    @Test("From a stored contact: each state reads what its row holds", .ambientTestKeyManager)
+    func fromTheRow() throws {
+        let cm = try makeContactManager()
+        let keys = samplePairKeys()
+        let paired = PairingState.paired(routingKey: Data(repeating: 1, count: 32), keys: keys)
+
+        #expect(try insert(cm).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == .both)
+        #expect(try insert(cm, quantum: true).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == .pairKeys)
+        #expect(try insert(cm, state: paired).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == .postQuantum)
+        #expect(try insert(cm, state: paired, quantum: true).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == nil)
+        // A pairing with pair keys from a contact never heard from since: the keys say the peer could pair.
+        #expect(try insert(cm, state: paired, tier: nil).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == .postQuantum)
+        // Without them, a contact on an older build, or never heard from, offers nothing.
+        #expect(try insert(cm, tier: .v3fs).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == nil)
+        #expect(try insert(cm, tier: nil).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == nil)
+        // No key at all.
+        #expect(try insert(cm, keys: 0).pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == nil)
+    }
+
+    @Test("A revoked pairing offers nothing, and a new one clears it", .ambientTestKeyManager)
+    func revokedAndRePaired() throws {
+        let cm = try makeContactManager()
+        let contact = try insert(cm)
+        #expect(contact.pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == .both)
+
+        try cm.reset(identity: contact.identifier)
+        #expect(contact.pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == nil)
+    }
+
+    @Test("A contact hidden at the current depth reads exactly as a visible one with the same row", .ambientTestKeyManager)
+    func sameAtEveryDepth() throws {
+        let cm = try makeContactManager()
+        let visible = try insert(cm)
+        let hidden = try insert(cm, hidden: true)
+        cm.security.applyVerifyState(for: .normal(depth: 1))
+        #expect(!hidden.isVisible(atDepth: cm.security.currentDepth))
+
+        for phone in [false, true] {
+            #expect(hidden.pairingCapabilities.upgrade(thisPhoneCanPostQuantum: phone) == visible.pairingCapabilities.upgrade(thisPhoneCanPostQuantum: phone))
+        }
+        // Another contact's row, hidden or not, changes nothing of a contact's own.
+        let before = visible.pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true)
+        try insert(cm, state: .paired(routingKey: Data(repeating: 9, count: 32), keys: samplePairKeys()), quantum: true, hidden: true)
+        #expect(visible.pairingCapabilities.upgrade(thisPhoneCanPostQuantum: true) == before)
+    }
+
+    @Test("Reading the prompt writes nothing", .ambientTestKeyManager)
+    func readingWritesNothing() throws {
+        let cm = try makeContactManager()
+        let contact = try insert(cm)
+        try cm.modelContext.save()
+        let column = contact.currentKey?.pairingEncrypted
+
+        for _ in 0..<5 { _ = contact.pairingCapabilities.upgrade() }
+
+        #expect(!cm.modelContext.hasChanges)
+        #expect(contact.currentKey?.pairingEncrypted == column)
+    }
+}
+
 // MARK: - Under one key
 
 /// The detail screen opens the pairing and the scheme label under the pass's key (`Docs/Bugs/v2.1.0/`). They have to

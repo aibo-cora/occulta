@@ -22,6 +22,31 @@ struct PairingUpgradeGlyph: View {
     }
 }
 
+/// Said once on the detail screen, above the key details: what a re-exchange would add, and the way to it. Neutral, with no
+/// word about safety. Shown for a pairing that lacks pair keys or quantum-resistant key agreement and could get them.
+struct PairingUpgradePrompt: View {
+    let identifier: String
+    let upgrade: PairingCapabilities.Upgrade
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(self.upgrade.prompt)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            NavigationLink {
+                KeyExchange(identifier: self.identifier)
+            } label: {
+                Label("Re-exchange in person to upgrade", systemImage: "arrow.up.circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
 /// What the pairing holds and what each thing is for. Present or missing, in plain words, with no word about safety.
 struct PairingCapabilityRows: View {
     let identifier: String
@@ -48,7 +73,7 @@ struct PairingCapabilityRows: View {
                 explanation: "Prepared for a future update. Not used yet."
             )
 
-            if self.capabilities.upgradeAvailable {
+            if self.capabilities.upgrade() != nil {
                 NavigationLink {
                     KeyExchange(identifier: self.identifier)
                 } label: {
