@@ -108,3 +108,18 @@ up in an error, a log or a crash report.
 text reaches the UI or a log, and no interop vector moves. A caller that passed an `ecdhOutput` of another size on
 purpose would now get an error; none is known. `PostQuantumProvider`'s optional returns are a separate question, not
 decided here.
+
+## The in-person exchange fails on an unusable ML-KEM key, without `MLKEMKeyCheck` (2026-11-28)
+
+**Decision:** When `encapsulate` returns `nil` for the peer's ML-KEM key, or `decapsulate` returns `nil` for its
+ciphertext, the exchange ends as `.failed` and tears down, as its other failed checks do. It does not run
+`MLKEMKeyCheck` on the key when it arrives.
+
+**Why:** Both failures used to return without ending the exchange, which from 2.0.5 waited out the 15-second step
+deadline and showed the timeout text, which blames distance (bugs.md OC-2; Bug 242). The check would add nothing:
+CryptoKit refuses to encapsulate to exactly the keys it rejects, and the exchange never stores the key for later, so
+the `nil` is already the signal. The card formats keep calling it, because a card's key is stored.
+
+**Consequences:** A malformed key or ciphertext from the connected phone now shows "This exchange didn't check out,
+so nothing was saved…" at once. Messages from another phone, and messages at the wrong step, are still ignored
+rather than failed, so a nearby phone can't end someone else's exchange. Nothing changes on the wire or at rest.

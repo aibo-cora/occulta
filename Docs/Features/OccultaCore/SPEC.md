@@ -73,7 +73,8 @@ ML-KEM-1024 key encapsulation behind a protocol, so no ML-KEM type leaves the fi
 - `PostQuantumProviderFactory.createForTesting()` and the in-memory provider exist **only under `#if DEBUG`**.
   Their private keys live in app memory (the persistent blob is the 64-byte seed, i.e. the key itself), so a
   Release build must not be able to reach them.
-- `encapsulate` does not run `MLKEMKeyCheck`; see bugs.md OC-2.
+- `encapsulate` does not run `MLKEMKeyCheck`. It returns `nil` for a key CryptoKit refuses, which is the same set
+  of keys; the in-person exchange ends as failed on that `nil` (bugs.md OC-2, fixed).
 
 ### 2.3 `MLKEMKeyCheck`
 
@@ -144,7 +145,7 @@ target links both products; the `ShareExtension` target links `OccultaFormats` o
 its dependency). The share extension keeps its own copy of the ML-KEM calls in `ShareStagingKeyManager` and does
 not use `PostQuantumProvider`. The app's `Manager.Key` and the card code call `TransportKeyDerivation.sessionKey`
 with Occulta's labels; `VaultManager.Backup.verifiedKey` calls the checked `reconstruct`. Outside
-`OccultaFormats`, `MLKEMKeyCheck` is not called anywhere in the app (bugs.md OC-2).
+`OccultaFormats`, `MLKEMKeyCheck` is not called anywhere in the app, and need not be (bugs.md OC-2).
 
 ## 7. Tests
 
