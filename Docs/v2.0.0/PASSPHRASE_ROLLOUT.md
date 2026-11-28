@@ -1,13 +1,16 @@
 # v2.0.0 — Passphrase Rollout
 
-**Status:** Proposed, 2026-10-19. The owner went through §8 on 2026-10-19, and again from 2026-10-29 after the
-brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies and logged in `decisions.md`.
+**Status:** ~~Proposed, 2026-10-19.~~ **Decided, not built** (2026-11-28, by the owner). Proposed 2026-10-19; the
+owner went through §8 on 2026-10-19, and again from 2026-10-29 after the brainstorm of 2026-10-27 to 29 (§1.5), through
+2026-11-28. Each decision is marked where it applies and logged in `decisions.md`. Still open: Bug 120, and when
+today's store is retired (below). Waiting on a measurement: the three listed below, each with its outcome decided.
 
 **Decided 2026-10-19:**
 - 2, direct derivation;
 - 3, the release after 2.0.0;
-- 5, every install migrates;
-- 10, setup required at once;
+- 5, every install migrates *(changed 2026-11-28: an install made before 2.1.0 migrates when it opts in, or, with no
+  lock, when it turns the lock on; nothing moves at the update, below)*;
+- ~~10, setup required at once;~~ *reversed 2026-11-28: the phrase is opt-in (below)*;
 - 12, the full list with 7 words;
 - 13a and 13b, no suggestion bar, and VoiceOver as in password fields;
 - 15a, 15b, 15c and 15d, keys stay in the keychain, and erase deletes the share key.
@@ -15,17 +18,20 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 **Decided 2026-10-29, which replaces or changes earlier decisions:**
 - 1, independent spaces replace the 2026-10-15 storage design (§1.5);
 - 4 and Rule 4, no probation week and no old store as the way back; the old store is deleted once the reseal is
-  verified (§1.2, §3.2);
+  verified (§1.2, §3.2) *(changed 2026-11-28: at the first cold-launch unlock after setup that opens a space with
+  content)*;
 - 7a to 7d, the coercion gate: lock-off for everyone with one warning, lock-on reseals the current space, coercer-
   created layers dropped at migration only (§1.3);
-- 8a and 8b, kept, but the old store waits until every layer has migrated; Rule 2 stands for the migration (§3.1);
+- 8a and 8b, kept, but the old store waits until every layer has migrated; Rule 2 stands for the migration (§3.1)
+  *(2026-11-28: 8a gains a "drop that layer" choice)*;
 - 9a and 9b, no remove-space action; Erase All Data erases the current space only and leaves the install-wide
   keys (§5);
 - 11a and 11b, the vault's own key from the space key, with an on-screen Face ID gate (§6);
 - 14, no rehearsal feature (§2.5);
 - 16, D2 of Bug 171: the Enclave does not take part in every guess;
 - 17, the release is 2.1.0, so `release/v2.1.0` and `v2.1.0/` feature branches;
-- 18, downgrade after migration is not supported, and the release notes say so;
+- 18, downgrade after migration is not supported, and the release notes say so *(2026-11-28: the loss is accepted,
+  and the TestFlight notes say so too)*;
 - 19, Bug 170's leftovers stay in Bug 170;
 - no typo check: no checksum and no retype before the first write (§1.5);
 - a bundle for a contact in another space is handled exactly like a corrupt file (§1.5);
@@ -52,7 +58,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   draw covers them all and there is no size spread to match; photos and vault entries stay out (decided
   2026-11-02);
 - photos: their own table, one row per photo of one fixed size, about 24 KB, re-encoded at about 360 px with its
-  metadata stripped, the original not kept, and no noise rows (decided 2026-11-02; the leak this leaves is open);
+  metadata stripped, the original not kept, and no noise rows (decided 2026-11-02; ~~the leak this leaves is open~~
+  *closed 2026-11-15: photos moved into the one table, whose noise covers them*);
 - vault entries: their own table, 4 KB rows with notes limited to about 3.5 KB of text, and a noise count drawn per
   install uniformly from 10–200, never stored, written when the contact noise is (decided 2026-11-02);
 - 26, a store-layer test that old ciphertext is gone from the file and its `-wal` after a write and a checkpoint,
@@ -90,12 +97,113 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - Bug 170, legacy keychain prekeys deleted in stage 4, the custody key derived from the space key in stage 5;
 - Bug 162, one padded custody record per owner, and a stated limit for a holder of the trustee's phrase.
 
-**Open, needs a decision:**
-- spec §2 still describes the 2026-10-15 storage design as history and needs rewriting for independent spaces
-  (its open sub-items were closed 2026-11-02);
-- the unlock cost, to be measured on a device, by the measuring app of decision 6 (PR #155; not run on a device);
-- 23, write order in the SQLite file: a stage 0 measurement first, with `VACUUM` on close as the candidate fix;
-- 29, the row size itself and the cap on retired keys, set when the record is built and measured;
+**Decided 2026-11-24 by the owner** (`decisions.md`, 2026-11-24), which closes stage 2's list:
+- spec §2 is rewritten in place for independent spaces, with the 2026-09 to 2026-10-15 text kept below it as its
+  history, so every reference to it still resolves;
+- the unlock cost: everything after PBKDF2 (the Enclave derivation, reading and trial-decrypting every row) takes at
+  most 0.5 s at 1,000 contacts and 2 s at 5,000 on an iPhone 11; within it, no locator tag; over it, lazy decoding,
+  then the locator tag before stage 4; the PBKDF2 target is never lowered (§1.5);
+- 23, write order: the migration writes every row and its noise in one shuffled order and rebuilds the file once;
+  a row's pages must follow its random ID and the header must match a freshly built file; if they don't, the store is
+  rebuilt with `VACUUM INTO` a new file and an atomic replace when it closes after a session that added a row (after
+  any write if rewrites move pages), which changes item 26's "rotation not adopted";
+- 29, the row size: fixed in code on every install, never from the data; from the largest record any type can
+  reach under its field limits, counting only fields that coexist, sealed, rounded up to 4 KB, plus one 4 KB page
+  reserved inside the record; growth beyond the reserve extends every row with random bytes outside the seal in one
+  release; contact text and vault notes past the record's budget go to overflow rows, so every existing contact
+  fits; the number is set at stage 3 or 4;
+- 29, retired keys: a retired key drops its ML-KEM material at retirement, and a contact keeps the public key and
+  dates of its two latest retired keys only.
+
+**Decided 2026-11-27 by the owner** (`decisions.md`, 2026-11-27):
+- §1.6, binding: each seal's AAD is the table's label ‖ the row's 16-byte ID ‖ a one-byte field tag, fixed width on
+  every row, built in the store layer and pinned by a test vector;
+- §1.6, drafts: a draft is a small record in its space; its attachments are staged under a key from the space key
+  and deleted when the store closes, and each launch empties `Drafts/` and the staging folder, so nothing about a
+  draft exists outside the store at rest;
+- photos stay at about 360 px and 24 KB, each its own row in the one small-records table, though that row is now
+  48–64 KB; the photo never sets the row size;
+- stated limits, which step 16's guidance states: images taken before the migration, older keychain images with
+  the legacy prekey tags (Bug 170), and the old store while it waits for every layer (§4, §1.2);
+- §8, 30: every pairing made before 2.0.1 keeps the identity fingerprint until re-paired in person, a stated limit,
+  and shows the same re-pair note in every space;
+- Bug 120 stays open, needs a decision: no fix is known.
+
+**Decided 2026-11-28 by the owner** (`decisions.md`, 2026-11-27), spec §2.2's message-key items:
+- old senders in the classical-only modes: a stated limit with §8, 30's re-pair note, which covers a pre-2.0.1
+  classical pairing's `.longTermNoPQ` files opening with the passcode;
+- the transport's records: a stated limit in step 16's guidance;
+- the two prekey items: superseded by D9, their remainders in Bug 120 (open) and Bug 170's stated limit;
+- also struck: "adding a depth shows across images", gone under spaces since 2026-11-02.
+
+**Decided 2026-11-28 by the owner: the phrase is opt-in** (`Docs/v2.0.0/PASSPHRASE_UX_REVIEW.md` §F and §G, PR #220;
+`decisions.md`, 2026-11-28). It reverses decision 10 and the forced migration of §3.1 and §3.2, and replaces §F's
+silent move (below):
+- **The offer:** at the first unlock after the update, on an install with a PIN, a short neutral explanation and
+  three choices, Migrate Now (the setup ladder), Remind me Later (7 days) and Dismiss. The copy is identical at every
+  PIN layer, and its state is one install-wide value, never per layer. Not shown with no lock. It stays in Settings
+  after Dismiss (§3.2).
+- **Nobody moves until they act** (gap 1, below). Every install made before 2.1.0 stays on today's store, with no lock,
+  a PIN or Secure Mode layers alike, until it opts in: Migrate Now, or turning the lock on for an install with none
+  (§1.4's option 1, for these installs). Migrate Now moves straight from today's store to phrase keys, with the user
+  present: one phrase for a PIN-only install, every layer's in one sitting from the real depth (Rule 2) for a Secure
+  Mode install, or 8a's single layer at a decoy, with a "drop that layer" choice the same at every depth. An install
+  made on 2.1.0 starts on the new store (§1.4).
+- **The Secure Mode control stays as it is today** on every install made before 2.1.0: at a duress layer it shows
+  "Activate Secure Mode", as an install without layers does (`Settings.swift:250`). The offer sits beside it.
+- **No release-wide date and no gate (4b).** After Migrate Now, the old store is the fallback: it is deleted at the
+  first cold-launch unlock, once every layer has migrated or been dropped, that opens a space with content (§1.2).
+- **Downgrade:** accepted, as on 2026-10-16; a line in the TestFlight notes (item 18).
+- **Also:** an explicit Unlock tap after 7 words, "Lock now" in Settings > Security and an icon-only padlock, the
+  5-minute grace with no setting, setup copy asking for a contact or note in each space, no word swaps, and a write
+  into a stray space accepted (the UX review, §F).
+- **What it costs, none of it a security or privacy loss:** today's store and its code stay until a later release
+  retires them, a release not yet set (open, needs a decision, below); and an install that hasn't opted in keeps today's store with today's properties,
+  no worse than today, so everything the new store fixes reaches an install at its opt-in (§8, 31's list among them).
+
+**Decided 2026-11-28 by the owner: the three gaps found while folding the opt-in in** (`decisions.md`, "The
+passphrase is opt-in, 2026-11-28"), each taken alone:
+- **Gap 1, the files and Settings marking Secure Mode installs: nobody moves until they act** (above). §F's silent
+  move (PIN-only and no-lock installs moved at the update, Secure Mode installs left on today's store) would have
+  left an unmoved Secure Mode install the only one on today's store, in any file listing, and "existing Secure Mode
+  installs keep their controls" would have shown it in Settings at a decoy, to a coercer with no tools. Every
+  install now holds the same files and Settings until it acts.
+  - *Why the silent move goes rather than widens:* its one gain was that the files didn't show who opted in. The lock
+    screen shows that to anyone who sees the phone (gap 2), so the gain was close to none, and it was what made the
+    gap.
+  - *First decided as B the same day, then replaced:* every install moved silently, each Secure Mode layer under its
+    own phrase-less key in a fixed slot array with PIN routing, and the Secure Mode control retired everywhere. It
+    closed the gap but cost a second key format until opt-in, the riskiest reseal in the app run unattended at the
+    update for every layer, and no layer changes until opt-in.
+  - *What remains of the same fact:* the PIN layers themselves. A 6-digit PIN adds no entropy, so until the install
+    opts in they are as exposed to an examiner with code execution on the phone as today's device-bound keys are
+    (Bug 119), as under every option.
+  - *Not chosen:* the silent move with the control retired and the file difference stated as a limit; B; a deadline
+    to opt in (finding 1 again, later); keeping it open.
+- **Gap 2, the lock screen: a stated limit.** It shows whether an install opted in (7 words or digits), not how many
+  spaces there are: a PIN install can hold layers as a phrase install can hold spaces, and the coercer's demand is
+  the same either way. Step 16's guidance says so. Not chosen: a deadline for everyone (finding 1 again), or keeping
+  it open.
+- **Gap 3, the fallback after Migrate Now: 4b for every install.** The old store stays until the first cold-launch
+  unlock that opens a space with content, for a PIN-only install as for a Secure Mode one. Until then the old data
+  opens as it does today. With duress spaces the first cold unlock may use a decoy's phrase, which proves only that
+  phrase. Not chosen: deleting at verification (§G as written), or a fixed 7-day window. *(Under B this was a
+  phrase-less copy of each new key in its slot; under nobody-moves the old store is the copy.)*
+
+**Waiting on a measurement, each with its outcome decided:** the unlock cost (the spare iPhone 11, decision 6, with
+the measuring app updated to the decided row size), the write-order test (stage 0, on the Simulator) and the row
+size's number (stage 3 or 4, on the Simulator, Enclave blob sizes checked on the spare phone).
+
+**Open, needs a decision:** none of stage 2's list. Still open:
+- Bug 120's across-images limit, with no fix known;
+- **when today's store and its code are retired** (raised 2026-11-28 by nobody-moves-until-they-act). Until then every
+  install made before 2.1.0 that hasn't opted in keeps it. Retiring it means doing something about those installs:
+  required setup at that release, which brings back finding 1 at a later moment, or the PIN path kept for good. To be
+  decided after 2.1.0 ships, with how many installs have opted in known. Whatever it is must be the same for every
+  install, so the retirement marks no one.
+
+The three gaps the opt-in raised were decided 2026-11-28 (above). Stage 2's other part, the model sweep for requirement 5, is still to do (§7.2),
+and so is item 24's check against the long-term slot's derivation.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
 - how the phrase is typed and learned;
@@ -181,6 +289,13 @@ change reseals each space at its next unlock** (`decisions.md`, 2026-11-15).
 - The reseal shows across images as a whole-space write, within Bug 120's stated limit (decision 25).
 
 ### 1.2 Rule 4's way back: the old store file
+
+**Changed 2026-11-28 by the owner (opt-in, the UX review §F, 4b; summary):** the old store is deleted at the first
+cold-launch unlock after setup that opens a space with content, not when the reseal verifies, on every install:
+nothing moves before an install opts in, so every migration starts from it. No progress record is kept: the only state
+is that the old store still exists. Under 8a it still waits for every layer, migrated or dropped. Until that unlock the
+old data is as readable as it is today; under duress layers the first cold unlock may use a decoy's phrase, which
+proves only that phrase.
 
 **Superseded 2026-10-29 by the owner: no probation week.** The setup ladder (§2.5) is the only check that a phrase
 is remembered. The reseal still writes a new store file, and the old store stays until the reseal has been
@@ -300,6 +415,13 @@ depth's phrase in one sitting. **Decided 2026-10-19 by the owner (7d): dropped a
 
 ### 1.4 Installs with no lock
 
+**Changed 2026-11-28 (opt-in, §3.1):** for an install made before 2.1.0, option 1 below: it stays on today's store
+until the lock is turned on, which runs the migration then, to a phrase, with the old store kept until 4b's first
+cold-launch unlock (§1.2). An install made on 2.1.0 starts on the new store as option 2 has it. Turning the lock on,
+on a 2.1.0 install, sets a phrase, never a PIN; on an older one it offers the phrase beside today's PIN, whose settings
+work as today until the install opts in (§3.2). The cost is option 1's: the code keeps two formats while such installs
+exist.
+
 **Decided 2026-10-19 by the owner: option 2, migrate everyone** (`decisions.md`, 2026-10-19).
 - Depth 0's key is derived from an empty phrase, with the install's salt and Enclave key. Protection stays at
   today's level.
@@ -374,7 +496,25 @@ Decision 1 is closed by it.
     per install uniformly from 10–200, never stored, written at the same moments as the contact noise (§8, 21).
     A hidden space of 40 entries stays unprovable on 79% of installs. At the cap the noise is about 0.8 MB.
   - **Fallback:** a 16-byte locator tag per row (an HMAC under a subkey of the space key), if a device
-    measurement shows unlock is too slow.
+    measurement shows unlock is too slow. **The threshold, decided 2026-11-24 by the owner** (`decisions.md`,
+    2026-11-24):
+    - *What is measured:* on an iPhone 11 (decision 6), in Release, at the row size item 29 sets, with one photo per
+      contact in the same table and 1,000 noise rows: everything after PBKDF2, that is the Enclave derivation and
+      reading, trial-decrypting and decoding every row, at 100, 1,000 and 5,000 contacts, first pass and median. A
+      return within the grace (§8, 27) costs the same. The same run sets PBKDF2's count: the smallest multiple of
+      10,000 whose median is at least 1 s.
+    - *Threshold:* at most 0.5 s at 1,000 contacts and 2 s at 5,000.
+    - *Within it:* no locator tag.
+    - *Over it, mostly in decrypting and decoding:* records are decoded lazily, which changes no format, and the
+      run is repeated. *Over it in reading, or still over:* the locator tag, in the row format before stage 4,
+      since adding it later is a migration of every row. A shred overwrites the tag with the row, or a phrase holder
+      could pick out their own space's deleted rows.
+    - *Never:* lowering the PBKDF2 target to pay for reading.
+    - *What unlock time shows:* nothing the file doesn't. The part shared by every phrase scales with the table's
+      total row count, which the file shows; the rest scales with the open space's own size, which whoever opened
+      it sees.
+    - *First:* the measuring app (PR #155) still uses 8,220-byte records and a photo table of its own; it is updated
+      to item 29's size and photos in the one table before a device run means anything.
 - **Removing a space:** unlock it, crypto-shred its rows into noise, and forget the phrase. The app keeps no record
   of the space.
 - **Cost accepted:** a decoy goes stale unless it is actually used. Nothing copies the real space's changes into
@@ -420,13 +560,16 @@ records, crypto and encoding only, no store read; median of 5 passes):
 - One Enclave ECDH costs about 4.6 ms here against 0.23 ms on the Simulator, so one per record would cost 4.6 s at
   1,000 records. The design's one derivation per unlock stays.
 - Opening is mostly JSON decoding: a noise row fails its tag check in under 4 µs.
-- Still unmeasured: PBKDF2, reading the rows from the store, and an iPhone 11 (decision 6).
+- Still unmeasured: PBKDF2, reading the rows from the store, and an iPhone 11 (decision 6). *2026-11-24:* rows
+  will be larger than 8 KB (§8, 29, likely 48–64 KB, an estimate), so these figures understate reading and
+  authenticating; the threshold under "Fallback" above says what the device run decides.
 
 ### 1.6 Binding each sealed record to its row (step 5)
 
 **The requirement is decided** (2026-09-26, `bugs.md` Bug 123; spec §2, requirement 6): every sealed blob is bound
-to its row with an AAD built from the row's ID. **How it applies under independent spaces is proposed 2026-11-02,
-not decided.**
+to its row with an AAD built from the row's ID. ~~How it applies under independent spaces is proposed 2026-11-02,
+not decided.~~ **Decided 2026-11-27 by the owner: the construction below, with the field tag on every row**
+(`decisions.md`, 2026-11-27).
 
 **What happens to the fields Bug 123 named.** Each one was sealed on its own with one fixed AAD byte, so a value
 copied from one row to another opened cleanly. Under §1.5 and §8, 21 none stays a field of its own:
@@ -442,15 +585,25 @@ So step 5 becomes binding whole records, not fields. Each row of the new store i
 sealed record (§8, 23); a vault entry's row holds two seals, its wrapped entry key and its content.
 
 **Construction.**
-- **AAD = a table label ‖ the row's 16-byte ID**, plus a field tag only where a row holds more than one seal (a
-  vault entry's key and content, as `VaultEntry.aad(for:)` does today).
-- **The label** is a constant per table: small records, photos, vault entries. It is never stored, so it leaves
+- **AAD = a table label ‖ the row's 16-byte ID ‖ a one-byte field tag**, fixed width on every row *(decided
+  2026-11-27; proposed with the tag only where a row holds more than one seal)*. A row with one seal uses one
+  constant tag; a vault entry's key and content use two, as `VaultEntry.aad(for:)` does today. One layout, one
+  pinned vector. The AAD is never stored, so the tag costs nothing in the file.
+- **Every row of a table is bound the same way,** overflow and manifest rows included (§8, 28, 29). A contact lists
+  its overflow rows' IDs inside its own seal, so one swapped between two contacts fails on the ID. The random bytes
+  that extend a row when the row size grows (§8, 29) are outside the seal and bound to nothing, being random; the
+  AEAD tag already authenticates the sealed length, so trying the old length then the new needs nothing in the AAD.
+- **The label** is a constant per table: small records, photos, vault entries *(2026-11-15: photos are small records, and install-wide state has a table of its own; spec §2.1; so the labels are small records, vault entries and install-wide state)*. It is never stored, so it leaves
   nothing in the file, and it makes a record moved between tables fail whatever the row sizes are.
 - **Not in it:**
   - the record's type, which is inside the seal (§8, 21); unlock doesn't know it before opening;
   - a creation date, since the new store has no plaintext column to take it from (today's `VaultEntry.aad(for:)`
     uses `createdAt`);
   - any space identifier, since none exists, and another space's key already fails.
+- **Not adopted** (2026-11-27): a key per row, HKDF(space key, label ‖ ID), instead of an AAD, which binds the same
+  and adds a derivation per row at unlock, its nonce isolation negligible at any real number of writes; and a
+  per-space write counter in every AAD, which would close rollback per row but reseal every row of the space on each
+  write (item 25's grouping), where the manifest row already covers rollback (item 28).
 - **In the store layer, not at call sites.** Stage 0's store layer seals and opens only through calls that take the
   table and the row ID, so no caller can seal without them. The binding then costs nothing extra in stage 3 or 4.
 - **The layout is a sealed contract,** like `Message.Draft.aad(for:)`: changing it makes every row unreadable. Pin
@@ -465,7 +618,8 @@ It costs no stored bytes and no measurable time, since the row ID is read with t
 
 **What it doesn't stop.**
 - Anyone holding the space's key, who can seal anything they like. Nothing binds against that.
-- **Rolling a row back to an older version of itself. Open, needs a decision.** An edit rewrites a row in place
+- **Rolling a row back to an older version of itself.** ~~Open, needs a decision.~~ *Decided 2026-11-15: a manifest
+  row per space (§8, 28), which catches a row rolled back or brought back, not a whole space rolled back.* An edit rewrites a row in place
   under the same ID (§8, 22), so an older ciphertext of that row from an earlier image still opens (§8, 26).
   Someone who can write the store can bring back a deleted contact's record, or a contact's earlier keys. Closing
   it needs something per space that changes with every write, which §1.5's "no per-space record" rules out (§8,
@@ -482,8 +636,27 @@ It costs no stored bytes and no measurable time, since the row ID is read with t
 
 **Still to sweep (stage 2):**
 - sealed fields that stay in SwiftData's install-wide state;
-- drafts, which hold contact references sealed under the space key (§8, 20) but have no table assigned yet. Today
-  they bind to their row ID and a field tag (`Message.Draft.aad(for:)`).
+- ~~drafts, which hold contact references sealed under the space key (§8, 20) but have no table assigned yet. Today
+  they bind to their row ID and a field tag (`Message.Draft.aad(for:)`).~~ **Drafts: decided 2026-11-27 by the
+  owner** (`decisions.md`, 2026-11-27).
+  - *Found while assigning the table:* a draft's attachments are files outside any store, in
+    `Application Support/Drafts/<draft id>/<file id>.<ext>`. The listing needs no phrase and shows how many drafts
+    hold attachments, how many files, their sizes and types. Under spaces, one image and a decoy phrase show folders
+    the decoy doesn't list, so another space exists; today a sensitive contact's draft is never written ("Option E",
+    `DraftStore`), and spaces have no such flag. Group drafts' files are sealed under tier U's compose key, which
+    needs no phrase, so a hidden space's would open, or their deleted remnants, on an AFU image with code execution.
+  - *The draft* (recipient reference, text, thread bubbles, compose mode) is a small record in its space, bound as
+    above; its text past the record's budget goes to overflow rows, as a contact's does (§8, 29).
+  - *Its attachments last only while the space is open.* They are staged under a key derived from the space key, not
+    tier U, and deleted when the store closes (background or lock); each launch empties `Drafts/` and the compose
+    staging folder before any space opens. At rest nothing about a draft exists outside the store. The cost: an
+    attachment in a draft is lost when the app leaves the foreground; leaving compose within the session keeps it.
+  - *Not adopted:* attachments as rows in the store (a large video is hundreds or thousands of rows, a total count a
+    decoy can't account for, readable with no phrase); today's files kept and sealed under the space key (fixes the
+    key, not the listing: a new residual).
+  - *Tests, before stage 4 counts as done:* after the store closes, `Drafts/` and the staging folder are empty; a
+    draft's text survives a relaunch and its attachments don't; no staged file opens under tier U's compose key; a
+    launch after a kill mid-session empties both folders before any space opens.
 
 Each gets the same rule.
 
@@ -600,6 +773,35 @@ headphones suggestion.
 
 ### 3.1 Starting states
 
+**Decided 2026-11-28 by the owner: opt-in, and nobody moves until they act** (the UX review §F, items 1–4b, with gap
+1 as decided the same day, summary; `decisions.md`, 2026-11-28). Nothing is required at the first unlock and nothing
+moves at the update. Each starting state now runs as follows; the table after it is the earlier, forced version, and
+its rows still describe what setup does once someone opts in.
+
+| Today | At the update | When they opt in |
+|---|---|---|
+| No lock | Nothing changes; no offer | Turning the lock on sets a phrase and migrates depth 0 to the new store (§1.4) |
+| PIN only | Nothing changes; the PIN stays the lock screen; the offer at the first unlock | Migrate Now: one phrase, the ladder, then the reseal into the new store; the PIN gate goes |
+| Secure Mode with K duress layers | Nothing changes; the same offer at the first unlock, at whichever PIN was typed | At the real depth, K+1 phrases in one sitting (Rule 2), then one reseal of every layer |
+| Unlocked at duress depth N | Nothing changes; the same offer | 8a: setup there is real for that layer; the real user finishes from the real depth later, or chooses "I don't remember it: drop that layer", the same choice at every depth, whose copy says what is lost |
+| Gate lowered at depth N | Nothing changes; no offer there, since no PIN is typed | With the others when the real user opts in, its key under the device-only key (7a) |
+| Depths a coercer created | Nothing changes | Dropped at setup with the contacts they created (7d) |
+
+In every row the old store stays until the first cold-launch unlock after setup, every layer migrated or dropped,
+that opens a space with content (4b, §1.2).
+
+- **The Secure Mode control.** It stays as it is today on every install made before 2.1.0, duress PINs included
+  (`secureMode` is on in the shipped `features.plist`): at a duress layer it shows "Activate Secure Mode", as an
+  install without layers does (`Settings.swift:250`). The offer sits beside it, the same everywhere. After opting in,
+  further spaces come from "add a space" (UX review finding 7). An install made on 2.1.0 has no PIN path.
+- **What this shows.** Until an install acts, its files and Settings are what they are today, the same with or without
+  a lock or layers. After it opts in, the files show it, as the lock screen does (gap 2, a stated limit). To an
+  examiner with code execution on the phone, the PIN layers stay as exposed as today's device-bound keys are (Bug 119).
+- **The lock screen while both paths exist** (8a, a Secure Mode install mid-setup) is left to stage 6 (UX review,
+  finding 11).
+
+*The earlier, forced version (2026-10-19 to 2026-11-27):*
+
 Assuming §1.2: the reseal happens at phrase setup, into a new store.
 
 | Today | At phrase setup | Notes |
@@ -637,7 +839,8 @@ Assuming §1.2: the reseal happens at phrase setup, into a new store.
 **Superseded 2026-10-29: there is no probation or graduation.** The deletion below runs when the reseal has been
 verified, with the same caveat for tier U's `r_U` and ML-KEM record. The "use my old PIN" option and the Rule 4
 progress ring (§2.5) are not built. What a forgotten phrase costs is stated in the setup copy, which is the only
-safeguard besides the ladder. Decision 10 (setup required at the first unlock) stands.
+safeguard besides the ladder. ~~Decision 10 (setup required at the first unlock) stands.~~ *Reversed 2026-11-28:
+opt-in (below).*
 
 **During probation.** Until graduation, the lock screen asks for the phrase. Every lock user also gets
 "use my old PIN", which opens the old store as it was at setup (§1.2).
@@ -651,14 +854,49 @@ safeguard besides the ladder. Decision 10 (setup required at the first unlock) s
   - So they go only once nothing else uses tier U (ROLLOUT_PLAN stage 4).
 - the Secure Mode PIN Enclave key (`app.layer.key.occulta.v1`).
 
-**What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. Since every
+**What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. ~~Since every
 install migrates (§1.4), every install loses the old keys: at once with no lock, at graduation with one. Their
-absence says only that the install has migrated. The deletion's date can still differ by about a week between
+absence says only that the install has migrated.~~ *2026-11-28 (opt-in, nobody moves until they act):* an install
+loses the old keys, `app.layer.key.occulta.v1` among them, at 4b's unlock after it opts in, and keeps them until then,
+as every install made before 2.1.0 does. Their absence says only that it has opted in, which the lock screen shows
+anyway (gap 2). The deletion's date can still differ by about a week between
 the two, which says no more than today's verifier scalar about whether there is a lock.
 
-**Setup deadline. Decided 2026-10-19 by the owner (decision 10): required at the first unlock after the update,**
+**The offer. Decided 2026-11-28 by the owner, reversing decision 10** (the UX review §F, items 1–2; `decisions.md`,
+2026-11-28).
+- **When:** at the first unlock after the update, on an install with a PIN. A short, neutral explanation and three
+  choices: **Migrate Now** (the setup ladder), **Remind me Later** and **Dismiss**.
+- **Remind me Later** waits 7 days: one stored date, written at the tap; the offer returns at the first unlock after
+  it, and Later again re-arms it. **Dismiss** ends it; the feature stays in Settings.
+- **Neutral copy.** It appears at whichever PIN was typed, a duress layer included, so it never mentions coercion,
+  duress, spaces or hidden data: "Replace your PIN with a stronger 7-word passphrase" is the level of claim. A string
+  test checks it.
+- **Identical at every PIN layer,** and Migrate Now at a duress layer starts setup there (8a).
+- **One install-wide state, never per layer:** not yet offered, remind after a date, dismissed. Every PIN install
+  writes it the same way. The stored date is a per-install trace, no more revealing than the update's own date.
+- **Not shown on installs with no lock;** turning the lock on offers the phrase beside today's PIN (§1.4).
+- **No notifications or badges** (`OSTraceTests`).
+- **Until an install opts in, its PIN settings are today's:** setting and removing the PIN, and Secure Mode, work as
+  they do now (the summary, gap 1).
+- **Rule 3: a stated limit, decided 2026-11-28 by the owner (gap 2, summary).** With no end date, the lock screen shows
+  from then on whether an install opted in (7 words or digits), and so do the files once it has. Rule 3 permitted an
+  opt-in period only if every lock user is offered it, which this does, and only if short, because early adopters mark
+  themselves, which this isn't. It says nothing about how many spaces there are: a PIN install can hold layers as a
+  phrase install can hold spaces. Step 16's guidance says so.
+
+**UX findings 10–12 under opt-in** (re-read 2026-11-28 as the UX review asks):
+- **10, lock off and on.** It now applies only to installs that opted in; before that the PIN toggle is today's. After
+  opting in there is no PIN path, so removing the lock and turning it on again sets a new phrase (7c).
+- **11, the mixed window.** It now exists only on Secure Mode installs that opt in at a decoy (8a); the "drop that
+  layer" choice is adopted, so Rule 2 can always be finished. A PIN lock screen no longer marks anything by itself,
+  since every install keeps its PIN until it opts in. The dual lock screen of that window is still stage 6's to design.
+- **12, forgetting.** Unchanged for anyone who opts in. Gap 3 (2026-11-28): every install keeps the old store as its
+  fallback until the first cold-launch unlock that opens a space with content (4b).
+
+*Superseded 2026-11-28: the setup deadline.* **Setup deadline. Decided 2026-10-19 by the owner (decision 10): required at the first unlock after the update,**
 with no "Later" (`decisions.md`, 2026-10-19).
-- There is no opt-in period, so setting up early marks no one (Rule 3).
+- ~~There is no opt-in period, so setting up early marks no one (Rule 3).~~ *Superseded 2026-11-28: opt-in, with no
+  end date; the files mark no one, the lock screen is a stated limit (above).*
 - After the update, no install keeps the PIN path ~~beyond the probation week~~ once its reseal is verified
   (2026-10-29: no probation week).
 - The cost: after the update, a lock user can't use the app until setup and its learning steps are done, even
@@ -687,11 +925,13 @@ checked against recorded ones. It needs the following added:
 - **Every field filled.** Each contact also has a prekey record, and one has a photo.
 - **Edge cases:**
   - empty strings;
-  - a contact record larger than its 8 KB row;
-  - a vault note longer than about 3.5 KB;
-  - a photo larger than 24 KB.
+  - a contact ~~record larger than its 8 KB row~~ whose text is past the record's budget: it migrates whole, the
+    rest in overflow rows (§8, 29);
+  - a vault note longer than about 3.5 KB: the same, in the vault table;
+  - a large, detailed photo: it re-encodes to about 360 px under 24 KB (§1.5; kept 2026-11-27).
 
-  What the migration does with the three that don't fit is open, needs a decision (§8, 29).
+  ~~What the migration does with the three that don't fit is open, needs a decision (§8, 29).~~ *Decided 2026-11-24
+  (§8, 29) and 2026-11-27 (photos): nothing is refused or trimmed.*
 - **What each depth shows, spelled out in the fixture as literal lists.** A fixture guard checks that today's code
   (`Contact.Profile.isVisible(atDepth:)`, `VaultEntry.isVisible(atDepth:whenUnclassified:)` and the group and
   backup-key filters) agrees with those lists. A later change to today's filters then can't quietly move what the
@@ -713,7 +953,8 @@ checked against recorded ones. It needs the following added:
    records of every space plus a noise count inside the decided range.
 5. **The old store isn't touched until every layer has been migrated and verified.** Before that, it is
    byte-for-byte what was seeded and still opens with the old PINs. Afterwards the store and the keys §3.2 lists are
-   gone (Bug 138).
+   gone (Bug 138). *2026-11-28 (4b):* gone at the first cold-launch unlock after that which opens a space with content,
+   not before.
 6. **Reads fail loudly.** A seeded value that won't open under today's key stops the migration with an error
    (register C1). Nothing is written or deleted, and the user's data is left as it was.
 
@@ -727,6 +968,43 @@ checked against recorded ones. It needs the following added:
 | Unlocked at duress depth N (8a) | Sets up at N, then later finishes from the real depth, typing N's phrase again | After the first step, only N's view is in the new store, and the old store is intact and opens with every PIN. After the second, every depth's view is in its space and the old store is gone |
 | Lock off at duress depth N (8b) | Migrates N silently under the device-only key; later the real user turns the lock on and finishes setup | Same as 8a: the old store waits for the other layers |
 | Depths a coercer created (`coercerBaseDepth > 0`) | Sets up as in the K-layer case | The coercer's depths and the contacts born in them are in no space, and their rows are shredded. Everything else checks 1–6 as usual. This is the one deliberate removal, by decision 7d |
+
+**Added 2026-11-28: the opt-in path** (the UX review §G, folded in and changed for gap 1's "nobody moves until they
+act", summary; §3.1). §G's silent move is not built, so its move tests become tests that nothing moves, and its
+migration order applies to Migrate Now. Unit tests for every item; where a real Enclave is needed the suite gates on
+it, otherwise it injects a key manager.
+
+*Migrate Now, in order:*
+1. Seal every row of every layer being migrated under its phrase key into the new store, shuffled with the noise rows
+   (§8, 23).
+2. Open the new store and compare every record with the old one.
+3. Switch the app to the new store.
+4. Keep the old store and the keys it alone used until the first cold-launch unlock, every layer migrated or dropped,
+   that opens a space with content (4b, §1.2); delete them then. A fault in steps 1 to 3 leaves the old store whole.
+
+*Its tests,* beyond checks 1–6 and the starting-state table above, which run at Migrate Now:
+- **Nothing moves at the update.** On every starting state (no lock, PIN only, Secure Mode with K = 1 and K = 3, a
+  lowered gate, coercer-created layers), launching the new build leaves the old store and every keychain item
+  byte-for-byte unchanged until the install acts (the `InteropVectors.json` approach), apart from the offer's one
+  install-wide value.
+- **Uniform until acted on.** Settings, the lock screen and the files are identical at every layer of a Secure Mode
+  install and on a PIN-only install: the Secure Mode control as today, the offer beside it (an `OSTraceTests`-style
+  test).
+- **Faulty sealer.** An injected failure at each of steps 1 to 3 leaves the old store untouched and the PIN working.
+  No half-built new store remains, and the next attempt starts over.
+- **Interruption.** Killing the process at each step leaves the old store whole and opening with the PINs, and the
+  next attempt starts over with the phrases typed again (UX review, finding 1, suggestion 4).
+- **No lock.** Turning the lock on with the phrase migrates the same way (§1.4); 4b applies.
+- **The offer.** Shown at every PIN layer with identical copy; a string test finds none of the coercion, duress or
+  space words. Dismiss and Later write one install-wide value, never one per layer; Later's date is 7 days ahead; not
+  shown with no lock.
+- **Wrong-phrase flow.** After Migrate Now, a mistyped phrase opens an empty space with no error and takes the same
+  time as a right one (UX review, finding 2).
+- **4b.** After Migrate Now the old store survives every launch until a cold-launch unlock opens a space with
+  content, and is deleted then with its keys; a warm return within the grace, or an unlock of an empty space, deletes
+  nothing. Until then the old PINs still open it.
+- **"Drop that layer" (8a).** Dropping a forgotten layer from any depth finishes the migration with that layer's data
+  in no space, and the copy is the same at every depth.
 
 **The lock turned on and off after migration.** On every starting state, after migration:
 - the lock is turned off (7a);
@@ -751,7 +1029,8 @@ After each step, the space shows exactly what it showed before the step, and the
 **When they land.**
 - Stage 0 builds the mock data, the literal lists and the fixture guards, which pass against today's code.
 - The checks are switched on as their slices land: the vault at stage 3; contacts, photos and groups at stage 4;
-  the remaining records at stage 5; every starting state and the lock toggles at stage 6.
+  the remaining records at stage 5; every starting state and the lock toggles at stage 6; nothing-moves, the offer
+  and 4b at stage 6 (2026-11-28).
 
 ---
 
@@ -811,9 +1090,12 @@ the phone's Contacts. This migration is where that closes:
   `ownerContactIdentifier` is the trustee's own reference to the owner.
 - ~~What the references hold instead is open, needs a decision. It must not be anything that decrypts to the
   identifier outside the contact's own depth.~~ **Decided 2026-11-02:** a random 16-byte contact ID (§8, 20).
-- Not closed by it, each open, needs a decision: images taken before the migration, the old store until
-  the reseal is verified (§1.2), and the legacy prekey tags in older keychain images, which outlive an app deletion (Bug 170,
-  decision 19).
+- Not closed by it, ~~each open, needs a decision~~ *each a stated limit, decided 2026-11-27 by the owner
+  (`decisions.md`, 2026-11-27)*: images taken before the migration, the old store until ~~the reseal is verified~~
+  every layer has migrated (§1.2, 8a), and the legacy prekey tags in older keychain images, which outlive an app
+  deletion (Bug 170, decision 19). No code reaches an image already taken. An image taken before the update shows
+  data as today's would, and the old store, while it waits, opens with the passcode as all data does today; the
+  setup copy asks for every layer in one sitting (Rule 2). Step 16's guidance says both.
 
 **Register C1 comes first.** `Data.decrypt()` turns any failure into `nil`, and `String.decrypt()` into `""`.
 That is how Bugs 75–78 and 80 became silent loss. The reseal's reads must fail loudly before it ships.
@@ -832,7 +1114,8 @@ Rule 3 allows only two visible states: lock off and lock on.
 - **Memory load.** Every depth's phrase has the same length (spec §3). So each depth adds 7 words to
   memorise.
 - **Adding a depth.** The new depth's header slot is written, and its parent's slot gains the new key (spec
-  §2, 2026-10-15). That shows across images; the spec has it as open.
+  §2, 2026-10-15). That shows across images; ~~the spec has it as open~~ *gone under independent spaces (spec §2.2,
+  2026-11-02): a new space writes no header, and its first row looks like any other addition.*
 - **Removing a depth: superseded 2026-10-29 by the owner.** Independent spaces share no keys, so no space can
   remove another, and there is no "remove space" action. Deleting content crypto-shreds it (§1.5), so a user who
   deletes everything in a space has emptied it. **Erase All Data erases the current space only:** it shreds that
@@ -856,11 +1139,13 @@ Rule 3 allows only two visible states: lock off and lock on.
     - Rows sealed only under those keys become unopenable, which requirement 2 explains as deletions. That is
       today's vault orphaning (`orphanVaultEntries`) generalised.
     - The contacts those depths created are deleted, for 7d's reason.
-  - **Still open:** it shows across images the same way creating a depth does (spec §2, 2026-10-15, open).
+  - ~~**Still open:** it shows across images the same way creating a depth does (spec §2, 2026-10-15, open).~~
+    *Moot: 9a and 9b are superseded (no remove action), and creating a depth no longer shows (above).*
 - **Repeated images.** The spec's finding stands: a duress depth doesn't survive comparison across images
   once its phrase is surrendered. Step 16's guidance has to say so.
-  **Recorded 2026-10-29 as a stated limit (Bug 120).** Independent spaces don't change it, and noise rows can't
-  close it. What the design does fix, in one image and with no phrase:
+  **Recorded 2026-10-29 as a stated limit (Bug 120)** *(2026-11-27, by the owner: kept open, needs a decision, as
+  bugs.md has it; no fix is known, and it stays open so any later mechanism is weighed against it).* Independent
+  spaces don't change it, and noise rows can't close it. What the design does fix, in one image and with no phrase:
   - **One table, one row shape:** each contact is one sealed blob (no per-type tables whose counts show), padded
     to a few fixed sizes, with noise rows in the same sizes (spec §2, requirements 3 and 4).
   - **No space tag on any row.**
@@ -995,13 +1280,13 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 | # | Stage | Ships | Weeks |
 |---|---|---|---|
 | P | Pairing secret, in a release before 2.1.0. *Shipped in 2.0.1, without the swap; cards deferred* | `bugs.md` Bug 196; §8, 30: the secret derived at pairing, swapped for existing pairings, from a card's ML-KEM material; a routing label in each slot; key binding; a new bundle version and interop vectors | Not estimated |
-| 0 | Groundwork | The measuring app (§8, 6); the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11; generator v2 (§2.3); install-wide state in its own table, so no SwiftData after migration (§8, 23); the write-order test (§8, 23); the data-protection entitlement (§8, 31) | 1.5–2 |
+| 0 | Groundwork | The measuring app (§8, 6), updated to item 29's row size with photos in the one table before its device run; the reseal's reads fail loudly (C1); a key cache in memory only that drops the key and every decrypted record when the app goes to the background, locks or changes space, not on device lock (C2; §8, 27); a `VersionedSchema` baseline (register §G); new-store-file mechanics (Bug 168's proposal), as a plain SQLite store layer with `secure_delete` and a checkpoint after every shred (§8, 23), closed when the app goes to the background so its `-wal` is deleted, with tests that old ciphertext is gone from the file and the `-wal` is gone after closing (§8, 26); the "data survives" reseal test (C3): §3.3's mock data, literal lists and fixture guards, with its checks switched on as stages 3–6 land; PBKDF2 and Enclave timing on an iPhone 11, and unlock against the 0.5 s / 2 s threshold (§1.5, "Fallback"); generator v2 (§2.3); install-wide state in its own table, so no SwiftData after migration (§8, 23); the write-order test, on the Simulator: pages in random-ID order and a fresh-file header, with `VACUUM INTO` and an atomic replace on close if it fails (§8, 23); the data-protection entitlement (§8, 31) | 1.5–2 |
 | 1 | Keyboard and learning ladder | §2.2, §2.5. Can ship first on Bug 92's export passphrase | 1–1.5, alongside 0 |
-| 2 | Close the design | §8's remaining open items; the model sweep for requirement 5 | 1–2 |
-| 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; each record bound to its row (step 5, §1.6) | 2–3 |
-| 4 | Contacts into the new store | One padded text record per contact, each in the space it was created in, at the one row size (§8, 29); ~~photos in their own table at one size, re-encoded, with no noise rows;~~ photos re-encoded, as records in the same table (§1.5); a manifest row per space (§8, 28); legacy keychain prekeys deleted once their blobs verify (Bug 170); vault entries in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
+| 2 | Close the design | ~~§8's remaining open items~~ *(decided 2026-11-24; spec §2 rewritten; the binding, drafts, photos and the residuals decided 2026-11-27)*; the model sweep for requirement 5 | 1–2 |
+| 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; vault notes past their budget in overflow rows (§8, 29); each record bound to its row (step 5, §1.6); the row size set from the field limits, with its maximal-record test (§8, 29), and the locator tag if the device run is over the threshold (§1.5) | 2–3 |
+| 4 | Contacts into the new store | One padded text record per contact, each in the space it was created in, at the one row size (§8, 29), long text in overflow rows, a retired key without its ML-KEM material and at most two kept (§8, 29); the migration's rows and noise in one shuffled order, then one rebuild (§8, 23); ~~photos in their own table at one size, re-encoded, with no noise rows;~~ photos re-encoded, as records in the same table (§1.5); a manifest row per space (§8, 28); drafts as records in their space, with attachments that last only while it is open (§1.6); the re-pair note on every pairing made before 2.0.1 (§8, 30); legacy keychain prekeys deleted once their blobs verify (Bug 170); vault entries in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part, as one padded custody record per owner (ROLLOUT_PLAN stage 4); the backup-export record as a space row (Bug 234); the custody key derived from the space key (Bug 170) | 1–2 |
-| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); Erase All Data scoped to one space; deleting the old store once every layer has migrated; no old-PIN fallback and no graduation | 2.5–4 |
+| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); *(2026-11-28, opt-in; the effort is not re-estimated)* nothing moving at the update, with its tests (§3.3; gap 1); the offer (Migrate Now, Remind me Later, Dismiss) and its Settings entry beside today's Secure Mode control (§3.2); "drop that layer" (8a); the lock screen while PIN and phrase paths coexist; the Unlock tap, "Lock now" and the padlock; Erase All Data scoped to one space; deleting the old store ~~once every layer has migrated~~ ~~at the first cold-launch unlock after setup that opens a space with content, once every layer has migrated or been dropped~~ at the first cold-launch unlock after setup that opens a space with content, once every layer has migrated or been dropped (4b, §1.2); no old-PIN fallback and no graduation; TestFlight notes (downgrade) | 2.5–4 |
 | 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several spaces | 1, plus ~1 calendar week: a 7-day phased release |
 
 **Total: about 13–21 weeks of build, roughly 3–5 months.** Stage 4 and stage 2 decide where in that range it
@@ -1024,9 +1309,12 @@ there and aren't repeated here.
    together, in one reseal (§7.1).
 4. ~~**Rule 4's way back** through the old store (§1.2).~~ ~~**Decided 2026-10-19:** adopted, with a new store
    file.~~ **Superseded 2026-10-29:** no probation week and no way back. The reseal writes a new store file, and the
-   old store is deleted once the reseal is verified (§1.2, §3.2).
+   old store is deleted once the reseal is verified (§1.2, §3.2). **Changed 2026-11-28 (opt-in, 4b):** at the first
+   cold-launch unlock after setup that opens a space with content, on every install, since nothing moves before an
+   install opts in (§1.2).
 5. ~~**Installs with no lock** (§1.4).~~ **Decided 2026-10-19:** migrate everyone, with an empty phrase for
-   depth 0.
+   depth 0. **Changed 2026-11-28 (opt-in):** for an install made before 2.1.0, option 1 instead: it stays on today's
+   store until the lock is turned on; nothing moves at the update on any install (§1.4, §3.1).
 6. **A test phone with no real data.** Which one? As of 2026-10-19 none is cleared: the iPhone 11 still holds real
    data. Stage 0's timing and every stage from 3 on wait for one.
    *2026-11-01: a hosted test run on the iPhone 15 Pro, which also holds real data, deleted its groups (`bugs.md`
@@ -1044,6 +1332,10 @@ there and aren't repeated here.
      naming the phone. ~~Not built.~~ *Built 2026-11-02 as `Tools/OccultaMeasure/`, PR #155, merged into `develop`
      2026-11-03 and into this branch with #172. It runs on the Simulator; a device run is manual and per phone (its
      README).*
+   - *2026-11-24:* what its unlock figures decide is set in advance (§1.5, "Fallback"), and it is updated to item 29's
+     row size, with photos in the one table, before the device run. The write-order test (item 23) and the row size
+     (item 29) need no phone: the Simulator runs iOS's own SQLite, and record sizes don't depend on the device
+     except for Enclave blobs.
 7. **The coercion gate** under phrases (§1.3):
    - 7a: ~~lowering it at a duress depth~~ **Decided:** kept, built identically for every depth and install.
    - 7b: ~~lowering it at the real depth~~ ~~**Decided:** refused while duress depths exist.~~ **Superseded
@@ -1061,8 +1353,10 @@ there and aren't repeated here.
    space only (install-wide keys stay). ~~**Decided 2026-10-19:** any depth removes the depths below it, cascading;
    their data becomes unopenable and the contacts they created are deleted. How it shows across images stays
    open, with depth creation.~~
-10. ~~**A setup deadline** for lock users without a phrase (§3.2).~~ **Decided 2026-10-19:** required at the
-    first unlock after the update.
+10. ~~**A setup deadline** for lock users without a phrase (§3.2).~~ ~~**Decided 2026-10-19:** required at the
+    first unlock after the update.~~ **Reversed 2026-11-28 by the owner:** the phrase is opt-in, offered at the first
+    unlock with Migrate Now, Remind me Later (7 days) and Dismiss, and kept in Settings; no deadline and no gate
+    (§3.2; the UX review §F; `decisions.md`, 2026-11-28).
 11. ~~**The vault's keys** (§6): 11a, a per-depth vault key derived from the depth key; 11b, a second unlock
     (an on-screen Face ID gate, or a real Face ID-or-passcode key).~~ **Decided 2026-10-29:** 11a, with an
     on-screen Face ID gate and no key behind it.
@@ -1088,6 +1382,11 @@ there and aren't repeated here.
     older build finds no data and starts empty, and the new store stays on disk for the next update. Same as D6
     of Bug 171 and Bug 168. The one window is 8a's migration state, where the old store lasts until every layer
     has migrated.
+    **2026-11-28 (the UX review §F):** the loss is accepted, as on 2026-10-16 (`decisions.md`, "Accept the prekey loss
+    on downgrade"). Only TestFlight and sideloaded builds can downgrade; the new store is a separate file, so upgrading
+    again finds the data. A line in the TestFlight notes says so. Under opt-in the window is longer: an install that
+    hasn't opted in keeps the old store, which an older build still opens, and so does one that has, until 4b's
+    unlock.
 19. ~~**Bug 170's leftovers** (added 2026-10-24; §6, `bugs.md` Bug 170): the legacy keychain prekeys, whose tags name
     contacts and outlive an app deletion until they retire, and the shard custody key, which waits on ROLLOUT_PLAN
     stage 4.~~ **Decided 2026-10-29:** left in Bug 170.
@@ -1112,8 +1411,8 @@ there and aren't repeated here.
       trustee or contact holds.
     - **Not adopted:** keeping the old identifier, decrypted at migration, inside the sealed rows. Less rewriting, but
       the address-book link would survive for anyone holding a space's phrase, even for a contact renamed in Occulta.
-    - **Still open, as before** (§4): images taken before the migration, and older keychain images with the legacy
-      prekey tags (Bug 170, decision 19).
+    - ~~**Still open, as before**~~ *Stated limits, decided 2026-11-27* (§4): images taken before the migration, and
+      older keychain images with the legacy prekey tags (Bug 170, decision 19).
 21. **How many noise rows there are, and when they are written** (added 2026-10-30; §1.5, §5). The migration has to
     write noise rows, or a table's total shows how many contacts every space holds together: an install with 40
     contacts and no duress space must look like one with 30 visible and 10 hidden. ~~Nothing says how many, whether
@@ -1206,14 +1505,42 @@ there and aren't repeated here.
     pages, since `secure_delete` doesn't reach SwiftData's connection (Bugs 210 and 229). Measured first: opening, changing and resealing
     100 records takes about 9 ms, plus about 1.6 ms for the Enclave derivation, on the iPhone 17 Pro Simulator
     (`ContactRecordCryptoMeasurementTests`). ~~Open, needs a decision: whether the SQLite header or page placement
-    says anything about write order; not checked.~~ **Write order: decided 2026-11-15 to measure first, open until
-    then.** A row larger than a page goes mostly to overflow pages taken from the end of the file or the freelist, so
+    says anything about write order; not checked.~~ **Write order: decided 2026-11-15 to measure first**~~, open until
+    then~~. A row larger than a page goes mostly to overflow pages taken from the end of the file or the freelist, so
     rows added after the migration batch tend to sit after it; noise is written only then, so in one image a row the
     open space can't read in pages allocated later points to another space's activity. The header's change counter
     may count transactions, which WAL mode may not update; not checked. A stage 0 store-layer test builds a migration
     batch and later inserts from two spaces, then reads each row's pages and the header, before and after a `VACUUM`.
     The candidate fix is a `VACUUM` when the store closes (item 26), which rewrites the file in key order, random by
     ID; its cost is a full-file rewrite per session.
+
+    **Decided 2026-11-24 by the owner: the rule and the pass condition now, confirmed by the stage 0 test**
+    (`decisions.md`, 2026-11-24).
+    - **Three ways the layout can show order, in one image:** the migration batch, if spaces and noise are written
+      one after another, each in a run of pages of its own; rows added after migration, in pages allocated later;
+      and edits, if a same-size rewrite reallocates a row's overflow chain, which would move every recently written
+      row, a hidden space's contacts with every message received, while noise never moves. Whether SQLite overwrites
+      a same-size cell in place in a `WITHOUT ROWID` table is what the test finds out.
+    - **The migration, whatever the test shows:** every space's rows and the noise are written in one shuffled
+      order, and the file is rebuilt once at the end.
+    - **The pass condition:** from the file alone, every row's pages appear in the order of its random ID, and the
+      header's counters (change counter, page count, freelist, version-valid-for) equal those of a freshly built file
+      holding the same rows. The test runs on the Simulator, whose SQLite is iOS's own; it needs no phone.
+    - **The fix, if the layout fails:** `VACUUM INTO` a new file, then an atomic replace, when the store closes after
+      a session that added a row, or after any write if the test shows rewrites move pages. It needs no key, since it
+      copies sealed bytes. If the phone locks before it finishes, `NSFileProtectionComplete` stops the write, the old
+      file stays, and the rebuild runs at the next close. *If the layout passes without it,* no rebuild after the
+      migration's.
+    - **Why `VACUUM INTO` and not `VACUUM`:** `VACUUM` in WAL mode writes the file about three times (a temporary
+      database, the WAL, the checkpoint) and may keep the header's counters; `VACUUM INTO` writes it once and starts a
+      fresh header. This is the rotation item 26 didn't adopt for cost; once a rebuild is paid for, rotation is the
+      cheaper way to do it, and it also discards the old file's key, for what that is worth (item 26).
+    - **Cost:** at a 32 KB row, about 100 MB per rebuild at 1,000 contacts with photos and 1,000 noise rows, about
+      350 MB at 5,000; additions are rare next to the received messages that rewrite records. Each rebuild leaves the
+      old file's blocks freed, within item 26's stated limit.
+    - **Not adopted:** `VACUUM` in place after every write (three times the writes, the header possibly unchanged);
+      noise rows added after migration so late rows can be explained (reopens item 21, and covers neither edits that
+      move nor the header); a stated limit (it is a one-image leak, which §1.5 exists to remove).
 24. **A known contact's bundle failing to open is the rejection oracle again** (added 2026-10-31; §1.5,
     `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`). The 2026-10-29 rule above
     doesn't cite that document's inbound-path analysis, which removed exactly this behaviour in `b1f9045`. Today a bundle from a contact
@@ -1266,7 +1593,8 @@ there and aren't repeated here.
       image holds, so there is no group. In the 8a/8b exception a space migrates later, as one batch, which shows
       its size. That batch also appends a random number of noise rows; how many is settled with item 21. Under the
       plain SQLite store (§8, 23) the random key gives the batch no order, but where its pages land in the file
-      isn't checked (item 23's open sub-question).
+      isn't checked ~~(item 23's open sub-question)~~ *(decided 2026-11-24, item 23: the batch and its noise are
+      written in one shuffled order and the store is rebuilt when it closes after a session that added a row)*.
 
     Spreading these writes over time was not adopted: it keeps erased or exposed data readable for longer.
 26. **Whether an overwritten row is gone below SQLite** (added 2026-11-01; §1.5, §5; not verified). A shred
@@ -1307,9 +1635,12 @@ there and aren't repeated here.
       pages add is its history, deleted records and older versions. Step 16's guidance says so: deleting removes data
       from the app and its file, and a forensic copy of the storage, with the phrase, may recover older versions.
       Rotation (below) stays not adopted: nothing Apple documents says a deleted file's key leaves the flash.
-    - **Not adopted:** rotating the file on going to the background after any write (`VACUUM INTO` a new file and
+    - ~~**Not adopted:** rotating the file on going to the background after any write (`VACUUM INTO` a new file and
       delete the old one, discarding its key and every stale copy). About 40 MB written per session at 5,000
-      contacts, nearly every session since received messages rewrite records, against that narrow attacker.
+      contacts, nearly every session since received messages rewrite records, against that narrow attacker.~~
+      **Changed 2026-11-24 (item 23):** the same rotation is the store's rebuild for write order, after a session
+      that added a row (any write if rewrites move pages), and only if the stage 0 test shows the layout needs it.
+      Rotation after every write for this item's attacker alone stays not adopted.
 27. **What the key cache holds, and when it drops it** (added 2026-11-01; stage 0, register C2, §1.5). One Enclave
     ECDH costs about 4.6 ms on an iPhone 15 Pro (§1.5's measurements), and a phrase-derived key can't be re-derived
     without the phrase, so a key is derived once and kept for the session. Caching is no weaker than today's
@@ -1337,7 +1668,8 @@ there and aren't repeated here.
       copy is dropped when the 5 minutes run out on return, when the app locks itself and when the space changes.
     - **Every depth alike** (Bug 41).
     - *2026-11-12:* the time away must be measured on a clock the user can't set; today's grace uses the wall
-      clock (Bug 227; §8, 31). Open, needs a decision.
+      clock (Bug 227; §8, 31). ~~Open, needs a decision.~~ *Settled 2026-11-15 (item 31): fixed in 2.0.2 on
+      `ContinuousClock`, and the phrase grace keeps that clock.*
     - **A memory dump of a locked phone** gets only the wrapped copy: the Enclave refuses while the phone is locked.
       The copy never reaches disk, where it would be §1.1's device slot, which older images unwrap.
     - **What it leaves, as today's PIN grace does:** someone who takes the phone unlocked, or compels its passcode,
@@ -1373,16 +1705,20 @@ there and aren't repeated here.
       files show item 24's screen reads worse than one that isn't there. A person reaches another space by being
       paired there in person, which item 30 supports. This settles the two questions below.
     - ~~**A contact today's code shows at several depths.**~~ Most contacts are visible everywhere (`visibleThroughDepth`
-      holds `Int.max`), so under 8a each space that can see one receives its own copy. Open, needs a decision:
+      holds `Int.max`), so under 8a each space that can see one receives its own copy. ~~Open, needs a decision:~~
+      *Settled 2026-11-15 by the decision above: no space gets a copy.*
       - whether the copies share one random ID (§8, 20) or get one each;
       - what happens to the prekey state, now copied into every space. A prekey consumed in one space is still
         listed in the others, while its private key, held once in the Enclave (`PrekeySecretsManager`), is gone.
     - **Records that don't fit their row.** The decided sizes are 8 KB for a small record, about 3.5 KB of text for
-      a vault note and 24 KB for a photo (§1.5, §8, 21). Today's store has no such limits. Open, needs a decision
+      a vault note and 24 KB for a photo (§1.5, §8, 21). Today's store has no such limits. ~~Open, needs a decision
       for a contact record or a note that is too large: failing the migration loudly, splitting the record, or
-      raising the size.
+      raising the size.~~ *Decided 2026-11-24 (below): text beyond the record's budget goes to overflow rows.*
       - A photo is re-encoded until it fits, by decision, so only a photo that still doesn't fit at the lowest
-        quality is a case to cover.
+        quality is a case to cover. *(2026-11-27: none exists; at about 360 px the lowest quality is a few KB. The
+        photo limit stays 360 px and 24 KB though each photo row is now 48–64 KB, decided by the owner: the app shows
+        a photo only as an avatar, the file and unlock are the same either way, and the photo never sets the row
+        size.)*
     - **Found 2026-11-15: every contact is too large for 8 KB.** Since 2.0.1 a contact carries three fields padded to
       fixed sizes: the pairing (16 KB, `PairingCodec`), the card state (12 KB, `CardStateCodec`) and the prekey record
       (16 KB, `PrekeyRecordCodec`). The 8 KB of item 21's remainder predates the pair keys.
@@ -1392,7 +1728,48 @@ there and aren't repeated here.
       it is fixed in code, so a larger contact never changes another row. Every field that can grow has a limit, and
       retired keys are capped at the last few, so no record can outgrow the row. Changing the size later is a
       migration of every row, the same on every install. Not adopted: continuation rows (an edit would rewrite a
-      varying number of rows) and two tables (a per-type count again).
+      varying number of rows) *(2026-11-24: adopted for long user text only, below)* and two tables (a per-type count
+      again).
+    - **Decided 2026-11-24 by the owner: the size, the text that doesn't fit, and retired keys** (`decisions.md`,
+      2026-11-24).
+      - *The size, bottom-up.* Every field that can grow gets a limit first. The row is the largest record any type
+        can reach under those limits, counting only fields that can coexist (a card state and a pairing, if the
+        record type makes them exclusive), encoded and sealed, rounded up to 4 KB, plus one 4 KB page reserved
+        inside the record for fields a later release adds. A test builds the maximal record of every type and fails if
+        one doesn't fit. The number is set when the record is built, at stage 3 or 4, on the Simulator; Enclave blob
+        sizes are checked on the spare phone (decision 6). From today's fields: the pairing state is about 15.7 KB
+        at most (`PairingCodec`, 12 KB of it the ML-DSA blob's room), the prekey record up to 16 KB (`PrekeyBookkeeper`'s
+        limits), the card state 12 KB, a key's ML-KEM material about 3.2 KB, so the row is likely 48–64 KB, an
+        estimate; two of those figures are budgets, not measured maxima.
+      - *Fixed in code, never from the data.* A size taken from the largest existing contact, or grown when a larger
+        one appears, would be a number per install, readable in one image with no phrase, that reflects the largest
+        record any space ever held: a decoy of short contacts in large rows has nothing to account for it. Fields a
+        peer supplies (signed attributes, card state, prekey batches) would let the peer grow every row. Not adopted.
+      - *A record never grows its row.* One larger row would be a size class of one. A record past the size is
+        refused, never trimmed, as today's codecs do, and the field limits make that unreachable.
+      - *Growth beyond the reserve* comes only with a release that raises the limits, on every install at once:
+        every row, noise included, is extended with random bytes outside its seal, which needs no space's key; an
+        open tries the old sealed length, then the new one; a row is resealed at the full size when its own space next
+        writes it. Old and new rows are both random bytes of the new size in one image, and every row changed in the
+        same release across images.
+      - *Text that doesn't fit: overflow rows.* Contact text is unbounded today (the note, and any number of phone
+        numbers, email, postal and URL addresses, which Address Book imports can fill), and every existing contact
+        must fit. The record holds a text budget; text beyond it goes to extra rows of the one size in the same table,
+        their type inside the seal, listed by row ID in the contact's record as its photo is. Nothing is refused or
+        trimmed at migration or later. Vault notes past their budget do the same in the vault table. Editing such
+        text rewrites the contact's row and its text rows together, which shows across images within Bug 120's stated
+        limit; in one image they are ordinary rows. This is continuation rows for long user text only; structural
+        fields stay within the record.
+      - *Retired keys.* A key is retired by a re-pair, which stamps every current key row `expiredOn` and overwrites its
+        pairing column (`Contact+Manager.swift:706`), or by Revoke, which does the same to the current row
+        (`Contact+Manager.swift:797`). Nothing decrypts with a retired key: routing and decryption use the current key
+        only (`Contact+Manager.swift:1953`). What reads a retired row is the old public key, for Bug 196's attachment
+        pass and the prekey repair sweep's key-change date (`Contact+Manager+Prekeys.swift:222`), and `expiredOn`, for
+        the revoked state on screen. Its ML-KEM material is read by nothing, yet with the phrase and the passcode it
+        opens captured long-term files of that old pairing. So in the new record a retired key drops its ML-KEM
+        material at retirement, and a contact keeps the public key and dates of its two latest retired keys only,
+        about 0.2 KB each; the migration applies the same to every contact. 2.0.x keeps the material on its retired rows
+        and gets no fix of its own: the drop ships with 2.1.0's migration (decided 2026-11-24 by the owner).
 30. **One person paired in two spaces** (added 2026-11-03). ~~Open, needs a decision.~~ **Decided 2026-11-03 by
     the owner: a random secret per pairing, used for both routing and key binding, with `senderProof` covering it**
     (`decisions.md`, 2026-11-03). Not built. ~~Still open, needs a decision: how existing pairings get a secret,
@@ -1490,11 +1867,23 @@ there and aren't repeated here.
       - *It ships in a release before 2.1.0,* as a stage of its own (§7.2, stage P). A pairing switches only once
         both phones run the new build, so shipped with spaces it would protect no pairing on the day they appear.
         It doesn't depend on the passphrase, and it keeps two large changes in separate releases (2026-10-19).
-      - *What stays open:* a pairing with a contact still on an older build keeps the identity fingerprint, and this
-        item stays open for it until they upgrade; item 29's copies share one pairing.
+      - ~~*What stays open:* a pairing with a contact still on an older build keeps the identity fingerprint, and this
+        item stays open for it until they upgrade; item 29's copies share one pairing.~~ *Corrected 2026-11-27:* 2.0.1
+        shipped without the in-band upgrade (Bug 196, 2026-11-05), so **every pairing made before 2.0.1** keeps the
+        identity fingerprint until the two re-pair in person, whether or not both have upgraded; item 29's copies were
+        dropped (2026-11-15). The harm needs one person paired at two depths before 2.0.1, whose pairings the migration
+        puts in two spaces: both match that person's files. A pairing made under 2.0.1 or later, a coerced one
+        included, has a routing key. **Decided 2026-11-27 by the owner: a stated limit, with a re-pair note**
+        (`decisions.md`, 2026-11-27). Every pairing made before 2.0.1 shows the same note, "pair in person again to
+        upgrade", in every space and on every install that has such a pairing, so it says nothing about spaces; it
+        goes when the pairing is replaced. Step 16's guidance says why. Stage 4, with the contact record.
+        *2026-11-28, by the owner:* the same limit and note cover spec §2.2's old-sender gap: on a classical pairing
+        made before 2.0.1, a `.longTermNoPQ` file needs only the identity key and the sender's public key, so a
+        captured one opens with the passcode and no phrase.
 31. **v2.0.1 audit findings this design carries over** (added 2026-11-12, from the three audits of 2026-11-10:
     `Docs/Audit/V2.0.1AuditIndex2026-11-10.md`; the bugs are in `bugs.md`, filed on `v2.1.0/v2.0.1-audit-docs`).
-    Each is open, needs a decision, and each would ship in 2.1.0 unless the plan takes it in. **2026-11-15:** Bugs 227,
+    ~~Each is open, needs a decision, and each would ship in 2.1.0 unless the plan takes it in.~~ *Each is now fixed
+    or decided (below).* **2026-11-15:** Bugs 227,
     222, 223 and 211 were fixed in 2.0.2 (`d67932ea`, #183), and the design keeps those fixes: the phrase grace is
     measured on the same `ContinuousClock`, the cover goes up on every install, and with the lock off Settings shows
     nothing of a phrase. The owner decided the other two the same day (below).
@@ -1521,7 +1910,8 @@ there and aren't repeated here.
     - **Closed by the design once 2.1.0 ships, each still open in 2.0.x:** Bugs 206, 210, 212, 220, 221, 224, 225,
       226, 228, 229, 230, 231, 232, 233 and 235. Erase (212, 235) is new code and needs its own fresh-install test.
       Images taken before the migration keep the old store's history log and residue until that store is deleted,
-      and stale blocks after it (item 26's remainder).
+      and stale blocks after it (item 26's remainder). *2026-11-28 (opt-in, nobody moves until they act):* "once 2.1.0
+      ships" becomes "once an install opts in"; until then it keeps today's store with these bugs, as today.
     - **Bugs 198 and 199** (key exchange) are outside this plan but reach Bug 196: its routing key is derived from
       the words' input, so a man in the middle who forces matching words holds it, and an ML-KEM strip leaves the
       classical pairing where key binding matters most.

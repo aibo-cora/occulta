@@ -178,6 +178,8 @@ Q-01 is resolved (Option E + B). Q-04 (SE-key tier) still needs an answer before
 
 ## Drafts — Resolved Design
 
+**Changes with the passphrase store (2.1.0; decided 2026-11-27 by the owner, `PASSPHRASE_ROLLOUT.md` §1.6, `decisions.md` 2026-11-27).** A draft becomes a small record in its space's store, and its attachments stop persisting on disk: they are staged under a key derived from the space key and deleted when the store closes, and each launch empties `Drafts/` and the staging folder. Today's per-draft folders would be listed with no phrase, and spaces have no "sensitive" flag for Option E to act on, so a folder a decoy space doesn't account for would show another space. The design below is today's, until that ships.
+
 Scoped down from the full message-persistence problem: drafts don't accumulate the way sent/received message history would. At most one active draft per recipient at a time, replaced or cleared on send — bounded by contact count, not by message volume. That difference is what makes several of the hard problems above (Option B's performance concern, most of Q-01–Q-04) not apply here, or apply so cheaply they're not worth a separate mechanism.
 
 ### Model

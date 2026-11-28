@@ -1006,7 +1006,9 @@ until a lock is turned on, or migrate with everyone else.
 
 **Decision:**
 - **Every install migrates in the passphrase release.** Depth 0's key on an install with no lock is derived
-  from an empty phrase, with the install's salt and Enclave key.
+  from an empty phrase, with the install's salt and Enclave key. *(2026-11-28: an install made before 2.1.0 migrates
+  only when it opts in, or turns the lock on; nothing moves at the update. "The passphrase is opt-in, 2026-11-28",
+  below.)*
 - **No probation week for these installs.** With no phrase to forget, the old store and its keys are deleted
   once the reseal checks out.
 - **Turning a lock on later** reseals depth 0 under the new phrase, through the same path.
@@ -1147,7 +1149,8 @@ the phrase, and a new phrase means a new key.
 
 ## Phrase setup is required at the first unlock after the update
 
-**Status:** Decided 2026-10-19 by the owner.
+**Status:** Decided 2026-10-19 by the owner. **Reversed 2026-11-28 by the owner:** the phrase is opt-in (below, "The
+passphrase is opt-in, 2026-11-28").
 
 **Context:**
 - After the passphrase release, a lock user who hasn't set up a phrase stays on the old store with the PIN, at
@@ -1749,7 +1752,7 @@ back to the old key, touches every attachment open and keeps the old key in use 
 
 ## The passphrase design's open items, 2026-11-15
 
-**Status:** Decided 2026-11-15 by the owner, one at a time. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, items 28 and 29, §1.1's derivation change, §1.3's re-enable marker, item 26's remainder, item 23's SwiftData remainder (Bug 190), item 31's last two findings, the photo table's noise, and the open parts of Bugs 162 and 170. Still open: the write-order measurement (item 23), the row size and the retired-key cap (set when built), the unlock cost on a device, and spec §2's rewrite.
+**Status:** Decided 2026-11-15 by the owner, one at a time. Not built. Closes `PASSPHRASE_ROLLOUT.md` §8, items 28 and 29, §1.1's derivation change, §1.3's re-enable marker, item 26's remainder, item 23's SwiftData remainder (Bug 190), item 31's last two findings, the photo table's noise, and the open parts of Bugs 162 and 170. Still open: the write-order measurement (item 23), the row size and the retired-key cap (set when built), the unlock cost on a device, and spec §2's rewrite *(each decided 2026-11-24, "The passphrase design's last open items")*.
 
 **Decisions:**
 - *Where a contact goes (29):* only to the space it was created in (`originDepth`), with its pairing and prekeys; no copies. Copies would share prekey blobs (D9), so a prekey used in one space would still open the message in another, two spaces would send to the same one-time keys, and each would replace the other's batch. A keyless copy for decoys only kept a decoy looking full, which register §I already doesn't require.
@@ -1794,3 +1797,61 @@ are untouched. The per-pairing secret of 2.1.0 ("A secret per pairing
 routes and binds every bundle") should derive from the committed exchange's input, so the words authenticate it. Bug 199's third part,
 decided 2026-11-20 by the owner: a re-exchange that would replace a hybrid pairing with a classical one is refused, and the person
 who wants a classical pairing revokes the contact's key and exchanges again (`bugs.md` Bug 196, "A hybrid pairing is not replaced").
+
+## The passphrase design's last open items, 2026-11-24
+
+**Status:** Decided 2026-11-24 by the owner, one at a time. Not built. Closes stage 2's list in `PASSPHRASE_ROLLOUT.md`: spec §2's rewrite, the unlock cost, item 23's write order and item 29's row size, text that doesn't fit and retired keys. Three outcomes wait on a measurement whose meaning is decided here: the unlock run on the spare iPhone 11 (decision 6), the write-order test and the row size's number (both on the Simulator).
+
+**Decisions:**
+- *Spec §2:* rewritten in place for independent spaces, with the text of 2026-09 to 2026-10-15 kept below it as its history, so every reference to it still resolves.
+- *Unlock cost (§1.5):* everything after PBKDF2 takes at most 0.5 s at 1,000 contacts and 2 s at 5,000 on an iPhone 11, at item 29's row size with photos and 1,000 noise rows; a grace return costs the same. Within it, no locator tag. Over it, lazy decoding first, then the locator tag before stage 4, shredded with its row. The PBKDF2 target is never lowered. The measuring app is updated to the decided row size first.
+- *Write order (23):* the migration writes every row and its noise in one shuffled order and rebuilds the file once. Pass condition: a row's pages follow its random ID and the header matches a freshly built file. If it fails, `VACUUM INTO` a new file and an atomic replace when the store closes after a session that added a row (any write if rewrites move pages). Item 26's "rotation not adopted" changes to that.
+- *Row size (29):* bottom-up from field limits, counting only fields that coexist, sealed, rounded up to 4 KB, plus one 4 KB page reserved inside the record; a test builds every type's maximal record. Fixed in code on every install, never taken from the data: a size per install would show, in one image, the largest record any space held, and peer-supplied fields could grow it. Growth beyond the reserve comes with a release, by extending every row with random bytes outside its seal, which needs no key. Likely 48–64 KB, an estimate.
+- *Text that doesn't fit (29):* the record holds a text budget, and longer contact text, and vault notes, go to overflow rows of the one size, listed in the record like a photo. Nothing is refused or trimmed, so every existing contact fits.
+- *Retired keys (29):* a retired key drops its ML-KEM material at retirement, since nothing reads it, and a contact keeps the public key and dates of its two latest retired keys only. It ships with 2.1.0's migration, which applies it to every retired row; 2.0.x gets no fix of its own.
+
+**Not chosen:** the locator tag now, or no threshold until measured; `VACUUM` in place, noise added after migration, or a stated limit for write order; a fixed 48 or 64 KB row, 25% headroom or no reserve; a row size per install, or one that grows with the data; a pre-flight that refuses to migrate an over-long record; retired keys kept whole, or none kept.
+
+**Full reasoning:** `PASSPHRASE_ROLLOUT.md` §1.5 ("Fallback") and §8, items 23, 26 and 29.
+
+## The passphrase design's remaining questions, 2026-11-27
+
+**Status:** Decided 2026-11-27 by the owner, one at a time. Not built. The questions a re-read of `PASSPHRASE_ROLLOUT.md` found still open after 2026-11-24.
+
+**Decisions:**
+- *Binding (§1.6):* each seal's AAD is the table's label ‖ the row's 16-byte ID ‖ a one-byte field tag, fixed width on every row (one constant tag for a row with one seal, two for a vault entry's key and content). The label is a constant per table (small records, vault entries, install-wide state), never stored. Overflow and manifest rows are bound the same way. Built in the store layer, which seals and opens only through calls that take the table and the row ID; pinned by a test vector.
+- *Drafts (§1.6):* a draft (recipient reference, text, thread bubbles, compose mode) is a small record in its space, long text in overflow rows. Its attachments, files outside any store today (`Application Support/Drafts/`, listed with no phrase, so a decoy phrase would show folders it doesn't account for; group ones under tier U's phrase-less compose key), are staged under a key from the space key and deleted when the store closes; each launch empties `Drafts/` and the staging folder before any space opens. An attachment in a draft doesn't survive the app leaving the foreground.
+- *Photos (§1.5, §8 29):* stay at about 360 px and 24 KB, each its own row in the one small-records table, though rows are now 48–64 KB. The app shows a photo only as an avatar, the file and unlock cost the same either way, and the photo never sets the row size. No photo fails to fit at the lowest quality.
+- *Stated limits (§4, §1.2, Bug 170):* images taken before the migration, older keychain images with the legacy prekey tags, and the old store while it waits for every layer to migrate (8a, 8b), which opens with the passcode as all data does today. No code reaches an image already taken. Step 16's guidance states them, and the setup copy asks for every layer in one sitting.
+- *Pairings made before 2.0.1 (§8, 30):* corrected: 2.0.1 shipped without the in-band upgrade, so every such pairing keeps the identity fingerprint until re-paired in person, whether or not both have upgraded. A stated limit, with the same "pair in person again to upgrade" note on every such pairing in every space, so it says nothing about spaces. Stage 4.
+- *Bug 120:* stays open, needs a decision. No fix is known; it stays open so a later mechanism is weighed against it.
+- *Spec §2.2's message-key items (2026-11-28):* old senders in the classical-only modes are a stated limit with item 30's note, which covers a pre-2.0.1 classical pairing's `.longTermNoPQ` files opening with the passcode and no phrase; the transport's own records are a stated limit in step 16's guidance; the two prekey items are superseded by D9 (no keychain items to list or count), their remainders in Bug 120 and Bug 170's stated limit.
+
+**Not chosen:** the tag only on rows with two seals (two layouts to pin); a key per row from HKDF instead of an AAD; a per-space write counter in every AAD (reseals every row on each write, item 25); draft attachments as store rows (a total row count no decoy accounts for); draft files kept on disk under the space key (the listing still shows them); photo quality up to the row's spare room, more pixels, or the photo inside the contact's row (every row about 24 KB larger); keeping the pre-migration residuals open with no fix in view; no re-pair note for pre-2.0.1 pairings; closing Bug 120 as a stated limit.
+
+**Full reasoning:** `PASSPHRASE_ROLLOUT.md` §1.6, §1.5 (photos), §4 and §8, items 20, 29 and 30.
+
+## The passphrase is opt-in, 2026-11-28
+
+**Status:** Decided 2026-11-28 by the owner, one item at a time, in the UX review (`Docs/v2.0.0/PASSPHRASE_UX_REVIEW.md` §F and §G, PR #220). Not built. Reverses decision 10 ("Phrase setup is required at the first unlock after the update", above) and the forced migration of `PASSPHRASE_ROLLOUT.md` §3.1 and §3.2; extends decision 5.
+
+**Context:** the forced setup held every lock user at a four-step ladder at whatever moment the first unlock came, Secure Mode users with K+1 phrases in one sitting, then deleted the old store, so a phrase forgotten soon after lost that space for good (UX review, finding 1, Critical).
+
+**Decisions:**
+- *Opt-in:* offered, not forced. At the first unlock after the update, on an install with a PIN: a neutral explanation and Migrate Now, Remind me Later (7 days, one stored date) and Dismiss; kept in Settings after Dismiss. The copy is identical at every PIN layer and mentions no coercion, duress, spaces or hidden data; its state is one install-wide value, never per layer; not shown with no lock; no notifications or badges.
+- *Nobody moves until they act* (gap 1, below): every install made before 2.1.0 stays on today's store, with no lock, a PIN or Secure Mode layers alike, until it opts in (Migrate Now, or turning the lock on with no lock). Migrate Now moves straight to phrase keys with the user present: every layer's phrase in one sitting from the real depth (Rule 2), or 8a's single layer at a decoy with a "drop that layer" choice the same at every depth. §F's silent move is not built. (The review gives `app.layer.key.occulta.v1` as Secure Mode installs' mark; every install creates it at first launch, so it marks nothing.)
+- *4b:* no release-wide date and no gate. After Migrate Now the old store is the fallback, deleted at the first cold-launch unlock, every layer migrated or dropped, that opens a space with content.
+- *The Secure Mode control* stays as today on every install made before 2.1.0, with the offer beside it; its PIN settings work as today until the install opts in.
+- *Downgrade:* the loss is accepted, as on 2026-10-16; a line in the TestFlight notes.
+- *Also:* an explicit Unlock tap, "Lock now" and an icon-only padlock, a fixed 5-minute grace, setup copy asking for content in each space, no word swaps, and a write into a stray space accepted.
+
+**The three gaps found while folding it into the rollout, decided 2026-11-28 by the owner, one at a time:**
+- *Gap 1, the files and Settings marking Secure Mode installs:* with §F's silent move, an unmoved Secure Mode install would have been the only one on today's store, in any file listing, and "existing Secure Mode installs keep their controls" would have shown it in Settings at a decoy. **Decided: nobody moves until they act.** The silent move's one gain, files not showing who opted in, is close to none once the lock screen is counted (gap 2), and it was what made the gap. Every install keeps today's files and Settings until it acts. Left: the PIN layers, as exposed to an examiner with code execution on the phone as today's device-bound keys are (Bug 119), under every option. Cost: today's store and its code stay until a later release retires them, and an install that hasn't opted in keeps today's store, no worse than today. *First decided the same day as B* (every install moved silently, each layer under its own phrase-less key in a fixed slot array with PIN routing, the control retired everywhere), *then replaced by the owner for its costs:* a second key format, an unattended reseal of every layer at the update, and no layer changes until opt-in. Not chosen: the silent move with the control retired and the file difference stated as a limit; B; a deadline to opt in; keeping it open.
+- *Gap 2, the lock screen showing opt-in:* **a stated limit.** It shows the lock type, not how many spaces; a PIN install can hold layers as a phrase install can hold spaces. Once an install opts in its files show it too. Not chosen: a deadline for everyone; keeping it open.
+- *Gap 3, the fallback after Migrate Now:* **4b for every install,** with the old store as the fallback until the first cold-launch unlock that opens a space with content. Not chosen: deleting at verification; a fixed 7-day window.
+
+**Open, needs a decision:** when today's store and its code are retired. Until then every install made before 2.1.0 that hasn't opted in keeps it; retiring it means required setup at that release (finding 1 again, later) or the PIN path kept for good. To be decided after 2.1.0 ships, the same for every install. With this entry the rollout's status is "Decided, not built".
+
+**Not chosen:** required setup at the first unlock (decision 10); a deferral with a release-wide deadline; §F's silent move (gap 1).
+
+**Full reasoning:** `PASSPHRASE_UX_REVIEW.md` §C (findings 1, 4, 10–12) and §F–§G; `PASSPHRASE_ROLLOUT.md` summary, §1.2, §1.4, §3.1–§3.3 and §8, items 4, 5, 10 and 18.

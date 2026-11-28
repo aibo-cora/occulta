@@ -10431,6 +10431,9 @@ anyone who can write the store can use it (no prompt on that key). So it is fold
 entry's remedy re-seals these fields under layer keys, the same migration must bind each to its row and
 field** (an AAD built from the row's `id` and a field tag, as `VaultEntry.aad(for:)` already does for the
 content fields). Recorded as a requirement in `PASSPHRASE_LAYER_KEYS.md` §2.
+*Decided 2026-11-27 by the owner, for the store under spaces (rollout §1.6):* the fields become part of whole
+records, and each seal's AAD is the table's label ‖ the row's 16-byte ID ‖ a one-byte field tag, fixed width on every
+row, built in the store layer and pinned by a test vector.
 
 ### Threat review, 2026-09-29
 
@@ -10581,7 +10584,11 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   space-sealed record shares one table and one row size, about 8 KB, so the same noise covers them and no per-type
   count shows. ~~Photos and vault entries stay open.~~ **Decided 2026-11-02:** vault entries get their own table of
   4 KB rows with noise drawn from 10–200. Photos get one size and no noise rows, so right after migration a photo
-  row the open space can't read proves another space: open, needs a decision.
+  row the open space can't read proves another space: ~~open, needs a decision~~. **Decided 2026-11-15:** photos are
+  records in the one table, whose noise covers them, and the one row size is larger than 8 KB, set from the largest
+  record (§8, 29). **Decided 2026-11-24:** the size is fixed in code on every install, never taken from the data,
+  since a size per install would show in one image the largest record any space held; long text goes to overflow
+  rows of the same size (§8, 29).
 - ~~**Also open, needs a decision (2026-10-31):**~~ a write that reseals all of one space's rows at once (a rekey,
   removing a space, a migration batch) shows across images which rows make up that space, with no phrase
   (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §8, 25). **Decided 2026-11-01 by the owner:** Erase All Data's group is a
@@ -10589,7 +10596,20 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   stated limit above, which now also covers the space's size: a rekey must overwrite rows the exposed phrase still
   opens, and while a lock was off anyone who could unlock the phone read the space. A space that migrates later
   than the others (8a, 8b) appends a random number of noise rows with its batch, how many settled with §8, 21.
-- **Status: still open, needs a decision.** It is recorded as a limit, not accepted.
+  *2026-11-28 (opt-in, `PASSPHRASE_ROLLOUT.md` §3.1):* nothing moves until an install opts in; then every layer moves
+  in one sitting (Rule 2), or under 8a a layer alone, or one dropped, which across images is this entry's limit as
+  before. Until an install opts in it keeps today's store, whose PIN layers stay as exposed to an examiner with code
+  execution on the phone as today's device-bound keys are (Bug 119); a stated limit.
+- **Found 2026-11-15, decided 2026-11-24 by the owner: write order in one image** (`PASSPHRASE_ROLLOUT.md` §8, 23;
+  `decisions.md`, 2026-11-24). A row larger than a page lives mostly on overflow pages, allocated at the end of the
+  file or from the freelist, so the file's layout can show which rows were written after the migration batch, and
+  possibly which were rewritten recently, with no phrase. That would undo this entry's "fixed in one image". The
+  migration writes every row and its noise in one shuffled order and rebuilds the file once; a stage 0 test checks
+  that a row's pages follow its random ID and that the header matches a freshly built file, and if not, the store
+  is rebuilt with `VACUUM INTO` a new file when it closes after a session that added a row. Not built or measured.
+- **Status: still open, needs a decision.** It is recorded as a limit, not accepted. *Confirmed 2026-11-27 by the
+  owner: kept open, since no fix is known and a later mechanism should be weighed against it; the rollout's wording
+  now says the same.*
 
 ---
 
@@ -13818,6 +13838,12 @@ passphrase migration's downgrade is a separate question (see "Fix" below).
 
 **Target:** `v2.0.0`. Present since prekey continuity stage 1, merged into `release/v2.0.0` with PR #110.
 
+*2026-11-28, the passphrase migration's downgrade (`PASSPHRASE_ROLLOUT.md` §8, 18; `decisions.md`, "The passphrase is
+opt-in, 2026-11-28"):* accepted the same way, for TestFlight and sideloaded builds; a line in the TestFlight notes. The
+new store is a separate file, so upgrading again finds the data. An install that hasn't opted in keeps today's store,
+which an older build still opens, and so does one that has, until the first cold-launch unlock with content (decided
+2026-11-28).
+
 ### Severity: Medium (data loss; reachable only through TestFlight and sideloaded builds)
 
 ### What happens
@@ -13906,6 +13932,9 @@ other keys (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`, decision 15). Not verified on a
   stage 5 derives the shard custody key from the space key and deletes its keychain item. What then outlives an
   app deletion is only decision 15's install-wide keys, which every install has (`PASSPHRASE_ROLLOUT.md` §6;
   `decisions.md`, 2026-11-15).
+- **Decided 2026-11-27 by the owner: older keychain images are a stated limit.** A keychain image taken before stage 4
+  deletes the legacy prekeys keeps their tags; no code reaches it. The passphrase release's user guidance (step 16)
+  says so (`PASSPHRASE_ROLLOUT.md` §4; `decisions.md`, 2026-11-27).
 - **Decided 2026-10-19 by the owner (decision 15):** per-install keys stay in the keychain, the new phrase key
   included. Erase All Data deletes the share staging key, built and merged 2026-10-19 (PR #118, with #119's
   sweep of unread `inbound/` handoffs).
@@ -16030,6 +16059,18 @@ throws `pairingWouldLoseQuantum` when the contact's current key holds ML-KEM mat
 leaves no current key to compare with, so the next exchange saves a classical pairing, which is the way to choose one on purpose. The
 check compares only with the contact's current key, so a new contact record, or a revoke first, is not refused, and nothing in it reads
 what another depth holds.
+
+**For 2.1.0's record (decided 2026-11-24 by the owner, `PASSPHRASE_ROLLOUT.md` §8, 29):** a retired key row keeps its ML-KEM
+material today, read by nothing; in the new record it is dropped at retirement, and a contact keeps the public key and dates of its
+two latest retired keys only. The 2.1.0 migration applies this to every retired row it carries. 2.0.x is left as it is, with no fix
+of its own (decided 2026-11-24 by the owner). Not built.
+
+**Pairings made before 2.0.1, under spaces (decided 2026-11-27 by the owner, `PASSPHRASE_ROLLOUT.md` §8, 30):** with no
+in-band upgrade, each keeps the identity fingerprint until the two re-pair in person, so one person paired at two depths before
+2.0.1 matches in both spaces after the migration. A stated limit. 2.1.0 shows the same "pair in person again to upgrade" note on
+every such pairing, in every space, so the note says nothing about spaces. Stage 4. Not built. *2026-11-28:* the same limit and
+note cover the other harm of such a pairing when classical: a `.longTermNoPQ` file needs only the identity key and the sender's
+public key, so a captured one opens with the passcode and no phrase (spec §2.2).
 
 **Other fixes made on the way, in this PR's branch:** the raw legacy trial decrypt now honours the old-form refusal (a legacy file
 used to open on a pairing that holds a routing key, and so on the twin record this bug is about); a re-pair retires every earlier

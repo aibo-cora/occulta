@@ -12,7 +12,8 @@ wider hardening plan: the steps around it, a proposed staged rollout, and a prot
 document stays the owner of the cryptographic design, and that folder owns sequencing.
 
 **Passphrase rollout, 2026-10-19 — [`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md).
-Proposed, not decided.** It plans how the phrase ships, on top of the 2026-10-15 design discussion
+~~Proposed, not decided.~~ Decided, not built (2026-11-28; Bug 120 and the old store's retirement stay open there).**
+It plans how the phrase ships, on top of the 2026-10-15 design discussion
 below. It covers:
 - phrase entry and learning;
 - migration from the PIN and the local DB key;
@@ -30,7 +31,8 @@ the vault's own key, the Enclave not in every guess, Bug 120 as a stated limit) 
 [`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md) §1.5 and
 `Docs/General/decisions.md`, 2026-10-29. Where this document still describes depths, canaries, header slots or
 the per-guess Enclave requirement, those parts are superseded and each carries a note. The rest stands as
-written.
+written. *2026-11-24:* §2.1 states the storage design as decided; §2.2 keeps the history. *2026-11-28: the phrase
+is opt-in (rollout §3.1, §3.2), and an install made before 2.1.0 stays on today's store until it opts in.*
 
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
 shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
@@ -220,7 +222,153 @@ every install has the same storage. Turning a lock on reseals depth 0 under the 
 
 ---
 
-## 2. The open structural question: what does `layerKey_D` actually protect?
+## 2. What `layerKey_D` protects: independent spaces
+
+**Decided 2026-10-29 to 2026-11-24 by the owner. Not built.** §2.1 is the design. §2.2 is the history, kept as
+written, which other documents cite by its parts ("requirement 6", "Finding, 2026-10-15", "Why prekeys stay in the
+Enclave"). Where they differ, §2.1 holds. The reasoning for each rule is in
+[`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md) ("rollout" below), at the item cited,
+and in `decisions.md` under the date.
+
+### 2.1 The design
+
+**Spaces** (rollout §1.5; 2026-10-29).
+- *Who is in the store (2026-11-28, opt-in, rollout §3.1):* an install made on 2.1.0, from its first launch; an
+  install made before it, only once it opts in (Migrate Now, or turning the lock on), every layer's phrase in one
+  sitting (Rule 2, with 8a and its "drop that layer" choice). Until then it keeps today's store, PIN layers and
+  Settings, as today, and after it the old store stays until the first cold-launch unlock that opens a space with
+  content (rollout §1.2).
+- A space is a key plus the rows that open under it. The key is `layerKey` as §1 derives it from a phrase, with one
+  salt and one Enclave key per install. A per-space salt or key would be a per-space record.
+- There are no depth numbers, no shared key, no pointers between spaces, no common pool, no canary or header, and no
+  record that only spaces have. A per-space record is countable once its format is known, and the format is public.
+- Any generated phrase opens a space. One that opens nothing is a new, empty space, and a mistyped phrase can't be
+  told from one: no checksum and no retype. An install with no lock uses an empty phrase (rollout §1.4).
+- Phrases are generated, never chosen, 7 words in every space (§3). The KDF's input is the word indices.
+- One identity key per install, in the keychain (rollout decision 15).
+- No action removes a space. Erase All Data erases the current space and leaves the install-wide keys (rollout §5).
+- A decoy goes stale unless it is used. Nothing copies one space's changes into another.
+
+**The store** (rollout §8, 21, 23; 2026-11-01, 2026-11-02, 2026-11-15).
+- One plain SQLite file, through the `sqlite3` C API. No SwiftData after the migration.
+- Every table is `WITHOUT ROWID`, keyed by a random 16-byte ID, with the sealed record as its only other column. No
+  plaintext column, type, date, order or space tag.
+
+| Table | Holds | Sealed under | Row | Noise rows |
+|---|---|---|---|---|
+| Small records | Contacts, photos, groups, backup keys, custody shards, the shard and restore queue records, the backup-export record, each space's manifest row, text overflow rows. The type is inside the seal | The space key | One fixed size (below) | Drawn per install, uniformly from 50–1,000, never stored |
+| Vault entries | A wrapped entry key and the content, two seals per row | The vault's key, derived from the space key (rollout §6) | 4 KB; a note's text past about 3.5 KB in overflow rows | Drawn per install, uniformly from 10–200 |
+| Install-wide state | What isn't any space's | The device-only key | — | — |
+
+- Noise rows are written in the migration's one sitting, at a fresh install's first launch, and with a space that
+  migrates later. Never after that: deleted rows grow the unopened set with use (rollout §8, 21, 25).
+- The migration writes every space's rows and the noise in one shuffled order, then rebuilds the file once (rollout
+  §8, 23).
+
+**The row size** (rollout §8, 29; 2026-11-15, 2026-11-24).
+- One size for every small record, fixed in code and the same on every install, never taken from the data. A size
+  per install would show in one image the largest record any space ever held.
+- Set bottom-up. Every field that can grow has a limit. The row is the largest record any type can reach, counting
+  only fields that can coexist, encoded and sealed, rounded up to 4 KB, plus one 4 KB page reserved inside the
+  record for later fields. A test builds every type's maximal record. Likely 48–64 KB, set at stage 3 or 4.
+- No per-field padding inside a record: the record is padded to the row as a whole, inside the seal.
+- A record never grows its row. One past the size is refused, never trimmed.
+- Text past the record's budget goes to overflow rows of the same size, listed by ID in the record, so every existing
+  contact fits.
+- Growth beyond the reserve comes only with a release. Every row, noise included, is extended with random bytes
+  outside its seal, which needs no key. An open tries the old sealed length, then the new one.
+- A photo is re-encoded at import to about 360 px with its metadata stripped, its quality lowered until it fits about
+  24 KB, and the original isn't kept (rollout §1.5).
+
+**Writes** (rollout §8, 22, 23, 26, 28).
+- An addition appends a row. An edit rewrites its row in place, under the same ID, in one transaction. A deletion
+  overwrites the row with random bytes and keeps it. So a deleted row, another space's row and a noise row look the
+  same, and the deletion marker is inside the seal.
+- `secure_delete` is on, with a checkpoint after every shred. The store closes when the app goes to the background,
+  with persistent WAL off, so SQLite deletes the `-wal`. Tests check that old ciphertext is in neither the file nor
+  the `-wal`, and that the `-wal` is gone.
+- A row's pages follow its random ID, and the header matches a freshly built file's. If the stage 0 test shows that
+  writes break this, the store is rebuilt with `VACUUM INTO` a new file and an atomic replace when it closes after a
+  session that added a row, or after any write if rewrites move pages.
+- Every write to a space rewrites that space's manifest row in the same transaction.
+
+**Binding and integrity** (rollout §1.6, §8, 28).
+- Each seal's AAD is the table's label, the row's 16-byte ID and a one-byte field tag, fixed width on every row
+  (decided 2026-11-27); a vault entry's two seals take two tags, every other row one constant tag. The label is a
+  constant per table and is never stored. The layout is pinned by a test vector. The store layer seals and
+  opens only through calls that take the table and the row ID. This is requirement 6 of §2.2, applied to whole records.
+- The manifest row holds a hash over the sorted (row ID, hash of sealed bytes) of every row that opens under the space
+  key. Unlock recomputes it. A row rolled back, or one the manifest doesn't list, is not used, and unlock says some
+  data was restored from an older copy. A whole space rolled back, manifest included, is not caught.
+
+**Unlock** (rollout §1.5, §8, 27).
+- One PBKDF2 run, about 1 s on an iPhone 11 by its count, and the `ECDH(d, P)` term (§1).
+- Then a trial open of every small record. A photo's plaintext is dropped once its type is read. Vault rows are
+  opened when the vault is. No row carries a key header.
+- After PBKDF2, at most 0.5 s at 1,000 contacts and 2 s at 5,000 on an iPhone 11. Over that, lazy decoding first,
+  then a 16-byte locator tag per row before stage 4, overwritten when its row is shredded. The PBKDF2 target is never
+  lowered.
+- The key and every decrypted record are held in memory only. They are dropped when the app goes to the background,
+  locks itself or changes space, not on device lock. A 5-minute grace keeps only a copy of the key wrapped by a
+  per-session Enclave key, timed on `ContinuousClock`.
+
+**Contacts and references** (rollout §8, 20, 29, 30).
+- Each contact is one record, in the space it was created in, with its pairing and its prekeys as Enclave blobs (D9).
+  No space gets a copy.
+- A contact is referenced by a random 16-byte ID, only inside rows sealed under the same space key. The address-book
+  ID is used once at import and never stored. With no references between spaces, a row a space opens never names one
+  it can't (requirement 5; the model sweep for it is stage 2's remaining work).
+- Each pairing has a routing key in the contact's record, so one person paired in two spaces matches only the
+  space whose pairing sealed a file (`bugs.md` Bug 196).
+- A retired key drops its ML-KEM material at retirement. A contact keeps the public key and dates of its two latest
+  retired keys only.
+- A draft is a small record in its space (decided 2026-11-27, rollout §1.6). Its attachments are staged under a key
+  derived from the space key and deleted when the store closes; each launch empties `Drafts/` and the staging folder,
+  so no draft leaves a file outside the store at rest.
+
+**Message keys.** The 2026-10-04 requirement in §2.2 stands: message keys must not route around the space key. Its
+open items were decided 2026-11-28, as listed there.
+
+**What it protects, and what it doesn't.**
+- *In one image, with no phrase:* every row has one size, no space tag shows and no per-type count shows. A hidden
+  space of H records right after migration is unprovable on (951 − H) / 951 of installs (rollout §8, 21). More than
+  1,000 unopened rows right after migration proves one. A decoy can look thin next to the real space (register §I).
+- *Across images:* rows a surrendered space can't open change between images, which shows that another space is in
+  use. A rekey or lock-on shows a space's size. Recorded as a stated limit, a duress space protects against one
+  image and not a series; `bugs.md` Bug 120 keeps it open, needs a decision, and so does the register.
+- *Stale pages outside the file,* in APFS free blocks and flash, stay readable with a raw image, the file's key and the
+  phrase. A stated limit (rollout §8, 26).
+- *Stated limits, decided 2026-11-27:* images taken before the migration, and older keychain images with the legacy
+  prekey tags (rollout §4, Bug 170); the old store while it waits for every layer to migrate, which opens with the
+  passcode as all data does today (rollout §1.2); every pairing made before 2.0.1, which keeps the identity
+  fingerprint until re-paired in person and shows the same re-pair note in every space (rollout §8, 30); on a classical
+  one, a `.longTermNoPQ` file also opens with the passcode and no phrase (§2.2, decided 2026-11-28); and the
+  transport's own records of who sent what (§2.2). The user guidance (rollout step 16) states each.
+- *Stated limits from the opt-in, decided 2026-11-28:* the lock screen, and the files once it has, show whether an
+  install opted in, not how many spaces it holds (rollout §3.2); until an install opts in, it keeps today's store, whose
+  PIN layers are as exposed to an examiner with code execution on the phone as today's device-bound keys are (Bug 119;
+  rollout summary).
+- *Open, needs a decision:* the across-images limit above (Bug 120); when today's store is retired for installs that
+  never opt in (rollout summary).
+
+**Waiting on a measurement, the outcome decided:** the unlock cost, on a spare iPhone 11 (rollout decision 6); the
+write-order test, and the row size's number, both on the Simulator.
+
+**§2.2's requirements under spaces:**
+
+| # | 2026-10-15 | Now |
+|---|---|---|
+| 1 | Nothing inside a depth names an absolute depth | Holds: the stamps are dropped, and the key that opens a row is its space |
+| 2 | Unopenable rows explained as deletions and padding | Replaced: a deletion shreds its row into noise; noise rows from the migration |
+| 3 | Each contact is one sealed blob | Holds |
+| 4 | A few fixed sizes | One size, fixed in code |
+| 5 | No row a depth opens refers to one it can't | Holds by construction; the model sweep remains (stage 2) |
+| 6 | Every seal bound to its row | Holds, for whole records (rollout §1.6) |
+| 7 | Nothing per depth changes with the depth count | Holds: no container per space; a manifest row changes only with its own space's writes |
+
+### 2.2 Design history
+
+Kept as written from 2026-09-10 to 2026-11-02, with the notes added as decisions were made. §2.1 supersedes it.
 
 **Closed 2026-10-29 by the owner: independent spaces** (`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5;
 `decisions.md`, 2026-10-29). The sections below are the design history. What the decision keeps and drops from
@@ -473,15 +621,24 @@ use an old copy, and it leaves no keychain items for items 2 and 3 below to hide
      such as files on a seized contact's phone, moved through Files, or forwarded. Where the transport's
      records exist, they already show who sent what.
 
-*Open, not decided. None of these is accepted:*
-- Messages from senders on old versions, in the classical-only modes, open with the passcode until both
-  sides support item 1.
+~~*Open, not decided. None of these is accepted:*~~ *Each decided 2026-11-28 by the owner (`decisions.md`,
+2026-11-27, "remaining questions"):*
+- Messages from senders on old versions, in the classical-only modes, open with the passcode until ~~both
+  sides support item 1~~ *the pairing is re-made in person.* **A stated limit, with rollout §8, item 30.** Item 1
+  shipped in 2.0.1 as the routing key, with no in-band swap, so this is every classical pairing made before 2.0.1.
+  Under D9 `.forwardSecretNoPQ` needs the phrase (its prekey blob is in the sealed record); what remains is
+  `.longTermNoPQ`, which needs only the identity key and the sender's public key: first messages after a pairing,
+  identity challenges, and contacts on builds older than last-resort keys. Item 30's re-pair note covers it.
 - The transport's own records (who sent which file to whom, and when) show that a relationship exists. An
   ongoing two-way exchange with a contact the surrendered depth doesn't show can't pass as a deleted
-  contact. That is outside the app.
-- Across repeated images, prekeys the surrendered depth can't account for disappear and appear. A new
-  batch for a hidden contact shows up as about 15 new keys.
-- In one image, hidden contacts beyond what the random padding covers make the total stand out.
+  contact. That is outside the app. **A stated limit:** the user guidance (rollout step 16) says the app can't hide
+  them, and what to look for in a transport.
+- ~~Across repeated images, prekeys the surrendered depth can't account for disappear and appear. A new
+  batch for a hidden contact shows up as about 15 new keys.~~ *Superseded by D9:* no prekey has a keychain item,
+  so a new batch rewrites only its contact's row, Bug 120's limit (open).
+- ~~In one image, hidden contacts beyond what the random padding covers make the total stand out.~~ *Superseded by
+  D9:* after stage 4 every prekey is inside a fixed-size row, so nothing is left to count; older keychain images
+  with the legacy prekeys are a stated limit (rollout §4, Bug 170).
 
 **Proposed 2026-10-15: storage for per-depth keys.** Not decided. Open questions are at the end. It covers
 one image. Repeated images are the finding above.
@@ -490,7 +647,7 @@ one image. Repeated images are the finding above.
 
 | Key | How many | Where it lives | What it seals |
 |---|---|---|---|
-| Enclave key | 1 per install | Keychain | Nothing directly. It is meant to be part of every phrase guess (§1, 2026-10-15); as designed it isn't: open, needs a decision (Bug 171) |
+| Enclave key | 1 per install | Keychain | Nothing directly. It is meant to be part of every phrase guess (§1, 2026-10-15); as designed it isn't: ~~open, needs a decision~~ *decided 2026-10-29: the requirement is dropped (D2)* (Bug 171) |
 | Depth key, `layerKey_D` | 1 per configured depth | Derived from that depth's phrase and the Enclave key. The depth above also keeps a copy, sealed under its own key | Contacts visible down to that depth; that depth's vault entries |
 | Shared key | 1 per install | A copy in every depth's header | Unclassified contacts, and contacts created at a duress depth (shown according to the origin lists below) |
 
@@ -727,7 +884,7 @@ or a rebuild of the same scale as what's being removed.
 **Proposed staged rollout, 2026-09-30 — `Docs/v2.0.0/ROLLOUT_PLAN.md`. Not decided.** If adopted, it
 replaces the single migration assumed above. The migration splits by data: the vault first, then
 contacts, then the remaining depth-stamped records. It never splits by requirement: each slice gets §1,
-§1's Enclave-per-guess requirement (open, needs a decision, Bug 171), §2's every-depth sealing, its
+§1's Enclave-per-guess requirement (~~open, needs a decision~~ *dropped 2026-10-29, D2*; Bug 171), §2's every-depth sealing, its
 write-frequency requirement, and the row and field AAD, all at once. Every depth on a device migrates in one step. The phrase replaces the
 PIN for every lock user, not only for users with duress depths. §2 remains the blocker. Design it for
 vault and contacts together, even though the vault would ship first.
@@ -736,8 +893,8 @@ vault and contacts together, even though the vault would ship first.
 and a shared key in place of "every-depth sealing". The write-frequency requirement leaves the list above:
 it can't be met against a surrendered phrase and is open, needs a decision (§2, finding of that date).
 
-**Passphrase rollout, 2026-10-19 — `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`. Proposed, not decided.** It
-plans a release built on the 2026-10-15 design and covers:
+**Passphrase rollout, 2026-10-19 — `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`. ~~Proposed, not decided.~~ Decided, not
+built (2026-11-28).** It plans a release built on the 2026-10-15 design and covers:
 - phrase entry and learning;
 - migration from the PIN;
 - Rule 4's way back, through the old store file (Bug 168's new-store proposal);
