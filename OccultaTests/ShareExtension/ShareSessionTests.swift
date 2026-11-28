@@ -595,14 +595,14 @@ struct ShareSessionEraseTests {
 
 // MARK: - The real key manager
 
-/// The share-staging key's public key, or nil when there is none. Asks the keychain directly,
-/// since every `ShareStagingKeyManager` entry point creates the key when it is missing. Tag
-/// and group are written out rather than read from the type: both are persisted, so renaming
-/// either has to fail here.
-private func stagingPublicKey() -> Data? {
+/// The public key of the share-staging key tagged `tag`, or nil when there is none. Asks the keychain
+/// directly, since every `ShareStagingKeyManager` entry point creates the key when it is missing. The
+/// canonical tag and the group are written out rather than read from the type: both are persisted, so
+/// renaming either has to fail here.
+private func stagingPublicKey(tag: String = "share.index.se.key.occulta") -> Data? {
     let query: [String: Any] = [
         kSecClass as String:              kSecClassKey,
-        kSecAttrApplicationTag as String: "share.index.se.key.occulta".data(using: .utf8)!,
+        kSecAttrApplicationTag as String: tag.data(using: .utf8)!,
         kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
         kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave,
         kSecAttrAccessGroup as String:    "group.com.occulta.shared",
@@ -621,9 +621,12 @@ private func stagingPublicKey() -> Data? {
 /// instances derive the same key: the extension seals with its own and the app opens with
 /// another.
 ///
-/// Serialized because two cases delete the key, which would pull it out from under a
-/// concurrent seal-then-open.
-@Suite("ShareStagingKeyManager — Enclave key", .enabled(if: shareKeyAvailable()), .serialized)
+/// The cases that delete the key do so on a key tag, `r_S` account and PQ record account of their own
+/// (`OwnItems`). The canonical ones are shared with every suite that seals and then opens under the real
+/// staging key (`ShareSessionRealKeyTests`, `EnclaveGeneratorECDHTests`), and a delete between the seal and the
+/// open gives a different key. Swift Testing runs suites at the same time, and `.serialized` orders only
+/// the tests inside one suite, so nothing here may delete a canonical item.
+@Suite("ShareStagingKeyManager — Enclave key", .enabled(if: shareKeyAvailable()))
 struct ShareStagingKeyManagerTests {
 
     /// Erase All Data deletes this key (`bugs.md` Bug 170): it and its creation date outlived
@@ -631,33 +634,49 @@ struct ShareStagingKeyManagerTests {
     /// under the old one may open with the new.
     @Test("Deleting the key removes it, and the next access creates a fresh one")
     func deleteKeyRemovesItAndNextAccessCreatesAFreshOne() throws {
-        let sealedBefore = try ShareStagingKeyManager().encrypt(data: Data("staged".utf8))
-        let original     = try #require(stagingPublicKey())
+        let items = OwnItems()
+        let staging = items.process(postQuantum: ShareStagingKeyManager.platformPostQuantum)
+        defer { staging.deleteKey() }
 
-        #expect(ShareStagingKeyManager().deleteKey())
-        #expect(stagingPublicKey() == nil)
+        let sealedBefore = try staging.encrypt(data: Data("staged".utf8))
+        let original     = try #require(stagingPublicKey(tag: items.keyTag))
+
+        #expect(staging.deleteKey())
+        #expect(stagingPublicKey(tag: items.keyTag) == nil)
 
         let plaintext = Data("staged after the erase".utf8)
-        let sealed    = try ShareStagingKeyManager().encrypt(data: plaintext)
-        #expect(try ShareStagingKeyManager().decrypt(data: sealed) == plaintext)
+        let sealed    = try staging.encrypt(data: plaintext)
+        #expect(try staging.decrypt(data: sealed) == plaintext)
 
-        let fresh = try #require(stagingPublicKey())
+        let fresh = try #require(stagingPublicKey(tag: items.keyTag))
         #expect(fresh != original)
-        #expect(throws: (any Error).self) { try ShareStagingKeyManager().decrypt(data: sealedBefore) }
+        #expect(throws: (any Error).self) { try staging.decrypt(data: sealedBefore) }
     }
 
     @Test("Deleting a key that is already gone succeeds")
     func deleteKeyWhenAbsentSucceeds() {
-        ShareStagingKeyManager().deleteKey()
-        #expect(stagingPublicKey() == nil)
-        #expect(ShareStagingKeyManager().deleteKey())
+        let items = OwnItems()
+        let staging = items.process(postQuantum: ShareStagingKeyManager.platformPostQuantum)
+
+        staging.deleteKey()
+        #expect(stagingPublicKey(tag: items.keyTag) == nil)
+        #expect(staging.deleteKey())
+    }
+
+    /// The tests above delete a key of their own, so this is the one that pins where the real key lives: the tag
+    /// and group the extension and the app both persist. It creates the key if it is missing and never deletes it.
+    @Test("The canonical key is created under the persisted tag and group")
+    func canonicalKeyLivesUnderThePersistedTag() throws {
+        _ = try ShareStagingKeyManager().encrypt(data: Data("staged".utf8))
+        #expect(stagingPublicKey() != nil)
     }
 
     /// `r_S`, the staging tier's Keychain secret, and its PQ record are dated like the key (`bugs.md` Bug 171): the
     /// wipe has to remove all three.
     @Test("Deleting the key also removes r_S and the PQ record")
     func deleteKeyAlsoRemovesTheTierSecretAndRecord() throws {
-        let staging = ShareStagingKeyManager()
+        let staging = OwnItems().process(postQuantum: ShareStagingKeyManager.platformPostQuantum)
+        defer { staging.deleteKey() }
         try staging.createTierSecretIfAbsent()
         try staging.createTierPQRecordIfAbsent()
         #expect(try staging.tierSecret() != nil)

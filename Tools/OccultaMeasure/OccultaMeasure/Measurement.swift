@@ -2,8 +2,9 @@
 //  Measurement.swift
 //  OccultaMeasure
 //
-//  The run: PBKDF2, the space-key derivation, then a plain SQLite store at three sizes. Every figure is the median
-//  of several passes. Mock data and transient keys only; every file made lives in one temporary directory that is
+//  The run: PBKDF2, the space-key derivation, then a plain SQLite store at three row sizes and three contact counts,
+//  the way `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5 decided it on 2026-11-24. Every figure is the median of several
+//  passes. Mock data and transient keys only; every file made lives in one temporary directory that is
 //  removed when the run ends. Never touches Occulta's container or keychain, which iOS keeps apart.
 //
 //  Numbers feed `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md` §1.5 and §8 (items 6, 21, 22, 26, 27); see README.md.
@@ -18,6 +19,10 @@ enum Measurement {
     static let contactCounts = [100, 1_000, 5_000]
     static let noiseRows = 1_000
     static let contactPasses = 5
+    /// The row size is decided later, bottom-up from the field limits (§8 item 29), and estimated at 48-64 KB.
+    static let rowSizes = [32 * 1_024, 48 * 1_024, 64 * 1_024]
+    /// Decided 2026-11-24 (§1.5, "Fallback"): everything after PBKDF2 within this many milliseconds, by contact count.
+    static let unlockLimits: [Int: Double] = [1_000: 500, 5_000: 2_000]
 
     /// Runs everything and returns the report. Blocks; call it off the main thread.
     static func run(progress: (String) -> Void) -> String {
@@ -104,18 +109,44 @@ enum Measurement {
         progress("PBKDF2: calibrating")
         _ = try samples(100_000, passes: 1)
         let probe = try samples(100_000, passes: 3)
-        var iterations = rounded(1_000 / probe.median * 100_000)
-        var target = try samples(iterations, passes: 5)
-        if abs(target.median - 1_000) > 100 {
-            iterations = rounded(Double(iterations) * 1_000 / target.median)
-            target = try samples(iterations, passes: 5)
+        let estimate = rounded(1_000 / probe.median * 100_000)
+
+        // The smallest multiple of 10,000 whose median is at least 1 s: from the estimate, up while it falls short,
+        // then down while the next one below still reaches it. Each count is measured once.
+        var measured: [UInt32: Samples] = [:]
+        func reaches(_ iterations: UInt32) throws -> Bool {
+            if measured[iterations] == nil {
+                progress("PBKDF2: searching, \(iterations) iterations")
+                measured[iterations] = try samples(iterations, passes: 5)
+            }
+            return measured[iterations]!.median >= 1_000
+        }
+        let steps = 40
+        var found = estimate
+        var searched = 0
+        while try !reaches(found), searched < steps {
+            found += 10_000
+            searched += 1
+        }
+        while found > 10_000, try reaches(found - 10_000), searched < steps {
+            found -= 10_000
+            searched += 1
         }
 
         var lines = [
             "\(PBKDF2.wordCount) word indices, \(PBKDF2.saltSize)-byte salt, \(PBKDF2.outputSize)-byte output; 5 passes each",
-            "about 1 s: \(iterations) iterations, \(target.summary)",
-            "CCCalibratePBKDF for 1000 ms, for comparison: \(PBKDF2.systemCalibration(milliseconds: 1_000)) iterations"
+            searched < steps
+                ? "smallest multiple of 10,000 iterations whose median is at least 1 s: \(found)"
+                : "SEARCH STOPPED after \(steps) steps, the result is not the smallest: \(found)",
+            "  at \(found): \(measured[found]!.summary)"
         ]
+        if let below = measured[found - 10_000] {
+            lines.append("  at \(found - 10_000), the next one below: \(below.summary)")
+        }
+        lines.append(String(format: "  10,000 iterations take about %.1f ms, so one step is %.1f%% of a second; a median of 5 moves by a few"
+                            + " percent between runs, so the result is good to a few steps",
+                            measured[found]!.median / Double(found) * 10_000, measured[found]!.median / Double(found) * 10_000 / 10))
+        lines.append("CCCalibratePBKDF for 1000 ms, for comparison: \(PBKDF2.systemCalibration(milliseconds: 1_000)) iterations")
         for count in Self.fixedCounts {
             progress("PBKDF2: \(count) iterations")
             lines.append("\(count) iterations: \(try samples(count, passes: 5).summary)")
@@ -179,15 +210,28 @@ enum Measurement {
         try fresh.close()
         lines.append("every store below: PRAGMA secure_delete=ON, journal_mode=WAL")
 
-        for count in Self.contactCounts {
-            progress("SQLite: \(count) contacts and \(Self.noiseRows) noise rows")
-            lines.append("")
-            lines += try Self.contactStore(count: count, key: key, directory: directory)
+        let derivation = try SpaceKeyDerivation()
+        let peer = try derivation.point(from: try PBKDF2.derive(password: PBKDF2.randomPassword(),
+                                                                salt: [UInt8](Random.bytes(PBKDF2.saltSize)), iterations: 10_000))
+        var results: [UnlockResult] = []
+        lines.append("contact table: one table of one row size; per contact one contact row and one photo row of "
+                     + "\(RowSize.photo / 1_024) KB, plus \(Self.noiseRows) noise rows. Unlock streams the table: "
+                     + "read a row, trial-decrypt it, read its type, decode a contact, drop a photo's plaintext")
+        lines.append("the mock contact is \(try Sealing.contactPayloadSize()) bytes of JSON in every row size; decode parses "
+                     + "that, not the padding, so a fuller record would decode slower")
+        for rowSize in Self.rowSizes {
+            for count in Self.contactCounts {
+                progress("SQLite: \(rowSize / 1_024) KB rows, \(count) contacts")
+                lines.append("")
+                let result = try Self.contactStore(count: count, rowSize: rowSize, key: key, directory: directory,
+                                                   derivation: derivation, peer: peer)
+                lines += result.lines
+                results.append(result)
+            }
         }
 
-        progress("SQLite: photos")
         lines.append("")
-        lines += try Self.photoStore(key: key, directory: directory)
+        lines += Self.verdict(results)
 
         progress("SQLite: vault")
         lines.append("")
@@ -220,78 +264,187 @@ enum Measurement {
         return store
     }
 
-    private static func contactStore(count: Int, key: SymmetricKey, directory: URL) throws -> [String] {
-        let store = try Self.configuredStore("contacts-\(count).sqlite", in: directory)
-        try store.createTable("contacts")
-        let real = try Sealing.contactRows(count: count, key: key)
-        let sealedSize = real[0].sealed.count
-        try store.insert(real + Sealing.noiseRows(count: Self.noiseRows, sealedSize: sealedSize), into: "contacts")
-        try store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-        var read = Samples(), trial = Samples(), decode = Samples(), total = Samples()
-        for _ in 0..<Self.contactPasses {
-            var rows: [Row] = []
-            var plaintexts: [Data] = []
-            var records = 0
-
-            let readTime = try timed { rows = try store.readAll(from: "contacts") }
-            let trialTime = timed {
-                for row in rows {
-                    if let plaintext = try? Sealing.open(row.sealed, id: row.id, key: key) {
-                        plaintexts.append(plaintext)
-                    }
-                }
-            }
-            let decodeTime = try timed { records = try plaintexts.map(Sealing.decode).count }
-
-            guard rows.count == count + Self.noiseRows, plaintexts.count == count, records == count else {
-                throw MeasureError("read \(rows.count) rows, \(plaintexts.count) opened, \(records) decoded; "
-                                   + "expected \(count + Self.noiseRows), \(count), \(count)")
-            }
-            read.add(readTime)
-            trial.add(trialTime)
-            decode.add(decodeTime)
-            total.add(readTime + trialTime + decodeTime)
-        }
-        let size = (try? FileManager.default.attributesOfItem(atPath: store.path)[.size] as? Int) ?? 0
-        try store.close()
-
-        return [
-            "\(count) contacts of \(sealedSize) bytes + \(Self.noiseRows) noise rows; file \(size / 1_024) KB; \(Self.contactPasses) passes",
-            "  read every row: \(read.summary)",
-            "  trial-decrypt every row (noise fails its tag): \(trial.summary)",
-            "  decode the \(count) real ones: \(decode.summary)",
-            "  read + trial + decode: \(total.summary)",
-            String(format: "  first pass, closest to a cold start: %.2f ms", total.first)
-        ]
+    private struct UnlockResult {
+        let rowSize: Int
+        let count: Int
+        let total: Samples
+        let read: Samples
+        let trial: Samples
+        let decode: Samples
+        var lines: [String]
     }
 
-    private static func photoStore(key: SymmetricKey, directory: URL) throws -> [String] {
-        let photos = 100
-        let store = try Self.configuredStore("photos.sqlite", in: directory)
-        try store.createTable("photos")
-        let rows = try Sealing.opaqueRows(count: photos, plaintextSize: RowSize.photo, key: key)
-        try store.insert(rows, into: "photos")
+    /// One unlock after PBKDF2, streamed: everything is timed per phase, and the total is the sum of the phases.
+    private struct UnlockPass {
+        var enclave = 0.0, read = 0.0, trial = 0.0, decode = 0.0
+        var rows = 0, opened = 0, contacts = 0, photos = 0
+
+        var total: Double { self.enclave + self.read + self.trial + self.decode }
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) * 1_000 + Double(duration.components.attoseconds) / 1e15
+    }
+
+    private static func unlockPass(store: SQLiteStore, table: String, key: SymmetricKey,
+                                   derivation: SpaceKeyDerivation, peer: SecKey) throws -> UnlockPass {
+        var pass = UnlockPass()
+        pass.enclave = try timed { _ = try derivation.derive(point: peer) }
+
+        let clock = ContinuousClock()
+        var read = Duration.zero, trial = Duration.zero, decode = Duration.zero
+        let cursor = try store.cursor(over: table)
+        while true {
+            let start = clock.now
+            guard let row = cursor.next() else { break }
+            let afterRead = clock.now
+            let plaintext = try? Sealing.open(row.sealed, id: row.id, key: key)
+            let afterTrial = clock.now
+            if let plaintext {
+                pass.opened += 1
+                switch Sealing.kind(of: plaintext) {
+                case .contact:
+                    _ = try Sealing.decodeContact(plaintext)
+                    pass.contacts += 1
+                case .photo:
+                    pass.photos += 1
+                case nil:
+                    throw MeasureError("a row opened with an unknown type")
+                }
+            }
+            // The plaintext goes out of scope here, a photo's with nothing else done to it.
+            let end = clock.now
+            pass.rows += 1
+            read += afterRead - start
+            trial += afterTrial - afterRead
+            decode += end - afterTrial
+        }
+        pass.read = Self.milliseconds(read)
+        pass.trial = Self.milliseconds(trial)
+        pass.decode = Self.milliseconds(decode)
+        return pass
+    }
+
+    private static func contactStore(count: Int, rowSize: Int, key: SymmetricKey, directory: URL,
+                                     derivation: SpaceKeyDerivation, peer: SecKey) throws -> UnlockResult {
+        let name = "contacts-\(rowSize)-\(count).sqlite"
+        let store = try Self.configuredStore(name, in: directory)
+        try store.createTable("contacts")
+
+        // Written in chunks: the table is 0.1 to 0.7 GB, which is not built in memory.
+        var photoIDs: [Data] = []
+        for start in stride(from: 0, to: count, by: 100) {
+            var chunk: [Row] = []
+            for index in start..<min(start + 100, count) {
+                let rows = try Sealing.contactAndPhotoRows(index: index, rowSize: rowSize, key: key)
+                chunk += [rows.contact, rows.photo]
+                if photoIDs.count < 30 {
+                    photoIDs.append(rows.photo.id)
+                }
+            }
+            try store.insert(chunk, into: "contacts")
+        }
+        let sealedSize = rowSize + Sealing.overhead
+        for start in stride(from: 0, to: Self.noiseRows, by: 100) {
+            try store.insert(Sealing.noiseRows(count: min(100, Self.noiseRows - start), sealedSize: sealedSize), into: "contacts")
+        }
         try store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
+        var enclave = Samples(), read = Samples(), trial = Samples(), decode = Samples(), total = Samples()
+        for _ in 0..<Self.contactPasses {
+            let pass = try Self.unlockPass(store: store, table: "contacts", key: key, derivation: derivation, peer: peer)
+            guard pass.rows == 2 * count + Self.noiseRows, pass.opened == 2 * count,
+                  pass.contacts == count, pass.photos == count
+            else {
+                throw MeasureError("read \(pass.rows) rows, \(pass.opened) opened, \(pass.contacts) contacts and "
+                                   + "\(pass.photos) photos; expected \(2 * count + Self.noiseRows), \(2 * count), \(count), \(count)")
+            }
+            enclave.add(pass.enclave)
+            read.add(pass.read)
+            trial.add(pass.trial)
+            decode.add(pass.decode)
+            total.add(pass.total)
+        }
+
         var fetch = Samples(), fetchAndOpen = Samples()
-        for _ in 0..<50 {
-            let row = rows.randomElement()!
-            var sealed = Data()
-            fetch.add(try timed { sealed = try store.fetch(id: row.id, from: "photos") })
-            guard sealed == row.sealed else { throw MeasureError("fetched a different photo") }
+        for id in photoIDs {
+            fetch.add(try timed { _ = try store.fetch(id: id, from: "contacts") })
             fetchAndOpen.add(try timed {
-                let sealed = try store.fetch(id: row.id, from: "photos")
-                _ = try Sealing.open(sealed, id: row.id, key: key)
+                _ = try Sealing.open(try store.fetch(id: id, from: "contacts"), id: id, key: key)
             })
         }
-        try store.close()
 
-        return [
-            "photos: \(photos) rows of \(rows[0].sealed.count) bytes, no noise; 50 fetches of one row by ID",
-            "  fetch: \(fetch.summary)",
-            "  fetch + decrypt: \(fetchAndOpen.summary)"
+        let size = (try? FileManager.default.attributesOfItem(atPath: store.path)[.size] as? Int) ?? 0
+        try store.close()
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: directory.appendingPathComponent(name).path + suffix)
+        }
+
+        var lines = [
+            "\(rowSize / 1_024) KB rows, \(count) contacts: \(count) contact rows + \(count) photo rows + \(Self.noiseRows) noise "
+                + "rows = \(2 * count + Self.noiseRows) rows of \(sealedSize) bytes; file \(size / 1_048_576) MB; \(Self.contactPasses) passes",
+            "  Enclave derivation, fixed point: \(enclave.summary)",
+            "  read every row: \(read.summary)",
+            "  trial-decrypt every row (noise fails its tag): \(trial.summary)",
+            "  read the type, decode the \(count) contacts, drop the \(count) photos: \(decode.summary)"
         ]
+        let after = "  everything after PBKDF2 (Enclave + read + trial + decode): \(total.summary)"
+        if let limit = Self.unlockLimits[count] {
+            lines.append(after + String(format: "; limit %.0f ms: %@", limit, total.median <= limit ? "WITHIN" : "OVER"))
+        } else {
+            lines.append(after + "; no limit decided at this count")
+        }
+        lines.append(String(format: "  first pass, closest to a cold start: %.2f ms", total.first))
+        lines.append("  where the time goes: " + Self.split(read: read.median, trial: trial.median, decode: decode.median))
+        lines.append("  one photo row by ID, \(photoIDs.count) fetches: fetch \(fetch.summary); fetch + decrypt \(fetchAndOpen.summary)")
+        return UnlockResult(rowSize: rowSize, count: count, total: total, read: read, trial: trial, decode: decode, lines: lines)
+    }
+
+    private enum Phase: String {
+        case read = "reading", trial = "decrypting", decode = "decoding"
+    }
+
+    private static func largest(read: Double, trial: Double, decode: Double) -> Phase {
+        if read >= trial && read >= decode { return .read }
+        return trial >= decode ? .trial : .decode
+    }
+
+    /// The share of read + trial-decrypt + decode each phase takes, and which is the largest; "mostly" only above half.
+    private static func split(read: Double, trial: Double, decode: Double) -> String {
+        let sum = read + trial + decode
+        let phase = Self.largest(read: read, trial: trial, decode: decode)
+        let largest = [Phase.read: read, .trial: trial, .decode: decode][phase]!
+        return String(format: "read %.0f%%, trial-decrypt %.0f%%, decode %.0f%% -> %@ %@",
+                      read / sum * 100, trial / sum * 100, decode / sum * 100,
+                      largest > sum / 2 ? "mostly" : "largest share:", phase.rawValue)
+    }
+
+    /// Every store against the decided limit, one line each, and what the split says to do next.
+    private static func verdict(_ results: [UnlockResult]) -> [String] {
+        var lines = [
+            "== Unlock after PBKDF2, against the limit decided 2026-11-24 ==",
+            "limit: at most 500 ms at 1,000 contacts and 2,000 ms at 5,000 (§1.5); the figure is the median of "
+                + "Enclave derivation + read + trial-decrypt + decode",
+            "this machine, not an iPhone 11, unless the header says so"
+        ]
+        for result in results {
+            let limit = Self.unlockLimits[result.count]
+            let mark = limit.map { result.total.median <= $0 ? "WITHIN \(Int($0)) ms" : "OVER \(Int($0)) ms" } ?? "no limit at this count"
+            lines.append(String(format: "  %2d KB rows, %5d contacts: %8.1f ms  %@  (%@)", result.rowSize / 1_024, result.count,
+                                result.total.median, mark,
+                                Self.split(read: result.read.median, trial: result.trial.median, decode: result.decode.median)))
+        }
+
+        let limited = results.filter { Self.unlockLimits[$0.count] != nil }
+        var counts: [Phase: Int] = [:]
+        for result in limited {
+            counts[Self.largest(read: result.read.median, trial: result.trial.median, decode: result.decode.median), default: 0] += 1
+        }
+        lines.append("largest phase at the \(limited.count) rows with a limit: reading in \(counts[.read, default: 0]), "
+                     + "decrypting in \(counts[.trial, default: 0]), decoding in \(counts[.decode, default: 0])")
+        lines.append("what that decides: decoding is what lazy decoding removes. A locator tag cuts reading and decrypting "
+                     + "only by the rows that aren't this space's: the \(Self.noiseRows) noise rows, and other spaces' rows")
+        return lines
     }
 
     private static func vaultStore(key: SymmetricKey, directory: URL) throws -> [String] {

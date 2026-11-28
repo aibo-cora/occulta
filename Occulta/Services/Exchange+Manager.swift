@@ -121,9 +121,9 @@ class ExchangeManager: NSObject {
     #endif
     /// Our identity key as sent. A test supplies one that needs no Secure Enclave.
     #if DEBUG
-    var identityProvider: () throws -> Data = ExchangeManager.ownIdentity
+    @ObservationIgnored var identityProvider: @MainActor () throws -> Data = { try ExchangeManager.ownIdentity() }
     #else
-    let identityProvider: () throws -> Data = ExchangeManager.ownIdentity
+    let identityProvider: @MainActor () throws -> Data = { try ExchangeManager.ownIdentity() }
     #endif
     private static func ownIdentity() throws -> Data {
         let keyManager = Manager.Key()
@@ -668,7 +668,7 @@ class ExchangeManager: NSObject {
     /// Anything missing means the peer can't hold a routing key, and the pairing is made without one.
     private func pairingOffer() -> PairingOffer? {
         guard
-            let committed = self.committedExchange, let ownPrekeys, let ownPairKeys, let ownPairingField, let peerPairing
+            let committed = self.committedExchange, let ownPrekeys, let ownPairKeys, self.ownPairingField != nil, let peerPairing
         else { return nil }
         return PairingOffer(
             committed: committed, ownPrekeys: ownPrekeys,

@@ -394,7 +394,8 @@ listed; D5 is not: see "What is not covered".
 - **What it found.** Bug 189, 513 bytes of `[` in a file or a nearby phone's message end the app inside Foundation's JSON
   scanner (fixed, `BoundedJSON`); Bug 187, a shared image makes ImageIO allocate gigabytes by its declared size or a chunk
   length (fixed for PNG chunks and for dimensions); Bug 186, decoders that trap on a `Data` slice, not reachable today
-  (fixed). Bug 188, the extension reads a whole inbound `.occ` into memory, is open, needs a decision. No decoder of
+  (fixed). Bug 188, the extension reads a whole inbound `.occ` into memory, is fixed on `v2.1.0/bug-188-inbound-share-stream` (a chunked copy,
+  not merged; its peak memory in the extension is not measured, needs a device). No decoder of
   `OccultaFormats` crashed on any other input in 200,000 cases per target and seed on seeds 11 and 12, run in a
   standalone harness, or in the committed seeds.
 - **Cost.** The committed run is four seeds of 400 cases per target, about 30 seconds in the Simulator in a Debug build.
@@ -415,6 +416,9 @@ listed; D5 is not: see "What is not covered".
   (residuals 1, 3, 4), and three unguarded image paths (a received video through AVFoundation, the system's share-sheet
   preview, a photo the user picks for a contact); the share extension's inbound read (Bug 188); the extension's
   remaining untested part (D5); converting the eight pending `JSONDecoder` decodes and emptying the exception (Bug 189).
+- **Open, needs a decision.** The 100-megapixel limit of Bug 187 and the unchecked decode of received images; the
+  share extension's inbound read (Bug 188, until it is measured on a device); the extension itself (D5); that nothing but a list reviewed by hand stops a
+  new `JSONDecoder` call on outside bytes (Bug 189, residual 2).
 
 ### 13. Keep keys in memory only briefly
 

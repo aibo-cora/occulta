@@ -131,9 +131,9 @@ struct StreamedReceiveCancelRaceTests {
 
     private func jpeg() throws -> Data {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64))
-        return try #require(renderer.jpegData(withCompressionQuality: 0.8) { context in
+        return renderer.jpegData(withCompressionQuality: 0.8) { context in
             UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
-        })
+        }
     }
 
     @Test("A file above the budget is refused from its header, before a byte is decrypted")
