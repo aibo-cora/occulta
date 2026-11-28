@@ -378,6 +378,9 @@ app's memory.
   `ComposeViewModel.seal(contentsOf:to:using:)` does.
 - **App.** The app passes the staged files to the streamed send as sources, as compose does.
 - **Size cap.** The 100 MB cap stays until the extension's peak memory is measured on a device.
+- **Inbound `.occ`.** The inbound handoff (`handoffInboundOCC`) copies the provider's file to the App Group a megabyte
+  at a time (`NoCacheFile.copy`), with no cap, so a bundle of any size reaches the app without being read whole (Bug 188).
+  Its peak memory in the extension is the second thing to measure on a device, beside the cap above.
 - **Migration.** The one-shot reader for files sealed whole under the staging key was removed in 2.0.5: no session
   staged before 2.0.0 is inside the one-hour cutoff, and a file in that form is refused. From 2.0.5 the manifest names
   its session and the app refuses one found under any other directory (Bug 213). A session staged by a build before
