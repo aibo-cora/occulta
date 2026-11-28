@@ -944,7 +944,16 @@ class ExchangeManager: NSObject {
                     #if DEBUG
                     debugPrint("[KE] PQ path — encapsulating peer's ML-KEM key")
                     #endif
-                    guard let result = provider.encapsulate(peerPublicKeyData: peerEncapKey) else { return }
+                    // A key that can't be encapsulated to ends the exchange: left alone, it would wait out the step deadline and
+                    // read as poor ranging, and a retry with the same phone fails the same way (OC-2).
+                    guard let result = provider.encapsulate(peerPublicKeyData: peerEncapKey) else {
+                        #if DEBUG
+                        debugPrint("[KE] Encapsulation failed — exchange failed")
+                        #endif
+                        self.phase = .failed
+                        self.teardownSessions()
+                        return
+                    }
                     let ours = QuantumPayload(secret: result.sharedSecret, ciphertext: result.ciphertext)
 
                     if self.isInitiator {
@@ -1016,10 +1025,13 @@ class ExchangeManager: NSObject {
                 debugPrint("[KE] Peer's ciphertext received from \(peerID.displayName)")
                 #endif
 
+                // A ciphertext that can't be decapsulated ends the exchange, as a key that can't be encapsulated to does (OC-2).
                 guard let secret = provider.decapsulate(ciphertext: ciphertext, privateKeyHandle: handle) else {
                     #if DEBUG
-                    debugPrint("[KE] Decapsulation failed")
+                    debugPrint("[KE] Decapsulation failed — exchange failed")
                     #endif
+                    self.phase = .failed
+                    self.teardownSessions()
                     return
                 }
 

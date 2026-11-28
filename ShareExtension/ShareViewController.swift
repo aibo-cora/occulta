@@ -26,6 +26,7 @@
 import UIKit
 import CryptoKit
 import UniformTypeIdentifiers
+import os
 
 class ShareViewController: UIViewController {
 
@@ -214,8 +215,22 @@ class ShareViewController: UIViewController {
 
                     let source = try NoCacheFile.reader(sourceURL)
                     let encryptor = try StreamingEncryptor(url: destination, contactKey: try self.sessionKey(sessionID))
-                    try source.forEachChunk(range: 0..<source.size, size: 65_536) { try encryptor.append($0) }
+                    #if DEBUG
+                    // Measures the 100 MB cap's replacement (STREAMING_SPEC §8.4). Numbers only, no name or type,
+                    // and compiled out of Release. Reads 0 on the Simulator; run it on a device.
+                    let availableAtStart = os_proc_available_memory()
+                    var availableLowest = availableAtStart
+                    #endif
+                    try source.forEachChunk(range: 0..<source.size, size: 65_536) {
+                        try encryptor.append($0)
+                        #if DEBUG
+                        availableLowest = min(availableLowest, os_proc_available_memory())
+                        #endif
+                    }
                     try encryptor.finalize()
+                    #if DEBUG
+                    print("[ShareExtension] sealed \(size / 1_048_576) MB; available memory \(availableAtStart / 1_048_576) MB at start, lowest \(availableLowest / 1_048_576) MB, drop \((availableAtStart - availableLowest) / 1_048_576) MB")
+                    #endif
                     continuation.resume(returning: true)
                 } catch {
                     continuation.resume(throwing: error)
@@ -346,7 +361,7 @@ class ShareViewController: UIViewController {
         return false
     }
 
-    /// Load the `.occ` bytes, stash them in the shared container, and launch
+    /// Copy the `.occ` into the shared container, and launch
     /// the main app with `occulta://inbound?session=<uuid>`.
     ///
     /// Failures at any stage cancel the extension request so the user isn't
@@ -386,14 +401,24 @@ class ShareViewController: UIViewController {
         do {
             // The .occ is already encrypted by the sender — just land it on disk
             // with NSFileProtection.complete. No share-key encryption needed.
-            let data: Data = try await withCheckedThrowingContinuation { cont in
-                provider.loadDataRepresentation(forTypeIdentifier: uti) { data, error in
-                    if let error { cont.resume(throwing: error); return }
-                    guard let data else { cont.resume(throwing: ShareError.noData); return }
-                    cont.resume(returning: data)
+            //
+            // A file representation, copied a chunk at a time inside the handler (its URL is valid only
+            // there): the file is never held in the extension's memory, whatever its size (Bug 188).
+            // There is no `loadDataRepresentation` fallback — it can't be bounded, since the size is known
+            // only after the whole file is in memory — and no size cap, which would refuse the large
+            // bundles Bug 183 made it possible to open.
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                provider.loadFileRepresentation(forTypeIdentifier: uti) { sourceURL, error in
+                    if let error { continuation.resume(throwing: error); return }
+                    guard let sourceURL else { continuation.resume(throwing: ShareError.noData); return }
+                    do {
+                        try NoCacheFile.copy(sourceURL, to: destURL)
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
-            try data.write(to: destURL, options: .completeFileProtection)
         } catch {
             try? fm.removeItem(at: destURL)
             self.extensionContext?.cancelRequest(withError: ShareError.noData)

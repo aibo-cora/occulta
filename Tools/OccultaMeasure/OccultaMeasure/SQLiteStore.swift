@@ -99,6 +99,33 @@ final class SQLiteStore {
         return rows
     }
 
+    /// Rows one at a time, so a large table is never held in memory whole, as unlock wouldn't hold it.
+    func cursor(over table: String) throws -> Cursor {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(self.database, "SELECT id, body FROM \(table)", -1, &statement, nil) == SQLITE_OK else {
+            throw MeasureError("cursor: \(self.message)")
+        }
+        return Cursor(statement: statement)
+    }
+
+    /// Finalises its statement when released, which must happen before the store closes.
+    final class Cursor {
+        private var statement: OpaquePointer?
+
+        fileprivate init(statement: OpaquePointer?) {
+            self.statement = statement
+        }
+
+        deinit {
+            sqlite3_finalize(self.statement)
+        }
+
+        func next() -> Row? {
+            guard sqlite3_step(self.statement) == SQLITE_ROW else { return nil }
+            return Row(id: SQLiteStore.blob(self.statement, 0), sealed: SQLiteStore.blob(self.statement, 1))
+        }
+    }
+
     func fetch(id: Data, from table: String) throws -> Data {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(self.database, "SELECT body FROM \(table) WHERE id = ?", -1, &statement, nil)
@@ -111,7 +138,7 @@ final class SQLiteStore {
         return Self.blob(statement, 0)
     }
 
-    private static func blob(_ statement: OpaquePointer?, _ column: Int32) -> Data {
+    fileprivate static func blob(_ statement: OpaquePointer?, _ column: Int32) -> Data {
         guard let bytes = sqlite3_column_blob(statement, column) else { return Data() }
         return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column)))
     }

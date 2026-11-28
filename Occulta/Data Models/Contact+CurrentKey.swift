@@ -16,6 +16,9 @@ extension Contact.Profile {
         self.contactPublicKeys?.last(where: { $0.expiredOn == nil })
     }
 
+    /// Whether anything can be encrypted for this contact: false once the key is revoked, until a new exchange.
+    var hasCurrentKey: Bool { self.currentKey != nil }
+
     /// The key row to show: the current one, else whichever row is latest, for a contact whose key was revoked.
     var displayedKey: Key? {
         self.currentKey ?? self.contactPublicKeys?.last

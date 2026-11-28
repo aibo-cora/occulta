@@ -818,54 +818,6 @@ extension ContactManager {
         if droppedInbound { self.security.checkpointStore() }
     }
     
-    /// Encrypt data for a contact using their public key, which is encrypted.
-    /// - Parameters:
-    ///   - data: Data to encrypt.
-    ///   - encrypted: Encrypt public keying material.
-    /// - Returns: Encrypted result.
-    func encrypt(data: Data, using encrypted: Data?) throws -> Data? {
-        guard
-            data.isEmpty == false
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        guard
-            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
-        else {
-            throw ContactManager.Errors.contactHasNoKeys
-        }
-        
-        let encryptedData = try self.encrypt(data: data, using: publicKeyingMaterial)
-        
-        return encryptedData
-    }
-    
-    func encrypt(data: Data, for identifier: String) throws -> Data? {
-        guard
-            let contact = try self.fetchContact(by: identifier)
-        else {
-            throw ContactManager.Errors.contactNotFound
-        }
-        
-        guard
-            let encrypted = contact.displayedKey?.material,
-            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
-        else {
-            throw ContactManager.Errors.contactHasNoKeys
-        }
-        
-        guard
-            data.isEmpty == false
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        let encryptedData = try self.encrypt(data: data, using: publicKeyingMaterial)
-        
-        return encryptedData
-    }
-    
     /// Derives the stable per-contact base key used to encrypt file attachments at rest.
     /// Callers pass this into `AttachmentManager(contactKey:)`.
     ///
@@ -886,10 +838,6 @@ extension ContactManager {
         return key
     }
 
-    private func encrypt(data: Data, using material: Data) throws -> Data? {
-        try self.cryptoManager.encrypt(message: data, using: material)
-    }
-    
     private func decrypt(message: Data?, for identifier: String) throws -> Data? {
         guard
             let payload = message, payload.isEmpty == false
@@ -919,7 +867,7 @@ extension ContactManager {
 // MARK: - Error Handling
 
 extension ContactManager {
-    enum Errors: Error {
+    enum Errors: Error, Equatable {
         case contactNotFound
         case identityNotSaved
         case contactHasNoKeys
@@ -942,17 +890,20 @@ extension ContactManager {
         /// An identity challenge or response in group format, to a contact below `.bodyDigestCapable`, whose build
         /// would refuse it. Those get the long-term format (prekey continuity §3.4).
         case identityChallengeBelowTier
+        /// `purgeUnreadableGroups` was given a key that doesn't open the rest of the store (Bug 191).
+        case keyDoesNotOpenStore
         /// A pairing's sealed state can't be read, so it can't be told from a pair-key pairing, which is never sent to the old
         /// way (Bug 196).
         case pairingUnreadable
         /// A re-exchange gave no pair keys to a contact whose current pairing has them. Saving it would overwrite the Enclave
         /// blobs of the better pairing with a plainer one.
         case pairingWouldBeWeaker
+        /// Members of the group, at the current depth, with no current key (a revoked key), that the caller didn't say to
+        /// leave out. Identifiers, not names: the caller resolves them. The send stops, so nobody is left out unseen.
+        case groupMembersWithoutKeys([String])
         /// A re-exchange gave no ML-KEM key to a contact whose current pairing has one. Nothing is saved; revoking the contact's
         /// key and exchanging again saves a classical pairing (Bug 199).
         case pairingWouldLoseQuantum
-        /// `purgeUnreadableGroups` was given a key that doesn't open the rest of the store (Bug 191).
-        case keyDoesNotOpenStore
     }
 }
 
@@ -1549,13 +1500,18 @@ extension ContactManager {
     /// this send's whole membership, so a recipient's ciphertext length never
     /// reveals whether they carry real shard content (see `ShardPadding`). No
     /// custody manifest is sent to group members (`bugs.md` Bug 141).
+    ///
+    /// A member with no current key (a revoked key) stops the send with `groupMembersWithoutKeys`, unless the caller
+    /// lists their identifier in `skipping`. `skipping` excuses only those: an identifier of a member who can receive is
+    /// ignored, so a caller can never drop someone who could have been sent to.
     func encryptGroupBundle(
         basket: Basket,
         groupID: UUID,
-        shardCustodyManager: ShardCustodyManager? = nil
+        shardCustodyManager: ShardCustodyManager? = nil,
+        skipping: Set<String> = []
     ) throws -> Data {
         let sent = try self.sendGroupBundle(
-            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, output: .memory
+            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, skipping: skipping, output: .memory
         )
         guard let data = sent.data else { throw Errors.messageHasNoData }
         return data
@@ -1568,17 +1524,37 @@ extension ContactManager {
         basket: Basket,
         groupID: UUID,
         shardCustodyManager: ShardCustodyManager? = nil,
+        skipping: Set<String> = [],
         output: BundleOutput
     ) throws -> BundleLayout {
         try self.sendGroupBundle(
-            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, output: output
+            basket: basket, groupID: groupID, shardCustodyManager: shardCustodyManager, skipping: skipping, output: output
         ).layout
+    }
+
+    /// The group's members at the current depth, as the send and the group screens see them.
+    ///
+    /// A group's stored membership is independent of each contact's own visibleThroughDepth — a member classified
+    /// as sensitive after being added to this group's list at the current depth must still be excluded here, exactly
+    /// as GroupDetailV3 and Group+FormV3 already filter for display. Without this, a message could be encrypted for a
+    /// contact the UI shows as absent from the group at the current security depth.
+    private func visibleMembers(of group: Group) throws -> [Contact.Profile] {
+        let identifierList = group.members(atDepth: self.security.currentDepth)
+
+        guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
+
+        let predicate = #Predicate<Contact.Profile> {
+            identifierList.contains($0.identifier) && $0.deletionToken == nil
+        }
+        return try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
+            .filter { $0.isVisible(atDepth: self.security.currentDepth) }
     }
 
     private func sendGroupBundle(
         basket: Basket,
         groupID: UUID,
         shardCustodyManager: ShardCustodyManager?,
+        skipping: Set<String>,
         output: BundleOutput
     ) throws -> SentBundle {
         // Pass 1 below pops each member's oldest prekey (mutating
@@ -1610,21 +1586,18 @@ extension ContactManager {
 
         guard let grp = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
 
-        let identifierList = grp.members(atDepth: self.security.currentDepth)
+        let visible = try self.visibleMembers(of: grp)
 
-        guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
+        // Before the key check: a card contact holds no ordinary key, so it would otherwise read as a revoked one.
+        guard !visible.contains(where: { $0.cardState.isCardContact }) else { throw CardError.hardBlocked }
 
-        let predicate = #Predicate<Contact.Profile> {
-            identifierList.contains($0.identifier) && $0.deletionToken == nil
-        }
-        // A group's stored membership is independent of each contact's own
-        // visibleThroughDepth — a member classified as sensitive after being added to
-        // this group's list at the current depth must still be excluded here, exactly
-        // as GroupDetailV3 and Group+FormV3 already filter for display. Without this,
-        // a message could be encrypted for a contact the UI shows as absent from the
-        // group at the current security depth.
-        let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
-            .filter { $0.isVisible(atDepth: self.security.currentDepth) }
+        // A member with no current key can't be sealed to. Stop unless the caller named them, so nobody is left out
+        // unseen (`Docs/Bugs/v2.1.0/Revoked-Contact-Stays-In-Group-...`).
+        let unkeyed = visible.filter { !$0.hasCurrentKey }.map(\.identifier)
+        let unexcused = unkeyed.filter { !skipping.contains($0) }
+        guard unexcused.isEmpty else { throw Errors.groupMembersWithoutKeys(unexcused) }
+
+        let members = visible.filter(\.hasCurrentKey)
 
         guard !members.isEmpty else { throw Errors.groupHasNoMembers }
 

@@ -109,7 +109,7 @@ Add a new manager class: `ShareIndexKeyManager`. It handles:
 - Deriving the symmetric key via ECDH(privKey, G) → HKDF
 - Encrypting/decrypting Data blobs for the index
 
-Both the main app and the extension link this class. It is the only crypto code the extension needs. It never touches the identity key, the local DB key or prekeys. Its one ML-KEM key is its own, the staging tier's (see the update above), and it is made and used in this file only.
+Both the main app and the extension link this class. It is the only code in the extension that derives or holds a key. (Since streamed bundles the extension also compiles `StreamingEncryptor` and links the `OccultaFormats` package, to seal staged files as `.eatt`: `STREAMING_SPEC.md` §8.4. They are handed a key from this class.) It never touches the identity key, the local DB key or prekeys. Its one ML-KEM key is its own, the staging tier's (see the update above), and it is made and used in this file only.
 
 ### Why Not Reuse the Local DB Key
 

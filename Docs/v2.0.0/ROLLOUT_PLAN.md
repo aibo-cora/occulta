@@ -50,6 +50,9 @@ however the stages are cut.
    *Decided 2026-10-19 by the owner ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §1.2):* the reseal writes
    a new store file. The way back is the old store, with its keys and the PIN, as it was at setup. A phrase
    forgotten during the week loses that week's changes. Graduation deletes the old store and its keys together.
+   *Superseded 2026-10-29 by the owner ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §1.2): there is no
+   probation week.* The old store and its keys are deleted once the reseal is verified. A phrase forgotten after
+   setup loses that space's data. The setup ladder is the only check.
 
 ## Release mechanics
 

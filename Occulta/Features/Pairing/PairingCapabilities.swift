@@ -14,6 +14,7 @@
 import Foundation
 import CryptoKit
 import OccultaFormats
+import OccultaCore
 
 nonisolated
 struct PairingCapabilities: Equatable {
@@ -32,6 +33,45 @@ struct PairingCapabilities: Equatable {
     var upgradeAvailable: Bool { !self.pairKeys && self.peerCanPair }
 
     static let none = PairingCapabilities(pairKeys: false, postQuantumAgreement: false, postQuantumSignatures: false, peerCanPair: false)
+
+    /// What exchanging keys again in person would add to this pairing: the only way a pairing gets either one, since nothing
+    /// is swapped in band.
+    enum Upgrade: Equatable {
+        /// Pair keys, and with them the routing key: 2.0.1 gave them to new pairings only.
+        case pairKeys
+        /// ML-KEM, which needs iOS 26 on both phones.
+        case postQuantum
+        case both
+
+        /// The line shown above the link to the exchange. Plain words: what a re-exchange adds, and nothing about risk.
+        var prompt: String {
+            switch self {
+            case .pairKeys:
+                "Exchange keys again in person to give this pairing pair keys."
+            case .postQuantum:
+                "Exchange keys again in person, with both phones on iOS 26 or later, to add quantum-resistant key agreement."
+            case .both:
+                "Exchange keys again in person to add pair keys and, with both phones on iOS 26 or later, quantum-resistant key agreement."
+            }
+        }
+    }
+
+    /// What a re-exchange could add, or nil when the pairing has both or a re-exchange could not help. Computed from this
+    /// pairing and this phone alone, so a contact reads the same at every depth.
+    ///
+    /// - A contact whose recorded build predates pair keys, or was never heard from, and whose pairing has none, offers
+    ///   nothing: it could not make them.
+    /// - ML-KEM is offered only where this phone can make it. A pairing with pair keys has a 2.0.1 peer by construction.
+    func upgrade(thisPhoneCanPostQuantum: Bool = PostQuantumProviderFactory.create() != nil) -> Upgrade? {
+        guard self.pairKeys || self.peerCanPair else { return nil }
+
+        switch (!self.pairKeys, !self.postQuantumAgreement && thisPhoneCanPostQuantum) {
+        case (true, true):   return .both
+        case (true, false):  return .pairKeys
+        case (false, true):  return .postQuantum
+        case (false, false): return nil
+        }
+    }
 }
 
 extension Contact.Profile {

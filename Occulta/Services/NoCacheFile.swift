@@ -19,6 +19,25 @@ nonisolated enum NoCacheFile {
     /// unfinished.
     static func writer(_ url: URL) throws -> Writer { try Writer(url: url) }
 
+    /// Copies `source` to a new file at `destination`, a chunk at a time, so what is resident is one chunk
+    /// whatever the file's size (Bug 188: the share extension's inbound `.occ`).
+    ///
+    /// The destination is created through `Writer`, so it has `.complete` protection from its first byte and is
+    /// excluded from backup. It is not a clone of the source: a clone would take the source's protection class,
+    /// and the temporary file a provider hands over is not at `.complete`. If anything fails, at any point, the
+    /// destination is removed before this throws, so a refused copy leaves no file.
+    static func copy(_ source: URL, to destination: URL, chunkSize: Int = 1_048_576) throws {
+        let reader = try Reader(url: source)
+        let writer = try Writer(url: destination)
+        do {
+            try reader.forEachChunk(range: 0..<reader.size, size: chunkSize) { try writer.write($0) }
+            try writer.finish()
+        } catch {
+            writer.abandon()
+            throw error
+        }
+    }
+
     // MARK: - Reader
 
     /// A read-only handle with `F_NOCACHE` on and read-ahead off.
