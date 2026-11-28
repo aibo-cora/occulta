@@ -43,9 +43,9 @@ however the stages are cut.
    opts in early marks themselves as security-conscious.
    *Decided 2026-10-19 ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §3.2, decision 10):* no opt-in period.
    Setup is required at the first unlock after the update. *Reversed 2026-11-28 by the owner: the phrase is opt-in,
-   offered to every PIN install alike, with no end date. Every install moves to the new store silently, Secure Mode
-   layers included, so the files don't mark who opts in or who has layers; the lock screen shows who opted in, a
-   stated limit (PASSPHRASE_ROLLOUT.md, summary and §3.2; decided 2026-11-28).*
+   offered to every PIN install alike, with no end date. Nothing moves until an install acts, so until then every
+   install keeps today's files and Settings, with or without layers; the lock screen, and the files once it has, show
+   who opted in, a stated limit (PASSPHRASE_ROLLOUT.md, summary and §3.2; decided 2026-11-28).*
 4. **Keep the old keys until the user proves they remember.** Keep the old device keys until every
    phrase has been entered correctly a few times over about a week. Then delete the old keys for all
    depths at once. Until the deletion nothing is safer, but a forgotten phrase can't cause data loss.

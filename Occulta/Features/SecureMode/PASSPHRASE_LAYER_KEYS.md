@@ -31,8 +31,7 @@ the vault's own key, the Enclave not in every guess, Bug 120 as a stated limit) 
 `Docs/General/decisions.md`, 2026-10-29. Where this document still describes depths, canaries, header slots or
 the per-guess Enclave requirement, those parts are superseded and each carries a note. The rest stands as
 written. *2026-11-24:* §2.1 states the storage design as decided; §2.2 keeps the history. *2026-11-28: the phrase
-is opt-in (rollout §3.1, §3.2): every install moves to the new store at the update under phrase-less keys, one per
-layer in a fixed slot array, the PIN kept as the lock screen and routing to its slot.*
+is opt-in (rollout §3.1, §3.2), and an install made before 2.1.0 stays on today's store until it opts in.*
 
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
 shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
@@ -233,12 +232,11 @@ and in `decisions.md` under the date.
 ### 2.1 The design
 
 **Spaces** (rollout §1.5; 2026-10-29).
-- *Who is in the store (2026-11-28, opt-in, rollout §3.1):* every install, from the update. Until it opts in, each
-  layer is a space under its own phrase-less key, sealed under the device-only key in install-wide state in a fixed
-  array the size of today's verifier slots, filler in the rest; the PIN routes to a slot, as today. Opting in sets
-  every layer's phrase in one sitting (Rule 2, with 8a and its "drop that layer" choice). The new phrase keys stay
-  wrapped in their slots until the first cold-launch unlock that opens a space with content, then every slot is
-  filler at once (rollout §1.2).
+- *Who is in the store (2026-11-28, opt-in, rollout §3.1):* an install made on 2.1.0, from its first launch; an
+  install made before it, only once it opts in (Migrate Now, or turning the lock on), every layer's phrase in one
+  sitting (Rule 2, with 8a and its "drop that layer" choice). Until then it keeps today's store, PIN layers and
+  Settings, as today, and after it the old store stays until the first cold-launch unlock that opens a space with
+  content (rollout §1.2).
 - A space is a key plus the rows that open under it. The key is `layerKey` as §1 derives it from a phrase, with one
   salt and one Enclave key per install. A per-space salt or key would be a per-space record.
 - There are no depth numbers, no shared key, no pointers between spaces, no common pool, no canary or header, and no
@@ -345,9 +343,10 @@ open items were decided 2026-11-28, as listed there.
   fingerprint until re-paired in person and shows the same re-pair note in every space (rollout §8, 30); on a classical
   one, a `.longTermNoPQ` file also opens with the passcode and no phrase (§2.2, decided 2026-11-28); and the
   transport's own records of who sent what (§2.2). The user guidance (rollout step 16) states each.
-- *Stated limits from the opt-in, decided 2026-11-28:* the lock screen shows whether an install opted in, not how many
-  spaces it holds (rollout §3.2); until an install opts in, its PIN layers are as exposed to an examiner with code
-  execution on the phone as today's device-bound keys are (Bug 119; rollout summary).
+- *Stated limits from the opt-in, decided 2026-11-28:* the lock screen, and the files once it has, show whether an
+  install opted in, not how many spaces it holds (rollout §3.2); until an install opts in, it keeps today's store, whose
+  PIN layers are as exposed to an examiner with code execution on the phone as today's device-bound keys are (Bug 119;
+  rollout summary).
 - *Open, needs a decision:* the across-images limit above (Bug 120).
 
 **Waiting on a measurement, the outcome decided:** the unlock cost, on a spare iPhone 11 (rollout decision 6); the

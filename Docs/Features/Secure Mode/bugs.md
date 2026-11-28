@@ -10596,11 +10596,10 @@ only when someone uses it (the "decoys go stale" cost, accepted).
   stated limit above, which now also covers the space's size: a rekey must overwrite rows the exposed phrase still
   opens, and while a lock was off anyone who could unlock the phone read the space. A space that migrates later
   than the others (8a, 8b) appends a random number of noise rows with its batch, how many settled with §8, 21.
-  *2026-11-28 (opt-in, `PASSPHRASE_ROLLOUT.md` §3.1):* installs without Secure Mode layers move silently at the update,
-  so their move is one sitting; ~~a Secure Mode install moves when it opts in~~ Secure Mode layers move with it, each
-  under its own phrase-less key (decided 2026-11-28), and under 8a a layer can be resealed under its phrase alone, or
-  dropped, which across images is this entry's limit as before. Until an install opts in, its PIN layers stay as
-  exposed to an examiner with code execution on the phone as today's device-bound keys are (Bug 119); a stated limit.
+  *2026-11-28 (opt-in, `PASSPHRASE_ROLLOUT.md` §3.1):* nothing moves until an install opts in; then every layer moves
+  in one sitting (Rule 2), or under 8a a layer alone, or one dropped, which across images is this entry's limit as
+  before. Until an install opts in it keeps today's store, whose PIN layers stay as exposed to an examiner with code
+  execution on the phone as today's device-bound keys are (Bug 119); a stated limit.
 - **Found 2026-11-15, decided 2026-11-24 by the owner: write order in one image** (`PASSPHRASE_ROLLOUT.md` §8, 23;
   `decisions.md`, 2026-11-24). A row larger than a page lives mostly on overflow pages, allocated at the end of the
   file or from the freelist, so the file's layout can show which rows were written after the migration batch, and
@@ -13841,8 +13840,9 @@ passphrase migration's downgrade is a separate question (see "Fix" below).
 
 *2026-11-28, the passphrase migration's downgrade (`PASSPHRASE_ROLLOUT.md` §8, 18; `decisions.md`, "The passphrase is
 opt-in, 2026-11-28"):* accepted the same way, for TestFlight and sideloaded builds; a line in the TestFlight notes. The
-new store is a separate file, so upgrading again finds the data. Every install moves at the update, Secure Mode layers
-included (decided 2026-11-28), so an older build finds no data.
+new store is a separate file, so upgrading again finds the data. An install that hasn't opted in keeps today's store,
+which an older build still opens, and so does one that has, until the first cold-launch unlock with content (decided
+2026-11-28).
 
 ### Severity: Medium (data loss; reachable only through TestFlight and sideloaded builds)
 
