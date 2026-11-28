@@ -12,7 +12,8 @@ wider hardening plan: the steps around it, a proposed staged rollout, and a prot
 document stays the owner of the cryptographic design, and that folder owns sequencing.
 
 **Passphrase rollout, 2026-10-19 — [`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md).
-Proposed, not decided.** It plans how the phrase ships, on top of the 2026-10-15 design discussion
+~~Proposed, not decided.~~ Decided, not built (2026-11-28; Bug 120 and the old store's retirement stay open there).**
+It plans how the phrase ships, on top of the 2026-10-15 design discussion
 below. It covers:
 - phrase entry and learning;
 - migration from the PIN and the local DB key;
@@ -347,7 +348,8 @@ open items were decided 2026-11-28, as listed there.
   install opted in, not how many spaces it holds (rollout §3.2); until an install opts in, it keeps today's store, whose
   PIN layers are as exposed to an examiner with code execution on the phone as today's device-bound keys are (Bug 119;
   rollout summary).
-- *Open, needs a decision:* the across-images limit above (Bug 120).
+- *Open, needs a decision:* the across-images limit above (Bug 120); when today's store is retired for installs that
+  never opt in (rollout summary).
 
 **Waiting on a measurement, the outcome decided:** the unlock cost, on a spare iPhone 11 (rollout decision 6); the
 write-order test, and the row size's number, both on the Simulator.
@@ -645,7 +647,7 @@ one image. Repeated images are the finding above.
 
 | Key | How many | Where it lives | What it seals |
 |---|---|---|---|
-| Enclave key | 1 per install | Keychain | Nothing directly. It is meant to be part of every phrase guess (§1, 2026-10-15); as designed it isn't: open, needs a decision (Bug 171) |
+| Enclave key | 1 per install | Keychain | Nothing directly. It is meant to be part of every phrase guess (§1, 2026-10-15); as designed it isn't: ~~open, needs a decision~~ *decided 2026-10-29: the requirement is dropped (D2)* (Bug 171) |
 | Depth key, `layerKey_D` | 1 per configured depth | Derived from that depth's phrase and the Enclave key. The depth above also keeps a copy, sealed under its own key | Contacts visible down to that depth; that depth's vault entries |
 | Shared key | 1 per install | A copy in every depth's header | Unclassified contacts, and contacts created at a duress depth (shown according to the origin lists below) |
 
@@ -882,7 +884,7 @@ or a rebuild of the same scale as what's being removed.
 **Proposed staged rollout, 2026-09-30 — `Docs/v2.0.0/ROLLOUT_PLAN.md`. Not decided.** If adopted, it
 replaces the single migration assumed above. The migration splits by data: the vault first, then
 contacts, then the remaining depth-stamped records. It never splits by requirement: each slice gets §1,
-§1's Enclave-per-guess requirement (open, needs a decision, Bug 171), §2's every-depth sealing, its
+§1's Enclave-per-guess requirement (~~open, needs a decision~~ *dropped 2026-10-29, D2*; Bug 171), §2's every-depth sealing, its
 write-frequency requirement, and the row and field AAD, all at once. Every depth on a device migrates in one step. The phrase replaces the
 PIN for every lock user, not only for users with duress depths. §2 remains the blocker. Design it for
 vault and contacts together, even though the vault would ship first.
@@ -891,8 +893,8 @@ vault and contacts together, even though the vault would ship first.
 and a shared key in place of "every-depth sealing". The write-frequency requirement leaves the list above:
 it can't be met against a surrendered phrase and is open, needs a decision (§2, finding of that date).
 
-**Passphrase rollout, 2026-10-19 — `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`. Proposed, not decided.** It
-plans a release built on the 2026-10-15 design and covers:
+**Passphrase rollout, 2026-10-19 — `Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`. ~~Proposed, not decided.~~ Decided, not
+built (2026-11-28).** It plans a release built on the 2026-10-15 design and covers:
 - phrase entry and learning;
 - migration from the PIN;
 - Rule 4's way back, through the old store file (Bug 168's new-store proposal);

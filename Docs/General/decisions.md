@@ -1850,6 +1850,8 @@ who wants a classical pairing revokes the contact's key and exchanges again (`bu
 - *Gap 2, the lock screen showing opt-in:* **a stated limit.** It shows the lock type, not how many spaces; a PIN install can hold layers as a phrase install can hold spaces. Once an install opts in its files show it too. Not chosen: a deadline for everyone; keeping it open.
 - *Gap 3, the fallback after Migrate Now:* **4b for every install,** with the old store as the fallback until the first cold-launch unlock that opens a space with content. Not chosen: deleting at verification; a fixed 7-day window.
 
+**Open, needs a decision:** when today's store and its code are retired. Until then every install made before 2.1.0 that hasn't opted in keeps it; retiring it means required setup at that release (finding 1 again, later) or the PIN path kept for good. To be decided after 2.1.0 ships, the same for every install. With this entry the rollout's status is "Decided, not built".
+
 **Not chosen:** required setup at the first unlock (decision 10); a deferral with a release-wide deadline; §F's silent move (gap 1).
 
 **Full reasoning:** `PASSPHRASE_UX_REVIEW.md` §C (findings 1, 4, 10–12) and §F–§G; `PASSPHRASE_ROLLOUT.md` summary, §1.2, §1.4, §3.1–§3.3 and §8, items 4, 5, 10 and 18.

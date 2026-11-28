@@ -1,7 +1,9 @@
 # v2.0.0 — Passphrase Rollout
 
-**Status:** Proposed, 2026-10-19. The owner went through §8 on 2026-10-19, and again from 2026-10-29 after the
-brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies and logged in `decisions.md`.
+**Status:** ~~Proposed, 2026-10-19.~~ **Decided, not built** (2026-11-28, by the owner). Proposed 2026-10-19; the
+owner went through §8 on 2026-10-19, and again from 2026-10-29 after the brainstorm of 2026-10-27 to 29 (§1.5), through
+2026-11-28. Each decision is marked where it applies and logged in `decisions.md`. Still open: Bug 120, and when
+today's store is retired (below). Waiting on a measurement: the three listed below, each with its outcome decided.
 
 **Decided 2026-10-19:**
 - 2, direct derivation;
@@ -56,7 +58,8 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   draw covers them all and there is no size spread to match; photos and vault entries stay out (decided
   2026-11-02);
 - photos: their own table, one row per photo of one fixed size, about 24 KB, re-encoded at about 360 px with its
-  metadata stripped, the original not kept, and no noise rows (decided 2026-11-02; the leak this leaves is open);
+  metadata stripped, the original not kept, and no noise rows (decided 2026-11-02; ~~the leak this leaves is open~~
+  *closed 2026-11-15: photos moved into the one table, whose noise covers them*);
 - vault entries: their own table, 4 KB rows with notes limited to about 3.5 KB of text, and a noise count drawn per
   install uniformly from 10–200, never stored, written when the contact noise is (decided 2026-11-02);
 - 26, a store-layer test that old ciphertext is gone from the file and its `-wal` after a write and a checkpoint,
@@ -155,7 +158,7 @@ silent move (below):
   5-minute grace with no setting, setup copy asking for a contact or note in each space, no word swaps, and a write
   into a stray space accepted (the UX review, §F).
 - **What it costs, none of it a security or privacy loss:** today's store and its code stay until a later release
-  retires them, a release not yet set; and an install that hasn't opted in keeps today's store with today's properties,
+  retires them, a release not yet set (open, needs a decision, below); and an install that hasn't opted in keeps today's store with today's properties,
   no worse than today, so everything the new store fixes reaches an install at its opt-in (§8, 31's list among them).
 
 **Decided 2026-11-28 by the owner: the three gaps found while folding the opt-in in** (`decisions.md`, "The
@@ -191,7 +194,14 @@ passphrase is opt-in, 2026-11-28"), each taken alone:
 the measuring app updated to the decided row size), the write-order test (stage 0, on the Simulator) and the row
 size's number (stage 3 or 4, on the Simulator, Enclave blob sizes checked on the spare phone).
 
-**Open, needs a decision:** none of stage 2's list. Still open: Bug 120's across-images limit, with no fix known.
+**Open, needs a decision:** none of stage 2's list. Still open:
+- Bug 120's across-images limit, with no fix known;
+- **when today's store and its code are retired** (raised 2026-11-28 by nobody-moves-until-they-act). Until then every
+  install made before 2.1.0 that hasn't opted in keeps it. Retiring it means doing something about those installs:
+  required setup at that release, which brings back finding 1 at a later moment, or the PIN path kept for good. To be
+  decided after 2.1.0 ships, with how many installs have opted in known. Whatever it is must be the same for every
+  install, so the retirement marks no one.
+
 The three gaps the opt-in raised were decided 2026-11-28 (above). Stage 2's other part, the model sweep for requirement 5, is still to do (§7.2),
 and so is item 24's check against the long-term slot's derivation.
 
