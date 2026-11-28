@@ -30,7 +30,9 @@ the vault's own key, the Enclave not in every guess, Bug 120 as a stated limit) 
 [`Docs/v2.0.0/PASSPHRASE_ROLLOUT.md`](../../../Docs/v2.0.0/PASSPHRASE_ROLLOUT.md) §1.5 and
 `Docs/General/decisions.md`, 2026-10-29. Where this document still describes depths, canaries, header slots or
 the per-guess Enclave requirement, those parts are superseded and each carries a note. The rest stands as
-written. *2026-11-24:* §2.1 states the storage design as decided; §2.2 keeps the history.
+written. *2026-11-24:* §2.1 states the storage design as decided; §2.2 keeps the history. *2026-11-28: the phrase
+is opt-in (rollout §3.1, §3.2): installs without Secure Mode layers move to the new store at the update under a
+phrase-less key, the PIN kept as the lock screen; Secure Mode installs stay on the old store until they opt in.*
 
 **Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
 shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
@@ -231,6 +233,10 @@ and in `decisions.md` under the date.
 ### 2.1 The design
 
 **Spaces** (rollout §1.5; 2026-10-29).
+- *Who is in the store (2026-11-28, opt-in, rollout §3.1):* every install without Secure Mode layers, from the update,
+  in one space under a phrase-less key (rollout §1.4) until it opts in; a Secure Mode install only once it opts in,
+  every layer's phrase in one sitting (Rule 2, with 8a and its "drop that layer" choice). Until then it keeps the old
+  store and its PIN layers, as today.
 - A space is a key plus the rows that open under it. The key is `layerKey` as §1 derives it from a phrase, with one
   salt and one Enclave key per install. A per-space salt or key would be a per-space record.
 - There are no depth numbers, no shared key, no pointers between spaces, no common pool, no canary or header, and no
@@ -337,7 +343,9 @@ open items were decided 2026-11-28, as listed there.
   fingerprint until re-paired in person and shows the same re-pair note in every space (rollout §8, 30); on a classical
   one, a `.longTermNoPQ` file also opens with the passcode and no phrase (§2.2, decided 2026-11-28); and the
   transport's own records of who sent what (§2.2). The user guidance (rollout step 16) states each.
-- *Open, needs a decision:* the across-images limit above (Bug 120).
+- *Open, needs a decision:* the across-images limit above (Bug 120); and, from 2026-11-28's opt-in, that a Secure Mode
+  install not yet opted in is the only one still on the old store, which a file listing shows, and that the lock
+  screen shows whether an install opted in, both with no end date (rollout summary, §3.1, §3.2).
 
 **Waiting on a measurement, the outcome decided:** the unlock cost, on a spare iPhone 11 (rollout decision 6); the
 write-order test, and the row size's number, both on the Simulator.

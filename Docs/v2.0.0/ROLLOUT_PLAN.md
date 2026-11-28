@@ -42,7 +42,10 @@ however the stages are cut.
    opt-in period is acceptable only if every lock user is offered it. Keep it short, because whoever
    opts in early marks themselves as security-conscious.
    *Decided 2026-10-19 ([PASSPHRASE_ROLLOUT.md](PASSPHRASE_ROLLOUT.md) §3.2, decision 10):* no opt-in period.
-   Setup is required at the first unlock after the update.
+   Setup is required at the first unlock after the update. *Reversed 2026-11-28 by the owner: the phrase is opt-in,
+   offered to every PIN install alike, with no end date. Every install without Secure Mode layers moves to the new
+   store silently, so the files don't mark who opts in; the lock screen does, which is open, needs a decision
+   (PASSPHRASE_ROLLOUT.md, summary and §3.2).*
 4. **Keep the old keys until the user proves they remember.** Keep the old device keys until every
    phrase has been entered correctly a few times over about a week. Then delete the old keys for all
    depths at once. Until the deletion nothing is safer, but a forgotten phrase can't cause data loss.

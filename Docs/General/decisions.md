@@ -1006,7 +1006,9 @@ until a lock is turned on, or migrate with everyone else.
 
 **Decision:**
 - **Every install migrates in the passphrase release.** Depth 0's key on an install with no lock is derived
-  from an empty phrase, with the install's salt and Enclave key.
+  from an empty phrase, with the install's salt and Enclave key. *(2026-11-28: PIN-only installs move the same way at
+  the update, the PIN kept as the lock screen; Secure Mode installs move only when they opt in. "The passphrase is
+  opt-in, 2026-11-28", below.)*
 - **No probation week for these installs.** With no phrase to forget, the old store and its keys are deleted
   once the reseal checks out.
 - **Turning a lock on later** reseals depth 0 under the new phrase, through the same path.
@@ -1147,7 +1149,8 @@ the phrase, and a new phrase means a new key.
 
 ## Phrase setup is required at the first unlock after the update
 
-**Status:** Decided 2026-10-19 by the owner.
+**Status:** Decided 2026-10-19 by the owner. **Reversed 2026-11-28 by the owner:** the phrase is opt-in (below, "The
+passphrase is opt-in, 2026-11-28").
 
 **Context:**
 - After the passphrase release, a lock user who hasn't set up a phrase stays on the old store with the PIN, at
@@ -1827,3 +1830,27 @@ who wants a classical pairing revokes the contact's key and exchanges again (`bu
 **Not chosen:** the tag only on rows with two seals (two layouts to pin); a key per row from HKDF instead of an AAD; a per-space write counter in every AAD (reseals every row on each write, item 25); draft attachments as store rows (a total row count no decoy accounts for); draft files kept on disk under the space key (the listing still shows them); photo quality up to the row's spare room, more pixels, or the photo inside the contact's row (every row about 24 KB larger); keeping the pre-migration residuals open with no fix in view; no re-pair note for pre-2.0.1 pairings; closing Bug 120 as a stated limit.
 
 **Full reasoning:** `PASSPHRASE_ROLLOUT.md` §1.6, §1.5 (photos), §4 and §8, items 20, 29 and 30.
+
+## The passphrase is opt-in, 2026-11-28
+
+**Status:** Decided 2026-11-28 by the owner, one item at a time, in the UX review (`Docs/v2.0.0/PASSPHRASE_UX_REVIEW.md` §F and §G, PR #220). Not built. Reverses decision 10 ("Phrase setup is required at the first unlock after the update", above) and the forced migration of `PASSPHRASE_ROLLOUT.md` §3.1 and §3.2; extends decision 5.
+
+**Context:** the forced setup held every lock user at a four-step ladder at whatever moment the first unlock came, Secure Mode users with K+1 phrases in one sitting, then deleted the old store, so a phrase forgotten soon after lost that space for good (UX review, finding 1, Critical).
+
+**Decisions:**
+- *Opt-in:* offered, not forced. At the first unlock after the update, on an install with a PIN: a neutral explanation and Migrate Now, Remind me Later (7 days, one stored date) and Dismiss; kept in Settings after Dismiss. The copy is identical at every PIN layer and mentions no coercion, duress, spaces or hidden data; its state is one install-wide value, never per layer; not shown with no lock; no notifications or badges.
+- *The silent move:* every PIN-only install and every no-lock install moves to the new store at the update under a phrase-less key (§1.4's path), the PIN kept as the lock screen; protection is unchanged. Migrate Now only replaces that key with a phrase. Order and tests in `PASSPHRASE_ROLLOUT.md` §3.3.
+- *Secure Mode installs* stay on the old store until they opt in. 8a stands, with a "drop that layer" choice the same at every depth. (The review gives `app.layer.key.occulta.v1` as their mark; every install creates it at first launch, so it marks nothing today.)
+- *4b:* no release-wide date and no gate. The old store is deleted at the first cold-launch unlock after setup that opens a space with content; a silently moved install's once the new store verifies.
+- *The Secure Mode control* becomes the phrase offer on a moved install; existing Secure Mode installs keep theirs. The release notes say so.
+- *Downgrade:* the loss is accepted, as on 2026-10-16; a line in the TestFlight notes.
+- *Also:* an explicit Unlock tap, "Lock now" and an icon-only padlock, a fixed 5-minute grace, setup copy asking for content in each space, no word swaps, and a write into a stray space accepted.
+
+**Found while folding it into the rollout, open, needs a decision:**
+- *The old store marks Secure Mode installs:* after the update only an unmoved Secure Mode install keeps today's store, which a file listing shows with no key or phrase; today every install has the same files. It lasts until opt-in, with no end date.
+- *Rule 3, the lock screen:* the files of a moved install don't show whether it opted in, but the lock screen does (7 words or digits), with no end date; Rule 3 allowed an opt-in period only if short because early adopters mark themselves.
+- *4b for Migrate Now on a moved install:* whether its phrase-less version is kept until a cold-launch unlock with content, as a Secure Mode install's old store is.
+
+**Not chosen:** required setup at the first unlock (decision 10); a deferral with a release-wide deadline; moving Secure Mode layers silently.
+
+**Full reasoning:** `PASSPHRASE_UX_REVIEW.md` §C (findings 1, 4, 10–12) and §F–§G; `PASSPHRASE_ROLLOUT.md` summary, §1.2, §1.4, §3.1–§3.3 and §8, items 4, 5, 10 and 18.

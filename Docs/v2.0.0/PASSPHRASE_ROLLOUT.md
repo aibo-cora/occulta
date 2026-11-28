@@ -6,8 +6,9 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 **Decided 2026-10-19:**
 - 2, direct derivation;
 - 3, the release after 2.0.0;
-- 5, every install migrates;
-- 10, setup required at once;
+- 5, every install migrates *(changed 2026-11-28: every install without Secure Mode layers moves to the new store
+  silently at the update; a Secure Mode install moves when it opts in, below)*;
+- ~~10, setup required at once;~~ *reversed 2026-11-28: the phrase is opt-in (below)*;
 - 12, the full list with 7 words;
 - 13a and 13b, no suggestion bar, and VoiceOver as in password fields;
 - 15a, 15b, 15c and 15d, keys stay in the keychain, and erase deletes the share key.
@@ -15,17 +16,20 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 **Decided 2026-10-29, which replaces or changes earlier decisions:**
 - 1, independent spaces replace the 2026-10-15 storage design (§1.5);
 - 4 and Rule 4, no probation week and no old store as the way back; the old store is deleted once the reseal is
-  verified (§1.2, §3.2);
+  verified (§1.2, §3.2) *(changed 2026-11-28: at the first cold-launch unlock after setup that opens a space with
+  content)*;
 - 7a to 7d, the coercion gate: lock-off for everyone with one warning, lock-on reseals the current space, coercer-
   created layers dropped at migration only (§1.3);
-- 8a and 8b, kept, but the old store waits until every layer has migrated; Rule 2 stands for the migration (§3.1);
+- 8a and 8b, kept, but the old store waits until every layer has migrated; Rule 2 stands for the migration (§3.1)
+  *(2026-11-28: 8a gains a "drop that layer" choice)*;
 - 9a and 9b, no remove-space action; Erase All Data erases the current space only and leaves the install-wide
   keys (§5);
 - 11a and 11b, the vault's own key from the space key, with an on-screen Face ID gate (§6);
 - 14, no rehearsal feature (§2.5);
 - 16, D2 of Bug 171: the Enclave does not take part in every guess;
 - 17, the release is 2.1.0, so `release/v2.1.0` and `v2.1.0/` feature branches;
-- 18, downgrade after migration is not supported, and the release notes say so;
+- 18, downgrade after migration is not supported, and the release notes say so *(2026-11-28: the loss is accepted,
+  and the TestFlight notes say so too)*;
 - 19, Bug 170's leftovers stay in Bug 170;
 - no typo check: no checksum and no retype before the first write (§1.5);
 - a bundle for a contact in another space is handled exactly like a corrupt file (§1.5);
@@ -129,11 +133,52 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
 - the two prekey items: superseded by D9, their remainders in Bug 120 (open) and Bug 170's stated limit;
 - also struck: "adding a depth shows across images", gone under spaces since 2026-11-02.
 
+**Decided 2026-11-28 by the owner: the phrase is opt-in** (`Docs/v2.0.0/PASSPHRASE_UX_REVIEW.md` §F and §G, PR #220;
+`decisions.md`, 2026-11-28). It reverses decision 10 and the forced migration of §3.1 and §3.2:
+- **The offer:** at the first unlock after the update, on an install with a PIN, a short neutral explanation and
+  three choices, Migrate Now (the setup ladder), Remind me Later (7 days) and Dismiss. The copy is identical at every
+  PIN layer, and its state is one install-wide value, never per layer. Not shown with no lock. It stays in Settings
+  after Dismiss (§3.2).
+- **The silent move:** every PIN-only install and every install with no lock moves to the new store at the update,
+  under a phrase-less key by §1.4's path, the PIN kept as the lock screen. Protection is unchanged, since the PIN adds
+  no entropy today. Migrate Now only replaces that key with a phrase (§3.1, §3.3).
+- **Secure Mode installs stay on the old store until they opt in.** The UX review gives today's
+  `app.layer.key.occulta.v1` as their mark, which opting in removes. *Corrected 2026-11-28:* every install creates that
+  key at its first launch, so that it says nothing (`Manager+Security.swift:174`); what marks them after the update is
+  the old store itself (open, below). Migrate Now runs the setup, every phrase in one sitting (Rule 2). 8a stands, with
+  a "drop that layer" choice.
+- **No release-wide date and no gate.** The old store is deleted at the first cold-launch unlock after setup that opens
+  a space with content (§1.2).
+- **After the silent move the Secure Mode control becomes the phrase offer;** extra spaces come from "add a space"
+  after opting in. Existing Secure Mode installs keep their controls. The release notes say so.
+- **Downgrade:** accepted, as on 2026-10-16; a line in the TestFlight notes (item 18).
+- **Also:** an explicit Unlock tap after 7 words, "Lock now" in Settings > Security and an icon-only padlock, the
+  5-minute grace with no setting, setup copy asking for a contact or note in each space, no word swaps, and a write
+  into a stray space accepted (the UX review, §F).
+
+**Open, needs a decision (found 2026-11-28 while folding the opt-in in):**
+- **The old store marks Secure Mode installs.** After the update every install without Secure Mode layers holds the new
+  store, and a Secure Mode install that hasn't opted in holds today's. That difference shows in a listing of the app's
+  files, with no key and no phrase, and picks out the installs with duress layers, which nothing on disk does today:
+  every install has the same store, the same `AppLayerConfig` row and the same `app.layer.key.occulta.v1`, each created
+  at first launch for that reason. It lasts until the install opts in, with no end date. Rule 2's own reason ("that
+  difference points straight at the real depth") applies one level up: it points at the install.
+- **Rule 3, the lock screen.** The silent move makes the files the same whether or not an install opts in, but the
+  lock screen still shows it: 7 words after opting in, digits before. With no end date, a phrase screen marks its owner
+  as someone who chose the stronger lock, which the owner's own reasoning for opt-in ("people who foresee coercion take
+  it") makes a likelier holder of other spaces. It shows nothing about how many spaces there are. Rule 3 allowed an
+  opt-in period only if short for this reason (`ROLLOUT_PLAN.md`); the UX review's threat checks don't weigh it (§3.2).
+- **Whether 4b's later deletion covers Migrate Now on a moved install.** §G removes the phrase-less version once the
+  reseal verifies; 4b keeps the old store until a cold-launch unlock opens a space with content. A phrase forgotten
+  within a day loses a moved install's data, and not a Secure Mode install's (§3.3).
+
 **Waiting on a measurement, each with its outcome decided:** the unlock cost (the spare iPhone 11, decision 6, with
 the measuring app updated to the decided row size), the write-order test (stage 0, on the Simulator) and the row
 size's number (stage 3 or 4, on the Simulator, Enclave blob sizes checked on the spare phone).
 
-**Open, needs a decision:** none of stage 2's list. Still open: Bug 120's across-images limit, with no fix known. Stage 2's other part, the model sweep for requirement 5, is still to do (§7.2),
+**Open, needs a decision:** none of stage 2's list. Still open: Bug 120's across-images limit, with no fix known;
+and, from 2026-11-28's opt-in, the old store marking Secure Mode installs, the lock screen under Rule 3, and 4b for
+Migrate Now on a moved install (above). Stage 2's other part, the model sweep for requirement 5, is still to do (§7.2),
 and so is item 24's check against the long-term slot's derivation.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
@@ -220,6 +265,13 @@ change reseals each space at its next unlock** (`decisions.md`, 2026-11-15).
 - The reseal shows across images as a whole-space write, within Bug 120's stated limit (decision 25).
 
 ### 1.2 Rule 4's way back: the old store file
+
+**Changed 2026-11-28 by the owner (opt-in, the UX review §F, 4b):** the old store is deleted at the first cold-launch
+unlock after setup that opens a space with content, not when the reseal verifies. No progress record is kept: the only
+state is that the old store still exists. Under 8a it still waits for every layer, now migrated or dropped. Until that
+unlock the old data is as readable as it is today; under duress layers the first cold unlock may use a decoy's phrase,
+which proves only that phrase. Installs that move silently (§3.1) delete their old store once the new one verifies,
+since nothing about them has to be recalled.
 
 **Superseded 2026-10-29 by the owner: no probation week.** The setup ladder (§2.5) is the only check that a phrase
 is remembered. The reseal still writes a new store file, and the old store stays until the reseal has been
@@ -338,6 +390,10 @@ depth's phrase in one sitting. **Decided 2026-10-19 by the owner (7d): dropped a
 
 
 ### 1.4 Installs with no lock
+
+**Extended 2026-11-28 (opt-in, §3.1):** a PIN-only install takes this path too, at the update, with its PIN kept as the
+lock screen over the phrase-less key; the PIN adds no entropy today, so protection is unchanged. Turning the lock on
+from no lock, or after the PIN is removed, sets a phrase, not a PIN.
 
 **Decided 2026-10-19 by the owner: option 2, migrate everyone** (`decisions.md`, 2026-10-19).
 - Depth 0's key is derived from an empty phrase, with the install's salt and Enclave key. Protection stays at
@@ -690,6 +746,32 @@ headphones suggestion.
 
 ### 3.1 Starting states
 
+**Decided 2026-11-28 by the owner: opt-in** (the UX review §F, items 1–4b; `decisions.md`, 2026-11-28). Nothing is
+required at the first unlock. Each starting state now runs as follows; the table after it is the earlier, forced
+version, and its rows still describe what setup does once someone opts in.
+
+| Today | At the update | When they opt in (Migrate Now) |
+|---|---|---|
+| No lock | Moves silently to the new store under the phrase-less key (§1.4); no offer, no prompt | Turning the lock on sets a phrase and reseals depth 0 under it (§1.4) |
+| PIN only | Moves silently, the same way; the PIN stays the lock screen; the offer at the first unlock | One phrase, the ladder, then a reseal from the phrase-less key to the phrase key; the PIN gate goes |
+| Secure Mode with K duress layers | Not moved: stays on the old store and its PIN layers, `app.layer.key.occulta.v1` kept; the same offer at the first unlock, at whichever PIN was typed | At the real depth, K+1 phrases in one sitting (Rule 2), then one reseal; `app.layer.key.occulta.v1` removed; the old store goes at the first cold-launch unlock after setup that opens a space with content (§1.2) |
+| Unlocked at duress depth N | Not moved; the same offer | 8a: setup there is real for that layer; the real user finishes from the real depth later, or chooses "I don't remember it: drop that layer", the same choice at every depth, whose copy says what is lost |
+| Gate lowered at depth N | Not moved (the UX review §F, item 4: no silent move of layers); no offer there, since no PIN is typed | With the others when the real user opts in, its key under the device-only key (7a), which follows from item 4 and 7a; 8b's silent move of that one layer no longer runs |
+| Depths a coercer created | Not moved | Dropped at setup with the contacts they created (7d) |
+
+- **The Secure Mode control after the silent move.** Duress PINs can be turned on today by any PIN-only user
+  (`secureMode` is on in the shipped `features.plist`). On a moved install that control becomes the phrase offer, and
+  further spaces come from "add a space" once a phrase is set (UX review finding 7). Existing Secure Mode installs keep
+  their controls. It changes a shipped feature, so the release notes say so.
+- **What this shows.** The files of a moved install are the same with and without a lock, and the same before and
+  after opting in, apart from the key. An install still on the old store is a Secure Mode install that hasn't opted
+  in, which nothing on disk shows today (`app.layer.key.occulta.v1` is on every install from its first launch). That,
+  and the lock screen showing whether the install opted in, are open, needs a decision (summary; §3.2).
+- **The lock screen while both paths exist** (8a, a Secure Mode install mid-setup) is left to stage 6 (UX review,
+  finding 11).
+
+*The earlier, forced version (2026-10-19 to 2026-11-27):*
+
 Assuming §1.2: the reseal happens at phrase setup, into a new store.
 
 | Today | At phrase setup | Notes |
@@ -727,7 +809,8 @@ Assuming §1.2: the reseal happens at phrase setup, into a new store.
 **Superseded 2026-10-29: there is no probation or graduation.** The deletion below runs when the reseal has been
 verified, with the same caveat for tier U's `r_U` and ML-KEM record. The "use my old PIN" option and the Rule 4
 progress ring (§2.5) are not built. What a forgotten phrase costs is stated in the setup copy, which is the only
-safeguard besides the ladder. Decision 10 (setup required at the first unlock) stands.
+safeguard besides the ladder. ~~Decision 10 (setup required at the first unlock) stands.~~ *Reversed 2026-11-28:
+opt-in (below).*
 
 **During probation.** Until graduation, the lock screen asks for the phrase. Every lock user also gets
 "use my old PIN", which opens the old store as it was at setup (§1.2).
@@ -741,14 +824,47 @@ safeguard besides the ladder. Decision 10 (setup required at the first unlock) s
   - So they go only once nothing else uses tier U (ROLLOUT_PLAN stage 4).
 - the Secure Mode PIN Enclave key (`app.layer.key.occulta.v1`).
 
-**What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. Since every
+**What the deletion shows.** Keychain items carry creation dates, and an item's absence is visible. ~~Since every
 install migrates (§1.4), every install loses the old keys: at once with no lock, at graduation with one. Their
-absence says only that the install has migrated. The deletion's date can still differ by about a week between
+absence says only that the install has migrated.~~ *2026-11-28 (opt-in):* every install without Secure Mode layers
+loses them at the update, with or without a lock, so their absence says only that it has moved. A Secure Mode install
+keeps them, and the old store, until it opts in, which marks it as one: open, needs a decision (summary). Today nothing
+on disk does, since every install has `app.layer.key.occulta.v1` from its first launch. The deletion's date can still differ by about a week between
 the two, which says no more than today's verifier scalar about whether there is a lock.
 
-**Setup deadline. Decided 2026-10-19 by the owner (decision 10): required at the first unlock after the update,**
+**The offer. Decided 2026-11-28 by the owner, reversing decision 10** (the UX review §F, items 1–2; `decisions.md`,
+2026-11-28).
+- **When:** at the first unlock after the update, on an install with a PIN. A short, neutral explanation and three
+  choices: **Migrate Now** (the setup ladder), **Remind me Later** and **Dismiss**.
+- **Remind me Later** waits 7 days: one stored date, written at the tap; the offer returns at the first unlock after
+  it, and Later again re-arms it. **Dismiss** ends it; the feature stays in Settings.
+- **Neutral copy.** It appears at whichever PIN was typed, a duress layer included, so it never mentions coercion,
+  duress, spaces or hidden data: "Replace your PIN with a stronger 7-word passphrase" is the level of claim. A string
+  test checks it.
+- **Identical at every PIN layer,** and Migrate Now at a duress layer starts setup there (8a).
+- **One install-wide state, never per layer:** not yet offered, remind after a date, dismissed. Every PIN install
+  writes it the same way. The stored date is a per-install trace, no more revealing than the update's own date.
+- **Not shown on installs with no lock;** they set a phrase when they turn the lock on (§1.4).
+- **No notifications or badges** (`OSTraceTests`).
+- **Rule 3, open, needs a decision.** With no end date, the lock screen shows from then on whether an install opted in
+  (7 words or digits). The files don't (the silent move). Rule 3 permitted an opt-in period only if every lock user
+  is offered it, which this does, and only if short, because early adopters mark themselves, which this isn't.
+
+**UX findings 10–12 under opt-in** (re-read 2026-11-28 as the UX review asks):
+- **10, lock off and on.** It now applies only to installs that opted in. On a moved PIN install, removing the PIN
+  leaves no lock, and turning the lock on again sets a phrase (§1.4): removing the PIN can't be undone as a PIN. The
+  "two actions, not a switch" copy should say so on a PIN install too.
+- **11, the mixed window.** It now exists only on Secure Mode installs that opt in at a decoy (8a); the "drop that
+  layer" choice is adopted, so Rule 2 can always be finished. A PIN lock screen no longer marks anything by itself,
+  since moved PIN-only installs keep theirs too. The dual lock screen of that window is still stage 6's to design.
+- **12, forgetting.** Unchanged for anyone who opts in. 4b's later deletion gives a Secure Mode install a fallback
+  until the first cold unlock with content; whether a moved PIN install's phrase-less version gets the same is open,
+  needs a decision (summary; §3.3).
+
+*Superseded 2026-11-28: the setup deadline.* **Setup deadline. Decided 2026-10-19 by the owner (decision 10): required at the first unlock after the update,**
 with no "Later" (`decisions.md`, 2026-10-19).
-- There is no opt-in period, so setting up early marks no one (Rule 3).
+- ~~There is no opt-in period, so setting up early marks no one (Rule 3).~~ *Superseded 2026-11-28: opt-in, with no
+  end date; the files mark no one, the lock screen is open (above).*
 - After the update, no install keeps the PIN path ~~beyond the probation week~~ once its reseal is verified
   (2026-10-29: no probation week).
 - The cost: after the update, a lock user can't use the app until setup and its learning steps are done, even
@@ -805,7 +921,8 @@ checked against recorded ones. It needs the following added:
    records of every space plus a noise count inside the decided range.
 5. **The old store isn't touched until every layer has been migrated and verified.** Before that, it is
    byte-for-byte what was seeded and still opens with the old PINs. Afterwards the store and the keys §3.2 lists are
-   gone (Bug 138).
+   gone (Bug 138). *2026-11-28 (4b):* on the opt-in path, gone at the first cold-launch unlock after that which opens
+   a space with content, not before; on the silent move, once the new store verifies.
 6. **Reads fail loudly.** A seeded value that won't open under today's key stops the migration with an error
    (register C1). Nothing is written or deleted, and the user's data is left as it was.
 
@@ -819,6 +936,45 @@ checked against recorded ones. It needs the following added:
 | Unlocked at duress depth N (8a) | Sets up at N, then later finishes from the real depth, typing N's phrase again | After the first step, only N's view is in the new store, and the old store is intact and opens with every PIN. After the second, every depth's view is in its space and the old store is gone |
 | Lock off at duress depth N (8b) | Migrates N silently under the device-only key; later the real user turns the lock on and finishes setup | Same as 8a: the old store waits for the other layers |
 | Depths a coercer created (`coercerBaseDepth > 0`) | Sets up as in the K-layer case | The coercer's depths and the contacts born in them are in no space, and their rows are shredded. Everything else checks 1–6 as usual. This is the one deliberate removal, by decision 7d |
+
+**Added 2026-11-28: the silent move and the offer** (the UX review §G, which this folds in; opt-in, §3.1). They apply
+to installs with a PIN and no Secure Mode layers, and to installs with no lock. Secure Mode installs are never moved
+silently. Unit tests for every item; where a real Enclave is needed the suite gates on it, otherwise it injects a key
+manager.
+
+*The silent move, in order:*
+1. Seal every row under the install's existing phrase-less key into a new store, shuffled with the noise rows (§8, 23).
+2. Open the new store and compare every record with the old one before anything is deleted.
+3. Switch the app to the new store; keep the PIN as the lock screen.
+4. Only then delete the old store and the keys it alone used. A fault in steps 1 to 3 leaves the old store whole.
+
+*Its tests,* beyond checks 1–6:
+- **No data loss.** A seeded old store (contacts with photos, files, notes, the PIN set) moves; every record is equal
+  field by field, and the PIN still opens the app.
+- **Faulty sealer.** An injected failure at each of steps 1 to 3 leaves the old store untouched and the PIN working.
+  No half-built new store remains, and the next launch retries.
+- **Interruption.** Killing the process at each step leaves either all old or all new, and the next launch finishes.
+- **No lock.** An install with no lock moves the same way (§1.4) and opens with no screen, as today.
+- **Secure Mode is left alone.** On an install with layers the silent move does not run, and the old store is
+  byte-for-byte unchanged (the `InteropVectors.json` approach).
+- **Uniform result.** After the move, a PIN-only install and a no-lock install hold the same set of files and keychain
+  items, with no per-install value that differs by lock state beyond what Rule 3 allows (an `OSTraceTests`-style test).
+- **Migrate Now after the move.** Setting a phrase reseals depth 0 under it, keeps every record, and removes the
+  phrase-less key and the PIN gate; a fault leaves the phrase-less version whole. *When that version is deleted, at
+  verification or at 4b's first cold-launch unlock with content, is open, needs a decision (summary).*
+- **The offer.** Shown at every PIN layer with identical copy; a string test finds none of the coercion, duress or
+  space words. Dismiss and Later write one install-wide value, never one per layer; Later's date is 7 days ahead; not
+  shown with no lock.
+- **Wrong-phrase flow.** After Migrate Now, a mistyped phrase opens an empty space with no error and takes the same
+  time as a right one (UX review, finding 2).
+- **4b.** On a Secure Mode install that opted in, the old store survives every launch until a cold-launch unlock
+  opens a space with content, and is deleted then; a warm return within the grace, or an unlock of an empty space,
+  deletes nothing.
+- **"Drop that layer" (8a).** Dropping a forgotten layer from any depth finishes the migration with that layer's data
+  in no space, and the copy is the same at every depth.
+
+*The starting-state table below* is the opt-in path's: each row runs at Migrate Now, except no lock and PIN only,
+whose move is the silent one above; the PIN-only row then starts from the moved store.
 
 **The lock turned on and off after migration.** On every starting state, after migration:
 - the lock is turned off (7a);
@@ -843,7 +999,8 @@ After each step, the space shows exactly what it showed before the step, and the
 **When they land.**
 - Stage 0 builds the mock data, the literal lists and the fixture guards, which pass against today's code.
 - The checks are switched on as their slices land: the vault at stage 3; contacts, photos and groups at stage 4;
-  the remaining records at stage 5; every starting state and the lock toggles at stage 6.
+  the remaining records at stage 5; every starting state and the lock toggles at stage 6; the silent move, the offer
+  and 4b at stage 6 (2026-11-28).
 
 ---
 
@@ -1099,7 +1256,7 @@ back after the old store is deleted, so the riskiest operation runs once and is 
 | 3 | Key derivation, space keys; vault into the new store | Spec §1 (PBKDF2 over word indices, the `ECDH(d, P)` term); the vault's own key and on-screen Face ID gate; vault notes past their budget in overflow rows (§8, 29); each record bound to its row (step 5, §1.6); the row size set from the field limits, with its maximal-record test (§8, 29), and the locator tag if the device run is over the threshold (§1.5) | 2–3 |
 | 4 | Contacts into the new store | One padded text record per contact, each in the space it was created in, at the one row size (§8, 29), long text in overflow rows, a retired key without its ML-KEM material and at most two kept (§8, 29); the migration's rows and noise in one shuffled order, then one rebuild (§8, 23); ~~photos in their own table at one size, re-encoded, with no noise rows;~~ photos re-encoded, as records in the same table (§1.5); a manifest row per space (§8, 28); drafts as records in their space, with attachments that last only while it is open (§1.6); the re-pair note on every pairing made before 2.0.1 (§8, 30); legacy keychain prekeys deleted once their blobs verify (Bug 170); vault entries in their own table with noise rows; groups per space; stamps dropped; deletion that crypto-shreds; prekey blobs (D9); the ~175 sites in §4; the identifier and the group slots and drafts that refer to it (§4) | 4–7 |
 | 5 | Remaining records | Backup keys, custody shards, restore records; the identifier's copies in custody and shard payloads and `TrusteeTag` (§4); the Bug 141 queue and Bug 162's open part, as one padded custody record per owner (ROLLOUT_PLAN stage 4); the backup-export record as a space row (Bug 234); the custody key derived from the space key (Bug 170) | 1–2 |
-| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); Erase All Data scoped to one space; deleting the old store once every layer has migrated; no old-PIN fallback and no graduation | 2.5–4 |
+| 6 | Phrase setup and the phrase lock screen | Every row of §3.1; the coercion gate (§1.3); *(2026-11-28, opt-in; the effort is not re-estimated)* the silent move of PIN-only and no-lock installs at the update, with its tests (§3.3); the offer (Migrate Now, Remind me Later, Dismiss) and its Settings entry (§3.2); the Secure Mode control becoming the offer after the move; "drop that layer" (8a); the lock screen while PIN and phrase paths coexist; the Unlock tap, "Lock now" and the padlock; Erase All Data scoped to one space; deleting the old store ~~once every layer has migrated~~ at the first cold-launch unlock after setup that opens a space with content, once every layer has migrated or been dropped (§1.2); no old-PIN fallback and no graduation; release and TestFlight notes (the Secure Mode control, downgrade) | 2.5–4 |
 | 7 | Copy and test period | Steps 11 and 16 through counsel; TestFlight on phones with several spaces | 1, plus ~1 calendar week: a 7-day phased release |
 
 **Total: about 13–21 weeks of build, roughly 3–5 months.** Stage 4 and stage 2 decide where in that range it
@@ -1122,9 +1279,12 @@ there and aren't repeated here.
    together, in one reseal (§7.1).
 4. ~~**Rule 4's way back** through the old store (§1.2).~~ ~~**Decided 2026-10-19:** adopted, with a new store
    file.~~ **Superseded 2026-10-29:** no probation week and no way back. The reseal writes a new store file, and the
-   old store is deleted once the reseal is verified (§1.2, §3.2).
+   old store is deleted once the reseal is verified (§1.2, §3.2). **Changed 2026-11-28 (opt-in, 4b):** at the first
+   cold-launch unlock after setup that opens a space with content; a silently moved install's old store goes once the
+   new one verifies (§1.2).
 5. ~~**Installs with no lock** (§1.4).~~ **Decided 2026-10-19:** migrate everyone, with an empty phrase for
-   depth 0.
+   depth 0. **Extended 2026-11-28 (opt-in):** PIN-only installs move the same way at the update, the PIN kept as the
+   lock screen; Secure Mode installs move only when they opt in (§3.1).
 6. **A test phone with no real data.** Which one? As of 2026-10-19 none is cleared: the iPhone 11 still holds real
    data. Stage 0's timing and every stage from 3 on wait for one.
    *2026-11-01: a hosted test run on the iPhone 15 Pro, which also holds real data, deleted its groups (`bugs.md`
@@ -1163,8 +1323,10 @@ there and aren't repeated here.
    space only (install-wide keys stay). ~~**Decided 2026-10-19:** any depth removes the depths below it, cascading;
    their data becomes unopenable and the contacts they created are deleted. How it shows across images stays
    open, with depth creation.~~
-10. ~~**A setup deadline** for lock users without a phrase (§3.2).~~ **Decided 2026-10-19:** required at the
-    first unlock after the update.
+10. ~~**A setup deadline** for lock users without a phrase (§3.2).~~ ~~**Decided 2026-10-19:** required at the
+    first unlock after the update.~~ **Reversed 2026-11-28 by the owner:** the phrase is opt-in, offered at the first
+    unlock with Migrate Now, Remind me Later (7 days) and Dismiss, and kept in Settings; no deadline and no gate
+    (§3.2; the UX review §F; `decisions.md`, 2026-11-28).
 11. ~~**The vault's keys** (§6): 11a, a per-depth vault key derived from the depth key; 11b, a second unlock
     (an on-screen Face ID gate, or a real Face ID-or-passcode key).~~ **Decided 2026-10-29:** 11a, with an
     on-screen Face ID gate and no key behind it.
@@ -1190,6 +1352,10 @@ there and aren't repeated here.
     older build finds no data and starts empty, and the new store stays on disk for the next update. Same as D6
     of Bug 171 and Bug 168. The one window is 8a's migration state, where the old store lasts until every layer
     has migrated.
+    **2026-11-28 (the UX review §F):** the loss is accepted, as on 2026-10-16 (`decisions.md`, "Accept the prekey loss
+    on downgrade"). Only TestFlight and sideloaded builds can downgrade; the new store is a separate file, so upgrading
+    again finds the data. A line in the TestFlight notes says so. Under opt-in the window is longer: a Secure Mode
+    install that hasn't opted in keeps the old store, which an older build still opens.
 19. ~~**Bug 170's leftovers** (added 2026-10-24; §6, `bugs.md` Bug 170): the legacy keychain prekeys, whose tags name
     contacts and outlive an app deletion until they retire, and the shard custody key, which waits on ROLLOUT_PLAN
     stage 4.~~ **Decided 2026-10-29:** left in Bug 170.
