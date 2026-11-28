@@ -15282,7 +15282,7 @@ rows, and the same `Z_OPT` on every row of the new tables.
 
 **Status:** Fixed on `v2.1.0/transport-key-derivation-throws`, not merged. Filed as `OC-1` in `Docs/Features/OccultaCore/bugs.md`
 (found 2026-10-31 when the function was extracted); recorded here when it was fixed. Numbered 191 because 190 is taken on
-`v2.1.0/passphrase-independent-spaces`, not merged *(merged 2026-11-12; Bug 190 above)*.
+`v2.1.0/passphrase-independent-spaces`, not merged *(merged 2026-11-12; Bug 190 above)*. *Merged into `release/v2.1.0` through #151 (cea3927), 2026-11-01.*
 
 **Target:** `v2.1.0`, `OccultaCore`. No shipped build of Occulta is affected: every app caller passes 32 bytes.
 
@@ -16224,3 +16224,43 @@ the next launch. Sites 7 and 8 are on the manager's context; 8 changes a live ro
 
 **Not done.** Nothing outside site 1 was changed or tested. No site was checked for a user-visible effect, and none was checked for a
 difference between depths.
+
+---
+
+## Bug 242 — An ML-KEM key or ciphertext the in-person exchange can't use ends it as a timeout that blames distance
+
+**Status:** Fixed 2026-11-28 on `v2.1.0/exchange-kem-failure`, not merged. Filed as `OC-2` in `Docs/Features/OccultaCore/bugs.md`
+(observed 2026-10-31); recorded here when it was fixed. Numbered 242 because 241 is the highest number in use, on
+`v2.1.0/local-docs`.
+
+**Target:** `v2.1.0`. Shipped builds are affected only in what the screen says: nothing is downgraded or saved.
+
+### Severity: Low (proposed; user experience only, reachable only by the phone the exchange is connected to)
+
+### What happens
+
+In `ExchangeManager`, the identity handler returned when `encapsulate(peerPublicKeyData:)` gave `nil` for the peer's ML-KEM key
+(CryptoKit checks only the length when it parses one, so a malformed 1,568-byte key gets that far), and the ciphertext handler
+returned when `decapsulate` gave `nil` (a ciphertext of the wrong length; one of the right length is implicitly rejected and yields a
+different secret instead). Neither ended the exchange. Before 2.0.5 it then stalled while ranging kept restarting the watchdog; from
+2.0.5 (Bug 198) the 15-second step deadline ended it as `.timedOut`, whose text is "Didn't connect — make sure both devices are
+within 25 cm and try again." The cause was not distance, and a retry with the same phone failed the same way. Only the connected
+phone can send either message, so the source is a faulty or hostile copy of the app. The classical branch was never taken, so
+nothing was downgraded, and no contact was saved.
+
+### Fix
+
+Both now end the exchange as its other failed checks do: `self.phase = .failed` and `self.teardownSessions()`, which shows "This
+exchange didn't check out, so nothing was saved. Try again. If it happens again, try somewhere else." and releases the ML-KEM
+private key. `MLKEMKeyCheck` is not added: CryptoKit's `nil` already catches the same keys, and the exchange never stores the key
+(`Docs/Features/OccultaCore/decisions.md`, 2026-11-28). Messages from another phone, and messages at the wrong step, are still
+ignored, not failed. The screen text is the same at every depth, the new log lines are Debug-only, and nothing changes on the wire or
+at rest.
+
+### Guard
+
+`RelayTests` (`OccultaTests/Pairing/ExchangeManagerCommitmentTests.swift`): a relay that replaces the initiator's ML-KEM key with
+1,568 bytes of `0xFF`, and one that shortens the initiator's ciphertext to 10 bytes, each end the responder's exchange as `.failed`,
+with no step deadline left running and no payload on either phone. Without the fix both fail, the responder still at
+`.identityExchanged` with its deadline running. Both make a real ML-KEM key and need an Enclave, like the suite's other hybrid tests,
+so they skip on CI and run on the Simulator.

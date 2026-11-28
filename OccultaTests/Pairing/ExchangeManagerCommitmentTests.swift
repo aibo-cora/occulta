@@ -399,6 +399,55 @@ struct RelayTests {
         #expect(payload.classicalKey == (try loop.a.key.retrieveIdentity()), "the first identity message is the one that counts")
         #expect(loop.a.words == loop.b.words && loop.a.words != nil)
     }
+
+    /// Re-encodes the initiator's message of `kind` with `change` applied, and passes every other message on as it is.
+    private static func changingInitiators(
+        _ kind: String, in loop: Loopback, _ change: @escaping (Exchange) -> Exchange
+    ) -> (_ from: Phone, _ data: Data) -> Data? {
+        { [unowned loop] from, data in
+            guard from === loop.a, Loopback.kind(of: data) == kind,
+                  let exchange = try? JSONDecoder().decode(Exchange.self, from: data) else { return data }
+            return (try? JSONEncoder().encode(change(exchange))) ?? data
+        }
+    }
+
+    @Test("OC-2: an ML-KEM key that can't be encapsulated to ends the exchange, rather than waiting out the deadline",
+          .enabled(if: enclave))
+    func unusableEncapsulationKeyFails() async throws {
+        let loop = Loopback(quantum: true)
+        defer { loop.end() }
+        // The right length, so it parses; all 0xFF fails the FIPS 203 modulus check, so CryptoKit won't encapsulate to it.
+        loop.tamper = Self.changingInitiators("identity", in: loop) { exchange in
+            Exchange(
+                id: exchange.id, token: exchange.token, version: exchange.version, identity: exchange.identity,
+                encapsulationKey: Data(repeating: 0xFF, count: 1_568), pairing: exchange.pairing
+            )
+        }
+        await loop.start()
+        await loop.run(until: { loop.b.manager.phase == .failed })
+
+        #expect(loop.b.manager.phase == .failed, "the responder got the initiator's unusable key")
+        #expect(!loop.b.manager.isStepDeadlineArmed, "the exchange is torn down, not left to its deadline")
+        #expect(loop.a.payload == nil && loop.b.payload == nil)
+    }
+
+    @Test("OC-2: an ML-KEM ciphertext that can't be decapsulated ends the exchange, rather than waiting out the deadline",
+          .enabled(if: enclave))
+    func unusableCiphertextFails() async throws {
+        let loop = Loopback(quantum: true)
+        defer { loop.end() }
+        // Short: decapsulation throws on the length. One of the right length would not fail: ML-KEM's implicit rejection
+        // returns a different secret instead.
+        loop.tamper = Self.changingInitiators("ciphertext", in: loop) { exchange in
+            Exchange(id: exchange.id, token: exchange.token, version: exchange.version, ciphertext: Data(repeating: 0x5a, count: 10))
+        }
+        await loop.start()
+        await loop.run(until: { loop.b.manager.phase == .failed })
+
+        #expect(loop.b.manager.phase == .failed, "the responder got the initiator's unusable ciphertext")
+        #expect(!loop.b.manager.isStepDeadlineArmed, "the exchange is torn down, not left to its deadline")
+        #expect(loop.a.payload == nil && loop.b.payload == nil)
+    }
 }
 
 // MARK: - One discovery message per exchange

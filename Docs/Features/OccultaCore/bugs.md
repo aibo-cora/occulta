@@ -8,7 +8,7 @@ here. "Open, needs a decision" means nobody has decided it: it is not accepted.
 
 ## OC-1: `TransportKeyDerivation` does not check `ecdhOutput`'s length (fixed)
 
-**Status:** Fixed 2026-11-01, on `v2.1.0/transport-key-derivation-throws`, not merged. Recorded as Bug 191 in
+**Status:** Fixed 2026-11-01, merged into `release/v2.1.0` through #151 (cea3927). Recorded as Bug 191 in
 `Docs/Features/Secure Mode/bugs.md`; the entry below is what was found. Found when the function was extracted
 (step 2); recorded 2026-10-31.
 
@@ -44,10 +44,11 @@ hybrid, and the `ReadmeExamplesTests` transport example still passes.
 
 ---
 
-## OC-2: Occulta's non-card ML-KEM key arrivals do not run `MLKEMKeyCheck`
+## OC-2: A malformed ML-KEM key or ciphertext in the in-person exchange ended as a timeout, not a failure (fixed)
 
-**Status:** Open, needs a decision. Observed 2026-10-31 while documenting the package; call sites read the same
-day. Not a downgrade.
+**Status:** Fixed 2026-11-28 on `v2.1.0/exchange-kem-failure`, not merged. Recorded as Bug 242 in
+`Docs/Features/Secure Mode/bugs.md`. Observed 2026-10-31 while documenting the package, as the question whether the
+exchange should run `MLKEMKeyCheck`; it doesn't need to (`decisions.md`, 2026-11-28). Not a downgrade.
 
 `MLKEMKeyCheck`'s own comment tells a host app to run it where a peer's key arrives. In Occulta only
 `OccultaFormats` calls it (`IntroductionCard` and `CardIntroduction`, for the card's ML-KEM key). `encapsulate`
@@ -55,18 +56,29 @@ returns `nil` for a key CryptoKit refuses, and CryptoKit checks only the length,
 reaches `encapsulate()` and fails there. What each caller of `encapsulate(peerPublicKeyData:)` does:
 
 - **The in-person exchange** (`Exchange+Manager.swift`, the identity handler): the one peer key that arrives
-  unchecked. On `nil` the handler returns. It does not take the classical branch, which is entered only when the
-  peer sent no ML-KEM key, there is no provider, or there is no private key. So a malformed key stalls the
-  exchange rather than downgrading it. The residual is the user experience: the exchange stops with no error.
+  unchecked. On `nil` the handler returned, and so did the ciphertext handler on a `decapsulate` that failed (a
+  ciphertext of the wrong length; a wrong one of the right length is implicitly rejected and yields a different
+  secret). Neither took the classical branch, which is entered only when the peer sent no ML-KEM key, there is no
+  provider, or there is no private key, so nothing was downgraded or saved. Before 2.0.5 the exchange then stalled
+  for as long as the phones stayed together, since ranging restarted the watchdog. From 2.0.5, Bug 198's 15-second
+  step deadline ended it as `.timedOut`, whose screen text ("Didn't connect — make sure both devices are within
+  25 cm…") blames distance, and a retry with the same phone failed the same way.
+
+  **Fix:** both now end the exchange as the other failed checks do, `phase = .failed` and `teardownSessions()`,
+  which shows "This exchange didn't check out, so nothing was saved…" and releases the ML-KEM private key. The text
+  is the same at every depth, and the new lines log only in Debug. **Guard:** `RelayTests` in
+  `OccultaTests/Pairing/ExchangeManagerCommitmentTests.swift`: a relay that replaces the initiator's ML-KEM key
+  with 1,568 bytes of `0xFF`, and one that shortens its ciphertext, each end the responder's exchange as `.failed`,
+  with no deadline left running and no payload on either phone. Both make a real ML-KEM key and so need an Enclave,
+  like the suite's other hybrid tests; they skip on CI.
 - **Introduction cards** (`ContactManager+Cards.swift`): keys the card format has already checked. Import throws
   `CardError.keyGenerationFailed`; the meeting path skips the entry.
 - **The tier PQ records** (`Key+Manager.swift`, `KeyManagerProtocol.swift`) and **share staging**
   (`ShareStagingKeyManager.swift`): encapsulate to a key pair generated on the spot, never a peer's. They throw or
   return `nil`, and never store a classical record in place of a hybrid one.
 
-**The decision:** whether the exchange should run `MLKEMKeyCheck` when the identity arrives, so a malformed key
-fails the exchange with an error the user sees instead of stalling it. The security outcome is the same either
-way.
+**Decided 2026-11-28:** the exchange does not run `MLKEMKeyCheck`. `encapsulate`'s `nil` already catches exactly
+the keys the check would, and the exchange never stores the key for later, so the fix is to fail on that `nil`.
 
 ---
 
