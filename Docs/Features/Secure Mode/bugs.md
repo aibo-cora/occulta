@@ -16021,7 +16021,9 @@ of its own (decided 2026-11-24 by the owner). Not built.
 **Pairings made before 2.0.1, under spaces (decided 2026-11-27 by the owner, `PASSPHRASE_ROLLOUT.md` §8, 30):** with no
 in-band upgrade, each keeps the identity fingerprint until the two re-pair in person, so one person paired at two depths before
 2.0.1 matches in both spaces after the migration. A stated limit. 2.1.0 shows the same "pair in person again to upgrade" note on
-every such pairing, in every space, so the note says nothing about spaces. Stage 4. Not built.
+every such pairing, in every space, so the note says nothing about spaces. Stage 4. Not built. *2026-11-28:* the same limit and
+note cover the other harm of such a pairing when classical: a `.longTermNoPQ` file needs only the identity key and the sender's
+public key, so a captured one opens with the passcode and no phrase (spec §2.2).
 
 **Other fixes made on the way, in this PR's branch:** the raw legacy trial decrypt now honours the old-form refusal (a legacy file
 used to open on a pairing that holds a routing key, and so on the twin record this bug is about); a re-pair retires every earlier

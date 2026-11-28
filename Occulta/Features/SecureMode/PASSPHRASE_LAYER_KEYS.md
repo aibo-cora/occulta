@@ -320,7 +320,7 @@ and in `decisions.md` under the date.
   so no draft leaves a file outside the store at rest.
 
 **Message keys.** The 2026-10-04 requirement in §2.2 stands: message keys must not route around the space key. Its
-open items stay open, as listed there.
+open items were decided 2026-11-28, as listed there.
 
 **What it protects, and what it doesn't.**
 - *In one image, with no phrase:* every row has one size, no space tag shows and no per-type count shows. A hidden
@@ -334,9 +334,10 @@ open items stay open, as listed there.
 - *Stated limits, decided 2026-11-27:* images taken before the migration, and older keychain images with the legacy
   prekey tags (rollout §4, Bug 170); the old store while it waits for every layer to migrate, which opens with the
   passcode as all data does today (rollout §1.2); every pairing made before 2.0.1, which keeps the identity
-  fingerprint until re-paired in person and shows the same re-pair note in every space (rollout §8, 30). The user
-  guidance (rollout step 16) states each.
-- *Open, needs a decision:* the across-images limit above (Bug 120); the message-key items in §2.2.
+  fingerprint until re-paired in person and shows the same re-pair note in every space (rollout §8, 30); on a classical
+  one, a `.longTermNoPQ` file also opens with the passcode and no phrase (§2.2, decided 2026-11-28); and the
+  transport's own records of who sent what (§2.2). The user guidance (rollout step 16) states each.
+- *Open, needs a decision:* the across-images limit above (Bug 120).
 
 **Waiting on a measurement, the outcome decided:** the unlock cost, on a spare iPhone 11 (rollout decision 6); the
 write-order test, and the row size's number, both on the Simulator.
@@ -608,15 +609,24 @@ use an old copy, and it leaves no keychain items for items 2 and 3 below to hide
      such as files on a seized contact's phone, moved through Files, or forwarded. Where the transport's
      records exist, they already show who sent what.
 
-*Open, not decided. None of these is accepted:*
-- Messages from senders on old versions, in the classical-only modes, open with the passcode until both
-  sides support item 1.
+~~*Open, not decided. None of these is accepted:*~~ *Each decided 2026-11-28 by the owner (`decisions.md`,
+2026-11-27, "remaining questions"):*
+- Messages from senders on old versions, in the classical-only modes, open with the passcode until ~~both
+  sides support item 1~~ *the pairing is re-made in person.* **A stated limit, with rollout §8, item 30.** Item 1
+  shipped in 2.0.1 as the routing key, with no in-band swap, so this is every classical pairing made before 2.0.1.
+  Under D9 `.forwardSecretNoPQ` needs the phrase (its prekey blob is in the sealed record); what remains is
+  `.longTermNoPQ`, which needs only the identity key and the sender's public key: first messages after a pairing,
+  identity challenges, and contacts on builds older than last-resort keys. Item 30's re-pair note covers it.
 - The transport's own records (who sent which file to whom, and when) show that a relationship exists. An
   ongoing two-way exchange with a contact the surrendered depth doesn't show can't pass as a deleted
-  contact. That is outside the app.
-- Across repeated images, prekeys the surrendered depth can't account for disappear and appear. A new
-  batch for a hidden contact shows up as about 15 new keys.
-- In one image, hidden contacts beyond what the random padding covers make the total stand out.
+  contact. That is outside the app. **A stated limit:** the user guidance (rollout step 16) says the app can't hide
+  them, and what to look for in a transport.
+- ~~Across repeated images, prekeys the surrendered depth can't account for disappear and appear. A new
+  batch for a hidden contact shows up as about 15 new keys.~~ *Superseded by D9:* no prekey has a keychain item,
+  so a new batch rewrites only its contact's row, Bug 120's limit (open).
+- ~~In one image, hidden contacts beyond what the random padding covers make the total stand out.~~ *Superseded by
+  D9:* after stage 4 every prekey is inside a fixed-size row, so nothing is left to count; older keychain images
+  with the legacy prekeys are a stated limit (rollout §4, Bug 170).
 
 **Proposed 2026-10-15: storage for per-depth keys.** Not decided. Open questions are at the end. It covers
 one image. Repeated images are the finding above.

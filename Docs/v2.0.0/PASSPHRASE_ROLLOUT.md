@@ -122,12 +122,18 @@ brainstorm of 2026-10-27 to 29 (§1.5). Each decision is marked where it applies
   and shows the same re-pair note in every space;
 - Bug 120 stays open, needs a decision: no fix is known.
 
+**Decided 2026-11-28 by the owner** (`decisions.md`, 2026-11-27), spec §2.2's message-key items:
+- old senders in the classical-only modes: a stated limit with §8, 30's re-pair note, which covers a pre-2.0.1
+  classical pairing's `.longTermNoPQ` files opening with the passcode;
+- the transport's records: a stated limit in step 16's guidance;
+- the two prekey items: superseded by D9, their remainders in Bug 120 (open) and Bug 170's stated limit;
+- also struck: "adding a depth shows across images", gone under spaces since 2026-11-02.
+
 **Waiting on a measurement, each with its outcome decided:** the unlock cost (the spare iPhone 11, decision 6, with
 the measuring app updated to the decided row size), the write-order test (stage 0, on the Simulator) and the row
 size's number (stage 3 or 4, on the Simulator, Enclave blob sizes checked on the spare phone).
 
-**Open, needs a decision:** none of stage 2's list. Still open: Bug 120's across-images limit, with no fix known, and
-the message-key items in spec §2.2. Stage 2's other part, the model sweep for requirement 5, is still to do (§7.2),
+**Open, needs a decision:** none of stage 2's list. Still open: Bug 120's across-images limit, with no fix known. Stage 2's other part, the model sweep for requirement 5, is still to do (§7.2),
 and so is item 24's check against the long-term slot's derivation.
 
 **What this is.** A plan for shipping the diceware phrase that replaces the PIN. It covers four areas:
@@ -921,7 +927,8 @@ Rule 3 allows only two visible states: lock off and lock on.
 - **Memory load.** Every depth's phrase has the same length (spec §3). So each depth adds 7 words to
   memorise.
 - **Adding a depth.** The new depth's header slot is written, and its parent's slot gains the new key (spec
-  §2, 2026-10-15). That shows across images; the spec has it as open.
+  §2, 2026-10-15). That shows across images; ~~the spec has it as open~~ *gone under independent spaces (spec §2.2,
+  2026-11-02): a new space writes no header, and its first row looks like any other addition.*
 - **Removing a depth: superseded 2026-10-29 by the owner.** Independent spaces share no keys, so no space can
   remove another, and there is no "remove space" action. Deleting content crypto-shreds it (§1.5), so a user who
   deletes everything in a space has emptied it. **Erase All Data erases the current space only:** it shreds that
@@ -945,7 +952,8 @@ Rule 3 allows only two visible states: lock off and lock on.
     - Rows sealed only under those keys become unopenable, which requirement 2 explains as deletions. That is
       today's vault orphaning (`orphanVaultEntries`) generalised.
     - The contacts those depths created are deleted, for 7d's reason.
-  - **Still open:** it shows across images the same way creating a depth does (spec §2, 2026-10-15, open).
+  - ~~**Still open:** it shows across images the same way creating a depth does (spec §2, 2026-10-15, open).~~
+    *Moot: 9a and 9b are superseded (no remove action), and creating a depth no longer shows (above).*
 - **Repeated images.** The spec's finding stands: a duress depth doesn't survive comparison across images
   once its phrase is surrendered. Step 16's guidance has to say so.
   **Recorded 2026-10-29 as a stated limit (Bug 120)** *(2026-11-27, by the owner: kept open, needs a decision, as
@@ -1672,6 +1680,9 @@ there and aren't repeated here.
         (`decisions.md`, 2026-11-27). Every pairing made before 2.0.1 shows the same note, "pair in person again to
         upgrade", in every space and on every install that has such a pairing, so it says nothing about spaces; it
         goes when the pairing is replaced. Step 16's guidance says why. Stage 4, with the contact record.
+        *2026-11-28, by the owner:* the same limit and note cover spec §2.2's old-sender gap: on a classical pairing
+        made before 2.0.1, a `.longTermNoPQ` file needs only the identity key and the sender's public key, so a
+        captured one opens with the passcode and no phrase.
 31. **v2.0.1 audit findings this design carries over** (added 2026-11-12, from the three audits of 2026-11-10:
     `Docs/Audit/V2.0.1AuditIndex2026-11-10.md`; the bugs are in `bugs.md`, filed on `v2.1.0/v2.0.1-audit-docs`).
     ~~Each is open, needs a decision, and each would ship in 2.1.0 unless the plan takes it in.~~ *Each is now fixed
