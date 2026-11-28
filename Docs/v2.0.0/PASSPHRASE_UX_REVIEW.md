@@ -675,14 +675,58 @@ Taken one at a time, each after the trade-off and the threat check were put to t
 - **Not shown on installs with no lock;** they set a phrase when they turn the lock on (§1.4).
 - Nothing here uses notifications or badges (`OSTraceTests`).
 
+**Also decided 2026-11-28**
+- **"Remind me Later" waits 7 days.** One stored date, written at the tap. The offer returns at the first unlock after
+  it, and tapping Later again re-arms it. Dismiss ends it, and Settings keeps the feature.
+- **8a stands for Secure Mode installs, with a "drop that layer" choice** (finding 11). A layer can migrate alone from
+  any layer, the old store waits for the real user, and a forgotten decoy phrase can be dropped, the same at every depth.
+  The lock screen's layout while the paths coexist is left to stage 6.
+- **A plan for the silent move's tests and migration is in §G.**
+
 **What is still open, needs a decision**
-- **What "Remind me Later" waits for:** a number of days or a number of cold launches. Not asked yet.
-- **Finding 11 and the stage plan:** under opt-in the mixed PIN-and-phrase state for Secure Mode installs is permanent
-  until they opt in, not a window. 8a and 8b were written for a window. Re-read them before stage 6.
-- **The silent migration's own tests,** including the case of an install updated at a duress layer (rollout 8a), are
-  not designed.
+- **Turning Secure Mode on after the silent move.** A PIN-only install that has moved to the new store has no old store
+  to hold duress PIN layers. Whether the old duress-PIN setup still exists for it, or a second space is added by a
+  phrase only (finding 7), is not decided. Secure Mode is behind a feature flag today.
+- **Downgrade.** The rollout promises that a downgrade loses nothing, by deleting the old store only after the switch.
+  The silent move deletes it at the update for PIN-only installs, so a person who downgrades after it would not find
+  their newer data. Keeping the old store for a window would cost an extra copy on the phone. Not decided.
 
 **Follow-ups outside this document.** The rollout (`PASSPHRASE_ROLLOUT.md`, §3.1, §3.2, §1.2, §8 items 4 and 10, and
 the stage 6 rows), the layer-keys spec and `decisions.md` still describe the forced migration. They need rewriting
 to match, and the rollout's last open items are on another branch (PR #221), so I have not edited them here. Findings
 10, 11 and 12 should be re-read under opt-in.
+
+
+---
+
+## G. Tests and migration plan for the silent move (§F, item 3)
+
+Applies to installs with a PIN and no Secure Mode layers, and to installs with no lock. Secure Mode installs are never
+moved silently. Unit tests for every item; where a real Enclave is needed the suite gates on it, otherwise it injects a
+key manager.
+
+**Migration, in order**
+1. Seal every row under the install's existing device-only key into a new store, shuffled with the noise rows (rollout
+   §8, 23).
+2. Open the new store and compare every record with the old one before anything is deleted.
+3. Switch the app to the new store, keep the PIN as the lock screen.
+4. Only then delete the old store and the keys it alone used. A fault in steps 1 to 3 leaves the old store whole.
+
+**Tests**
+- **No data loss.** A seeded old store (contacts with photos, files, notes, the PIN set) moves; every record is equal
+  field by field, and the PIN still opens the app.
+- **Faulty sealer.** An injected failure at each of steps 1 to 3 leaves the old store untouched and the PIN working.
+  No half-built new store remains, and the next launch retries.
+- **Interruption.** Killing the process at each step leaves either all-old or all-new, and the next launch finishes.
+- **No lock.** An install with no lock moves the same way (§1.4) and opens with no screen, as today.
+- **Secure Mode is left alone.** On an install with layers, the silent move does not run and the old store is
+  byte-for-byte unchanged (the `InteropVectors.json` approach).
+- **Uniform result.** After the move, a PIN-only install and a no-lock install hold the same set of files and keychain
+  items, with no per-install value that differs by lock state beyond what Rule 3 allows (an `OSTraceTests`-style test).
+- **Migrate Now after the move.** Setting a phrase reseals depth 0 under the phrase, preserves every record, removes the
+  device-only key and the PIN gate, and a fault leaves the device-only version whole.
+- **The offer.** It is shown at every PIN layer with identical copy, and a string test shows the copy has none of the
+  coercion, duress or space words. Dismiss and Later write one install-wide value (never one per layer), Later's date is
+  7 days ahead, and it is not shown with no lock.
+- **Wrong-phrase flow.** After Migrate Now, a mistyped phrase opens an empty space with no error and takes the same
+  time as a right one (finding 2).
