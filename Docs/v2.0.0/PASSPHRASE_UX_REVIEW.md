@@ -29,7 +29,7 @@ what the rollout document already states. No push or PR has been made; that is t
 
 | # | Finding | Flow | Severity | Rollout § |
 |---|---|---|---|---|
-| 1 | Forced, one-sitting memorisation of K+1 phrases, then the old store is deleted: no way back, and a recall check made minutes earlier | Migration; first weeks | **Critical** | §3.1, §3.2, §2.5, §1.2, §8 (4, 10) |
+| 1 | Forced, one-sitting memorisation of K+1 phrases, then the old store is deleted: no way back, and a recall check made minutes earlier | Migration; first weeks | **Critical** as written; the forced part is removed by opting in (§F) | §3.1, §3.2, §2.5, §1.2, §8 (4, 10) |
 | 2 | A wrong phrase opens an empty app, silently; nothing says "this may be a slip" | Daily unlock; stress | **High** | §1.5 (no typo check), §8 (28) |
 | 3 | The decoy phrase is the one most needed under coercion and the least practised; rehearsal was dropped on a premise that misses this | First weeks; coercion | **High** | §2.5, §8 (14) |
 | 4 | 37 blind taps, no biometric, a 5-minute grace and no "Lock now": people will turn the lock off | Daily unlock | **High** | §2.2, §8 (27), Rule 3 |
@@ -102,7 +102,12 @@ typing the phrase unaided, a few minutes after seeing it.
 **Why it is Critical.** Forced, irreversible and hurried, on the install base with the most to lose. It is the one
 step where a UX failure destroys data.
 
-**Suggestions** (independent; the first two matter most).
+**Decided 2026-11-28 (owner): the phrase is opt-in** (§F, items 1–3). Setup is started from Settings by people who
+foresee coercion, at a time they choose; no one is held at the ladder on first unlock. That removes the bad-moment
+problem, so suggestion 1 (a deferral) is **not needed** and suggestions 2–5 apply to whoever opts in. The text
+above describes the forced version and is kept as written for the record.
+
+**Suggestions** (independent; the first two mattered most before opt-in).
 1. **A deferral with a release-wide deadline.** Offer "Not now" at the first-unlock gate to everyone, at every
    space, until a date fixed in the code (say 14 days after the release ships). After that date the gate is
    mandatory. The only per-install state is that the old store still exists, which an image already shows today.
@@ -114,8 +119,10 @@ step where a UX failure destroys data.
    the probation week decision 4 dropped: no ring, no per-space progress record, nothing stored in the new store.
    The state is again just "the old store still exists". It turns the dangerous case (the real phrase forgotten
    within a day) into a recoverable one, at the price of the old store lasting a little longer than "verified".
-   *Open, needs a decision:* that price is the exposure window decision 4 weighed, now short and bounded by the
-   date.
+   *Decided 2026-11-28: adopted, with no release-wide date* (there is no deferral under opt-in, so no backstop). The
+   price is the exposure window decision 4 weighed: until that first cold unlock the old data is as readable as it
+   is today. With duress layers the first cold unlock may be with a decoy phrase, which proves only that phrase.
+   That is no worse than decision 4 as written.
 3. **Keep the ladder's last step as the only check, and don't tell people how to store the phrase.** An earlier
    draft added "write it down and type it back from the paper"; withdrawn. A paper copy is a trace of its own, and
    so is an entry in the phone's own password manager, which sits on the phone a coercer holds and syncs to the
@@ -131,7 +138,7 @@ step where a UX failure destroys data.
 
 **Threat check.** Suggestion 1: the observable is the old store's presence and the date constant, both the same
 for every space and install; the prompt looks the same at a decoy and at the real space. Suggestion 2: same state;
-residual is the old store's window, *open, needs a decision*. Suggestions 3–5 are local to a screen shown
+residual is the old store's window, decided 2026-11-28 (above). Suggestions 3–5 are local to a screen shown
 identically everywhere. Nothing here depends on or reveals a space count.
 
 ---
@@ -154,7 +161,8 @@ safe bluff (§B, item 1), so I recommend **not** using it (§D, item 1). The fix
 
 **Suggestions.**
 1. **Don't submit on the 7th word.** Show the dots, and require an explicit "Unlock" tap. One extra tap; a last
-   word that was mis-tapped can be removed first (finding 5 makes backspace remove a whole word).
+   word that was mis-tapped can be removed first (finding 5 makes backspace remove a whole word). *Decided
+   2026-11-28: adopted.*
 2. **One empty-state for every empty space,** the same whether the emptiness is a decoy the user made, a slip, a
    space the user erased or a fresh install: "Nothing here yet." On top of it, only when the space was reached by
    typing a phrase, a dismissible line: "If you expected your contacts, lock the app and try again." It is never
@@ -200,7 +208,8 @@ oracle of §D, item 2. So practice can't verify through the manifest and stay bl
    are forbidden by `OSTraceTests`, a per-space date is a per-space record (§1.5), and a checker is the oracle.
 
 **Threat check.** 1 and 2 are copy and an existing-style control, the same on every install. Residual: a decoy
-that is empty stays unverifiable by its owner; *open, needs a decision* (it is the price of keeping the bluff).
+that is empty stays unverifiable by its owner. *Decided 2026-11-28:* add suggestion 1's copy at setup, the same for
+every phrase, and take that residual as the price of keeping the bluff.
 
 ---
 
@@ -229,8 +238,10 @@ most people at the weak end, and the few at the strong end are easier to pick ou
 
 **Threat check.** The grace value is one install-wide setting, visible only when a lock is on (which the lock
 screen already shows). It is not stored per space and not a depth number, so it names nothing. Residual: a longer
-grace widens the stated window of item 27; *open, needs a decision* (the owner may prefer to keep 5 minutes
-and lean on Lock now alone).
+grace widens the stated window of item 27. *Decided 2026-11-28:* the grace stays fixed at 5 minutes, with no
+setting (suggestion 1 is not adopted); Lock now and the padlock (finding 6) cover people who want a shorter
+window. Opting in is for people who foresee coercion, which lowers the worry that the tap cost drives people to
+turn the lock off. Revisit only if testing shows they do.
 
 ---
 
@@ -309,8 +320,9 @@ real space who wants the decoy, or the reverse, must kill the app or wait out th
    **Not "Switch space" or "Switch account".** Either word tells whoever opens Settings that a second space exists,
    on every install with the lock on, and an app with no sign-in has no accounts to switch; the familiarity of
    "Switch account" is the leak. Only a lock is neutral. An earlier draft of this suggestion used "Lock / Switch
-   space"; it had the same flaw and is withdrawn.
-5. **Optional: flip between spaces opened in this session.** Once a second phrase has been typed, the first
+   space"; it had the same flaw and is withdrawn. *Decided 2026-11-28: the owner asked for "Switch Account" and,
+   after the trade-off was put to them, chose "Lock now".*
+5. **Rejected 2026-11-28 (owner): flip between spaces opened in this session.** Once a second phrase has been typed, the first
    space's key stays in memory and a toggle appears, so the two feel like switched accounts. Nothing is written
    to disk. Lock now, grace expiry and an app kill clear every cached key. The toggle is absent until a second
    phrase has been typed this session, its rows carry no names or colours, and it exists only in memory.
@@ -320,8 +332,8 @@ which the lock screen already shows. It is not per space and names nothing. A co
 tells them there is a lock. Pressing it in front of them is ordinary.
 
 **Placement.** In Settings > Security the control is three taps away. That suits switching and is slow for
-"someone is walking up". *Open, needs a decision:* an icon-only padlock in the top bar of every tab as a second
-route. It names nothing, and it is not per space.
+"someone is walking up". *Decided 2026-11-28: adopted.* An icon-only padlock in the top bar of every tab is a second
+route. It names nothing, it is not per space, and it is the same on every install with the lock on.
 
 **Why not a stored switcher** ("the real space has access to all the others", as with account switching). It
 needs the other spaces' keys or phrases kept inside one space, so:
@@ -335,10 +347,9 @@ needs the other spaces' keys or phrases kept inside one space, so:
 - *It erodes finding 3.* A one-tap switch means the decoy phrase is never typed, then forgotten, then unavailable
   under coercion.
 
-**Open, needs a decision (suggestion 5 only).** Someone who takes the unlocked phone mid-session, after both
-phrases were typed, sees the toggle and learns a second space exists. Mitigations are an unlabelled toggle, a
-prominent Lock now and the 5-minute grace. Whether that residual is tolerable is for the owner. Suggestion 4 alone
-has no such leak.
+**Decided 2026-11-28 (suggestion 5): rejected.** Someone who takes the unlocked phone mid-session, after both
+phrases were typed, would see the toggle and learn a second space exists. Suggestion 4 alone has no such leak, and
+switching stays "type the other phrase", which is also the practice finding 3 needs.
 
 ---
 
@@ -542,7 +553,8 @@ keyboard, so any aid has to be in-app.
 2. **Layout follows the system's keyboard layout** (QWERTY, AZERTY, QWERTZ), or a one-time install-wide choice.
    A per-install layout setting names no space.
 3. **Let the person reject a word they can't pronounce,** with a cap (two swaps per phrase) so the selection effect on
-   the 90.5 bits stays small. *Open, needs a decision:* the owner may prefer none.
+   the 90.5 bits stays small (at most about 5.2 bits in the worst case: 36 swap patterns over 7 positions).
+   *Rejected 2026-11-28 (owner): no swaps.* Phrases are exactly as drawn.
 4. **Don't translate the words on the lock screen.** A gloss in setup only would need a language pack per
    language; low value.
 
@@ -602,7 +614,8 @@ A sweep for stage 6 and the counsel pass (steps 11 and 16):
    whether it opens a real space.
 3. **A list, count or switcher of spaces,** a "you have N spaces" line, space names or colours. §1.5 forbids it.
    This includes a *stored* switcher in which one space holds the others' keys, like account switching (finding
-   6, "Why not a stored switcher"). The in-memory toggle of finding 6, suggestion 5 is a separate, open item.
+   6, "Why not a stored switcher"). The in-memory toggle of finding 6, suggestion 5 was rejected on 2026-11-28 for the
+   same reason: while it shows, it tells whoever holds the unlocked phone that a second space exists.
 4. **A stored per-space date or reminder** (rehearsal, "last used"). A per-space record; notifications are forbidden
    (`OSTraceTests`).
 5. **A per-space grace or setting.** Any value that differs by space is a depth-only observable.
@@ -616,7 +629,9 @@ A sweep for stage 6 and the counsel pass (steps 11 and 16):
 
 ## E. Order of decisions
 
-1. **Finding 1**: a release-wide deferral, and when the old store goes. Nothing in stage 6 can be finished without it.
+1. **Finding 1**: ~~a release-wide deferral, and when the old store goes~~ decided 2026-11-28: opt-in, and the old
+   store goes at the first cold unlock after setup (§F). The rollout's decisions 4 and 10 have to be rewritten to match
+   before stage 6 can be finished.
 2. **Findings 6 and 7**: Lock now; the "Add another space" flow. Stage 6's scope.
 3. **Finding 5**: the commit rule (next-word key or stronger cue) and the disabled-key change. Stage 1's scope, and
    it can be tested on Bug 92's export passphrase first.
@@ -626,3 +641,38 @@ A sweep for stage 6 and the counsel pass (steps 11 and 16):
 
 Nothing here changes the cryptography or the storage. Findings 2, 3 and 5 are where the UX and the threat model pull
 against each other, and each is resolved in favour of the threat model.
+
+---
+
+## F. Owner decisions, 2026-11-28
+
+Taken one at a time, each after the trade-off and the threat check were put to the owner.
+
+| # | Decision | Findings touched |
+|---|---|---|
+| 1 | **The phrase is opt-in.** People who foresee coercion start setup from Settings, at a time they choose. Nobody is forced through the ladder at first unlock. This reverses rollout decision 10 and the forced migration of §3.1 and §3.2 for installs with a PIN. It is consistent with decision 5, "the passphrase stays optional". | 1, 4, 10, 11 |
+| 2 | **People with a PIN who never opt in keep their PIN,** as today's lock. The PIN code path stays in the app. | 1, 11 |
+| 3 | **No "Not now" deferral and no release-wide date,** since nothing is forced. | 1 |
+| 4 | **The old store is deleted at the first cold-launch unlock after setup that opens a space with content.** No date backstop. | 1 |
+| 5 | **Unlock tap:** the lock screen stops at 7 words, and nothing is derived until an explicit Unlock. | 2, 5 |
+| 6 | **Label: "Lock now"**, in Settings > Security. Not "Switch Account" or "Switch space". | 6 |
+| 7 | **No in-memory switching toggle.** Switching is typing the other phrase. | 6, §D |
+| 8 | **An icon-only padlock** in the top bar of every tab, as a second route to Lock now. | 6 |
+| 9 | **Grace is fixed at 5 minutes,** with no setting. | 4 |
+| 10 | **Setup copy** asking the person to put a contact or note in each space, the same for every phrase. An empty decoy stays unverifiable by its owner; that residual is taken. | 3 |
+| 11 | **No word swaps at setup.** Phrases are exactly as drawn. | 14 |
+
+**Still open, needs a decision**
+- **Who can tell a phrase install from a PIN install.** Rule 3 allows two visible states, lock off and lock on. With
+  opt-in, an image or a coercer reading Settings must not be able to tell lock-on with a phrase from lock-on with a
+  PIN beyond what the lock screen already shows. If it can, using a phrase becomes evidence about its owner. I have not
+  checked this against the code or the stores.
+- **A write into a stray space** (finding 2): a person who writes into the space a typo opened has data they can't
+  find. Whether to accept that or add a first-write notice, which costs the bluff.
+- **Secure Mode users who never opt in** keep their duress PINs as today. What that does to rollout §3.1's 8a and 8b
+  (a mixed PIN-and-phrase state, finding 11) is not worked out: under opt-in the mixed state is permanent, not a window.
+
+**Follow-ups outside this document.** The rollout (`PASSPHRASE_ROLLOUT.md`, §3.1, §3.2, §1.2, §8 items 4 and 10, and
+the stage 6 rows), the layer-keys spec and `decisions.md` still describe the forced migration. They need rewriting
+to match, and the rollout's last open items are on another branch (PR #221), so I have not edited them here. Findings
+10, 11 and 12 should be re-read under opt-in.
