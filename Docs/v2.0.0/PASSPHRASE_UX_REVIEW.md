@@ -102,8 +102,8 @@ typing the phrase unaided, a few minutes after seeing it.
 **Why it is Critical.** Forced, irreversible and hurried, on the install base with the most to lose. It is the one
 step where a UX failure destroys data.
 
-**Decided 2026-11-28 (owner): the phrase is opt-in** (§F, items 1–3). Setup is started from Settings by people who
-foresee coercion, at a time they choose; no one is held at the ladder on first unlock. That removes the bad-moment
+**Decided 2026-11-28 (owner): the phrase is opt-in** (§F, items 1–4). People with a PIN are offered it once, with
+Migrate Now, Remind me Later and Dismiss, and it stays in Settings; no one is held at the ladder on first unlock. That removes the bad-moment
 problem, so suggestion 1 (a deferral) is **not needed** and suggestions 2–5 apply to whoever opts in. The text
 above describes the forced version and is kept as written for the record.
 
@@ -176,8 +176,9 @@ safe bluff (§B, item 1), so I recommend **not** using it (§D, item 1). The fix
 runs whatever the outcome, as today's 0.5 s pad does for the PIN; keep a floor). The empty-state copy is the same
 in every empty space, on every install; the line shown after a typed phrase is the same whether the space is a
 real decoy or a slip. It tells a coercer the app supports phrases, which onboarding already says. No manifest
-check is read by the UI. Residual: a person who writes into a stray space still has data they can't find. *Open,
-needs a decision:* whether that is acceptable, or whether the first write needs a notice, which costs the bluff.
+check is read by the UI. Residual: a person who writes into a stray space still has data they can't find.
+*Decided 2026-11-28:* accepted. No first-write notice (it would be the verifier of §D, item 2), and suggestions 2 and
+3 are adopted: a uniform empty state with the dismissible hint after a typed phrase, and no prompt on the first write.
 
 ---
 
@@ -650,10 +651,11 @@ Taken one at a time, each after the trade-off and the threat check were put to t
 
 | # | Decision | Findings touched |
 |---|---|---|
-| 1 | **The phrase is opt-in.** People who foresee coercion start setup from Settings, at a time they choose. Nobody is forced through the ladder at first unlock. This reverses rollout decision 10 and the forced migration of §3.1 and §3.2 for installs with a PIN. It is consistent with decision 5, "the passphrase stays optional". | 1, 4, 10, 11 |
-| 2 | **People with a PIN who never opt in keep their PIN,** as today's lock. The PIN code path stays in the app. | 1, 11 |
-| 3 | **No "Not now" deferral and no release-wide date,** since nothing is forced. | 1 |
-| 4 | **The old store is deleted at the first cold-launch unlock after setup that opens a space with content.** No date backstop. | 1 |
+| 1 | **The phrase is opt-in.** It is offered, not forced. People who foresee coercion take it at a time they choose. This reverses rollout decision 10 and the forced migration of §3.1 and §3.2. It is consistent with decision 5, "the passphrase stays optional". | 1, 4, 10, 11 |
+| 2 | **The offer.** To an install with a PIN, at the first unlock after the update: a short, neutral explanation of the feature and three choices, **Migrate Now** (the setup ladder), **Remind me Later** and **Dismiss**. It stays available in Settings after a Dismiss. See "The offer" below. | 1, 4 |
+| 3 | **Every PIN install moves to the new store silently at the update,** under today's device-only key, with the PIN as the lock screen (§1.4's path; the PIN adds no entropy today, so protection is unchanged). Migrate Now only replaces that key with a phrase. This is so that opting in marks no one (Rule 3). | 1, 11 |
+| 4 | **Secure Mode installs stay on the old store until they opt in,** with the same offer. Migrate Now runs the existing setup, all phrases in one sitting (Rule 2), at a time they choose. Their mark is today's `app.layer.key.occulta.v1` keychain item, which opting in removes. No silent move of layers is designed. | 1, 11 |
+| 4b | **No release-wide date and no gate.** The old store is deleted at the first cold-launch unlock after setup that opens a space with content. | 1 |
 | 5 | **Unlock tap:** the lock screen stops at 7 words, and nothing is derived until an explicit Unlock. | 2, 5 |
 | 6 | **Label: "Lock now"**, in Settings > Security. Not "Switch Account" or "Switch space". | 6 |
 | 7 | **No in-memory switching toggle.** Switching is typing the other phrase. | 6, §D |
@@ -661,16 +663,24 @@ Taken one at a time, each after the trade-off and the threat check were put to t
 | 9 | **Grace is fixed at 5 minutes,** with no setting. | 4 |
 | 10 | **Setup copy** asking the person to put a contact or note in each space, the same for every phrase. An empty decoy stays unverifiable by its owner; that residual is taken. | 3 |
 | 11 | **No word swaps at setup.** Phrases are exactly as drawn. | 14 |
+| 12 | **A write into a stray space is accepted.** No first-write notice; finding 2's suggestions 2 and 3 are adopted (uniform empty state, dismissible hint after a typed phrase, no prompt on the first write). | 2 |
 
-**Still open, needs a decision**
-- **Who can tell a phrase install from a PIN install.** Rule 3 allows two visible states, lock off and lock on. With
-  opt-in, an image or a coercer reading Settings must not be able to tell lock-on with a phrase from lock-on with a
-  PIN beyond what the lock screen already shows. If it can, using a phrase becomes evidence about its owner. I have not
-  checked this against the code or the stores.
-- **A write into a stray space** (finding 2): a person who writes into the space a typo opened has data they can't
-  find. Whether to accept that or add a first-write notice, which costs the bluff.
-- **Secure Mode users who never opt in** keep their duress PINs as today. What that does to rollout §3.1's 8a and 8b
-  (a mixed PIN-and-phrase state, finding 11) is not worked out: under opt-in the mixed state is permanent, not a window.
+**The offer.** Constraints that follow from the threat model, to be built in:
+- **Neutral copy.** It appears at whichever PIN was typed, including a duress layer, so it can't mention coercion,
+  duress, spaces or hidden data. "Replace your PIN with a stronger 7-word passphrase" is the level of claim.
+- **Identical at every PIN layer.** Showing it only at the real layer would mark the others. Migrate Now at a duress
+  layer starts setup there, as rollout 8a already allows.
+- **One install-wide state, never per layer:** not yet offered, remind after a date, dismissed. Every PIN install
+  writes it the same way. A stored date is a per-install trace, no more revealing than the update's own date.
+- **Not shown on installs with no lock;** they set a phrase when they turn the lock on (§1.4).
+- Nothing here uses notifications or badges (`OSTraceTests`).
+
+**What is still open, needs a decision**
+- **What "Remind me Later" waits for:** a number of days or a number of cold launches. Not asked yet.
+- **Finding 11 and the stage plan:** under opt-in the mixed PIN-and-phrase state for Secure Mode installs is permanent
+  until they opt in, not a window. 8a and 8b were written for a window. Re-read them before stage 6.
+- **The silent migration's own tests,** including the case of an install updated at a duress layer (rollout 8a), are
+  not designed.
 
 **Follow-ups outside this document.** The rollout (`PASSPHRASE_ROLLOUT.md`, §3.1, §3.2, §1.2, §8 items 4 and 10, and
 the stage 6 rows), the layer-keys spec and `decisions.md` still describe the forced migration. They need rewriting
