@@ -683,13 +683,18 @@ Taken one at a time, each after the trade-off and the threat check were put to t
   The lock screen's layout while the paths coexist is left to stage 6.
 - **A plan for the silent move's tests and migration is in §G.**
 
+**Gaps found while writing §G, decided 2026-11-28**
+- **Turning Secure Mode on after the silent move: not possible as PIN layers.** `secureMode` is on in the shipped
+  `features.plist`, so a PIN-only person can turn on duress PINs today. On an install that has moved, the Secure Mode
+  control in Settings > Security becomes the phrase offer (Migrate Now), and extra spaces come from "add a space"
+  (finding 7) after they opt in. Existing Secure Mode installs are not moved and keep their controls. This changes a
+  feature that ships today, so the release notes have to say so.
+- **Downgrade: accepted,** as on 2026-10-16 (`decisions.md`, "Accept the prekey loss on downgrade"). Only TestFlight and
+  sideloaded builds can downgrade. The new store is a separate file, so upgrading again finds the data. The case where
+  the older build wrote its own store in the meantime stays with rollout decision 18. Add a line to the TestFlight notes.
+
 **What is still open, needs a decision**
-- **Turning Secure Mode on after the silent move.** A PIN-only install that has moved to the new store has no old store
-  to hold duress PIN layers. Whether the old duress-PIN setup still exists for it, or a second space is added by a
-  phrase only (finding 7), is not decided. Secure Mode is behind a feature flag today.
-- **Downgrade.** The rollout promises that a downgrade loses nothing, by deleting the old store only after the switch.
-  The silent move deletes it at the update for PIN-only installs, so a person who downgrades after it would not find
-  their newer data. Keeping the old store for a window would cost an extra copy on the phone. Not decided.
+- **Nothing is left open in this document.** The follow-ups below, outside it, are what remain.
 
 **Follow-ups outside this document.** The rollout (`PASSPHRASE_ROLLOUT.md`, §3.1, §3.2, §1.2, §8 items 4 and 10, and
 the stage 6 rows), the layer-keys spec and `decisions.md` still describe the forced migration. They need rewriting
